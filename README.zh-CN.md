@@ -56,19 +56,6 @@
 
 ## 快速开始
 
-```bash
-./start_reweave_static.sh
-```
-
-试用公开 Source Box：
-
-```text
-examples/source_boxes/customer-quote-widget
-examples/source_boxes/ops-status-card
-```
-
-在桌面程序里点击 **Bind Source Box**，选择其中一个文件夹。
-
 运行公开 Task Pack demo：
 
 ```bash
@@ -76,6 +63,19 @@ python3 scripts/run_public_reweave_demo.py \
   --source examples/source_boxes/customer-quote-widget \
   --task "Build a quote summary card" \
   --out /tmp/reweave_public_demo
+```
+
+查看输出：
+
+```bash
+ls /tmp/reweave_public_demo
+```
+
+在桌面程序里试用公开 Source Box：
+
+```text
+examples/source_boxes/customer-quote-widget
+examples/source_boxes/ops-status-card
 ```
 
 运行公开仓库自带检查：
@@ -86,7 +86,13 @@ python3 -m pytest tests -q
 node --check reweave_frontend/app.js
 ```
 
-可选：把桌面桥接到你自己的 Lumo Lite runtime state：
+可选桌面壳：
+
+```bash
+./start_reweave_static.sh
+```
+
+可选 runtime bridge：
 
 ```bash
 REWEAVE_LUMO_LITE_STATE_PATH=/path/to/frontend_runtime_state.json \

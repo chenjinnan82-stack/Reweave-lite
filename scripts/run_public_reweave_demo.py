@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 import shutil
@@ -11,6 +12,7 @@ import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
+MARKER = ".reweave_public_demo"
 
 
 def _import_reweave() -> tuple[object, object, object, object, object]:
@@ -38,10 +40,43 @@ def _safe_out(path: Path) -> Path:
     resolved = path.expanduser().resolve()
     if resolved == ROOT or ROOT in resolved.parents:
         raise SystemExit("refusing to write demo output inside the repository")
+    if resolved == Path.home().resolve():
+        raise SystemExit("refusing to use home directory as demo output")
+    if resolved.parent == resolved:
+        raise SystemExit("refusing to use filesystem root as demo output")
+    if not resolved.name.startswith(("reweave_", ".reweave_", "demo_")):
+        raise SystemExit("demo output directory name must start with reweave_, .reweave_, or demo_")
     return resolved
 
 
-def run(source: Path, task: str, out: Path) -> dict[str, object]:
+def _source_box_public(box: dict[str, object], source: Path, *, include_local_paths: bool) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "id": box["id"],
+        "label": box["label"],
+        "path_policy": "included" if include_local_paths else "redacted",
+        "path_hash": "sha256:" + hashlib.sha256(str(source).encode("utf-8")).hexdigest(),
+    }
+    if include_local_paths:
+        payload["path"] = str(source)
+    return payload
+
+
+def _prepare_out(out: Path) -> None:
+    marker = out / MARKER
+    if out.exists():
+        if not marker.is_file():
+            raise SystemExit(f"refusing to overwrite non-demo output directory: {out}")
+        shutil.rmtree(out)
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.mkdir()
+    marker.write_text("reweave public demo output\n", encoding="utf-8")
+
+
+def _public_files(out: Path) -> list[str]:
+    return sorted(p.name for p in out.iterdir() if p.is_file() and p.name != MARKER)
+
+
+def run(source: Path, task: str, out: Path, *, include_local_paths: bool = False) -> dict[str, object]:
     source = source.expanduser().resolve()
     if not source.is_dir():
         raise SystemExit(f"source folder not found: {source}")
@@ -58,27 +93,31 @@ def run(source: Path, task: str, out: Path) -> dict[str, object]:
         draft = draft_capsules(box["id"])
         capsules = promote_source_drafts(box["id"])
         capsule_ids = [str(cap["id"]) for cap in capsules[:4]]
+        source_box = _source_box_public(box, source, include_local_paths=include_local_paths)
         preview = build_preview_package(
             {
                 "task": task,
                 "capsuleIds": capsule_ids,
                 "backend": "public_demo",
-                "sourceBoxes": [{"id": box["id"], "label": box["label"], "path": str(source)}],
+                "sourceBoxes": [source_box],
             }
         )
 
         preview_path = Path(str(preview["previewPath"]))
-        if out.exists():
-            shutil.rmtree(out)
-        out.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(preview_path, out)
+        _prepare_out(out)
+        for item in preview_path.iterdir():
+            target = out / item.name
+            if item.is_dir():
+                shutil.copytree(item, target)
+            else:
+                shutil.copy2(item, target)
 
         task_pack = {
             "schema_version": "reweave_public_task_pack.v1",
             "task": task,
-            "source_box": {"id": box["id"], "label": box["label"]},
+            "source_box": source_box,
             "selected_capsule_ids": capsule_ids,
-            "output_files": sorted(p.name for p in out.iterdir() if p.is_file()),
+            "output_files": _public_files(out),
             "source_project_write": False,
         }
         _write_json(out / "task_pack.json", task_pack)
@@ -98,9 +137,9 @@ def run(source: Path, task: str, out: Path) -> dict[str, object]:
         return {
             "ok": True,
             "out": str(out),
-            "source": str(source),
+            "source": source_box,
             "task": task,
-            "files": sorted(p.name for p in out.iterdir() if p.is_file()),
+            "files": _public_files(out),
             "capsules_used": len(_json(out / "capsules_used.json")),
             "source_project_write": False,
         }
@@ -111,9 +150,10 @@ def main() -> None:
     parser.add_argument("--source", default="examples/source_boxes/customer-quote-widget")
     parser.add_argument("--task", default="Build a quote summary card")
     parser.add_argument("--out", default="/tmp/reweave_public_demo")
+    parser.add_argument("--include-local-paths", action="store_true", help="Include local source paths in provenance; avoid for shared output.")
     args = parser.parse_args()
 
-    result = run(Path(args.source), args.task, Path(args.out))
+    result = run(Path(args.source), args.task, Path(args.out), include_local_paths=args.include_local_paths)
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
 

@@ -55,19 +55,6 @@ Use local capsules to plan a new web task while keeping trace and source-write s
 
 ## Quick Start
 
-```bash
-./start_reweave_static.sh
-```
-
-Try a public Source Box:
-
-```text
-examples/source_boxes/customer-quote-widget
-examples/source_boxes/ops-status-card
-```
-
-In the desktop app, choose one of those folders from **Bind Source Box**.
-
 Run the public Task Pack demo:
 
 ```bash
@@ -75,6 +62,19 @@ python3 scripts/run_public_reweave_demo.py \
   --source examples/source_boxes/customer-quote-widget \
   --task "Build a quote summary card" \
   --out /tmp/reweave_public_demo
+```
+
+Inspect the output:
+
+```bash
+ls /tmp/reweave_public_demo
+```
+
+Try a public Source Box in the desktop app:
+
+```text
+examples/source_boxes/customer-quote-widget
+examples/source_boxes/ops-status-card
 ```
 
 Run the public checks:
@@ -85,7 +85,13 @@ python3 -m pytest tests -q
 node --check reweave_frontend/app.js
 ```
 
-Optional: point the desktop bridge at your own Lumo Lite runtime state:
+Optional desktop shell:
+
+```bash
+./start_reweave_static.sh
+```
+
+Optional runtime bridge:
 
 ```bash
 REWEAVE_LUMO_LITE_STATE_PATH=/path/to/frontend_runtime_state.json \
