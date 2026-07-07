@@ -24,6 +24,6 @@ python3 scripts/run_public_reweave_demo.py
 
 ### Safety Boundary
 
-Source folders are read as context. The public demo writes only to `/tmp/reweave_public_demo` unless you pass another safe output directory.
+Source folders are read as context. The public demo writes only to your system temp folder by default, such as `/tmp/reweave_public_demo` on macOS/Linux or `%TEMP%\reweave_public_demo` on Windows, unless you pass another safe output directory.
 
 Local source paths are redacted from public demo provenance by default.

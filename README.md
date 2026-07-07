@@ -22,11 +22,10 @@ Old project -> Source Box -> Capsules -> Task Pack -> New Web
 ## 30-Second Demo
 
 ```bash
-python3 scripts/run_public_reweave_demo.py
-ls /tmp/reweave_public_demo
+python scripts/run_public_reweave_demo.py
 ```
 
-Expected output includes `task_pack.json`, `capsules_used.json`, and `provenance.json`.
+The JSON result prints the output folder and files. Expected output includes `task_pack.json`, `capsules_used.json`, and `provenance.json`.
 
 **Boundary:** source projects are read-only by default. Reweave-lite previews task packs; it does not auto-write or overwrite your project.
 
@@ -69,17 +68,20 @@ Use local capsules to plan a new web task while keeping trace and source-write s
 Run the public Task Pack demo:
 
 ```bash
-python3 scripts/run_public_reweave_demo.py \
+python scripts/run_public_reweave_demo.py \
   --source examples/source_boxes/customer-quote-widget \
-  --task "Build a quote summary card" \
-  --out /tmp/reweave_public_demo
+  --task "Build a quote summary card"
 ```
 
-Inspect the output:
+Windows PowerShell:
 
-```bash
-ls /tmp/reweave_public_demo
+```powershell
+py -3 scripts\run_public_reweave_demo.py `
+  --source examples\source_boxes\customer-quote-widget `
+  --task "Build a quote summary card"
 ```
+
+The script writes to your system temp folder by default, for example `/tmp/reweave_public_demo` on macOS/Linux or `%TEMP%\reweave_public_demo` on Windows.
 
 Try a public Source Box in the desktop app:
 
@@ -91,16 +93,18 @@ examples/source_boxes/ops-status-card
 Run the public checks:
 
 ```bash
-python3 -m pip install -r requirements-dev.txt
-python3 -m pytest tests -q
+python -m pip install -r requirements-dev.txt
+python -m pytest tests -q
 node --check reweave_frontend/app.js
 ```
 
-Optional desktop shell:
+Optional desktop shell on macOS/Linux:
 
 ```bash
 ./start_reweave_static.sh
 ```
+
+Windows desktop shell support is experimental; the CLI demo and tests are CI-checked on Windows.
 
 Optional runtime bridge:
 
@@ -112,7 +116,7 @@ REWEAVE_RUNTIME_STATE_PATH=/path/to/frontend_runtime_state.json \
 ## Public Reproducibility
 
 - GitHub Actions runs the Reweave test suite.
-- GitHub Actions runs the public Task Pack demo.
+- GitHub Actions runs the public Task Pack demo on Ubuntu and Windows.
 - GitHub Actions checks `task_pack.json`, `capsules_used.json`, and `provenance.json`.
 - GitHub Actions checks frontend JavaScript syntax.
 - Local default launch does not depend on private workspace paths.

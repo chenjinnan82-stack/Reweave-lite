@@ -12,6 +12,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 MARKER = ".reweave_public_demo"
+DEFAULT_OUT = Path(tempfile.gettempdir()) / "reweave_public_demo"
 
 
 def _import_reweave() -> tuple[object, object, object, object, object]:
@@ -147,7 +148,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--source", default="examples/source_boxes/customer-quote-widget")
     parser.add_argument("--task", default="Build a quote summary card")
-    parser.add_argument("--out", default="/tmp/reweave_public_demo")
+    parser.add_argument("--out", default=str(DEFAULT_OUT))
     parser.add_argument("--include-local-paths", action="store_true", help="Include local source paths in stdout and task_pack.json; provenance stays redacted.")
     args = parser.parse_args()
 

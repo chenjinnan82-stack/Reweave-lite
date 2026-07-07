@@ -22,11 +22,10 @@
 ## 30 秒 demo
 
 ```bash
-python3 scripts/run_public_reweave_demo.py
-ls /tmp/reweave_public_demo
+python scripts/run_public_reweave_demo.py
 ```
 
-预期输出包含 `task_pack.json`、`capsules_used.json` 和 `provenance.json`。
+输出 JSON 会打印产物目录和文件列表。预期输出包含 `task_pack.json`、`capsules_used.json` 和 `provenance.json`。
 
 **边界：** 源项目默认只读。Reweave-lite 生成任务包 preview，不自动写入或覆盖你的项目。
 
@@ -70,17 +69,20 @@ ls /tmp/reweave_public_demo
 运行公开 Task Pack demo：
 
 ```bash
-python3 scripts/run_public_reweave_demo.py \
+python scripts/run_public_reweave_demo.py \
   --source examples/source_boxes/customer-quote-widget \
-  --task "Build a quote summary card" \
-  --out /tmp/reweave_public_demo
+  --task "Build a quote summary card"
 ```
 
-查看输出：
+Windows PowerShell：
 
-```bash
-ls /tmp/reweave_public_demo
+```powershell
+py -3 scripts\run_public_reweave_demo.py `
+  --source examples\source_boxes\customer-quote-widget `
+  --task "Build a quote summary card"
 ```
+
+脚本默认写入系统临时目录，例如 macOS/Linux 上的 `/tmp/reweave_public_demo`，或 Windows 上的 `%TEMP%\reweave_public_demo`。
 
 在桌面程序里试用公开 Source Box：
 
@@ -92,16 +94,18 @@ examples/source_boxes/ops-status-card
 运行公开仓库自带检查：
 
 ```bash
-python3 -m pip install -r requirements-dev.txt
-python3 -m pytest tests -q
+python -m pip install -r requirements-dev.txt
+python -m pytest tests -q
 node --check reweave_frontend/app.js
 ```
 
-可选桌面壳：
+macOS/Linux 可选桌面壳：
 
 ```bash
 ./start_reweave_static.sh
 ```
+
+Windows 桌面壳仍是 experimental；CLI demo 和测试已纳入 Windows CI。
 
 可选 runtime bridge：
 
@@ -113,7 +117,7 @@ REWEAVE_RUNTIME_STATE_PATH=/path/to/frontend_runtime_state.json \
 ## 公开可复现性
 
 - GitHub Actions 会运行 Reweave 测试。
-- GitHub Actions 会运行公开 Task Pack demo。
+- GitHub Actions 会在 Ubuntu 和 Windows 上运行公开 Task Pack demo。
 - GitHub Actions 会检查 `task_pack.json`、`capsules_used.json` 和 `provenance.json`。
 - GitHub Actions 会检查前端 JavaScript 语法。
 - 默认启动不依赖私有工作区路径。
