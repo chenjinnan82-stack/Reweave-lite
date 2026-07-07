@@ -19,6 +19,17 @@ Old project -> Source Box -> Capsules -> Task Pack -> New Web
 
 </div>
 
+## 30-Second Demo
+
+```bash
+python3 scripts/run_public_reweave_demo.py
+ls /tmp/reweave_public_demo
+```
+
+Expected output includes `task_pack.json`, `capsules_used.json`, and `provenance.json`.
+
+**Boundary:** source projects are read-only by default. Reweave-lite previews task packs; it does not auto-write or overwrite your project.
+
 ## Why
 
 Small local models can write code, but they often lose the project memory that makes code useful: naming, layout, patterns, copy, and tiny business rules.
@@ -131,11 +142,11 @@ See [Architecture](docs/ARCHITECTURE.md) for the Source Box -> Capsule -> Task P
 
 ## Roadmap
 
-- Source Box intake polish
-- Better capsule review and selection
-- Stronger Task Pack planning
-- More public Source Boxes and task-pack walkthroughs
-- Manual create-only write flow with rollback receipts
+- More public Source Box demos
+- Better desktop packaging
+- More stable Task Pack previews
+
+See [Roadmap](ROADMAP.md).
 
 ## License
 

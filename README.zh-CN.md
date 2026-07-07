@@ -19,6 +19,17 @@
 
 </div>
 
+## 30 秒 demo
+
+```bash
+python3 scripts/run_public_reweave_demo.py
+ls /tmp/reweave_public_demo
+```
+
+预期输出包含 `task_pack.json`、`capsules_used.json` 和 `provenance.json`。
+
+**边界：** 源项目默认只读。Reweave-lite 生成任务包 preview，不自动写入或覆盖你的项目。
+
 ## 为什么做
 
 小模型不是完全不会写代码。它真正吃亏的地方，是很难稳定记住一个旧项目里的命名、布局、样式、业务词和细节规则。
@@ -132,11 +143,11 @@ Source Box -> Capsule -> Task Pack 的主链见 [Architecture](docs/ARCHITECTURE
 
 ## 后续方向
 
-- Source Box 入口继续打磨。
-- 胶囊 review 和选择更顺手。
-- Task Pack 计划能力增强。
-- 准备更多公开 Source Box 和 Task Pack walkthrough。
-- 真实写入只做人工确认的单文件新建和 rollback receipt。
+- 更多公开 Source Box demo。
+- 更好的桌面打包。
+- 更稳定的 Task Pack preview。
+
+见 [Roadmap](ROADMAP.md)。
 
 ## 开源协议
 
