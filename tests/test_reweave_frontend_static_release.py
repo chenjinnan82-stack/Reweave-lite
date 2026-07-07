@@ -14,6 +14,10 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     mock = (ROOT / "reweave_frontend" / "mock-data.json").read_text(encoding="utf-8")
     styles = (ROOT / "reweave_frontend" / "styles.css").read_text(encoding="utf-8")
 
+    assert (ROOT / "reweave_frontend" / "assets" / "reweave-icon.svg").exists()
+    assert 'src="assets/reweave-icon.svg"' in index
+    assert ".logo-mark::before" not in styles
+    assert ".logo-mark::after" not in styles
     assert 'class="btn-ghost btn-add-source hidden" disabled' in index
     assert '"sourceBoxes":[{"' not in index
     assert '"capsules":[{"' not in index

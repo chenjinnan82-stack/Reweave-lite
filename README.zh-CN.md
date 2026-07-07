@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="assets/logo.svg" alt="Reweave" width="420">
+
 # 再织 Reweave
 
 **把旧项目清洗成可复用的胶囊，再织成新的 Web 任务包。**
