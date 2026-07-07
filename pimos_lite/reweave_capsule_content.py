@@ -1,0 +1,515 @@
+"""Reweave controlled capsule content enrichment — explicit, read-only snippet preview."""
+
+from __future__ import annotations
+
+import json
+import re
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from pimos_lite.reweave_capsule_warehouse import (
+    GENERATE_ELIGIBLE_STATUSES,
+    get_capsule,
+    is_generate_eligible,
+    list_warehouse_capsules,
+    load_warehouse,
+    save_warehouse,
+)
+from pimos_lite.reweave_reuse_suggestions import load_reuse_suggestions
+from pimos_lite.reweave_capsule_verifier import load_verification
+from pimos_lite.reweave_source_registry import get_source_box, state_dir
+from pimos_lite.reweave_source_scanner import load_summary
+
+CONTENT_SCHEMA_VERSION = 1
+MAX_FILES = 5
+MAX_BYTES_PER_FILE = 4096
+MAX_TOTAL_BYTES = 16000
+
+ALLOWED_EXTENSIONS = frozenset(
+    {
+        ".html",
+        ".css",
+        ".js",
+        ".ts",
+        ".jsx",
+        ".tsx",
+        ".vue",
+        ".svelte",
+        ".py",
+        ".md",
+        ".json",
+        ".yaml",
+        ".yml",
+        ".toml",
+        ".txt",
+    }
+)
+
+BLOCKED_EXTENSIONS = frozenset(
+    {
+        ".env",
+        ".pem",
+        ".key",
+        ".crt",
+        ".sqlite",
+        ".db",
+        ".png",
+        ".jpg",
+        ".jpeg",
+        ".gif",
+        ".webp",
+        ".pdf",
+    }
+)
+
+BLOCKED_DIR_NAMES = frozenset(
+    {"node_modules", ".git", ".venv", "venv", "dist", "build", ".next", "target", "vendor"}
+)
+
+SECRET_PATTERNS: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r"(?i)(api[_-]?key|secret|token|password|access[_-]?key|secret[_-]?key)\s*[:=]\s*\S+"), r"\1: [REDACTED_SECRET]"),
+    (re.compile(r"(?i)Bearer\s+[A-Za-z0-9\-._~+/]+=*"), "Bearer [REDACTED_SECRET]"),
+    (re.compile(r"\bsk-[A-Za-z0-9]{8,}\b"), "[REDACTED_SECRET]"),
+    (re.compile(r"-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?-----END [A-Z ]*PRIVATE KEY-----"), "[REDACTED_SECRET]"),
+    (re.compile(r"(?i)password\s*=\s*\S+"), "password=[REDACTED_SECRET]"),
+]
+
+
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def content_dir() -> Path:
+    return state_dir() / "capsule_contents"
+
+
+def content_file_path(capsule_id: str) -> Path:
+    safe = capsule_id.replace("/", "_").replace("\\", "_")
+    return content_dir() / f"{safe}.content.json"
+
+
+def content_rel_path(capsule_id: str) -> str:
+    return f"capsule_contents/{capsule_id}.content.json"
+
+
+def load_capsule_content(capsule_id: str) -> dict[str, Any] | None:
+    path = content_file_path(capsule_id)
+    if not path.is_file():
+        return None
+    data = json.loads(path.read_text(encoding="utf-8"))
+    return data if isinstance(data, dict) else None
+
+
+def save_capsule_content(capsule_id: str, record: dict[str, Any]) -> str:
+    path = content_file_path(capsule_id)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(record, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.replace(path)
+    return content_rel_path(capsule_id)
+
+
+def redact_secrets(text: str) -> tuple[str, bool]:
+    redacted = False
+    result = text
+    for pattern, repl in SECRET_PATTERNS:
+        new_result, count = pattern.subn(repl, result)
+        if count:
+            redacted = True
+            result = new_result
+    return result, redacted
+
+
+def _language_hint(ext: str) -> str:
+    mapping = {
+        ".html": "html",
+        ".css": "css",
+        ".js": "javascript",
+        ".jsx": "javascript",
+        ".ts": "typescript",
+        ".tsx": "typescript",
+        ".vue": "vue",
+        ".svelte": "svelte",
+        ".py": "python",
+        ".md": "markdown",
+        ".json": "json",
+        ".yaml": "yaml",
+        ".yml": "yaml",
+        ".toml": "toml",
+        ".txt": "text",
+    }
+    return mapping.get(ext.lower(), "text")
+
+
+def _normalize_rel_path(raw: str) -> str:
+    return raw.strip().replace("\\", "/").lstrip("/")
+
+
+def _path_has_blocked_dir(rel_path: str) -> bool:
+    parts = [p for p in _normalize_rel_path(rel_path).split("/") if p]
+    for part in parts:
+        if part in BLOCKED_DIR_NAMES:
+            return True
+        if part.startswith("."):
+            return True
+    return False
+
+
+def is_allowed_relative_path(rel_path: str) -> bool:
+    rel = _normalize_rel_path(rel_path)
+    if not rel or ".." in rel.split("/"):
+        return False
+    if _path_has_blocked_dir(rel):
+        return False
+    suffix = Path(rel).suffix.lower()
+    if suffix in BLOCKED_EXTENSIONS:
+        return False
+    return suffix in ALLOWED_EXTENSIONS
+
+
+def resolve_safe_path(source_root: Path, relative: str) -> Path | None:
+    rel = _normalize_rel_path(relative)
+    if not rel or not is_allowed_relative_path(rel):
+        return None
+    root = source_root.resolve()
+    candidate = (root / rel).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return None
+    if not candidate.is_file():
+        return None
+    return candidate
+
+
+def _dedupe_paths(paths: list[str]) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for raw in paths:
+        rel = _normalize_rel_path(raw)
+        if not rel or rel in seen:
+            continue
+        seen.add(rel)
+        out.append(rel)
+    return out
+
+
+def _paths_from_lineage(lineage: dict[str, Any]) -> list[str]:
+    paths: list[str] = []
+    for key in ("relative_path", "path", "file", "source_path", "evidence_path"):
+        val = lineage.get(key)
+        if val:
+            paths.append(str(val))
+    evidence = lineage.get("evidence")
+    if isinstance(evidence, list):
+        paths.extend(str(x) for x in evidence if x)
+    return paths
+
+
+def _paths_from_snippet(snippet: dict[str, Any] | None) -> list[str]:
+    if not snippet:
+        return []
+    evidence = snippet.get("evidence")
+    if isinstance(evidence, list):
+        return [str(x) for x in evidence if x]
+    return []
+
+
+def _paths_from_evidence_matched(matched: list[Any], entry_candidates: list[Any]) -> list[str]:
+    paths: list[str] = []
+    entries = [_normalize_rel_path(str(e)) for e in entry_candidates if e]
+    for item in matched:
+        if not isinstance(item, str):
+            continue
+        if item.startswith("entry:"):
+            name = item.split(":", 1)[1].strip()
+            for ec in entries:
+                if Path(ec).name.lower() == name.lower() or ec.lower() == name.lower():
+                    paths.append(ec)
+        elif item.startswith("extension:"):
+            ext = item.split(":", 1)[1].strip()
+            if not ext.startswith("."):
+                ext = f".{ext}"
+            for ec in entries:
+                if ec.lower().endswith(ext.lower()):
+                    paths.append(ec)
+                    break
+    return paths
+
+
+def _paths_from_verification(source_id: str, suggestion_id: str, summary: dict[str, Any]) -> list[str]:
+    verification = load_verification(source_id)
+    if not verification:
+        return []
+    results = verification.get("results") if isinstance(verification.get("results"), list) else []
+    entry_candidates = summary.get("entry_candidates") if isinstance(summary.get("entry_candidates"), list) else []
+    for item in results:
+        if not isinstance(item, dict):
+            continue
+        if str(item.get("id") or "") != suggestion_id:
+            continue
+        matched = item.get("evidence_matched") if isinstance(item.get("evidence_matched"), list) else []
+        return _paths_from_evidence_matched(matched, entry_candidates)
+    return []
+
+
+def _paths_from_reuse_assets(source_id: str, suggestion_id: str) -> list[str]:
+    record = load_reuse_suggestions(source_id)
+    if not record:
+        return []
+    paths: list[str] = []
+    assets = record.get("assets") if isinstance(record.get("assets"), list) else []
+    for asset in assets:
+        if not isinstance(asset, dict):
+            continue
+        asset_id = str(asset.get("id") or "")
+        if suggestion_id and f"luna_asset_{asset_id.replace(':', '_')}" != suggestion_id:
+            continue
+        for key in ("relative_path", "path", "file"):
+            val = asset.get(key)
+            if val:
+                paths.append(str(val))
+    suggestions = record.get("mapped_capsuleSuggestions")
+    if isinstance(suggestions, list):
+        for sug in suggestions:
+            if not isinstance(sug, dict):
+                continue
+            if str(sug.get("id") or "") != suggestion_id:
+                continue
+            for key in ("relative_path", "path", "file"):
+                val = sug.get(key)
+                if val:
+                    paths.append(str(val))
+    return paths
+
+
+def collect_candidate_paths(capsule: dict[str, Any], summary: dict[str, Any]) -> list[str]:
+    """Collect candidate relative paths without scanning the full source tree."""
+    source_id = str(capsule.get("source_id") or "")
+    suggestion_id = ""
+    lineage = capsule.get("lineage") if isinstance(capsule.get("lineage"), dict) else {}
+    if lineage:
+        suggestion_id = str(lineage.get("suggestion_id") or "")
+        paths = _paths_from_lineage(lineage)
+    else:
+        paths = []
+
+    snippet = capsule.get("snippet") if isinstance(capsule.get("snippet"), dict) else None
+    paths.extend(_paths_from_snippet(snippet))
+
+    if source_id and suggestion_id:
+        paths.extend(_paths_from_verification(source_id, suggestion_id, summary))
+        paths.extend(_paths_from_reuse_assets(source_id, suggestion_id))
+
+    paths = _dedupe_paths(paths)
+
+    if not paths:
+        entry_candidates = summary.get("entry_candidates") if isinstance(summary.get("entry_candidates"), list) else []
+        paths = _dedupe_paths([str(e) for e in entry_candidates if e])
+
+    return [p for p in paths if is_allowed_relative_path(p)][:MAX_FILES]
+
+
+def _read_text_snippet(file_path: Path, max_bytes: int) -> tuple[str, int, bool]:
+    raw = file_path.read_bytes()[: max_bytes + 1]
+    if b"\x00" in raw[:max_bytes]:
+        raise ValueError("binary_content")
+    truncated = len(raw) > max_bytes
+    chunk = raw[:max_bytes]
+    text = chunk.decode("utf-8", errors="replace")
+    return text, len(chunk), truncated
+
+
+def _apply_enrichment_metadata(
+    capsule_id: str,
+    *,
+    success: bool,
+    snippet_count: int = 0,
+    error: str = "",
+) -> None:
+    now = _utc_now_iso()
+    data = load_warehouse()
+    for cap in data.get("capsules", []):
+        if not isinstance(cap, dict) or str(cap.get("id") or "") != capsule_id:
+            continue
+        if success:
+            cap["content_mode"] = "controlled_snippet_preview"
+            cap["content_risk"] = "controlled_snippet_preview"
+            cap["content_enrichment"] = {
+                "status": "enriched",
+                "content_path": content_rel_path(capsule_id),
+                "snippet_count": snippet_count,
+                "updated_at": now,
+            }
+        else:
+            cap["content_enrichment"] = {
+                "status": "failed",
+                "error": (error or "enrichment_failed")[:200],
+                "updated_at": now,
+            }
+        cap["updated_at"] = now
+        break
+    save_warehouse(data)
+
+
+def enrich_capsule_content(capsule_id: str) -> dict[str, Any]:
+    """Explicit user-triggered content enrichment — read-only whitelist snippets."""
+    capsule_id = (capsule_id or "").strip()
+    if not capsule_id:
+        return {"ok": False, "error": "missing_capsule_id"}
+
+    capsule = get_capsule(capsule_id)
+    if not capsule:
+        return {"ok": False, "error": "capsule_not_found", "capsule_id": capsule_id}
+
+    status = str(capsule.get("status") or "active")
+    if status not in GENERATE_ELIGIBLE_STATUSES:
+        return {"ok": False, "error": "capsule_not_active", "capsule_id": capsule_id, "status": status}
+
+    source_id = str(capsule.get("source_id") or "")
+    if not source_id:
+        source_box = capsule.get("source_box") if isinstance(capsule.get("source_box"), dict) else {}
+        source_id = str(source_box.get("source_id") or "")
+
+    if not source_id:
+        _apply_enrichment_metadata(capsule_id, success=False, error="missing_source_id")
+        return {"ok": False, "error": "missing_source_id", "capsule_id": capsule_id}
+
+    box = get_source_box(source_id)
+    if not box:
+        _apply_enrichment_metadata(capsule_id, success=False, error="source_not_found")
+        return {"ok": False, "error": "source_not_found", "capsule_id": capsule_id, "source_id": source_id}
+
+    source_path = Path(str(box.get("path") or ""))
+    if not source_path.is_dir():
+        _apply_enrichment_metadata(capsule_id, success=False, error="source_path_not_found")
+        return {"ok": False, "error": "source_path_not_found", "capsule_id": capsule_id, "source_id": source_id}
+
+    summary = load_summary(source_id) or {}
+    candidates = collect_candidate_paths(capsule, summary)
+    warnings: list[str] = []
+    snippets: list[dict[str, Any]] = []
+    total_bytes = 0
+    now = _utc_now_iso()
+
+    for rel in candidates:
+        if len(snippets) >= MAX_FILES:
+            warnings.append("max_files_reached")
+            break
+        if total_bytes >= MAX_TOTAL_BYTES:
+            warnings.append("max_total_bytes_reached")
+            break
+
+        safe = resolve_safe_path(source_path, rel)
+        if not safe:
+            warnings.append(f"skipped_unsafe_path:{rel}")
+            continue
+
+        remaining = MAX_TOTAL_BYTES - total_bytes
+        per_file_limit = min(MAX_BYTES_PER_FILE, remaining)
+        if per_file_limit <= 0:
+            warnings.append("max_total_bytes_reached")
+            break
+
+        try:
+            preview, bytes_read, truncated = _read_text_snippet(safe, per_file_limit)
+        except ValueError:
+            warnings.append(f"skipped_binary:{rel}")
+            continue
+        except OSError as exc:
+            warnings.append(f"read_failed:{rel}:{str(exc)[:40]}")
+            continue
+
+        preview, redacted = redact_secrets(preview)
+        total_bytes += bytes_read
+        snippets.append(
+            {
+                "relative_path": _normalize_rel_path(rel),
+                "language_hint": _language_hint(safe.suffix),
+                "bytes_read": bytes_read,
+                "truncated": truncated,
+                "redacted": redacted,
+                "preview": preview,
+            }
+        )
+
+    if not snippets:
+        _apply_enrichment_metadata(capsule_id, success=False, error="no_readable_snippets")
+        return {
+            "ok": False,
+            "error": "no_readable_snippets",
+            "capsule_id": capsule_id,
+            "warnings": warnings,
+        }
+
+    record = {
+        "schema_version": CONTENT_SCHEMA_VERSION,
+        "capsule_id": capsule_id,
+        "source_id": source_id,
+        "created_at": now,
+        "mode": "controlled_snippet_preview",
+        "limits": {
+            "max_files": MAX_FILES,
+            "max_bytes_per_file": MAX_BYTES_PER_FILE,
+            "max_total_bytes": MAX_TOTAL_BYTES,
+            "secret_redaction": True,
+        },
+        "safety": {
+            "source_folder_written": False,
+            "llm_called": False,
+            "dispatch_called": False,
+            "binary_read": False,
+        },
+        "snippets": snippets,
+        "warnings": warnings,
+    }
+    rel_path = save_capsule_content(capsule_id, record)
+    _apply_enrichment_metadata(capsule_id, success=True, snippet_count=len(snippets))
+
+    updated = get_capsule(capsule_id)
+    return {
+        "ok": True,
+        "capsule_id": capsule_id,
+        "source_id": source_id,
+        "content_path": rel_path,
+        "snippet_count": len(snippets),
+        "content": record,
+        "capsule": updated,
+        "capsules": list_warehouse_capsules(include_inactive=True),
+        "warnings": warnings,
+    }
+
+
+def get_capsule_content(capsule_id: str) -> dict[str, Any]:
+    """Read enriched capsule content from app state only — never touches source folder."""
+    capsule_id = (capsule_id or "").strip()
+    if not capsule_id:
+        return {"ok": False, "error": "missing_capsule_id"}
+
+    capsule = get_capsule(capsule_id)
+    if not capsule:
+        return {"ok": False, "error": "capsule_not_found", "capsule_id": capsule_id}
+
+    enrichment = capsule.get("content_enrichment") if isinstance(capsule.get("content_enrichment"), dict) else None
+    if not enrichment or str(enrichment.get("status") or "") != "enriched":
+        return {"ok": False, "error": "no_content_enrichment", "capsule_id": capsule_id}
+
+    record = load_capsule_content(capsule_id)
+    if not record:
+        return {"ok": False, "error": "content_file_missing", "capsule_id": capsule_id}
+
+    snippets = record.get("snippets") if isinstance(record.get("snippets"), list) else []
+    return {
+        "ok": True,
+        "capsule_id": capsule_id,
+        "content_path": str(enrichment.get("content_path") or content_rel_path(capsule_id)),
+        "snippet_count": len(snippets),
+        "content": {
+            "mode": record.get("mode"),
+            "limits": record.get("limits") if isinstance(record.get("limits"), dict) else {},
+            "safety": record.get("safety") if isinstance(record.get("safety"), dict) else {},
+            "snippets": snippets,
+            "warnings": list(record.get("warnings") or []),
+        },
+    }
