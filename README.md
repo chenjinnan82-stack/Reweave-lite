@@ -1,5 +1,7 @@
 <div align="center">
 
+<img src="assets/logo.svg" alt="Reweave" width="420">
+
 # 再织 Reweave
 
 **Turn old projects into reusable capsules for new web work.**
