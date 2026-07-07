@@ -68,11 +68,20 @@ examples/source_boxes/ops-status-card
 
 In the desktop app, choose one of those folders from **Bind Source Box**.
 
+Run the public Task Pack demo:
+
+```bash
+python3 scripts/run_public_reweave_demo.py \
+  --source examples/source_boxes/customer-quote-widget \
+  --task "Build a quote summary card" \
+  --out /tmp/reweave_public_demo
+```
+
 Run the public checks:
 
 ```bash
 python3 -m pip install pytest
-python3 -m pytest tests/test_reweave*.py -q
+python3 -m pytest tests -q
 node --check reweave_frontend/app.js
 ```
 
@@ -97,7 +106,7 @@ Reweave is not a full autopilot IDE.
 
 It does **not** currently promise arbitrary production-grade project generation, automatic multi-file writes, overwrites, deletes, or frontend write buttons.
 
-This repo publishes the safe Reweave-lite release surface for old-project reuse. It is not the full internal PIMOS/Lumo workspace.
+This repo publishes the safe Reweave-lite release surface for old-project reuse, not a full autopilot IDE.
 
 The safe write direction remains manual, single-file, create-only, and rollback-aware.
 
@@ -108,8 +117,11 @@ reweave_frontend/                  Desktop UI
 pimos_lite/reweave_engine/         Local and Lumo Lite engines
 pimos_lite/reweave_*               Source Box, capsule, preview, bridge logic
 examples/source_boxes/             Small public Source Box samples
+scripts/run_public_reweave_demo.py Public Task Pack reproduction
 tests/test_reweave*.py             Release and bridge checks
 ```
+
+See [Architecture](docs/ARCHITECTURE.md) for the Source Box -> Capsule -> Task Pack chain.
 
 ## Roadmap
 

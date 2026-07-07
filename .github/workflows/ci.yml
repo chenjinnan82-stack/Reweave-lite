@@ -14,7 +14,9 @@ jobs:
           python-version: "3.11"
       - uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "24"
       - run: python -m pip install --upgrade pip pytest
-      - run: python -m pytest tests/test_reweave*.py -q
+      - run: python -m pytest tests -q
+      - run: python scripts/run_public_reweave_demo.py --source examples/source_boxes/customer-quote-widget --task "Build a quote summary card" --out /tmp/reweave_public_demo
+      - run: test -f /tmp/reweave_public_demo/task_pack.json && test -f /tmp/reweave_public_demo/capsules_used.json && test -f /tmp/reweave_public_demo/provenance.json
       - run: node --check reweave_frontend/app.js

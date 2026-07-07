@@ -69,11 +69,20 @@ examples/source_boxes/ops-status-card
 
 在桌面程序里点击 **Bind Source Box**，选择其中一个文件夹。
 
+运行公开 Task Pack demo：
+
+```bash
+python3 scripts/run_public_reweave_demo.py \
+  --source examples/source_boxes/customer-quote-widget \
+  --task "Build a quote summary card" \
+  --out /tmp/reweave_public_demo
+```
+
 运行公开仓库自带检查：
 
 ```bash
 python3 -m pip install pytest
-python3 -m pytest tests/test_reweave*.py -q
+python3 -m pytest tests -q
 node --check reweave_frontend/app.js
 ```
 
@@ -98,7 +107,7 @@ REWEAVE_LUMO_LITE_STATE_PATH=/path/to/frontend_runtime_state.json \
 
 它当前不承诺任意项目自动生成、不自动多文件写入、不覆盖文件、不删除文件，也不在前端开放真实写入按钮。
 
-这个仓库公开的是旧项目复用链条里的 Reweave-lite 安全 release surface，不是完整内部 PIMOS/Lumo 工作区。
+这个仓库公开的是旧项目复用链条里的 Reweave-lite 安全 release surface，不是全自动 IDE。
 
 未来真实写入只保留一条安全路线：人工确认、单文件、新建、不覆盖、可回滚。
 
@@ -109,8 +118,11 @@ reweave_frontend/                  桌面界面
 pimos_lite/reweave_engine/         Local 和 Lumo Lite 引擎
 pimos_lite/reweave_*               Source Box、胶囊、预览、桥接逻辑
 examples/source_boxes/             小型公开 Source Box 样例
+scripts/run_public_reweave_demo.py 公开 Task Pack 复现脚本
 tests/test_reweave*.py             release 和 bridge 测试
 ```
+
+Source Box -> Capsule -> Task Pack 的主链见 [Architecture](docs/ARCHITECTURE.md)。
 
 ## 后续方向
 
