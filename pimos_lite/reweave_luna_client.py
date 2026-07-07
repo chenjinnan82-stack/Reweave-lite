@@ -11,13 +11,6 @@ from pathlib import Path
 from typing import Any
 
 DEFAULT_LUNA_BASE_URL = "http://127.0.0.1:8020"
-DEFAULT_ADMIN_API_KEY_FILE = (
-    Path(__file__).resolve().parents[1]
-    / "workspace_sixcats_argus_integration"
-    / "agent_system"
-    / "runtime"
-    / "admin_api_key"
-)
 DEFAULT_TIMEOUT_SECONDS = 2.0
 INDEX_PACK_TIMEOUT_SECONDS = 5.0
 INDEX_PACK_PATH = "/api/v1/pym/index-pack"
@@ -44,12 +37,8 @@ def admin_api_key() -> str:
     direct = os.environ.get("ADMIN_API_KEY", "").strip()
     if direct:
         return direct
-    paths: list[Path] = []
     key_file = os.environ.get("PIMOS_ADMIN_API_KEY_FILE", "").strip()
-    if key_file:
-        paths.append(Path(key_file))
-    paths.append(DEFAULT_ADMIN_API_KEY_FILE)
-    for path in paths:
+    for path in [Path(key_file)] if key_file else []:
         try:
             value = path.read_text(encoding="utf-8").strip()
         except OSError:

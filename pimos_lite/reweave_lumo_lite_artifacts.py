@@ -250,12 +250,9 @@ def _path_or_none(value: Any) -> Path | None:
 
 def _artifact_roots(*, state_path: Path, preview_root: Path | None) -> list[Path]:
     roots = [state_path]
-    if state_path.parent.name in {".runtime", "runtime", "artifacts"}:
-        roots.append(state_path.parent)
     for parent in [state_path, *state_path.parents]:
-        if parent.name == "pym_luna_lite_migration_stage4_main_rehearsal":
-            roots.extend([parent / "artifacts", parent / ".runtime", parent / "runtime"])
-            break
+        if parent.name in {"artifacts", ".runtime", "runtime"}:
+            roots.append(parent)
     trusted = _dedupe_roots(roots)
     if preview_root is not None:
         resolved_preview = preview_root.expanduser().resolve(strict=False)

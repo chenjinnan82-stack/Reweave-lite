@@ -98,9 +98,9 @@ class ReweaveEngineFactoryTest(unittest.TestCase):
 
         self.assertIn('export REWEAVE_ENGINE="lumo_lite"', text)
         self.assertIn("unset REWEAVE_ENABLE_LEGACY_WORKBENCH", text)
-        self.assertIn("DEFAULT_LUMO_LITE_PRODUCT_STATE=", text)
-        self.assertIn("DEFAULT_LUMO_LITE_RC4_STATE=", text)
-        self.assertIn("REWEAVE_LUMO_LITE_STATE_PATH", text)
+        self.assertNotIn("DEFAULT_LUMO_LITE_PRODUCT_STATE=", text)
+        self.assertNotIn("DEFAULT_LUMO_LITE_RC4_STATE=", text)
+        self.assertNotIn("PIMOS_ADMIN_API_KEY_FILE", text)
 
     def test_lumo_available_when_luna_health_ok(self) -> None:
         class HealthyClient:

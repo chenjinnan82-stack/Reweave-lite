@@ -11,6 +11,7 @@ Old project -> Source Box -> Capsules -> Task Pack -> New Web
 [简体中文](README.zh-CN.md)
 
 ![Local first](https://img.shields.io/badge/local--first-yes-2f855a)
+![CI](https://github.com/chenjinnan82-stack/Reweave-lite/actions/workflows/ci.yml/badge.svg)
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue)
 ![Source writes](https://img.shields.io/badge/source%20writes-off-1f2937)
 ![Task Pack](https://img.shields.io/badge/task%20pack-preview-f59e0b)
@@ -58,28 +59,28 @@ Use local capsules to plan a new web task while keeping trace and source-write s
 ./start_reweave_static.sh
 ```
 
-Run the fixed 12-case demo reproduction:
+Run the public checks:
 
 ```bash
-cd workspace_sixcats_argus_integration/agent_system/pym_luna_lite_migration_stage4_main_rehearsal
-../.venv-mac/bin/python scripts/run_lumo_product_demo_repro.py --skip-live
+python3 -m pip install pytest
+python3 -m pytest tests/test_reweave*.py -q
+node --check reweave_frontend/app.js
 ```
 
-Run the live local-model demo when Ollama has `qwen2.5-coder:1.5b`:
+Optional: point the desktop bridge at your own Lumo Lite runtime state:
 
 ```bash
-../.venv-mac/bin/python scripts/run_lumo_product_demo_repro.py \
-  --preferred-model qwen2.5-coder:1.5b \
-  --round-count 1
+REWEAVE_LUMO_LITE_STATE_PATH=/path/to/frontend_runtime_state.json \
+./start_reweave_static.sh
 ```
 
-## Current Evidence
+## Public Reproducibility
 
-- Reweave tests: `238 passed`
-- 12-case fixture demo: passed
-- 12-case live local-model demo: passed
-- 30-case product line sample: `5/5 accepted`
-- Source project writes: `0`
+- GitHub Actions runs the Reweave test suite and frontend syntax check.
+- Local default launch does not depend on private workspace paths.
+- Source project writes stay off by default.
+
+Development notes from the original Lumo Lite workbench are intentionally not required for this public repo.
 
 ## Boundaries
 
@@ -96,9 +97,6 @@ reweave_frontend/                  Desktop UI
 pimos_lite/reweave_engine/         Local and Lumo Lite engines
 pimos_lite/reweave_*               Source Box, capsule, preview, bridge logic
 tests/test_reweave*.py             Release and bridge checks
-workspace_sixcats_argus_integration/
-  agent_system/pym_luna_lite_migration_stage4_main_rehearsal/
-                                  Lumo Lite backend and capability demos
 ```
 
 ## Roadmap

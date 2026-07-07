@@ -11,6 +11,7 @@
 [English](README.md)
 
 ![Local first](https://img.shields.io/badge/local--first-yes-2f855a)
+![CI](https://github.com/chenjinnan82-stack/Reweave-lite/actions/workflows/ci.yml/badge.svg)
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue)
 ![Source writes](https://img.shields.io/badge/source%20writes-off-1f2937)
 ![Task Pack](https://img.shields.io/badge/task%20pack-preview-f59e0b)
@@ -59,28 +60,28 @@
 ./start_reweave_static.sh
 ```
 
-运行固定 12-case demo 复现：
+运行公开仓库自带检查：
 
 ```bash
-cd workspace_sixcats_argus_integration/agent_system/pym_luna_lite_migration_stage4_main_rehearsal
-../.venv-mac/bin/python scripts/run_lumo_product_demo_repro.py --skip-live
+python3 -m pip install pytest
+python3 -m pytest tests/test_reweave*.py -q
+node --check reweave_frontend/app.js
 ```
 
-如果本地 Ollama 已有 `qwen2.5-coder:1.5b`，可以跑 live demo：
+可选：把桌面桥接到你自己的 Lumo Lite runtime state：
 
 ```bash
-../.venv-mac/bin/python scripts/run_lumo_product_demo_repro.py \
-  --preferred-model qwen2.5-coder:1.5b \
-  --round-count 1
+REWEAVE_LUMO_LITE_STATE_PATH=/path/to/frontend_runtime_state.json \
+./start_reweave_static.sh
 ```
 
-## 当前证据
+## 公开可复现性
 
-- Reweave 测试：`238 passed`
-- 12-case fixture demo：passed
-- 12-case live local-model demo：passed
-- 30-case 产品线抽样：`5/5 accepted`
-- Source project writes：`0`
+- GitHub Actions 会运行 Reweave 测试和前端语法检查。
+- 默认启动不依赖私有工作区路径。
+- Source project writes 默认保持关闭。
+
+早期 Lumo Lite 工作台里的内部能力测试记录，不作为这个公开仓库的运行前提。
 
 ## 安全边界
 
@@ -97,9 +98,6 @@ reweave_frontend/                  桌面界面
 pimos_lite/reweave_engine/         Local 和 Lumo Lite 引擎
 pimos_lite/reweave_*               Source Box、胶囊、预览、桥接逻辑
 tests/test_reweave*.py             release 和 bridge 测试
-workspace_sixcats_argus_integration/
-  agent_system/pym_luna_lite_migration_stage4_main_rehearsal/
-                                  Lumo Lite 后端和能力测试
 ```
 
 ## 后续方向

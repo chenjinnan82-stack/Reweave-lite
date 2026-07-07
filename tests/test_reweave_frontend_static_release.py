@@ -93,3 +93,23 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert ".generated-package.runtime-read-only .generated-files" in styles
     assert ".sources-list li > span:first-child" in styles
     assert "text-overflow: ellipsis;" in styles
+
+
+def test_public_release_entrypoints_do_not_reference_private_workspaces() -> None:
+    forbidden = (
+        "workspace_" + "sixcats_argus_integration",
+        "pym_luna_" + "lite_migration_stage4_main_rehearsal",
+        "/Users/" + "hack",
+        "$ROOT/" + "Luna/",
+        "$ROOT/" + "Doraemon/",
+    )
+    paths = [
+        ROOT / "README.md",
+        ROOT / "README.zh-CN.md",
+        ROOT / "start_reweave_static.sh",
+        ROOT / "pimos_lite" / "reweave_luna_client.py",
+        ROOT / "pimos_lite" / "reweave_lumo_lite_artifacts.py",
+    ]
+    for path in paths:
+        text = path.read_text(encoding="utf-8")
+        assert not any(value in text for value in forbidden), path
