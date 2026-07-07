@@ -112,7 +112,10 @@ REWEAVE_LUMO_LITE_STATE_PATH=/path/to/frontend_runtime_state.json \
 
 ## 公开可复现性
 
-- GitHub Actions 会运行 Reweave 测试和前端语法检查。
+- GitHub Actions 会运行 Reweave 测试。
+- GitHub Actions 会运行公开 Task Pack demo。
+- GitHub Actions 会检查 `task_pack.json`、`capsules_used.json` 和 `provenance.json`。
+- GitHub Actions 会检查前端 JavaScript 语法。
 - 默认启动不依赖私有工作区路径。
 - Source project writes 默认保持关闭。
 
@@ -131,12 +134,14 @@ REWEAVE_LUMO_LITE_STATE_PATH=/path/to/frontend_runtime_state.json \
 ## 项目结构
 
 ```text
-reweave_frontend/                  桌面界面
-pimos_lite/reweave_engine/         Local 和 Lumo Lite 引擎
-pimos_lite/reweave_*               Source Box、胶囊、预览、桥接逻辑
-examples/source_boxes/             小型公开 Source Box 样例
-scripts/run_public_reweave_demo.py 公开 Task Pack 复现脚本
-tests/test_reweave*.py             release 和 bridge 测试
+桌面界面                          reweave_frontend/
+运行时桥接和预览引擎              Reweave engine modules
+Source Box 入口和扫描             Source registry / scanner modules
+胶囊草稿和仓库                    Capsule modules
+Task Pack preview 和 provenance   Preview modules
+公开 Source Box 样例              examples/source_boxes/
+公开 Task Pack 复现脚本           scripts/run_public_reweave_demo.py
+release 和 bridge 测试            tests/
 ```
 
 Source Box -> Capsule -> Task Pack 的主链见 [Architecture](docs/ARCHITECTURE.md)。

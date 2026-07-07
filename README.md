@@ -111,7 +111,10 @@ REWEAVE_LUMO_LITE_STATE_PATH=/path/to/frontend_runtime_state.json \
 
 ## Public Reproducibility
 
-- GitHub Actions runs the Reweave test suite and frontend syntax check.
+- GitHub Actions runs the Reweave test suite.
+- GitHub Actions runs the public Task Pack demo.
+- GitHub Actions checks `task_pack.json`, `capsules_used.json`, and `provenance.json`.
+- GitHub Actions checks frontend JavaScript syntax.
 - Local default launch does not depend on private workspace paths.
 - Source project writes stay off by default.
 
@@ -130,12 +133,14 @@ The safe write direction remains manual, single-file, create-only, and rollback-
 ## Project Shape
 
 ```text
-reweave_frontend/                  Desktop UI
-pimos_lite/reweave_engine/         Local and Lumo Lite engines
-pimos_lite/reweave_*               Source Box, capsule, preview, bridge logic
-examples/source_boxes/             Small public Source Box samples
-scripts/run_public_reweave_demo.py Public Task Pack reproduction
-tests/test_reweave*.py             Release and bridge checks
+Desktop UI                         reweave_frontend/
+Runtime bridge and preview engine  Reweave engine modules
+Source Box intake and scanner      Source registry / scanner modules
+Capsule draft and warehouse        Capsule modules
+Task Pack preview and provenance   Preview modules
+Public Source Box samples          examples/source_boxes/
+Public Task Pack reproduction      scripts/run_public_reweave_demo.py
+Release and bridge checks          tests/
 ```
 
 See [Architecture](docs/ARCHITECTURE.md) for the Source Box -> Capsule -> Task Pack chain.
