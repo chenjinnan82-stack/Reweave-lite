@@ -121,3 +121,12 @@ def test_public_source_box_examples_exist() -> None:
         box = examples / name
         assert (box / "README.md").is_file()
         assert any(path.suffix in {".html", ".css", ".js"} for path in box.iterdir())
+
+
+def test_frontend_readme_matches_public_read_only_surface() -> None:
+    text = (ROOT / "reweave_frontend" / "README.md").read_text(encoding="utf-8")
+    assert "docs/REWEAVE_DESKTOP_STATIC_SHELL.md" not in text
+    assert "Open in folder" not in text
+    assert "view/open/copy" not in text
+    assert "python3 -m http.server 8765" in text
+    assert "No frontend apply/export/open-folder write path is exposed." in text

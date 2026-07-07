@@ -98,6 +98,8 @@ REWEAVE_LUMO_LITE_STATE_PATH=/path/to/frontend_runtime_state.json \
 
 它当前不承诺任意项目自动生成、不自动多文件写入、不覆盖文件、不删除文件，也不在前端开放真实写入按钮。
 
+这个仓库公开的是旧项目复用链条里的 Reweave-lite 安全 release surface，不是完整内部 PIMOS/Lumo 工作区。
+
 未来真实写入只保留一条安全路线：人工确认、单文件、新建、不覆盖、可回滚。
 
 ## 项目结构
@@ -115,7 +117,7 @@ tests/test_reweave*.py             release 和 bridge 测试
 - Source Box 入口继续打磨。
 - 胶囊 review 和选择更顺手。
 - Task Pack 计划能力增强。
-- 准备更多公开 demo Source Box。
+- 准备更多公开 Source Box 和 Task Pack walkthrough。
 - 真实写入只做人工确认的单文件新建和 rollback receipt。
 
 ## 开源协议

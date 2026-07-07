@@ -97,6 +97,8 @@ Reweave is not a full autopilot IDE.
 
 It does **not** currently promise arbitrary production-grade project generation, automatic multi-file writes, overwrites, deletes, or frontend write buttons.
 
+This repo publishes the safe Reweave-lite release surface for old-project reuse. It is not the full internal PIMOS/Lumo workspace.
+
 The safe write direction remains manual, single-file, create-only, and rollback-aware.
 
 ## Project Shape
@@ -114,7 +116,7 @@ tests/test_reweave*.py             Release and bridge checks
 - Source Box intake polish
 - Better capsule review and selection
 - Stronger Task Pack planning
-- More public demo Source Boxes
+- More public Source Boxes and task-pack walkthroughs
 - Manual create-only write flow with rollback receipts
 
 ## License
