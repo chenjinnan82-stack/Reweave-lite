@@ -91,7 +91,7 @@ examples/source_boxes/ops-status-card
 Run the public checks:
 
 ```bash
-python3 -m pip install pytest
+python3 -m pip install -r requirements-dev.txt
 python3 -m pytest tests -q
 node --check reweave_frontend/app.js
 ```

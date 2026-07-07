@@ -86,6 +86,30 @@ class ReweavePreviewPackTest(unittest.TestCase):
         self.assertNotIn("<script>alert(1)</script>", html)
         self.assertNotIn("<img src=x>", html)
 
+    def test_preview_package_redacts_source_box_paths_by_default(self) -> None:
+        result = preview.build_preview_package(
+            {
+                "taskText": "Path redaction",
+                "capsules": [{"id": "cap_demo", "name": "Demo", "type": "ui", "preview": []}],
+                "sourceBoxes": [
+                    {
+                        "id": "source_demo",
+                        "label": "demo",
+                        "path": "/Users/alice/private-project",
+                        "path_hash": "sha256:stable",
+                    }
+                ],
+            }
+        )
+
+        provenance = json.loads((Path(result["previewPath"]) / "provenance.json").read_text(encoding="utf-8"))
+        box = provenance["source_boxes"][0]
+        self.assertEqual(box["id"], "source_demo")
+        self.assertEqual(box["label"], "demo")
+        self.assertEqual(box["path_policy"], "redacted")
+        self.assertNotIn("path", box)
+        self.assertNotIn("path_hash", box)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -92,7 +92,7 @@ examples/source_boxes/ops-status-card
 运行公开仓库自带检查：
 
 ```bash
-python3 -m pip install pytest
+python3 -m pip install -r requirements-dev.txt
 python3 -m pytest tests -q
 node --check reweave_frontend/app.js
 ```

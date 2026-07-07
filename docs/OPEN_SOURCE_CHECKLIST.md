@@ -1,6 +1,8 @@
 # Open Source Checklist
 
 - [x] MIT license exists.
+- [x] `.gitignore` ignores local caches and virtualenvs.
+- [x] `SECURITY.md` describes security boundaries and reporting.
 - [x] Public README exists in English and Chinese.
 - [x] CI workflow exists.
 - [x] Public demo Source Boxes exist.

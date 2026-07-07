@@ -40,7 +40,6 @@ Public demo provenance redacts local source paths by default.
 `provenance.json` stores:
 
 - `path_policy: "redacted"`
-- a stable `path_hash`
 - Source Box id and label
 
 Use `--include-local-paths` only for local debugging output that will not be shared.

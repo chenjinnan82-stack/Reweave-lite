@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import shutil
@@ -54,7 +53,6 @@ def _source_box_public(box: dict[str, object], source: Path, *, include_local_pa
         "id": box["id"],
         "label": box["label"],
         "path_policy": "included" if include_local_paths else "redacted",
-        "path_hash": "sha256:" + hashlib.sha256(str(source).encode("utf-8")).hexdigest(),
     }
     if include_local_paths:
         payload["path"] = str(source)

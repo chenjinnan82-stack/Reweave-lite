@@ -41,7 +41,9 @@ def test_public_reweave_demo_outputs_task_pack(tmp_path: Path) -> None:
     assert task_pack["selected_capsule_ids"]
     assert provenance["source_boxes"][0]["label"] == "customer-quote-widget"
     assert "path" not in provenance["source_boxes"][0]
+    assert "path_hash" not in provenance["source_boxes"][0]
     assert provenance["source_boxes"][0]["path_policy"] == "redacted"
+    assert "path_hash" not in payload["source"]
 
 
 def test_public_reweave_demo_refuses_repo_output() -> None:

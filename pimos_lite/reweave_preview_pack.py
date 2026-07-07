@@ -255,6 +255,24 @@ def _capsule_provenance_entry(cap: dict[str, Any]) -> dict[str, Any]:
     return entry
 
 
+def _sanitize_source_boxes(rows: Any, *, include_local_paths: bool = False) -> list[dict[str, Any]]:
+    if not isinstance(rows, list):
+        return []
+    boxes: list[dict[str, Any]] = []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        box = {
+            "id": row.get("id"),
+            "label": row.get("label"),
+            "path_policy": "included" if include_local_paths and row.get("path") else "redacted",
+        }
+        if include_local_paths and row.get("path"):
+            box["path"] = str(row["path"])
+        boxes.append(box)
+    return boxes
+
+
 def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
     """Write a local preview package under app state and return UI metadata."""
     task = str(payload.get("taskText") or payload.get("task") or "New tool")[:MAX_TASK_LEN]
@@ -295,7 +313,10 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
         "task": task,
         "capsule_ids": [c.get("id") for c in capsules],
         "capsules": [_capsule_provenance_entry(c) for c in capsules],
-        "source_boxes": payload.get("sourceBoxes") if isinstance(payload.get("sourceBoxes"), list) else [],
+        "source_boxes": _sanitize_source_boxes(
+            payload.get("sourceBoxes"),
+            include_local_paths=bool(payload.get("includeLocalSourcePaths")),
+        ),
     }
 
     if use_enriched and snippet_context:
