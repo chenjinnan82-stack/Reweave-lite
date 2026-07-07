@@ -60,6 +60,15 @@
 ./start_reweave_static.sh
 ```
 
+试用公开 Source Box：
+
+```text
+examples/source_boxes/customer-quote-widget
+examples/source_boxes/ops-status-card
+```
+
+在桌面程序里点击 **Bind Source Box**，选择其中一个文件夹。
+
 运行公开仓库自带检查：
 
 ```bash
@@ -97,6 +106,7 @@ REWEAVE_LUMO_LITE_STATE_PATH=/path/to/frontend_runtime_state.json \
 reweave_frontend/                  桌面界面
 pimos_lite/reweave_engine/         Local 和 Lumo Lite 引擎
 pimos_lite/reweave_*               Source Box、胶囊、预览、桥接逻辑
+examples/source_boxes/             小型公开 Source Box 样例
 tests/test_reweave*.py             release 和 bridge 测试
 ```
 

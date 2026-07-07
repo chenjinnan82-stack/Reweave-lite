@@ -113,3 +113,11 @@ def test_public_release_entrypoints_do_not_reference_private_workspaces() -> Non
     for path in paths:
         text = path.read_text(encoding="utf-8")
         assert not any(value in text for value in forbidden), path
+
+
+def test_public_source_box_examples_exist() -> None:
+    examples = ROOT / "examples" / "source_boxes"
+    for name in ("customer-quote-widget", "ops-status-card"):
+        box = examples / name
+        assert (box / "README.md").is_file()
+        assert any(path.suffix in {".html", ".css", ".js"} for path in box.iterdir())

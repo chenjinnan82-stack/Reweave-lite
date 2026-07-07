@@ -59,6 +59,15 @@ Use local capsules to plan a new web task while keeping trace and source-write s
 ./start_reweave_static.sh
 ```
 
+Try a public Source Box:
+
+```text
+examples/source_boxes/customer-quote-widget
+examples/source_boxes/ops-status-card
+```
+
+In the desktop app, choose one of those folders from **Bind Source Box**.
+
 Run the public checks:
 
 ```bash
@@ -96,6 +105,7 @@ The safe write direction remains manual, single-file, create-only, and rollback-
 reweave_frontend/                  Desktop UI
 pimos_lite/reweave_engine/         Local and Lumo Lite engines
 pimos_lite/reweave_*               Source Box, capsule, preview, bridge logic
+examples/source_boxes/             Small public Source Box samples
 tests/test_reweave*.py             Release and bridge checks
 ```
 

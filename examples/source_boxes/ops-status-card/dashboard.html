@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Ops Status Card</title>
+    <link rel="stylesheet" href="status.css">
+  </head>
+  <body>
+    <section class="status-panel">
+      <header>
+        <p class="label">Operations</p>
+        <h1>Service health</h1>
+      </header>
+      <div class="status-grid">
+        <article class="status-card stable">
+          <span>API</span>
+          <strong>99.98%</strong>
+          <small>Healthy</small>
+        </article>
+        <article class="status-card watch">
+          <span>Queue</span>
+          <strong>14m</strong>
+          <small>Backlog watch</small>
+        </article>
+        <article class="status-card stable">
+          <span>Web</span>
+          <strong>42ms</strong>
+          <small>Fast</small>
+        </article>
+      </div>
+      <p id="incidentLine">No active customer-facing incidents.</p>
+    </section>
+    <script src="status.js"></script>
+  </body>
+</html>
