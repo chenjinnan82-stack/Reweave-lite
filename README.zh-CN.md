@@ -106,7 +106,7 @@ node --check reweave_frontend/app.js
 可选 runtime bridge：
 
 ```bash
-REWEAVE_LUMO_LITE_STATE_PATH=/path/to/frontend_runtime_state.json \
+REWEAVE_RUNTIME_STATE_PATH=/path/to/frontend_runtime_state.json \
 ./start_reweave_static.sh
 ```
 
@@ -119,7 +119,7 @@ REWEAVE_LUMO_LITE_STATE_PATH=/path/to/frontend_runtime_state.json \
 - 默认启动不依赖私有工作区路径。
 - Source project writes 默认保持关闭。
 
-早期 Lumo Lite 工作台里的内部能力测试记录，不作为这个公开仓库的运行前提。
+历史内部工作台笔记，不作为这个公开仓库的运行前提。
 
 ## 安全边界
 
@@ -135,13 +135,15 @@ REWEAVE_LUMO_LITE_STATE_PATH=/path/to/frontend_runtime_state.json \
 
 ```text
 桌面界面                          reweave_frontend/
-运行时桥接和预览引擎              Reweave engine modules
-Source Box 入口和扫描             Source registry / scanner modules
-胶囊草稿和仓库                    Capsule modules
-Task Pack preview 和 provenance   Preview modules
-公开 Source Box 样例              examples/source_boxes/
-公开 Task Pack 复现脚本           scripts/run_public_reweave_demo.py
-release 和 bridge 测试            tests/
+运行时桥接                        pimos_lite/reweave_engine/lumo_lite.py
+Source Box 入口                   pimos_lite/reweave_source_registry.py
+Source Box 扫描                   pimos_lite/reweave_source_scanner.py
+胶囊草稿                          pimos_lite/reweave_capsule_draft.py
+胶囊仓库                          pimos_lite/reweave_capsule_warehouse.py
+Task Pack / provenance            pimos_lite/reweave_preview_pack.py
+公开样例                          examples/source_boxes/
+公开 demo                         scripts/run_public_reweave_demo.py
+测试                              tests/
 ```
 
 Source Box -> Capsule -> Task Pack 的主链见 [Architecture](docs/ARCHITECTURE.md)。

@@ -10,5 +10,7 @@
 - [x] Screenshots exist under `assets/`.
 - [x] Source project writes are off by default.
 - [x] Issue templates exist.
-- [ ] GitHub About and topics are set on the repository page.
-- [ ] Release page is published from tag `v0.1.0`.
+- [x] Contributing guide and PR template exist.
+- [x] GitHub About and topics are set on the repository page.
+- [x] Latest public alpha release is published as `v0.1.3`.
+- [x] Release notes mention CI, public demo, and safety boundaries.

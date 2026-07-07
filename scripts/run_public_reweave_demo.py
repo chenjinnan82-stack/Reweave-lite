@@ -148,7 +148,7 @@ def main() -> None:
     parser.add_argument("--source", default="examples/source_boxes/customer-quote-widget")
     parser.add_argument("--task", default="Build a quote summary card")
     parser.add_argument("--out", default="/tmp/reweave_public_demo")
-    parser.add_argument("--include-local-paths", action="store_true", help="Include local source paths in provenance; avoid for shared output.")
+    parser.add_argument("--include-local-paths", action="store_true", help="Include local source paths in stdout and task_pack.json; provenance stays redacted.")
     args = parser.parse_args()
 
     result = run(Path(args.source), args.task, Path(args.out), include_local_paths=args.include_local_paths)

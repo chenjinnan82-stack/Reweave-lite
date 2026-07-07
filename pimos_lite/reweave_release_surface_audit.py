@@ -6,6 +6,7 @@ from typing import Any
 
 AUDIT_VERSION = "reweave_release_surface_audit.v1"
 SUMMARY_VERSION = "lumo_reweave_release_surface_summary.v1"
+PUBLIC_ALPHA_SUMMARY_VERSION = "reweave_public_alpha_release_summary.v1"
 
 
 REQUIRED_SURFACE_FILES = (
@@ -94,7 +95,25 @@ def build_reweave_release_surface_audit(root: str | Path | None = None) -> dict[
         "release_excluded_entrypoints": [row["path"] for row in entries if row["release_disposition"] == "excluded_support_only"],
         "release_unknown_entrypoints": unknown,
         "entrypoints": entries,
-        "overall_release_status": "partial_until_stage4_audit_supplied",
+        "public_alpha_status": release_status,
+        "overall_release_status": release_status,
+    }
+
+
+def build_reweave_public_alpha_release_summary(
+    *,
+    reweave_audit: dict[str, Any] | None = None,
+    root: str | Path | None = None,
+) -> dict[str, Any]:
+    audit = reweave_audit or build_reweave_release_surface_audit(root)
+    status = str(audit.get("release_surface_status") or audit.get("status") or "missing")
+    return {
+        "summary_version": PUBLIC_ALPHA_SUMMARY_VERSION,
+        "overall_status": status,
+        "release_surface_status": status,
+        "source_project_write_allowed": False,
+        "frontend_write_buttons_allowed": bool(audit.get("frontend_write_buttons_allowed") is True),
+        "boundary_line": "Reweave-lite public alpha: no source project write; preview/report/runtime artifact writes are classified separately",
     }
 
 

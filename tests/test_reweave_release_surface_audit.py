@@ -2,7 +2,12 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from pimos_lite.reweave_release_surface_audit import _disposition, build_lumo_reweave_release_surface_summary, build_reweave_release_surface_audit
+from pimos_lite.reweave_release_surface_audit import (
+    _disposition,
+    build_lumo_reweave_release_surface_summary,
+    build_reweave_public_alpha_release_summary,
+    build_reweave_release_surface_audit,
+)
 
 
 def test_reweave_release_surface_audit_checks_release_boundary() -> None:
@@ -19,7 +24,8 @@ def test_reweave_release_surface_audit_checks_release_boundary() -> None:
     assert audit["source_write_allowed"] is False
     assert audit["frontend_write_buttons_allowed"] is False
     assert audit["frontend_write_buttons_blocked_by_lumo_lite"] is True
-    assert audit["overall_release_status"] == "partial_until_stage4_audit_supplied"
+    assert audit["public_alpha_status"] == "passed"
+    assert audit["overall_release_status"] == "passed"
     assert audit["missing_surface_files"] == []
     assert audit["release_blockers"] == []
     assert all(audit["release_checks"].values())
@@ -40,6 +46,17 @@ def test_reweave_release_surface_audit_checks_release_boundary() -> None:
     assert dispositions["pimos_lite/reweave_lumo_lite_state.py"] == "included"
     assert dispositions["pimos_lite/reweave_engine/local.py"] == "excluded_support_only"
     assert audit["release_unknown_entrypoints"] == []
+
+
+def test_reweave_public_alpha_release_summary_is_self_contained() -> None:
+    root = Path(__file__).resolve().parents[1]
+    summary = build_reweave_public_alpha_release_summary(root=root)
+
+    assert summary["summary_version"] == "reweave_public_alpha_release_summary.v1"
+    assert summary["overall_status"] == "passed"
+    assert summary["release_surface_status"] == "passed"
+    assert summary["source_project_write_allowed"] is False
+    assert "Reweave-lite public alpha" in summary["boundary_line"]
 
 
 def test_reweave_release_surface_unknown_file_is_not_silent_support() -> None:

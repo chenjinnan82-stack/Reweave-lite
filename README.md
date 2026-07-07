@@ -105,7 +105,7 @@ Optional desktop shell:
 Optional runtime bridge:
 
 ```bash
-REWEAVE_LUMO_LITE_STATE_PATH=/path/to/frontend_runtime_state.json \
+REWEAVE_RUNTIME_STATE_PATH=/path/to/frontend_runtime_state.json \
 ./start_reweave_static.sh
 ```
 
@@ -118,7 +118,7 @@ REWEAVE_LUMO_LITE_STATE_PATH=/path/to/frontend_runtime_state.json \
 - Local default launch does not depend on private workspace paths.
 - Source project writes stay off by default.
 
-Development notes from the original Lumo Lite workbench are intentionally not required for this public repo.
+Historical internal workbench notes are not required for this public repo.
 
 ## Boundaries
 
@@ -134,13 +134,15 @@ The safe write direction remains manual, single-file, create-only, and rollback-
 
 ```text
 Desktop UI                         reweave_frontend/
-Runtime bridge and preview engine  Reweave engine modules
-Source Box intake and scanner      Source registry / scanner modules
-Capsule draft and warehouse        Capsule modules
-Task Pack preview and provenance   Preview modules
-Public Source Box samples          examples/source_boxes/
-Public Task Pack reproduction      scripts/run_public_reweave_demo.py
-Release and bridge checks          tests/
+Runtime bridge                     pimos_lite/reweave_engine/lumo_lite.py
+Source Box intake                  pimos_lite/reweave_source_registry.py
+Source Box scanner                 pimos_lite/reweave_source_scanner.py
+Capsules                           pimos_lite/reweave_capsule_draft.py
+Warehouse                          pimos_lite/reweave_capsule_warehouse.py
+Task Pack / provenance             pimos_lite/reweave_preview_pack.py
+Public samples                     examples/source_boxes/
+Public demo                        scripts/run_public_reweave_demo.py
+Tests                              tests/
 ```
 
 See [Architecture](docs/ARCHITECTURE.md) for the Source Box -> Capsule -> Task Pack chain.

@@ -1,1 +1,5 @@
-blank_issues_enabled: true
+blank_issues_enabled: false
+contact_links:
+  - name: Security boundary report
+    url: https://github.com/chenjinnan82-stack/Reweave-lite/security
+    about: Please do not disclose source-write, path traversal, or local path exposure issues publicly.
