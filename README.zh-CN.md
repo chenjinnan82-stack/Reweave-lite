@@ -22,19 +22,22 @@
 ## 30 秒 demo
 
 ```bash
-python scripts/run_public_reweave_demo.py
+python3 scripts/run_public_reweave_demo.py
 ```
 
 输出 JSON 会打印产物目录和文件列表。预期输出包含可运行的 `index.html`、`styles.css`、`app.js`，以及 `task_pack.json`、`capsules_used.json`、`provenance.json` 和 `snippets_used.json`。
 
 **边界：** 源项目默认只读。Reweave-lite 生成小项目包 preview，不自动写入或覆盖你的项目。
 
-列出胶囊并手动选择：
+可直接复制的公开 demo 流程：
 
 ```bash
-python scripts/run_public_reweave_demo.py --list-capsules
-python scripts/run_public_reweave_demo.py --select-capsule "Style Sheet" --select-capsule "Script Module"
+python3 scripts/run_public_reweave_demo.py --list-capsules
+python3 scripts/run_public_reweave_demo.py --select-capsule "Style Sheet" --select-capsule "Script Module"
+python3 scripts/run_public_reweave_demo.py --source examples/source_boxes/support-ticket-triage --task "Build a support dashboard"
 ```
+
+第一条列出可选胶囊。第二条用手动选择的胶囊生成 Small Project Pack。第三条换一个公开 Source Box 跑同一条链路。
 
 ## 为什么做
 
@@ -79,7 +82,7 @@ python scripts/run_public_reweave_demo.py --select-capsule "Style Sheet" --selec
 运行公开 Task Pack demo：
 
 ```bash
-python scripts/run_public_reweave_demo.py \
+python3 scripts/run_public_reweave_demo.py \
   --source examples/source_boxes/customer-quote-widget \
   --task "Build a quote summary card"
 ```
@@ -104,8 +107,8 @@ examples/source_boxes/ops-status-card
 运行公开仓库自带检查：
 
 ```bash
-python -m pip install -r requirements-dev.txt
-python -m pytest tests -q
+python3 -m pip install -r requirements-dev.txt
+python3 -m pytest tests -q
 node --check reweave_frontend/app.js
 ```
 

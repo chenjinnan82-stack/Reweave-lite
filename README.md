@@ -22,19 +22,22 @@ Old project -> Source Box -> Capsules -> Small Project Pack -> New Web
 ## 30-Second Demo
 
 ```bash
-python scripts/run_public_reweave_demo.py
+python3 scripts/run_public_reweave_demo.py
 ```
 
 The JSON result prints the output folder and files. Expected output includes runnable `index.html`, `styles.css`, `app.js`, plus `task_pack.json`, `capsules_used.json`, `provenance.json`, and `snippets_used.json`.
 
 **Boundary:** source projects are read-only by default. Reweave-lite previews small project packs; it does not auto-write or overwrite your project.
 
-List and manually choose capsules:
+Copyable public demo flow:
 
 ```bash
-python scripts/run_public_reweave_demo.py --list-capsules
-python scripts/run_public_reweave_demo.py --select-capsule "Style Sheet" --select-capsule "Script Module"
+python3 scripts/run_public_reweave_demo.py --list-capsules
+python3 scripts/run_public_reweave_demo.py --select-capsule "Style Sheet" --select-capsule "Script Module"
+python3 scripts/run_public_reweave_demo.py --source examples/source_boxes/support-ticket-triage --task "Build a support dashboard"
 ```
+
+The first command shows available capsules. The second builds a Small Project Pack from manually selected capsules. The third runs the same chain on another public Source Box.
 
 ## Why
 
@@ -78,7 +81,7 @@ Use local capsules to plan a new web task while keeping trace and source-write s
 Run the public Task Pack demo:
 
 ```bash
-python scripts/run_public_reweave_demo.py \
+python3 scripts/run_public_reweave_demo.py \
   --source examples/source_boxes/customer-quote-widget \
   --task "Build a quote summary card"
 ```
@@ -103,8 +106,8 @@ examples/source_boxes/ops-status-card
 Run the public checks:
 
 ```bash
-python -m pip install -r requirements-dev.txt
-python -m pytest tests -q
+python3 -m pip install -r requirements-dev.txt
+python3 -m pytest tests -q
 node --check reweave_frontend/app.js
 ```
 
