@@ -390,7 +390,7 @@ def _sanitize_source_boxes(rows: Any, *, include_local_paths: bool = False) -> l
     return boxes
 
 
-def _build_task_pack(task: str, capsules: list[dict[str, Any]]) -> dict[str, Any]:
+def _build_task_pack(task: str, capsules: list[dict[str, Any]], *, selection_mode: str = "selected_capsules") -> dict[str, Any]:
     capsule_ids = [str(c.get("id") or "") for c in capsules if c.get("id")]
     capsules_used = [
         {
@@ -408,6 +408,7 @@ def _build_task_pack(task: str, capsules: list[dict[str, Any]]) -> dict[str, Any
         "package_kind": "small_project_pack",
         "task": task,
         "task_scope": "preview_only",
+        "selection_mode": selection_mode,
         "source_project_write": False,
         "selected_capsule_ids": capsule_ids,
         "capsules_used": capsules_used,
@@ -542,7 +543,8 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
     else:
         provenance["content_aware_generate"] = {"enabled": False}
 
-    task_pack = _build_task_pack(task, capsules)
+    selection_mode = str(payload.get("selectionMode") or payload.get("selection_mode") or "selected_capsules")
+    task_pack = _build_task_pack(task, capsules, selection_mode=selection_mode)
     files = ["index.html", "styles.css", "app.js", "task_pack.json", "capsules_used.json", "provenance.json", "summary.md"]
     _write_text(root / "index.html", _build_index_html(task, capsules, content_aware=content_aware_enabled, snippet_context=snippet_context))
     _write_text(root / "styles.css", _build_styles_css())

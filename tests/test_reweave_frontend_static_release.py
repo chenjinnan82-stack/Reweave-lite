@@ -34,6 +34,8 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert 'id="source-box-mode-note"' in index
     assert 'id="btn-view-runtime"' in index
     assert 'placeholder="Current Runtime / read-only"' in index
+    assert "GENERATION INPUT" in index
+    assert 'id="generation-input-note"' in index
     assert '<h3 class="generated-title">Current Runtime</h3>' in index
     assert 'class="btn-secondary btn-open-folder hidden"' in index
     assert '<span id="sources-count">0</span> bound' in index
@@ -70,6 +72,9 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert 'els.taskInput.disabled = !taskPackPreview;' in app
     assert 'els.btnGenerate.classList.toggle("hidden", !taskPackPreview);' in app
     assert "Build Task Pack preview" in app
+    assert 'selectionMode: usedCapsuleIds.length > 0 ? "manual" : "auto_match"' in app
+    assert "Generate will use exactly these capsules." in app
+    assert ".generation-input-note" in styles
     assert 'openFolder.classList.add("hidden");' in app
     assert "Product capability: unavailable" in app
     assert "summary.product_capability_line || summary.line" in app

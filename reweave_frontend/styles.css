@@ -490,6 +490,13 @@ button {
   border: 1px solid var(--border-soft);
 }
 
+.generation-input-note {
+  margin: 6px 0 0;
+  color: var(--text-secondary);
+  font-size: 10px;
+  line-height: 1.35;
+}
+
 .capsule-strip {
   position: relative;
   z-index: 1;

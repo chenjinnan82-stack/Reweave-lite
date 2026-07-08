@@ -42,7 +42,7 @@ class ReweavePreviewPackTest(unittest.TestCase):
         cap_ids = self._promote_capsules()
         self.assertGreater(len(cap_ids), 0)
         result = preview.build_preview_package(
-            {"taskText": "Client quote tool", "capsuleIds": cap_ids[:2], "backend": "local"}
+            {"taskText": "Client quote tool", "capsuleIds": cap_ids[:2], "backend": "local", "selectionMode": "manual"}
         )
         self.assertTrue(result["ok"])
         self.assertFalse(result["mock"])
@@ -58,6 +58,7 @@ class ReweavePreviewPackTest(unittest.TestCase):
         task_pack = json.loads((preview_path / "task_pack.json").read_text(encoding="utf-8"))
         self.assertEqual(task_pack["mode"], "task_pack_preview")
         self.assertEqual(task_pack["package_kind"], "small_project_pack")
+        self.assertEqual(task_pack["selection_mode"], "manual")
         self.assertFalse(task_pack["source_project_write"])
         self.assertEqual(task_pack["selected_capsule_ids"], cap_ids[:2])
         provenance = json.loads((preview_path / "provenance.json").read_text(encoding="utf-8"))

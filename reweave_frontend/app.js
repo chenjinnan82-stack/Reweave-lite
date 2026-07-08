@@ -17,6 +17,8 @@
       history: "History",
       taskPlaceholder: "描述你要重新织出的工具或页面...",
       usedPlaceholder: "选中的胶囊将停靠在这里",
+      generationAuto: "未手动选择时会自动匹配胶囊。",
+      generationManual: "Generation input: {count} selected. Generate will use exactly these capsules.",
       selecting: "Reweave 正在挑选胶囊…",
       readyResponse: "Reweave 使用了 {count} 个胶囊，并已准备本地预览包。",
       docked: "已停靠到任务区。",
@@ -35,6 +37,8 @@
       history: "History",
       taskPlaceholder: "Describe the tool or page to reweave...",
       usedPlaceholder: "Selected capsules dock here",
+      generationAuto: "Generate will auto-pick capsules if none are selected.",
+      generationManual: "Generation input: {count} selected. Generate will use exactly these capsules.",
       selecting: "Reweave is selecting capsules…",
       readyResponse: "Reweave used {count} capsules and prepared a local preview package.",
       docked: "docked for this task.",
@@ -1113,6 +1117,7 @@
       taskText: text,
       capsuleIds: ids,
       capsules: ids.map(findCapsule).filter(Boolean),
+      selectionMode: usedCapsuleIds.length > 0 ? "manual" : "auto_match",
       useEnrichedContent: !!(useEnrichedContentPreview && anyEnrichedInIds(ids)),
       sourceBoxes: (data.sourceBoxes || []).map(function (s) {
         return { id: s.id, label: s.label, path: s.path || "", status: s.status };
@@ -1240,6 +1245,12 @@
       els.usedCapsuleDock.innerHTML =
         '<span class="used-placeholder">' + escapeHtml(t("usedPlaceholder")) + "</span>";
     }
+    if (els.generationInputNote) {
+      els.generationInputNote.textContent =
+        usedCapsuleIds.length > 0
+          ? t("generationManual").replace("{count}", String(usedCapsuleIds.length))
+          : t("generationAuto");
+    }
     var useBtn = $("btn-use-in-task");
     if (useBtn) useBtn.textContent = t("useInTask");
     var openCapBtn = $("btn-open-capsule");
@@ -1342,6 +1353,7 @@
     els.capsuleCount = $("capsule-count");
     els.taskBay = $("task-bay");
     els.usedCapsuleDock = $("used-capsule-dock");
+    els.generationInputNote = $("generation-input-note");
     els.usedCount = $("used-count");
     els.taskInput = $("task-input");
     els.btnGenerate = $("btn-generate");
@@ -1653,6 +1665,7 @@
     if (usedCapsuleIds.length === 0) {
       els.usedCapsuleDock.innerHTML =
         '<span class="used-placeholder">' + escapeHtml(t("usedPlaceholder")) + "</span>";
+      if (els.generationInputNote) els.generationInputNote.textContent = t("generationAuto");
       return;
     }
     els.usedCapsuleDock.innerHTML = "";
@@ -1672,6 +1685,12 @@
         "</span>";
       els.usedCapsuleDock.appendChild(chip);
     });
+    if (els.generationInputNote) {
+      els.generationInputNote.textContent = t("generationManual").replace(
+        "{count}",
+        String(usedCapsuleIds.length)
+      );
+    }
     updateEnrichedContentToggle();
   }
 
@@ -2519,7 +2538,13 @@
       var cap = findCapsule(id);
       if (cap) {
         els.reweaveResponse.textContent =
-          getCapsuleSerial(cap) + " " + cap.name + " " + t("docked");
+          getCapsuleSerial(cap) +
+          " " +
+          cap.name +
+          " " +
+          t("docked") +
+          " " +
+          t("generationManual").replace("{count}", String(usedCapsuleIds.length));
       }
     }
   }
