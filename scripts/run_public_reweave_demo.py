@@ -117,6 +117,7 @@ def run(source: Path, task: str, out: Path, *, include_local_paths: bool = False
 
         task_pack = {
             "schema_version": "reweave_public_task_pack.v1",
+            "project_type": "small_project_pack",
             "task": task,
             "source_box": source_box,
             "selected_capsule_ids": capsule_ids,

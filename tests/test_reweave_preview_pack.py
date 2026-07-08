@@ -52,10 +52,12 @@ class ReweavePreviewPackTest(unittest.TestCase):
         for name in ("index.html", "styles.css", "app.js", "task_pack.json", "capsules_used.json", "provenance.json", "summary.md"):
             self.assertTrue((preview_path / name).is_file())
         html = (preview_path / "index.html").read_text(encoding="utf-8")
-        self.assertIn("Task Pack Preview", html)
+        self.assertIn("Small Project Pack", html)
+        self.assertIn("reweaveDemoButton", html)
         self.assertIn("Client quote tool", html)
         task_pack = json.loads((preview_path / "task_pack.json").read_text(encoding="utf-8"))
         self.assertEqual(task_pack["mode"], "task_pack_preview")
+        self.assertEqual(task_pack["package_kind"], "small_project_pack")
         self.assertFalse(task_pack["source_project_write"])
         self.assertEqual(task_pack["selected_capsule_ids"], cap_ids[:2])
         provenance = json.loads((preview_path / "provenance.json").read_text(encoding="utf-8"))

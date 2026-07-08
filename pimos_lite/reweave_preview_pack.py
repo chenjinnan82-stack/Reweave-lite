@@ -128,8 +128,8 @@ def _build_index_html(
     source_names = sorted(source_names)[:4]
 
     summary = (
-        "A small preview assembled from selected project capsules. "
-        "Use it as a local task package, not as an automatic source write."
+        "A runnable small project pack assembled from selected project capsules. "
+        "Open this folder locally, review the provenance, then decide what to keep."
     )
     signal_items = "".join(
         f"<li>{html.escape(tag)}</li>" for tag in (capsule_tags or ["layout", "copy", "logic"])
@@ -139,6 +139,13 @@ def _build_index_html(
     )
     capsule_badges = "".join(
         f"<span>{html.escape(name)}</span>" for name in (capsule_names or ["Selected capsule"])
+    )
+    project_cards = "".join(
+        "<article>"
+        f"<strong>{html.escape(str(cap.get('name') or 'Capsule'))}</strong>"
+        f"<p>{html.escape(str(cap.get('role') or 'Selected project pattern'))}</p>"
+        "</article>"
+        for cap in (capsules[:4] or [{"name": "Project shell", "role": "Generated local output"}])
     )
     excerpt_cards = ""
     if content_aware and isinstance(snippet_context, dict):
@@ -204,7 +211,7 @@ def _build_index_html(
     </header>
     <section class="task-output" aria-label="Generated task output">
       <div>
-        <p class="eyebrow">Task Pack Preview</p>
+        <p class="eyebrow">Small Project Pack</p>
         <h2>{task_title}</h2>
         <p>{html.escape(summary)}</p>
         <div class="capsule-badges">{capsule_badges}</div>
@@ -215,6 +222,16 @@ def _build_index_html(
         <strong>Source Boxes</strong>
         <ul>{source_items}</ul>
       </aside>
+    </section>
+    <section class="project-app" aria-label="Runnable small project output">
+      <div>
+        <p class="eyebrow">Generated output</p>
+        <h2>{task_title}</h2>
+        <p>This package is self-contained: no external scripts, no source-folder writes, and every reused capsule is recorded.</p>
+        <button id="reweaveDemoButton" type="button">Mark reviewed</button>
+        <p id="reweaveDemoStatus">Ready for local review.</p>
+      </div>
+      <div class="project-cards">{project_cards}</div>
     </section>
     {excerpt_cards}
     <section class="capsules">{body}</section>
@@ -269,6 +286,13 @@ def _build_styles_css() -> str:
 .task-output ul { margin: 0.35rem 0 0.85rem; padding-left: 1.1rem; }
 .capsule-badges { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.75rem; }
 .capsule-badges span { border: 1px solid #e8dfd0; border-radius: 999px; padding: 0.25rem 0.55rem; color: #6b5d4a; background: #faf7f0; font-size: 0.8rem; }
+.project-app { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(260px, 1.1fr); gap: 1rem; margin-top: 1rem; padding: 1rem; border: 1px solid #d8e3dc; border-radius: 10px; background: #f8fbf8; }
+.project-app h2 { margin: 0 0 0.5rem; }
+.project-app button { min-height: 40px; border: 0; border-radius: 6px; padding: 0 0.85rem; background: #21352a; color: #fff; font: inherit; cursor: pointer; }
+#reweaveDemoStatus { margin: 0.75rem 0 0; color: #5f6f62; font-size: 0.9rem; }
+.project-cards { display: grid; gap: 0.65rem; }
+.project-cards article { border: 1px solid #d8e3dc; border-radius: 8px; background: #fff; padding: 0.85rem; }
+.project-cards p { margin: 0.35rem 0 0; color: #5f6f62; font-size: 0.9rem; }
 .source-excerpts { margin-top: 1rem; }
 .excerpt-card { border: 1px solid #e8dfd0; border-radius: 10px; background: #fff; padding: 0.85rem; margin: 0.75rem 0; }
 .excerpt-card h3 { margin: 0; font-size: 0.95rem; }
@@ -278,13 +302,20 @@ def _build_styles_css() -> str:
 .capsule-card .type { font-size: 0.75rem; color: #a67c3d; }
 .capsule-card pre { background: #faf7f0; padding: 0.75rem; border-radius: 6px; overflow: auto; }
 .empty { color: #6b5d4a; }
-@media (max-width: 680px) { .task-output { grid-template-columns: 1fr; } .task-output aside { border-left: 0; border-top: 1px solid #e8dfd0; padding-left: 0; padding-top: 1rem; } }
+@media (max-width: 680px) { .task-output, .project-app { grid-template-columns: 1fr; } .task-output aside { border-left: 0; border-top: 1px solid #e8dfd0; padding-left: 0; padding-top: 1rem; } }
 """
 
 
 def _build_app_js() -> str:
     return """document.addEventListener('DOMContentLoaded', function () {
-  console.log('[Reweave] local preview shell ready');
+  const button = document.getElementById('reweaveDemoButton');
+  const status = document.getElementById('reweaveDemoStatus');
+  if (button && status) {
+    button.addEventListener('click', function () {
+      status.textContent = 'Reviewed locally. Source writes remain 0.';
+    });
+  }
+  console.log('[Reweave] small project pack ready');
 });
 """
 
@@ -374,6 +405,7 @@ def _build_task_pack(task: str, capsules: list[dict[str, Any]]) -> dict[str, Any
     return {
         "schema_version": "reweave_task_pack.v1",
         "mode": "task_pack_preview",
+        "package_kind": "small_project_pack",
         "task": task,
         "task_scope": "preview_only",
         "source_project_write": False,
@@ -382,17 +414,17 @@ def _build_task_pack(task: str, capsules: list[dict[str, Any]]) -> dict[str, Any
         "planned_outputs": [
             {
                 "path": "index.html",
-                "kind": "preview_page",
+                "kind": "project_page",
                 "capsule_ids": capsule_ids,
             },
             {
                 "path": "styles.css",
-                "kind": "preview_style",
+                "kind": "project_style",
                 "capsule_ids": capsule_ids,
             },
             {
                 "path": "app.js",
-                "kind": "preview_runtime",
+                "kind": "project_runtime",
                 "capsule_ids": capsule_ids,
             },
         ],
@@ -400,7 +432,7 @@ def _build_task_pack(task: str, capsules: list[dict[str, Any]]) -> dict[str, Any
             {
                 "path": "preview/index.html",
                 "action": "preview_only",
-                "reason": "show selected capsule context for this task",
+                "reason": "run the generated small project locally",
             },
             {
                 "path": "task_pack.json",
@@ -409,7 +441,7 @@ def _build_task_pack(task: str, capsules: list[dict[str, Any]]) -> dict[str, Any
             },
         ],
         "validation": [
-            "open index.html",
+            "open index.html locally",
             "check capsules_used.json",
             "check provenance.json",
         ],
@@ -428,7 +460,7 @@ def _build_task_pack(task: str, capsules: list[dict[str, Any]]) -> dict[str, Any
 
 def _build_summary_md(task: str, capsules: list[dict[str, Any]]) -> str:
     lines = [
-        "# Reweave Task Pack Preview",
+        "# Reweave Small Project Pack",
         "",
         f"- Task: {task}",
         f"- Capsules used: {len(capsules)}",

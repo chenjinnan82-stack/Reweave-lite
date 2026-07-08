@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Support Ticket Triage</title>
+    <link rel="stylesheet" href="tickets.css">
+  </head>
+  <body>
+    <main class="triage-board">
+      <header>
+        <p class="eyebrow">Support desk</p>
+        <h1>Ticket triage</h1>
+      </header>
+      <section class="ticket-list">
+        <article class="ticket urgent">
+          <strong>Billing webhook failed</strong>
+          <span>Urgent</span>
+          <p>Customer cannot finish checkout after invoice retry.</p>
+        </article>
+        <article class="ticket normal">
+          <strong>Invite email copy</strong>
+          <span>Normal</span>
+          <p>Rewrite onboarding copy for workspace invites.</p>
+        </article>
+      </section>
+      <button id="resolveOldest">Resolve oldest</button>
+      <p id="triageStatus">2 open tickets</p>
+    </main>
+    <script src="tickets.js"></script>
+  </body>
+</html>

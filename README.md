@@ -6,7 +6,7 @@
 
 **Turn old projects into reusable capsules for new web work.**
 
-Old project -> Source Box -> Capsules -> Task Pack -> New Web
+Old project -> Source Box -> Capsules -> Small Project Pack -> New Web
 
 [简体中文](README.zh-CN.md)
 
@@ -14,7 +14,7 @@ Old project -> Source Box -> Capsules -> Task Pack -> New Web
 ![CI](https://github.com/chenjinnan82-stack/Reweave-lite/actions/workflows/ci.yml/badge.svg)
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue)
 ![Source writes](https://img.shields.io/badge/source%20writes-off-1f2937)
-![Task Pack](https://img.shields.io/badge/task%20pack-preview-f59e0b)
+![Small Project Pack](https://img.shields.io/badge/small%20project%20pack-preview-f59e0b)
 ![Desktop](https://img.shields.io/badge/app-desktop-334155)
 
 </div>
@@ -25,15 +25,15 @@ Old project -> Source Box -> Capsules -> Task Pack -> New Web
 python scripts/run_public_reweave_demo.py
 ```
 
-The JSON result prints the output folder and files. Expected output includes `task_pack.json`, `capsules_used.json`, `provenance.json`, and `snippets_used.json`.
+The JSON result prints the output folder and files. Expected output includes runnable `index.html`, `styles.css`, `app.js`, plus `task_pack.json`, `capsules_used.json`, `provenance.json`, and `snippets_used.json`.
 
-**Boundary:** source projects are read-only by default. Reweave-lite previews task packs; it does not auto-write or overwrite your project.
+**Boundary:** source projects are read-only by default. Reweave-lite previews small project packs; it does not auto-write or overwrite your project.
 
 ## Why
 
 Small local models can write code, but they often lose the project memory that makes code useful: naming, layout, patterns, copy, and tiny business rules.
 
-Reweave treats an old project folder as a **Source Box**, cleans it into reusable **Capsules**, then lets a task use those capsules to build a previewable **Task Pack** with provenance.
+Reweave treats an old project folder as a **Source Box**, cleans it into reusable **Capsules**, then lets a task use those capsules to build a previewable **Small Project Pack** with provenance.
 
 The inspiration is a spider spinning silk: old project threads are cleaned, joined, and woven into something new.
 
@@ -43,7 +43,8 @@ The inspiration is a spider spinning silk: old project threads are cleaned, join
 - Scans and drafts capsule candidates without writing to the source project.
 - Stores approved capsules in a local Capsule Warehouse.
 - Lets the desktop workbench select capsules for a task.
-- Builds a Task Pack preview with:
+- Builds a Small Project Pack preview with:
+  - runnable `index.html`, `styles.css`, `app.js`
   - `task_pack.json`
   - `capsules_used.json`
   - `provenance.json`

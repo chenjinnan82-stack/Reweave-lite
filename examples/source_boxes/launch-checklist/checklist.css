@@ -1,0 +1,38 @@
+body {
+  margin: 0;
+  font-family: Inter, ui-sans-serif, system-ui, sans-serif;
+  background: #f3f7f5;
+  color: #16231d;
+}
+
+.launch-card {
+  max-width: 520px;
+  margin: 56px auto;
+  padding: 28px;
+  border: 1px solid #cfded6;
+  border-radius: 8px;
+  background: #fff;
+}
+
+.eyebrow {
+  margin: 0 0 6px;
+  color: #43745a;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+label {
+  display: block;
+  margin: 14px 0;
+}
+
+input {
+  margin-right: 8px;
+}
+
+#launchProgress {
+  margin-top: 18px;
+  color: #43745a;
+  font-weight: 700;
+}

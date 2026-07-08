@@ -2,6 +2,14 @@
 
 These folders are tiny public Source Boxes for first-run testing.
 
+Current samples:
+
+- `customer-quote-widget`
+- `ops-status-card`
+- `support-ticket-triage`
+- `content-calendar`
+- `launch-checklist`
+
 Use one in the desktop app:
 
 1. Start Reweave with `./start_reweave_static.sh`.

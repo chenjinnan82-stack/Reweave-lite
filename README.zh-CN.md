@@ -6,7 +6,7 @@
 
 **把旧项目清洗成可复用的胶囊，再织成新的 Web 任务包。**
 
-旧项目 -> Source Box -> Capsules -> Task Pack -> New Web
+旧项目 -> Source Box -> Capsules -> Small Project Pack -> New Web
 
 [English](README.md)
 
@@ -14,7 +14,7 @@
 ![CI](https://github.com/chenjinnan82-stack/Reweave-lite/actions/workflows/ci.yml/badge.svg)
 ![License: MIT](https://img.shields.io/badge/license-MIT-blue)
 ![Source writes](https://img.shields.io/badge/source%20writes-off-1f2937)
-![Task Pack](https://img.shields.io/badge/task%20pack-preview-f59e0b)
+![Small Project Pack](https://img.shields.io/badge/small%20project%20pack-preview-f59e0b)
 ![Desktop](https://img.shields.io/badge/app-desktop-334155)
 
 </div>
@@ -25,15 +25,15 @@
 python scripts/run_public_reweave_demo.py
 ```
 
-输出 JSON 会打印产物目录和文件列表。预期输出包含 `task_pack.json`、`capsules_used.json`、`provenance.json` 和 `snippets_used.json`。
+输出 JSON 会打印产物目录和文件列表。预期输出包含可运行的 `index.html`、`styles.css`、`app.js`，以及 `task_pack.json`、`capsules_used.json`、`provenance.json` 和 `snippets_used.json`。
 
-**边界：** 源项目默认只读。Reweave-lite 生成任务包 preview，不自动写入或覆盖你的项目。
+**边界：** 源项目默认只读。Reweave-lite 生成小项目包 preview，不自动写入或覆盖你的项目。
 
 ## 为什么做
 
 小模型不是完全不会写代码。它真正吃亏的地方，是很难稳定记住一个旧项目里的命名、布局、样式、业务词和细节规则。
 
-再织把旧项目文件夹当作 **Source Box**，只读扫描后清洗成 **Capsule**，再让新任务按需调用这些胶囊，生成带来源痕迹的 **Task Pack Preview**。
+再织把旧项目文件夹当作 **Source Box**，只读扫描后清洗成 **Capsule**，再让新任务按需调用这些胶囊，生成带来源痕迹的 **Small Project Pack**。
 
 它的灵感来自蜘蛛吐丝：旧项目里的线索不是被复制粘贴，而是被清洗、连接，再织成新的结构。
 
@@ -44,7 +44,8 @@ python scripts/run_public_reweave_demo.py
 - 生成 capsule candidate。
 - 人工 Store 到本地 Capsule Warehouse。
 - 在桌面工作台选择胶囊进入任务。
-- 生成 Task Pack preview，包含：
+- 生成 Small Project Pack preview，包含：
+  - 可运行的 `index.html`、`styles.css`、`app.js`
   - `task_pack.json`
   - `capsules_used.json`
   - `provenance.json`
