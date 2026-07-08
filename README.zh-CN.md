@@ -29,6 +29,13 @@ python scripts/run_public_reweave_demo.py
 
 **边界：** 源项目默认只读。Reweave-lite 生成小项目包 preview，不自动写入或覆盖你的项目。
 
+列出胶囊并手动选择：
+
+```bash
+python scripts/run_public_reweave_demo.py --list-capsules
+python scripts/run_public_reweave_demo.py --select-capsule "Style Sheet" --select-capsule "Script Module"
+```
+
 ## 为什么做
 
 小模型不是完全不会写代码。它真正吃亏的地方，是很难稳定记住一个旧项目里的命名、布局、样式、业务词和细节规则。
@@ -44,6 +51,7 @@ python scripts/run_public_reweave_demo.py
 - 生成 capsule candidate。
 - 人工 Store 到本地 Capsule Warehouse。
 - 在桌面工作台选择胶囊进入任务。
+- 在 CLI 中列出胶囊，并手动选择要复用的胶囊。
 - 生成 Small Project Pack preview，包含：
   - 可运行的 `index.html`、`styles.css`、`app.js`
   - `task_pack.json`

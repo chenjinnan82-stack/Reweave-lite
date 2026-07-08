@@ -29,6 +29,13 @@ The JSON result prints the output folder and files. Expected output includes run
 
 **Boundary:** source projects are read-only by default. Reweave-lite previews small project packs; it does not auto-write or overwrite your project.
 
+List and manually choose capsules:
+
+```bash
+python scripts/run_public_reweave_demo.py --list-capsules
+python scripts/run_public_reweave_demo.py --select-capsule "Style Sheet" --select-capsule "Script Module"
+```
+
 ## Why
 
 Small local models can write code, but they often lose the project memory that makes code useful: naming, layout, patterns, copy, and tiny business rules.
@@ -43,6 +50,7 @@ The inspiration is a spider spinning silk: old project threads are cleaned, join
 - Scans and drafts capsule candidates without writing to the source project.
 - Stores approved capsules in a local Capsule Warehouse.
 - Lets the desktop workbench select capsules for a task.
+- Lets the CLI list capsules and manually select the ones to reuse.
 - Builds a Small Project Pack preview with:
   - runnable `index.html`, `styles.css`, `app.js`
   - `task_pack.json`

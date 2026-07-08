@@ -76,7 +76,55 @@ def _public_files(out: Path) -> list[str]:
     return sorted(p.name for p in out.iterdir() if p.is_file() and p.name != MARKER)
 
 
-def run(source: Path, task: str, out: Path, *, include_local_paths: bool = False) -> dict[str, object]:
+def _capsule_match_text(cap: dict[str, object]) -> str:
+    parts = [
+        cap.get("id"),
+        cap.get("name"),
+        cap.get("type"),
+        cap.get("role"),
+        " ".join(str(tag) for tag in (cap.get("tags") or []) if tag),
+    ]
+    return " ".join(str(part or "") for part in parts).lower()
+
+
+def _public_capsule(cap: dict[str, object]) -> dict[str, object]:
+    return {
+        "id": cap.get("id"),
+        "name": cap.get("name"),
+        "type": cap.get("type"),
+        "role": cap.get("role"),
+        "tags": list(cap.get("tags") or []),
+        "source_id": cap.get("source_id"),
+    }
+
+
+def _select_capsules(capsules: list[dict[str, object]], selectors: list[str]) -> list[dict[str, object]]:
+    if not selectors:
+        return capsules[:4]
+    selected: list[dict[str, object]] = []
+    for selector in selectors:
+        needle = selector.strip().lower()
+        match = next((cap for cap in capsules if str(cap.get("id") or "").lower() == needle), None)
+        if match is None:
+            match = next((cap for cap in capsules if str(cap.get("name") or "").lower() == needle), None)
+        if match is None:
+            match = next((cap for cap in capsules if needle and needle in _capsule_match_text(cap)), None)
+        if match is None:
+            raise SystemExit(f"capsule selector did not match: {selector}")
+        if match not in selected:
+            selected.append(match)
+    return selected[:4]
+
+
+def run(
+    source: Path,
+    task: str,
+    out: Path,
+    *,
+    include_local_paths: bool = False,
+    select_capsules: list[str] | None = None,
+    list_capsules: bool = False,
+) -> dict[str, object]:
     source = source.expanduser().resolve()
     if not source.is_dir():
         raise SystemExit(f"source folder not found: {source}")
@@ -92,9 +140,19 @@ def run(source: Path, task: str, out: Path, *, include_local_paths: bool = False
         scan = scan_source_box(box["id"])
         draft = draft_capsules(box["id"])
         capsules = promote_source_drafts(box["id"])
-        capsule_ids = [str(cap["id"]) for cap in capsules[:4]]
+        selected_capsules = _select_capsules(capsules, select_capsules or [])
+        capsule_ids = [str(cap["id"]) for cap in selected_capsules]
         for cap_id in capsule_ids:
             enrich_capsule_content(cap_id)
+        if list_capsules:
+            return {
+                "ok": True,
+                "source": _source_box_public(box, source, include_local_paths=include_local_paths),
+                "files_scanned": scan.get("counts", {}).get("files_scanned", 0),
+                "capsule_candidates": draft.get("candidate_count", 0),
+                "capsules": [_public_capsule(cap) for cap in capsules],
+                "source_project_write": False,
+            }
         source_box = _source_box_public(box, source, include_local_paths=include_local_paths)
         preview = build_preview_package(
             {
@@ -121,6 +179,8 @@ def run(source: Path, task: str, out: Path, *, include_local_paths: bool = False
             "task": task,
             "source_box": source_box,
             "selected_capsule_ids": capsule_ids,
+            "selected_capsules": [_public_capsule(cap) for cap in selected_capsules],
+            "selection_mode": "manual" if select_capsules else "default_first_four",
             "output_files": _public_files(out),
             "source_project_write": False,
         }
@@ -145,6 +205,7 @@ def run(source: Path, task: str, out: Path, *, include_local_paths: bool = False
             "task": task,
             "files": _public_files(out),
             "capsules_used": len(_json(out / "capsules_used.json")),
+            "selected_capsules": [_public_capsule(cap) for cap in selected_capsules],
             "source_project_write": False,
         }
 
@@ -154,10 +215,19 @@ def main() -> None:
     parser.add_argument("--source", default="examples/source_boxes/customer-quote-widget")
     parser.add_argument("--task", default="Build a quote summary card")
     parser.add_argument("--out", default=str(DEFAULT_OUT))
+    parser.add_argument("--list-capsules", action="store_true", help="List capsule choices for a Source Box and exit without writing an output pack.")
+    parser.add_argument("--select-capsule", action="append", default=[], help="Select a capsule by id, exact name, or text match. Repeat up to four times.")
     parser.add_argument("--include-local-paths", action="store_true", help="Include local source paths in stdout and task_pack.json; provenance stays redacted.")
     args = parser.parse_args()
 
-    result = run(Path(args.source), args.task, Path(args.out), include_local_paths=args.include_local_paths)
+    result = run(
+        Path(args.source),
+        args.task,
+        Path(args.out),
+        include_local_paths=args.include_local_paths,
+        select_capsules=args.select_capsule,
+        list_capsules=args.list_capsules,
+    )
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
 

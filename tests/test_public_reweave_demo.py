@@ -109,6 +109,58 @@ def test_public_reweave_demo_runs_five_source_boxes(tmp_path: Path) -> None:
         _assert_local_assets_exist(out)
 
 
+def test_public_reweave_demo_supports_manual_capsule_selection(tmp_path: Path) -> None:
+    source = ROOT / "examples" / "source_boxes" / "customer-quote-widget"
+    listed = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "run_public_reweave_demo.py"),
+            "--source",
+            str(source),
+            "--list-capsules",
+        ],
+        check=True,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    choices = json.loads(listed.stdout)
+    assert choices["source_project_write"] is False
+    assert {item["name"] for item in choices["capsules"]} >= {"Style Sheet", "Script Module"}
+
+    out = tmp_path / "reweave_manual_selection"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "run_public_reweave_demo.py"),
+            "--source",
+            str(source),
+            "--task",
+            "Build a styled quote interaction",
+            "--select-capsule",
+            "Style Sheet",
+            "--select-capsule",
+            "Script Module",
+            "--out",
+            str(out),
+        ],
+        check=True,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout)
+    task_pack = json.loads((out / "task_pack.json").read_text(encoding="utf-8"))
+    capsules_used = json.loads((out / "capsules_used.json").read_text(encoding="utf-8"))
+    selected_names = [item["name"] for item in payload["selected_capsules"]]
+    assert selected_names == ["Style Sheet", "Script Module"]
+    assert task_pack["selection_mode"] == "manual"
+    assert [item["name"] for item in task_pack["selected_capsules"]] == selected_names
+    assert [item["name"] for item in capsules_used] == selected_names
+    assert task_pack["source_project_write"] is False
+    _assert_local_assets_exist(out)
+
+
 def test_public_reweave_demo_refuses_repo_output() -> None:
     result = subprocess.run(
         [
