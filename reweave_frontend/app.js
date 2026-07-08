@@ -199,25 +199,25 @@
       data.generatedPackage.files.indexOf("task_pack.json") >= 0;
     var capsulesUsed = Number(summary.capsules_used || 0);
     var traceText = summary.trace_available ? "Trace available" : "Trace unavailable";
-    var previewText = hasTaskPackPreview ? "Task Pack preview ready" : summary.preview_ready ? "Preview ready" : "Preview not ready";
+    var previewText = hasTaskPackPreview ? "Small Project Pack ready" : summary.preview_ready ? "Preview ready" : "Preview not ready";
     var responseText = summary.product_capability_line || summary.line || summary.acceptance_line || "Current Runtime / read-only";
     var sourceWrites = summary.source_project_write_count;
     if (sourceWrites === undefined || sourceWrites === null || sourceWrites === "") sourceWrites = "unknown";
 
     if (!taskPackPreview) els.taskInput.value = "";
-    els.taskInput.placeholder = taskPackPreview ? "Describe a small Task Pack preview..." : "Current Runtime / read-only";
+    els.taskInput.placeholder = taskPackPreview ? "Describe a small project pack..." : "Current Runtime / read-only";
     els.taskInput.disabled = !taskPackPreview;
     if (els.btnGenerate) {
       els.btnGenerate.disabled = !taskPackPreview;
       els.btnGenerate.setAttribute("aria-disabled", taskPackPreview ? "false" : "true");
-      els.btnGenerate.title = taskPackPreview ? "Build Task Pack preview" : "Current Runtime is read-only";
+      els.btnGenerate.title = taskPackPreview ? "Build Small Project Pack" : "Current Runtime is read-only";
       els.btnGenerate.classList.toggle("hidden", !taskPackPreview);
     }
     if (els.generatedPackage) {
       els.generatedPackage.classList.toggle("runtime-read-only", !hasTaskPackPreview);
     }
     var title = document.querySelector(".generated-title");
-    if (title) title.textContent = hasTaskPackPreview ? "Task Pack Preview" : "Current Runtime";
+    if (title) title.textContent = hasTaskPackPreview ? "Small Project Pack" : "Current Runtime";
     if (els.generatedTree && !hasTaskPackPreview) {
       els.generatedTree.innerHTML =
         '<div class="folder">Runtime artifacts</div>' +

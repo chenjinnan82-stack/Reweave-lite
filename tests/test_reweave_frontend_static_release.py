@@ -71,7 +71,8 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert "function canBuildTaskPackPreview()" in app
     assert 'els.taskInput.disabled = !taskPackPreview;' in app
     assert 'els.btnGenerate.classList.toggle("hidden", !taskPackPreview);' in app
-    assert "Build Task Pack preview" in app
+    assert "Build Small Project Pack" in app
+    assert "Small Project Pack ready" in app
     assert 'selectionMode: usedCapsuleIds.length > 0 ? "manual" : "auto_match"' in app
     assert "Generate will use exactly these capsules." in app
     assert ".generation-input-note" in styles
