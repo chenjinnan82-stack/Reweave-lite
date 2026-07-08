@@ -15,18 +15,19 @@ MARKER = ".reweave_public_demo"
 DEFAULT_OUT = Path(tempfile.gettempdir()) / "reweave_public_demo"
 
 
-def _import_reweave() -> tuple[object, object, object, object, object]:
+def _import_reweave() -> tuple[object, object, object, object, object, object, object]:
     import sys
 
     sys.path.insert(0, str(ROOT))
     from pimos_lite.reweave_capsule_draft import draft_capsules
     from pimos_lite.reweave_capsule_content import enrich_capsule_content
+    from pimos_lite.reweave_llm_pack import apply_ollama_pack
     from pimos_lite.reweave_capsule_warehouse import promote_source_drafts
     from pimos_lite.reweave_preview_pack import build_preview_package
     from pimos_lite.reweave_source_registry import add_source_box
     from pimos_lite.reweave_source_scanner import scan_source_box
 
-    return add_source_box, scan_source_box, draft_capsules, promote_source_drafts, build_preview_package, enrich_capsule_content
+    return add_source_box, scan_source_box, draft_capsules, promote_source_drafts, build_preview_package, enrich_capsule_content, apply_ollama_pack
 
 
 def _json(path: Path) -> object:
@@ -124,13 +125,19 @@ def run(
     include_local_paths: bool = False,
     select_capsules: list[str] | None = None,
     list_capsules: bool = False,
+    llm: str = "none",
+    model: str = "qwen2.5-coder:1.5b",
+    ollama_url: str = "http://127.0.0.1:11434",
+    llm_timeout: float = 60,
+    require_llm: bool = False,
 ) -> dict[str, object]:
     source = source.expanduser().resolve()
     if not source.is_dir():
         raise SystemExit(f"source folder not found: {source}")
     out = _safe_out(out)
 
-    add_source_box, scan_source_box, draft_capsules, promote_source_drafts, build_preview_package, enrich_capsule_content = _import_reweave()
+    imported = _import_reweave()
+    add_source_box, scan_source_box, draft_capsules, promote_source_drafts, build_preview_package, enrich_capsule_content, apply_ollama_pack = imported
 
     with tempfile.TemporaryDirectory(prefix="reweave-public-demo-state-") as state:
         os.environ["REWEAVE_STATE_DIR"] = state
@@ -185,6 +192,21 @@ def run(
             "source_project_write": False,
         }
         _write_json(out / "task_pack.json", task_pack)
+        llm_result: dict[str, object] = {"enabled": False}
+        if llm == "ollama":
+            llm_result = apply_ollama_pack(
+                out,
+                task=task,
+                selected_capsules=[_public_capsule(cap) for cap in selected_capsules],
+                snippet_context=preview.get("snippetContext") if isinstance(preview, dict) else None,
+                model=model,
+                base_url=ollama_url,
+                timeout=llm_timeout,
+                require=require_llm,
+            )
+        elif llm != "none":
+            raise SystemExit(f"unsupported llm: {llm}")
+
         summary = [
             "# Reweave public demo",
             "",
@@ -194,6 +216,8 @@ def run(
             f"- Capsule candidates: {draft.get('candidate_count', 0)}",
             f"- Capsules used: {len(capsule_ids)}",
             "- Source project writes: 0",
+            f"- Local model: {llm_result.get('model', 'off') if llm_result.get('enabled') else 'off'}",
+            f"- LLM applied: {bool(llm_result.get('applied'))}",
             "",
         ]
         (out / "summary.md").write_text("\n".join(summary), encoding="utf-8")
@@ -206,6 +230,7 @@ def run(
             "files": _public_files(out),
             "capsules_used": len(_json(out / "capsules_used.json")),
             "selected_capsules": [_public_capsule(cap) for cap in selected_capsules],
+            "llm": llm_result,
             "source_project_write": False,
         }
 
@@ -218,6 +243,11 @@ def main() -> None:
     parser.add_argument("--list-capsules", action="store_true", help="List capsule choices for a Source Box and exit without writing an output pack.")
     parser.add_argument("--select-capsule", action="append", default=[], help="Select a capsule by id, exact name, or text match. Repeat up to four times.")
     parser.add_argument("--include-local-paths", action="store_true", help="Include local source paths in stdout and task_pack.json; provenance stays redacted.")
+    parser.add_argument("--llm", choices=("none", "ollama"), default="none", help="Optional local model pass. Default: none.")
+    parser.add_argument("--model", default="qwen2.5-coder:1.5b", help="Ollama model name when --llm ollama is used.")
+    parser.add_argument("--ollama-url", default=os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434"), help="Ollama base URL.")
+    parser.add_argument("--llm-timeout", type=float, default=60.0, help="Ollama request timeout in seconds.")
+    parser.add_argument("--require-llm", action="store_true", help="Fail instead of falling back when local model generation fails.")
     args = parser.parse_args()
 
     result = run(
@@ -227,6 +257,11 @@ def main() -> None:
         include_local_paths=args.include_local_paths,
         select_capsules=args.select_capsule,
         list_capsules=args.list_capsules,
+        llm=args.llm,
+        model=args.model,
+        ollama_url=args.ollama_url,
+        llm_timeout=args.llm_timeout,
+        require_llm=args.require_llm,
     )
     print(json.dumps(result, indent=2, ensure_ascii=False))
 

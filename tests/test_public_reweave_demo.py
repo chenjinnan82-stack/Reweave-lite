@@ -4,6 +4,8 @@ import json
 import re
 import subprocess
 import sys
+import threading
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 
 
@@ -169,6 +171,122 @@ def test_public_reweave_demo_supports_manual_capsule_selection(tmp_path: Path) -
     assert [item["name"] for item in capsules_used] == selected_names
     assert task_pack["source_project_write"] is False
     _assert_local_assets_exist(out)
+
+
+def test_public_reweave_demo_supports_optional_local_ollama(tmp_path: Path) -> None:
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:  # noqa: N802
+            body = """--- index.html ---
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <title>LLM quote pack</title>
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <main><h1>LLM quote pack</h1><p id="quoteSummary">Ready</p></main>
+    <script src="app.js"></script>
+  </body>
+</html>
+--- styles.css ---
+body { font-family: system-ui, sans-serif; }
+main { max-width: 640px; margin: 2rem auto; }
+--- app.js ---
+document.addEventListener('DOMContentLoaded', function () {
+  const target = document.getElementById('quoteSummary');
+  if (target) target.textContent = 'Local model pack ready';
+});
+"""
+            payload = json.dumps({"response": body}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, format: str, *args: object) -> None:
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        source = ROOT / "examples" / "source_boxes" / "customer-quote-widget"
+        out = tmp_path / "reweave_llm_selection"
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "run_public_reweave_demo.py"),
+                "--source",
+                str(source),
+                "--task",
+                "Build a styled quote interaction",
+                "--select-capsule",
+                "Style Sheet",
+                "--select-capsule",
+                "Script Module",
+                "--llm",
+                "ollama",
+                "--model",
+                "tiny-test",
+                "--ollama-url",
+                f"http://127.0.0.1:{server.server_port}",
+                "--out",
+                str(out),
+            ],
+            check=True,
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+
+    payload = json.loads(result.stdout)
+    provenance = json.loads((out / "provenance.json").read_text(encoding="utf-8"))
+    task_pack = json.loads((out / "task_pack.json").read_text(encoding="utf-8"))
+    assert payload["llm"]["applied"] is True
+    assert "LLM quote pack" in (out / "index.html").read_text(encoding="utf-8")
+    assert provenance["llm_generation"]["model"] == "tiny-test"
+    assert provenance["llm_generation"]["local_http_call"] is True
+    assert provenance["llm_generation"]["external_network_call"] is False
+    assert provenance["llm_generation"]["source_project_write"] is False
+    assert provenance["content_aware_generate"]["llm_called"] is True
+    assert task_pack["llm_generation"]["applied"] is True
+    _assert_local_assets_exist(out)
+
+
+def test_public_reweave_demo_rejects_remote_ollama_url_without_network(tmp_path: Path) -> None:
+    source = ROOT / "examples" / "source_boxes" / "customer-quote-widget"
+    out = tmp_path / "reweave_remote_ollama"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "run_public_reweave_demo.py"),
+            "--source",
+            str(source),
+            "--task",
+            "Build a quote card",
+            "--llm",
+            "ollama",
+            "--ollama-url",
+            "https://example.com",
+            "--out",
+            str(out),
+        ],
+        check=True,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout)
+    provenance = json.loads((out / "provenance.json").read_text(encoding="utf-8"))
+    assert payload["llm"]["applied"] is False
+    assert "ollama_url_must_be_localhost" in payload["llm"]["error"]
+    assert provenance["llm_generation"]["external_network_call"] is False
+    assert provenance["llm_generation"]["source_project_write"] is False
 
 
 def test_public_reweave_demo_refuses_repo_output() -> None:

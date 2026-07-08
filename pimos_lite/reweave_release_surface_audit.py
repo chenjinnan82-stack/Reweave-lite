@@ -14,6 +14,7 @@ REQUIRED_SURFACE_FILES = (
     "pimos_lite/reweave_app_service.py",
     "pimos_lite/reweave_engine/factory.py",
     "pimos_lite/reweave_engine/lumo_lite.py",
+    "pimos_lite/reweave_llm_pack.py",
     "pimos_lite/reweave_lumo_lite_artifacts.py",
     "pimos_lite/reweave_lumo_lite_state.py",
     "pimos_lite/reweave_preview_viewer.py",
@@ -167,6 +168,8 @@ def _role(relative: str) -> str:
         return "service_facade"
     if "lumo_lite" in relative:
         return "lumo_lite_bridge"
+    if relative.endswith("reweave_llm_pack.py"):
+        return "optional_local_model_pack"
     if relative.startswith("reweave_frontend/"):
         return "frontend_shell"
     if relative.endswith("start_reweave_static.sh"):
@@ -199,6 +202,7 @@ def _release_checks(base: Path) -> dict[str, bool]:
     app_service = _read(base / "pimos_lite/reweave_app_service.py")
     artifacts = _read(base / "pimos_lite/reweave_lumo_lite_artifacts.py")
     frontend = _read(base / "reweave_frontend/app.js")
+    llm_pack = _read(base / "pimos_lite/reweave_llm_pack.py")
     launcher = _read(base / "start_reweave_static.sh")
     return {
         "default_backend_is_lumo_lite": 'DEFAULT_BACKEND = "lumo_lite"' in factory,
@@ -210,6 +214,9 @@ def _release_checks(base: Path) -> dict[str, bool]:
         "artifact_viewer_enforces_root_allowlist": "root_allowlist_enforced" in artifacts and "_is_under_allowed_roots" in artifacts,
         "lumo_lite_hides_preview_export_actions": "currentPreviewPackageId && !isLumoLiteReadOnly()" in frontend,
         "lumo_lite_blocks_preview_export_handler": "!currentPreviewPackageId || isLumoLiteReadOnly()" in frontend,
+        "optional_llm_pack_is_local_and_fallback_safe": "external_network_call" in llm_pack
+        and "source_project_write" in llm_pack
+        and "fallback_used" in llm_pack,
     }
 
 

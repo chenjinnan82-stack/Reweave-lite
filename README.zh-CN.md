@@ -39,6 +39,21 @@ python3 scripts/run_public_reweave_demo.py --source examples/source_boxes/suppor
 
 第一条列出可选胶囊。第二条用手动选择的胶囊生成 Small Project Pack。第三条换一个公开 Source Box 跑同一条链路。
 
+可选本地小模型增强：
+
+```bash
+ollama pull qwen2.5-coder:1.5b
+python3 scripts/run_public_reweave_demo.py \
+  --source examples/source_boxes/customer-quote-widget \
+  --task "Build a styled quote interaction" \
+  --select-capsule "Style Sheet" \
+  --select-capsule "Script Module" \
+  --llm ollama \
+  --model qwen2.5-coder:1.5b
+```
+
+如果 Ollama 没有运行，Reweave 会回退到稳定的 deterministic Small Project Pack；除非你显式加 `--require-llm`。provenance 会记录本地模型是否真的参与生成。
+
 ## 为什么做
 
 小模型不是完全不会写代码。它真正吃亏的地方，是很难稳定记住一个旧项目里的命名、布局、样式、业务词和细节规则。
@@ -55,6 +70,7 @@ python3 scripts/run_public_reweave_demo.py --source examples/source_boxes/suppor
 - 人工 Store 到本地 Capsule Warehouse。
 - 在桌面工作台选择胶囊进入任务。
 - 在 CLI 中列出胶囊，并手动选择要复用的胶囊。
+- 可选使用本地 Ollama 小模型优化 Small Project Pack。
 - 生成 Small Project Pack preview，包含：
   - 可运行的 `index.html`、`styles.css`、`app.js`
   - `task_pack.json`

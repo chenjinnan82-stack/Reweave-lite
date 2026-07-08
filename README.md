@@ -39,6 +39,21 @@ python3 scripts/run_public_reweave_demo.py --source examples/source_boxes/suppor
 
 The first command shows available capsules. The second builds a Small Project Pack from manually selected capsules. The third runs the same chain on another public Source Box.
 
+Optional local small-model pass:
+
+```bash
+ollama pull qwen2.5-coder:1.5b
+python3 scripts/run_public_reweave_demo.py \
+  --source examples/source_boxes/customer-quote-widget \
+  --task "Build a styled quote interaction" \
+  --select-capsule "Style Sheet" \
+  --select-capsule "Script Module" \
+  --llm ollama \
+  --model qwen2.5-coder:1.5b
+```
+
+If Ollama is not running, Reweave falls back to the deterministic Small Project Pack unless `--require-llm` is set. Provenance records whether the local model was actually used.
+
 ## Why
 
 Small local models can write code, but they often lose the project memory that makes code useful: naming, layout, patterns, copy, and tiny business rules.
@@ -54,6 +69,7 @@ The inspiration is a spider spinning silk: old project threads are cleaned, join
 - Stores approved capsules in a local Capsule Warehouse.
 - Lets the desktop workbench select capsules for a task.
 - Lets the CLI list capsules and manually select the ones to reuse.
+- Optionally lets a local Ollama model refine the Small Project Pack.
 - Builds a Small Project Pack preview with:
   - runnable `index.html`, `styles.css`, `app.js`
   - `task_pack.json`
