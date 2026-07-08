@@ -355,6 +355,14 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
             summary = engine.scan_source(box["id"])
             draft = engine.draft_source(box["id"])
             promoted = engine.promote_source(box["id"])
+            result = engine.generate_preview(
+                {
+                    "taskText": "build a quote summary card",
+                    "capsuleIds": [promoted[0]["id"]],
+                    "capsules": promoted[:1],
+                    "sourceBoxes": [box],
+                }
+            )
             state = engine.get_initial_state()
 
         self.assertEqual(box["source_project_write"], False)
@@ -367,6 +375,13 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
         self.assertIn(box["id"], {item["source_id"] for item in state["sourceSummaries"]})
         self.assertIn(box["id"], {item["source_id"] for item in state["capsuleDrafts"]})
         self.assertIn(box["id"], {item["source_id"] for item in state["warehouseCapsules"] if "source_id" in item})
+        preview_root = Path(result["previewPath"])
+        self.assertTrue((preview_root / "index.html").is_file())
+        self.assertTrue((preview_root / "task_pack.json").is_file())
+        task_pack = json.loads((preview_root / "task_pack.json").read_text(encoding="utf-8"))
+        self.assertEqual(task_pack["mode"], "task_pack_preview")
+        self.assertFalse(task_pack["source_project_write"])
+        self.assertEqual(task_pack["selected_capsule_ids"], [promoted[0]["id"]])
 
     def test_lumo_lite_engine_builds_task_pack_preview_without_source_write(self) -> None:
         capsule = {

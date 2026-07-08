@@ -107,6 +107,39 @@ def _build_index_html(
     *,
     content_aware: bool = False,
 ) -> str:
+    task_title = html.escape((task or "New Task Pack")[:MAX_TASK_LEN])
+    capsule_names = [str(cap.get("name") or "Capsule") for cap in capsules[:4]]
+    capsule_tags = sorted(
+        {
+            str(tag)
+            for cap in capsules
+            for tag in (cap.get("tags") or [])
+            if str(tag).strip()
+        }
+    )[:8]
+    source_names: list[str] = []
+    for cap in capsules:
+        raw_source = cap.get("source")
+        name = raw_source.get("label") if isinstance(raw_source, dict) else raw_source
+        name = str(name or cap.get("source_id") or "").strip()
+        if name and name not in source_names:
+            source_names.append(name)
+    source_names = sorted(source_names)[:4]
+
+    summary = (
+        "A small preview assembled from selected project capsules. "
+        "Use it as a local task package, not as an automatic source write."
+    )
+    signal_items = "".join(
+        f"<li>{html.escape(tag)}</li>" for tag in (capsule_tags or ["layout", "copy", "logic"])
+    )
+    source_items = "".join(
+        f"<li>{html.escape(name)}</li>" for name in (source_names or ["local Source Box"])
+    )
+    capsule_badges = "".join(
+        f"<span>{html.escape(name)}</span>" for name in (capsule_names or ["Selected capsule"])
+    )
+
     items = []
     for cap in capsules:
         preview = cap.get("preview") or []
@@ -122,7 +155,6 @@ def _build_index_html(
             f"</article>"
         )
     body = "\n".join(items) if items else "<p class='empty'>No capsules selected.</p>"
-    title = html.escape((task or "Reweave preview")[:MAX_TASK_LEN])
     note = (
         "Content-aware preview — excerpt manifests in snippets_used.json; not copied source files."
         if content_aware
@@ -133,16 +165,30 @@ def _build_index_html(
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>{title}</title>
+  <title>{task_title}</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
   <main class="surface">
     <header>
       <p class="eyebrow">Reweave · local preview</p>
-      <h1>{title}</h1>
+      <h1>{task_title}</h1>
       <p class="note">{note}</p>
     </header>
+    <section class="task-output" aria-label="Generated task output">
+      <div>
+        <p class="eyebrow">Task Pack Preview</p>
+        <h2>{task_title}</h2>
+        <p>{html.escape(summary)}</p>
+        <div class="capsule-badges">{capsule_badges}</div>
+      </div>
+      <aside>
+        <strong>Reused signals</strong>
+        <ul>{signal_items}</ul>
+        <strong>Source Boxes</strong>
+        <ul>{source_items}</ul>
+      </aside>
+    </section>
     <section class="capsules">{body}</section>
   </main>
   <script src="app.js"></script>
@@ -189,10 +235,17 @@ def _build_styles_css() -> str:
 .surface { max-width: 720px; margin: 2rem auto; padding: 0 1.25rem; }
 .eyebrow { letter-spacing: 0.08em; text-transform: uppercase; font-size: 0.75rem; color: #8a7355; }
 .note { color: #6b5d4a; font-size: 0.9rem; }
+.task-output { display: grid; grid-template-columns: minmax(0, 1fr) 220px; gap: 1rem; background: #fff; border: 1px solid #e8dfd0; border-radius: 10px; padding: 1rem; box-shadow: 0 12px 32px rgba(43, 38, 28, 0.08); }
+.task-output h2 { margin: 0 0 0.5rem; }
+.task-output aside { border-left: 1px solid #e8dfd0; padding-left: 1rem; font-size: 0.9rem; color: #6b5d4a; }
+.task-output ul { margin: 0.35rem 0 0.85rem; padding-left: 1.1rem; }
+.capsule-badges { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.75rem; }
+.capsule-badges span { border: 1px solid #e8dfd0; border-radius: 999px; padding: 0.25rem 0.55rem; color: #6b5d4a; background: #faf7f0; font-size: 0.8rem; }
 .capsule-card { background: #fff; border: 1px solid #e8dfd0; border-radius: 10px; padding: 1rem; margin: 1rem 0; }
 .capsule-card .type { font-size: 0.75rem; color: #a67c3d; }
 .capsule-card pre { background: #faf7f0; padding: 0.75rem; border-radius: 6px; overflow: auto; }
 .empty { color: #6b5d4a; }
+@media (max-width: 680px) { .task-output { grid-template-columns: 1fr; } .task-output aside { border-left: 0; border-top: 1px solid #e8dfd0; padding-left: 0; padding-top: 1rem; } }
 """
 
 
@@ -273,6 +326,88 @@ def _sanitize_source_boxes(rows: Any, *, include_local_paths: bool = False) -> l
     return boxes
 
 
+def _build_task_pack(task: str, capsules: list[dict[str, Any]]) -> dict[str, Any]:
+    capsule_ids = [str(c.get("id") or "") for c in capsules if c.get("id")]
+    capsules_used = [
+        {
+            "id": cap.get("id"),
+            "name": cap.get("name"),
+            "source_id": cap.get("source_id"),
+            "reason": cap.get("role") or "selected for task context",
+        }
+        for cap in capsules
+        if isinstance(cap, dict)
+    ]
+    return {
+        "schema_version": "reweave_task_pack.v1",
+        "mode": "task_pack_preview",
+        "task": task,
+        "task_scope": "preview_only",
+        "source_project_write": False,
+        "selected_capsule_ids": capsule_ids,
+        "capsules_used": capsules_used,
+        "planned_outputs": [
+            {
+                "path": "index.html",
+                "kind": "preview_page",
+                "capsule_ids": capsule_ids,
+            },
+            {
+                "path": "styles.css",
+                "kind": "preview_style",
+                "capsule_ids": capsule_ids,
+            },
+            {
+                "path": "app.js",
+                "kind": "preview_runtime",
+                "capsule_ids": capsule_ids,
+            },
+        ],
+        "planned_files": [
+            {
+                "path": "preview/index.html",
+                "action": "preview_only",
+                "reason": "show selected capsule context for this task",
+            },
+            {
+                "path": "task_pack.json",
+                "action": "plan_only",
+                "reason": "record task scope, capsule inputs, and checks",
+            },
+        ],
+        "validation": [
+            "open index.html",
+            "check capsules_used.json",
+            "check provenance.json",
+        ],
+        "checks": [
+            "review preview output",
+            "review capsules_used.json",
+            "review provenance.json",
+        ],
+        "effects": {
+            "source_project_write": False,
+            "preview_output_write": True,
+            "manual_real_write": False,
+        },
+    }
+
+
+def _build_summary_md(task: str, capsules: list[dict[str, Any]]) -> str:
+    lines = [
+        "# Reweave Task Pack Preview",
+        "",
+        f"- Task: {task}",
+        f"- Capsules used: {len(capsules)}",
+        "- Source project writes: 0",
+        "",
+        "## Capsules",
+    ]
+    for cap in capsules:
+        lines.append(f"- {cap.get('name', 'Capsule')} ({cap.get('id')})")
+    return "\n".join(lines).strip() + "\n"
+
+
 def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
     """Write a local preview package under app state and return UI metadata."""
     task = str(payload.get("taskText") or payload.get("task") or "New tool")[:MAX_TASK_LEN]
@@ -313,6 +448,14 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
         "task": task,
         "capsule_ids": [c.get("id") for c in capsules],
         "capsules": [_capsule_provenance_entry(c) for c in capsules],
+        "outputs": [
+            {
+                "path": name,
+                "capsule_ids": [c.get("id") for c in capsules],
+                "source_project_write": False,
+            }
+            for name in ("index.html", "styles.css", "app.js")
+        ],
         "source_boxes": _sanitize_source_boxes(
             payload.get("sourceBoxes"),
             include_local_paths=bool(payload.get("includeLocalSourcePaths")),
@@ -334,12 +477,15 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
     else:
         provenance["content_aware_generate"] = {"enabled": False}
 
-    files = ["index.html", "styles.css", "app.js", "capsules_used.json", "provenance.json"]
+    task_pack = _build_task_pack(task, capsules)
+    files = ["index.html", "styles.css", "app.js", "task_pack.json", "capsules_used.json", "provenance.json", "summary.md"]
     _write_text(root / "index.html", _build_index_html(task, capsules, content_aware=content_aware_enabled))
     _write_text(root / "styles.css", _build_styles_css())
     _write_text(root / "app.js", _build_app_js())
+    _write_text(root / "task_pack.json", json.dumps(task_pack, indent=2, ensure_ascii=False) + "\n")
     _write_text(root / "capsules_used.json", json.dumps(capsules_used, indent=2, ensure_ascii=False) + "\n")
     _write_text(root / "provenance.json", json.dumps(provenance, indent=2, ensure_ascii=False) + "\n")
+    _write_text(root / "summary.md", _build_summary_md(task, capsules))
 
     snippets_used_count = 0
     if content_aware_enabled and snippet_context:
@@ -403,6 +549,7 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
         },
         "capsulesUsed": capsules_used,
         "provenance": provenance,
+        "taskPack": task_pack,
         "contentAwareGenerate": content_aware_generate,
         "snippetContext": snippet_context if use_enriched else None,
     }
@@ -464,8 +611,10 @@ def load_latest_preview() -> dict[str, Any] | None:
                     "index.html",
                     "styles.css",
                     "app.js",
+                    "task_pack.json",
                     "capsules_used.json",
                     "provenance.json",
+                    "summary.md",
                 ],
                 "stats": {
                     "capsulesUsed": int(data.get("capsule_count") or 0),

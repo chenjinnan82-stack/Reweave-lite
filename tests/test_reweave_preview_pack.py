@@ -49,11 +49,23 @@ class ReweavePreviewPackTest(unittest.TestCase):
         preview_path = Path(result["previewPath"])
         self.assertTrue(preview_path.is_dir())
         self.assertEqual(preview_path.resolve().parent, preview.preview_packages_dir().resolve())
-        for name in ("index.html", "styles.css", "app.js", "capsules_used.json", "provenance.json"):
+        for name in ("index.html", "styles.css", "app.js", "task_pack.json", "capsules_used.json", "provenance.json", "summary.md"):
             self.assertTrue((preview_path / name).is_file())
+        html = (preview_path / "index.html").read_text(encoding="utf-8")
+        self.assertIn("Task Pack Preview", html)
+        self.assertIn("Client quote tool", html)
+        task_pack = json.loads((preview_path / "task_pack.json").read_text(encoding="utf-8"))
+        self.assertEqual(task_pack["mode"], "task_pack_preview")
+        self.assertFalse(task_pack["source_project_write"])
+        self.assertEqual(task_pack["selected_capsule_ids"], cap_ids[:2])
         provenance = json.loads((preview_path / "provenance.json").read_text(encoding="utf-8"))
         self.assertEqual(provenance["backend"], "local")
         self.assertEqual(len(provenance["capsule_ids"]), 2)
+        self.assertEqual(
+            {item["path"] for item in provenance["outputs"]},
+            {"index.html", "styles.css", "app.js"},
+        )
+        self.assertTrue(all(item["source_project_write"] is False for item in provenance["outputs"]))
 
     def test_latest_preview_restored(self) -> None:
         cap_ids = self._promote_capsules()
@@ -62,6 +74,7 @@ class ReweavePreviewPackTest(unittest.TestCase):
         assert latest is not None
         self.assertTrue(Path(latest["previewPath"]).is_dir())
         self.assertIn("generatedPackage", latest)
+        self.assertIn("task_pack.json", latest["generatedPackage"]["files"])
 
     def test_missing_capsules_raises(self) -> None:
         with self.assertRaises(ValueError):

@@ -229,7 +229,7 @@ class LumoLiteReweaveEngine:
                 "taskPack": True,
             }
         )
-        pack = _task_pack_from_preview(result)
+        pack = result.get("taskPack") if isinstance(result.get("taskPack"), dict) else _task_pack_from_preview(result)
         root = Path(str(result["previewPath"]))
         (root / "task_pack.json").write_text(json.dumps(pack, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
         files = result.setdefault("generatedPackage", {}).setdefault("files", [])
