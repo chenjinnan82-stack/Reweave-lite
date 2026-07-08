@@ -134,6 +134,7 @@ def scan_directory_readonly(
     }
     extensions: dict[str, int] = {}
     entry_candidates: list[str] = []
+    sample_paths_by_extension: dict[str, list[str]] = {}
     files_scanned = 0
     stop = False
 
@@ -163,12 +164,15 @@ def scan_directory_readonly(
         counts["files_scanned"] += 1
         ext = entry.suffix.lower()
         extensions[ext] = extensions.get(ext, 0) + 1
+        try:
+            rel = entry.relative_to(resolved).as_posix()
+        except ValueError:
+            rel = entry.name
+        samples = sample_paths_by_extension.setdefault(ext, [])
+        if rel not in samples and len(samples) < 5:
+            samples.append(rel)
 
         if entry.name in ENTRY_CANDIDATE_NAMES:
-            try:
-                rel = entry.relative_to(resolved).as_posix()
-            except ValueError:
-                rel = entry.name
             if rel not in entry_candidates:
                 entry_candidates.append(rel)
 
@@ -223,6 +227,9 @@ def scan_directory_readonly(
         },
         "counts": counts,
         "extensions": dict(sorted(extensions.items(), key=lambda kv: (-kv[1], kv[0]))),
+        "sample_paths_by_extension": {
+            ext: paths for ext, paths in sorted(sample_paths_by_extension.items(), key=lambda kv: kv[0])
+        },
         "ignored_dirs": sorted(IGNORED_DIR_NAMES),
         "entry_candidates": entry_candidates,
         "warnings": warnings,

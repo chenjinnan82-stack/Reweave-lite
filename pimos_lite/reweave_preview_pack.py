@@ -147,6 +147,13 @@ def _build_index_html(
         "</article>"
         for cap in (capsules[:4] or [{"name": "Project shell", "role": "Generated local output"}])
     )
+    checklist = "".join(
+        "<label>"
+        "<input class='reweave-step' type='checkbox' />"
+        f"<span>{html.escape(step)}</span>"
+        "</label>"
+        for step in _project_steps(capsules)
+    )
     excerpt_cards = ""
     if content_aware and isinstance(snippet_context, dict):
         cards: list[str] = []
@@ -231,7 +238,10 @@ def _build_index_html(
         <button id="reweaveDemoButton" type="button">Mark reviewed</button>
         <p id="reweaveDemoStatus">Ready for local review.</p>
       </div>
-      <div class="project-cards">{project_cards}</div>
+      <div>
+        <div class="project-cards">{project_cards}</div>
+        <div class="project-checklist" aria-label="Local review checklist">{checklist}</div>
+      </div>
     </section>
     {excerpt_cards}
     <section class="capsules">{body}</section>
@@ -270,8 +280,40 @@ def _build_preview_readme(task: str, snippet_context: dict[str, Any]) -> str:
     return "\n".join(lines).strip() + "\n"
 
 
-def _build_styles_css() -> str:
-    return """body {
+def _style_tokens(snippet_context: dict[str, Any] | None) -> dict[str, str]:
+    colors: list[str] = []
+    if isinstance(snippet_context, dict):
+        for cap in snippet_context.get("capsules") if isinstance(snippet_context.get("capsules"), list) else []:
+            if not isinstance(cap, dict):
+                continue
+            for snip in cap.get("snippets") if isinstance(cap.get("snippets"), list) else []:
+                if not isinstance(snip, dict):
+                    continue
+                rel = str(snip.get("relative_path") or "")
+                lang = str(snip.get("language_hint") or "")
+                if not (rel.endswith(".css") or lang == "css"):
+                    continue
+                colors.extend(re.findall(r"#[0-9a-fA-F]{3,6}\b", str(snip.get("preview_excerpt") or "")))
+    skip = {"#000", "#000000", "#fff", "#ffffff"}
+    accent = next((c for c in colors if c.lower() not in skip), "#21352a")
+    return {"accent": accent, "soft": "#f8fbf8"}
+
+
+def _project_steps(capsules: list[dict[str, Any]]) -> list[str]:
+    names = [str(cap.get("name") or "Capsule") for cap in capsules[:3]]
+    steps = [f"Review {name}" for name in names]
+    steps.extend(["Check provenance", "Confirm source writes stay 0"])
+    return steps[:5]
+
+
+def _build_styles_css(snippet_context: dict[str, Any] | None = None) -> str:
+    tokens = _style_tokens(snippet_context)
+    css = """:root {
+  --accent: __ACCENT__;
+  --soft: __SOFT__;
+}
+
+body {
   margin: 0;
   font-family: ui-sans-serif, system-ui, sans-serif;
   background: #fdfcf8;
@@ -286,13 +328,16 @@ def _build_styles_css() -> str:
 .task-output ul { margin: 0.35rem 0 0.85rem; padding-left: 1.1rem; }
 .capsule-badges { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.75rem; }
 .capsule-badges span { border: 1px solid #e8dfd0; border-radius: 999px; padding: 0.25rem 0.55rem; color: #6b5d4a; background: #faf7f0; font-size: 0.8rem; }
-.project-app { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(260px, 1.1fr); gap: 1rem; margin-top: 1rem; padding: 1rem; border: 1px solid #d8e3dc; border-radius: 10px; background: #f8fbf8; }
+.project-app { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(260px, 1.1fr); gap: 1rem; margin-top: 1rem; padding: 1rem; border: 1px solid #d8e3dc; border-radius: 10px; background: var(--soft); }
 .project-app h2 { margin: 0 0 0.5rem; }
-.project-app button { min-height: 40px; border: 0; border-radius: 6px; padding: 0 0.85rem; background: #21352a; color: #fff; font: inherit; cursor: pointer; }
+.project-app button { min-height: 40px; border: 0; border-radius: 6px; padding: 0 0.85rem; background: var(--accent); color: #fff; font: inherit; cursor: pointer; }
 #reweaveDemoStatus { margin: 0.75rem 0 0; color: #5f6f62; font-size: 0.9rem; }
 .project-cards { display: grid; gap: 0.65rem; }
 .project-cards article { border: 1px solid #d8e3dc; border-radius: 8px; background: #fff; padding: 0.85rem; }
 .project-cards p { margin: 0.35rem 0 0; color: #5f6f62; font-size: 0.9rem; }
+.project-checklist { display: grid; gap: 0.55rem; margin-top: 1rem; }
+.project-checklist label { display: flex; align-items: center; gap: 0.5rem; padding: 0.6rem 0.7rem; border: 1px solid #d8e3dc; border-radius: 8px; background: #fff; }
+.project-checklist input { accent-color: var(--accent); }
 .source-excerpts { margin-top: 1rem; }
 .excerpt-card { border: 1px solid #e8dfd0; border-radius: 10px; background: #fff; padding: 0.85rem; margin: 0.75rem 0; }
 .excerpt-card h3 { margin: 0; font-size: 0.95rem; }
@@ -304,17 +349,30 @@ def _build_styles_css() -> str:
 .empty { color: #6b5d4a; }
 @media (max-width: 680px) { .task-output, .project-app { grid-template-columns: 1fr; } .task-output aside { border-left: 0; border-top: 1px solid #e8dfd0; padding-left: 0; padding-top: 1rem; } }
 """
+    return css.replace("__ACCENT__", tokens["accent"]).replace("__SOFT__", tokens["soft"])
 
 
 def _build_app_js() -> str:
     return """document.addEventListener('DOMContentLoaded', function () {
   const button = document.getElementById('reweaveDemoButton');
   const status = document.getElementById('reweaveDemoStatus');
+  const steps = Array.from(document.querySelectorAll('.reweave-step'));
+  function renderProgress() {
+    if (!status || !steps.length) return;
+    const done = steps.filter(function (item) { return item.checked; }).length;
+    status.textContent = done + ' of ' + steps.length + ' local checks complete.';
+  }
+  steps.forEach(function (item) {
+    item.addEventListener('change', renderProgress);
+  });
   if (button && status) {
     button.addEventListener('click', function () {
-      status.textContent = 'Reviewed locally. Source writes remain 0.';
+      const next = steps.find(function (item) { return !item.checked; });
+      if (next) next.checked = true;
+      renderProgress();
     });
   }
+  renderProgress();
   console.log('[Reweave] small project pack ready');
 });
 """
@@ -547,7 +605,7 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
     task_pack = _build_task_pack(task, capsules, selection_mode=selection_mode)
     files = ["index.html", "styles.css", "app.js", "task_pack.json", "capsules_used.json", "provenance.json", "summary.md"]
     _write_text(root / "index.html", _build_index_html(task, capsules, content_aware=content_aware_enabled, snippet_context=snippet_context))
-    _write_text(root / "styles.css", _build_styles_css())
+    _write_text(root / "styles.css", _build_styles_css(snippet_context if content_aware_enabled else None))
     _write_text(root / "app.js", _build_app_js())
     _write_text(root / "task_pack.json", json.dumps(task_pack, indent=2, ensure_ascii=False) + "\n")
     _write_text(root / "capsules_used.json", json.dumps(capsules_used, indent=2, ensure_ascii=False) + "\n")

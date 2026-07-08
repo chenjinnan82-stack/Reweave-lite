@@ -67,8 +67,14 @@ def test_public_reweave_demo_outputs_task_pack(tmp_path: Path) -> None:
     assert snippets_used["safety"]["source_folder_read_at_generate_time"] is False
     assert snippets_used["safety"]["used_app_state_content_only"] is True
     html = (out / "index.html").read_text(encoding="utf-8")
+    styles = (out / "styles.css").read_text(encoding="utf-8")
+    app_js = (out / "app.js").read_text(encoding="utf-8")
     assert "Small Project Pack" in html
     assert "reweaveDemoButton" in html
+    assert "project-checklist" in html
+    assert "reweave-step" in html
+    assert "--accent: #172033;" in styles
+    assert "local checks complete" in app_js
     _assert_local_assets_exist(out)
 
 
@@ -101,10 +107,14 @@ def test_public_reweave_demo_runs_five_source_boxes(tmp_path: Path) -> None:
         task_pack = json.loads((out / "task_pack.json").read_text(encoding="utf-8"))
         snippets_used = json.loads((out / "snippets_used.json").read_text(encoding="utf-8"))
         html = (out / "index.html").read_text(encoding="utf-8")
+        app_js = (out / "app.js").read_text(encoding="utf-8")
         assert task_pack["source_project_write"] is False
         assert task_pack["project_type"] == "small_project_pack"
         assert snippets_used["snippets"]
         assert "Small Project Pack" in html
+        assert "project-checklist" in html
+        assert "reweave-step" in html
+        assert "local checks complete" in app_js
         assert "Source excerpts used" in html
         _assert_local_assets_exist(out)
 

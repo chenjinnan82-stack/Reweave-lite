@@ -67,6 +67,21 @@ BLOCKED_DIR_NAMES = frozenset(
     {"node_modules", ".git", ".venv", "venv", "dist", "build", ".next", "target", "vendor"}
 )
 
+EXTENSION_HINTS: tuple[tuple[str, str], ...] = (
+    ("css", ".css"),
+    ("style", ".css"),
+    ("html", ".html"),
+    ("page", ".html"),
+    ("javascript", ".js"),
+    ("script", ".js"),
+    ("typescript", ".ts"),
+    ("json", ".json"),
+    ("markdown", ".md"),
+    ("docs", ".md"),
+    ("copy", ".md"),
+    ("python", ".py"),
+)
+
 SECRET_PATTERNS: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"(?i)(api[_-]?key|secret|token|password|access[_-]?key|secret[_-]?key)\s*[:=]\s*\S+"), r"\1: [REDACTED_SECRET]"),
     (re.compile(r"(?i)Bearer\s+[A-Za-z0-9\-._~+/]+=*"), "Bearer [REDACTED_SECRET]"),
@@ -284,6 +299,34 @@ def _paths_from_reuse_assets(source_id: str, suggestion_id: str) -> list[str]:
     return paths
 
 
+def _extension_hints_from_capsule(capsule: dict[str, Any]) -> list[str]:
+    parts: list[str] = []
+    for key in ("type", "name", "role"):
+        val = capsule.get(key)
+        if val:
+            parts.append(str(val).lower())
+    tags = capsule.get("tags") if isinstance(capsule.get("tags"), list) else []
+    parts.extend(str(tag).lower() for tag in tags if tag)
+    haystack = " ".join(parts)
+    hints: list[str] = []
+    for token, ext in EXTENSION_HINTS:
+        if token in haystack and ext not in hints:
+            hints.append(ext)
+    return hints
+
+
+def _paths_from_summary_extension_samples(capsule: dict[str, Any], summary: dict[str, Any]) -> list[str]:
+    samples = summary.get("sample_paths_by_extension")
+    if not isinstance(samples, dict):
+        return []
+    paths: list[str] = []
+    for ext in _extension_hints_from_capsule(capsule):
+        raw_paths = samples.get(ext)
+        if isinstance(raw_paths, list):
+            paths.extend(str(p) for p in raw_paths if p)
+    return paths
+
+
 def collect_candidate_paths(capsule: dict[str, Any], summary: dict[str, Any]) -> list[str]:
     """Collect candidate relative paths without scanning the full source tree."""
     source_id = str(capsule.get("source_id") or "")
@@ -303,6 +346,9 @@ def collect_candidate_paths(capsule: dict[str, Any], summary: dict[str, Any]) ->
         paths.extend(_paths_from_reuse_assets(source_id, suggestion_id))
 
     paths = _dedupe_paths(paths)
+
+    if not paths:
+        paths = _dedupe_paths(_paths_from_summary_extension_samples(capsule, summary))
 
     if not paths:
         entry_candidates = summary.get("entry_candidates") if isinstance(summary.get("entry_candidates"), list) else []
