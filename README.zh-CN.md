@@ -25,7 +25,7 @@
 python scripts/run_public_reweave_demo.py
 ```
 
-输出 JSON 会打印产物目录和文件列表。预期输出包含 `task_pack.json`、`capsules_used.json` 和 `provenance.json`。
+输出 JSON 会打印产物目录和文件列表。预期输出包含 `task_pack.json`、`capsules_used.json`、`provenance.json` 和 `snippets_used.json`。
 
 **边界：** 源项目默认只读。Reweave-lite 生成任务包 preview，不自动写入或覆盖你的项目。
 
@@ -48,6 +48,7 @@ python scripts/run_public_reweave_demo.py
   - `task_pack.json`
   - `capsules_used.json`
   - `provenance.json`
+  - `snippets_used.json`
 - 默认关闭真实源项目写入。
 
 ## 截图

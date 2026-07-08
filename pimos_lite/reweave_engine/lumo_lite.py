@@ -6,7 +6,10 @@ import json
 from pathlib import Path
 from typing import Any
 
+from pimos_lite.reweave_capsule_content import enrich_capsule_content as enrich_local_capsule_content
+from pimos_lite.reweave_capsule_content import get_capsule_content as get_local_capsule_content
 from pimos_lite.reweave_capsule_draft import draft_capsules, list_draft_lights
+from pimos_lite.reweave_capsule_warehouse import get_capsule as get_local_capsule
 from pimos_lite.reweave_capsule_warehouse import list_capsules as list_local_capsules
 from pimos_lite.reweave_capsule_warehouse import promote_source_drafts as promote_local_drafts
 from pimos_lite.reweave_preview_pack import build_preview_package
@@ -216,17 +219,41 @@ class LumoLiteReweaveEngine:
         return draft_capsules(source_id)
 
     def promote_source(self, source_id: str) -> list[dict[str, Any]]:
-        return promote_local_drafts(source_id)
+        promoted = promote_local_drafts(source_id)
+        enriched: list[dict[str, Any]] = []
+        for cap in promoted:
+            cap_id = str(cap.get("id") or "")
+            if not cap_id:
+                continue
+            enrich_local_capsule_content(cap_id)
+            enriched.append(get_local_capsule(cap_id) or cap)
+        return enriched or promoted
 
     def get_source(self, source_id: str) -> dict[str, Any] | None:
         return get_source_box(source_id)
 
+    def enrich_capsule_content(self, capsule_id: str) -> dict[str, Any]:
+        return enrich_local_capsule_content(capsule_id)
+
+    def get_capsule_content(self, capsule_id: str) -> dict[str, Any]:
+        return get_local_capsule_content(capsule_id)
+
     def generate_preview(self, payload: dict[str, Any]) -> dict[str, Any]:
+        capsule_ids = payload.get("capsuleIds") if isinstance(payload.get("capsuleIds"), list) else []
+        use_enriched = bool(payload.get("useEnrichedContent"))
+        if not use_enriched:
+            for cap_id in capsule_ids:
+                cap = get_local_capsule(str(cap_id))
+                enrichment = cap.get("content_enrichment") if isinstance(cap, dict) and isinstance(cap.get("content_enrichment"), dict) else {}
+                if str(enrichment.get("status") or "") == "enriched":
+                    use_enriched = True
+                    break
         result = build_preview_package(
             {
                 **payload,
                 "backend": "lumo_lite_task_pack",
                 "taskPack": True,
+                "useEnrichedContent": use_enriched,
             }
         )
         pack = result.get("taskPack") if isinstance(result.get("taskPack"), dict) else _task_pack_from_preview(result)

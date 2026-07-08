@@ -93,6 +93,9 @@ class ReweaveContentAwareGenerateTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertTrue(result["contentAwareGenerate"]["enabled"])
         self.assertIn("snippets_used.json", result["generatedPackage"]["files"])
+        html = (Path(result["previewPath"]) / "index.html").read_text(encoding="utf-8")
+        self.assertIn("Source excerpts used", html)
+        self.assertIn("&lt;!doctype html&gt;", html)
         snippets_used = json.loads(
             (Path(result["previewPath"]) / "snippets_used.json").read_text(encoding="utf-8")
         )

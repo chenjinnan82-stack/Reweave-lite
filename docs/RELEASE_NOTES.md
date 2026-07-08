@@ -15,6 +15,8 @@ Reweave-lite turns old project folders into reusable capsules and previewable Ta
 python3 scripts/run_public_reweave_demo.py
 ```
 
+The demo writes `task_pack.json`, `capsules_used.json`, `provenance.json`, and `snippets_used.json`.
+
 ### What Does Not
 
 - Not a full autopilot IDE.

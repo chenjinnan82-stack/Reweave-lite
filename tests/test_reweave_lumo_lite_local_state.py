@@ -263,18 +263,14 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
             patch("pimos_lite.reweave_app_service.preview_and_save") as preview_local,
             patch("pimos_lite.reweave_app_service.create_or_update_review_queue") as queue_local,
             patch("pimos_lite.reweave_app_service.apply_review_decision") as decision_local,
-            patch("pimos_lite.reweave_app_service.execute_capsule_content_enrichment") as enrich_local,
             patch("pimos_lite.reweave_app_service.execute_preview_export") as export_local,
-            patch("pimos_lite.reweave_app_service.fetch_capsule_content") as content_local,
         ):
             results = [
                 service.verify_source_suggestions("box_alpha"),
                 service.preview_governance_for_source("box_alpha"),
                 service.create_review_queue_for_source("box_alpha"),
                 service.update_review_decision("box_alpha", "review_alpha", "approved"),
-                service.enrich_capsule_content("capsule_alpha"),
                 service.export_preview_package("pkg", "/tmp/export", "zip"),
-                service.get_capsule_content("capsule_alpha"),
             ]
 
         self.assertTrue(all(result["error"] == "lumo_lite_read_only" for result in results))
@@ -282,9 +278,7 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
         preview_local.assert_not_called()
         queue_local.assert_not_called()
         decision_local.assert_not_called()
-        enrich_local.assert_not_called()
         export_local.assert_not_called()
-        content_local.assert_not_called()
 
     def test_app_service_lumo_lite_allows_task_pack_preview_and_viewer_reads(self) -> None:
         service = ReweaveAppService(engine=LumoLiteReweaveEngine(runtime_state_path=str(self._runtime_state)))
@@ -346,7 +340,7 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
     def test_lumo_lite_engine_allows_source_intake_without_source_write(self) -> None:
         source = self._root / "source"
         source.mkdir()
-        original = "<html></html>\n"
+        original = "<html><body>Legacy quote shell</body></html>\n"
         (source / "index.html").write_text(original, encoding="utf-8")
 
         with patch.dict(os.environ, {"REWEAVE_STATE_DIR": str(self._reweave_state)}):
@@ -370,6 +364,7 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
         self.assertGreaterEqual(summary["counts"]["files_scanned"], 1)
         self.assertGreater(draft["candidate_count"], 0)
         self.assertGreater(len(promoted), 0)
+        self.assertEqual(promoted[0]["content_enrichment"]["status"], "enriched")
         self.assertEqual((source / "index.html").read_text(encoding="utf-8"), original)
         self.assertIn(box["id"], {item["id"] for item in state["sourceBoxes"]})
         self.assertIn(box["id"], {item["source_id"] for item in state["sourceSummaries"]})
@@ -382,6 +377,10 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
         self.assertEqual(task_pack["mode"], "task_pack_preview")
         self.assertFalse(task_pack["source_project_write"])
         self.assertEqual(task_pack["selected_capsule_ids"], [promoted[0]["id"]])
+        self.assertTrue((preview_root / "snippets_used.json").is_file())
+        html = (preview_root / "index.html").read_text(encoding="utf-8")
+        self.assertIn("Source excerpts used", html)
+        self.assertIn("Legacy quote shell", html)
 
     def test_lumo_lite_engine_builds_task_pack_preview_without_source_write(self) -> None:
         capsule = {
@@ -449,8 +448,6 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
                     json.loads(bridge.promote_review_item(json.dumps({"sourceId": "box_alpha", "reviewId": "review_alpha"}))),
                     json.loads(bridge.list_warehouse_capsules(json.dumps({"include_inactive": True}))),
                     json.loads(bridge.update_capsule_status(json.dumps({"capsuleId": "capsule_alpha", "status": "disabled"}))),
-                    json.loads(bridge.enrich_capsule_content("capsule_alpha")),
-                    json.loads(bridge.get_capsule_content("capsule_alpha")),
                     json.loads(bridge.preview_governance_for_source("box_alpha")),
                     json.loads(bridge.verify_source_suggestions("box_alpha")),
                     json.loads(bridge.export_preview_package(json.dumps({"packageIdOrPath": "package-alpha", "exportDir": str(self._root), "mode": "zip"}))),
@@ -501,6 +498,7 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
                 scanned = json.loads(bridge.scan_source_box(bound["source"]["id"]))
                 drafted = json.loads(bridge.draft_capsules(bound["source"]["id"]))
                 stored = json.loads(bridge.promote_source_drafts(bound["source"]["id"]))
+                content = json.loads(bridge.get_capsule_content(stored["capsules"][0]["id"]))
             finally:
                 desktop.ReweaveBridge._qobject_cls = None
 
@@ -510,6 +508,8 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
         self.assertTrue(drafted["ok"])
         self.assertTrue(stored["ok"])
         self.assertGreater(len(stored["capsules"]), 0)
+        self.assertTrue(content["ok"])
+        self.assertGreater(content["snippet_count"], 0)
         self.assertEqual((source / "index.html").read_text(encoding="utf-8"), original)
 
     def test_desktop_bridge_lumo_lite_export_does_not_open_folder_chooser(self) -> None:

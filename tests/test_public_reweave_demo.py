@@ -31,12 +31,13 @@ def test_public_reweave_demo_outputs_task_pack(tmp_path: Path) -> None:
     payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["capsules_used"] > 0
-    for name in ("task_pack.json", "capsules_used.json", "provenance.json", "summary.md"):
+    for name in ("task_pack.json", "capsules_used.json", "provenance.json", "snippets_used.json", "summary.md"):
         assert (out / name).is_file()
     assert not (source / ".reweave").exists()
 
     task_pack = json.loads((out / "task_pack.json").read_text(encoding="utf-8"))
     provenance = json.loads((out / "provenance.json").read_text(encoding="utf-8"))
+    snippets_used = json.loads((out / "snippets_used.json").read_text(encoding="utf-8"))
     assert task_pack["source_project_write"] is False
     assert task_pack["selected_capsule_ids"]
     assert provenance["source_boxes"][0]["label"] == "customer-quote-widget"
@@ -44,6 +45,11 @@ def test_public_reweave_demo_outputs_task_pack(tmp_path: Path) -> None:
     assert "path_hash" not in provenance["source_boxes"][0]
     assert provenance["source_boxes"][0]["path_policy"] == "redacted"
     assert "path_hash" not in payload["source"]
+    assert provenance["content_aware_generate"]["enabled"] is True
+    assert snippets_used["mode"] == "content_aware_preview"
+    assert snippets_used["snippets"]
+    assert snippets_used["safety"]["source_folder_read_at_generate_time"] is False
+    assert snippets_used["safety"]["used_app_state_content_only"] is True
 
 
 def test_public_reweave_demo_refuses_repo_output() -> None:

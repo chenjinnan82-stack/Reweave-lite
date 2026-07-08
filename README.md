@@ -25,7 +25,7 @@ Old project -> Source Box -> Capsules -> Task Pack -> New Web
 python scripts/run_public_reweave_demo.py
 ```
 
-The JSON result prints the output folder and files. Expected output includes `task_pack.json`, `capsules_used.json`, and `provenance.json`.
+The JSON result prints the output folder and files. Expected output includes `task_pack.json`, `capsules_used.json`, `provenance.json`, and `snippets_used.json`.
 
 **Boundary:** source projects are read-only by default. Reweave-lite previews task packs; it does not auto-write or overwrite your project.
 
@@ -47,6 +47,7 @@ The inspiration is a spider spinning silk: old project threads are cleaned, join
   - `task_pack.json`
   - `capsules_used.json`
   - `provenance.json`
+  - `snippets_used.json`
 - Keeps real source project writes off by default.
 
 ## Screenshots

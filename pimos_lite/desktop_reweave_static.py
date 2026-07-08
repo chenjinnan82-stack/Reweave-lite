@@ -108,6 +108,8 @@ class ReweaveBridge:
                     "draft_capsules",
                     "promote_source_drafts",
                     "notify_generate",
+                    "enrich_capsule_content",
+                    "get_capsule_content",
                     "get_latest_preview_package",
                     "get_preview_package",
                     "compare_preview_packages",

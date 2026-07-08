@@ -106,6 +106,7 @@ def _build_index_html(
     capsules: list[dict[str, Any]],
     *,
     content_aware: bool = False,
+    snippet_context: dict[str, Any] | None = None,
 ) -> str:
     task_title = html.escape((task or "New Task Pack")[:MAX_TASK_LEN])
     capsule_names = [str(cap.get("name") or "Capsule") for cap in capsules[:4]]
@@ -139,6 +140,32 @@ def _build_index_html(
     capsule_badges = "".join(
         f"<span>{html.escape(name)}</span>" for name in (capsule_names or ["Selected capsule"])
     )
+    excerpt_cards = ""
+    if content_aware and isinstance(snippet_context, dict):
+        cards: list[str] = []
+        for cap in snippet_context.get("capsules") if isinstance(snippet_context.get("capsules"), list) else []:
+            if not isinstance(cap, dict):
+                continue
+            cap_name = html.escape(str(cap.get("name") or cap.get("capsule_id") or "Capsule"))
+            for snip in cap.get("snippets") if isinstance(cap.get("snippets"), list) else []:
+                if not isinstance(snip, dict):
+                    continue
+                rel = html.escape(str(snip.get("relative_path") or "source excerpt"))
+                excerpt = html.escape(str(snip.get("preview_excerpt") or "")[:900])
+                cards.append(
+                    f"<article class='excerpt-card'>"
+                    f"<h3>{cap_name}</h3>"
+                    f"<p>{rel}</p>"
+                    f"<pre>{excerpt}</pre>"
+                    f"</article>"
+                )
+        if cards:
+            excerpt_cards = (
+                "<section class='source-excerpts' aria-label='Source excerpts used'>"
+                "<p class='eyebrow'>Source excerpts used</p>"
+                + "".join(cards[:4])
+                + "</section>"
+            )
 
     items = []
     for cap in capsules:
@@ -189,6 +216,7 @@ def _build_index_html(
         <ul>{source_items}</ul>
       </aside>
     </section>
+    {excerpt_cards}
     <section class="capsules">{body}</section>
   </main>
   <script src="app.js"></script>
@@ -241,6 +269,11 @@ def _build_styles_css() -> str:
 .task-output ul { margin: 0.35rem 0 0.85rem; padding-left: 1.1rem; }
 .capsule-badges { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.75rem; }
 .capsule-badges span { border: 1px solid #e8dfd0; border-radius: 999px; padding: 0.25rem 0.55rem; color: #6b5d4a; background: #faf7f0; font-size: 0.8rem; }
+.source-excerpts { margin-top: 1rem; }
+.excerpt-card { border: 1px solid #e8dfd0; border-radius: 10px; background: #fff; padding: 0.85rem; margin: 0.75rem 0; }
+.excerpt-card h3 { margin: 0; font-size: 0.95rem; }
+.excerpt-card p { margin: 0.25rem 0 0.65rem; color: #6b5d4a; font-size: 0.8rem; }
+.excerpt-card pre { max-height: 220px; overflow: auto; background: #faf7f0; border-radius: 6px; padding: 0.75rem; }
 .capsule-card { background: #fff; border: 1px solid #e8dfd0; border-radius: 10px; padding: 1rem; margin: 1rem 0; }
 .capsule-card .type { font-size: 0.75rem; color: #a67c3d; }
 .capsule-card pre { background: #faf7f0; padding: 0.75rem; border-radius: 6px; overflow: auto; }
@@ -479,7 +512,7 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
 
     task_pack = _build_task_pack(task, capsules)
     files = ["index.html", "styles.css", "app.js", "task_pack.json", "capsules_used.json", "provenance.json", "summary.md"]
-    _write_text(root / "index.html", _build_index_html(task, capsules, content_aware=content_aware_enabled))
+    _write_text(root / "index.html", _build_index_html(task, capsules, content_aware=content_aware_enabled, snippet_context=snippet_context))
     _write_text(root / "styles.css", _build_styles_css())
     _write_text(root / "app.js", _build_app_js())
     _write_text(root / "task_pack.json", json.dumps(task_pack, indent=2, ensure_ascii=False) + "\n")

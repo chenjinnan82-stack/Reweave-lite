@@ -297,13 +297,13 @@ class ReweaveAppService:
     def enrich_capsule_content(self, capsule_id: str) -> dict[str, Any]:
         """Explicit controlled snippet enrichment — read-only, user triggered."""
         if self._is_lumo_lite():
-            return self._lumo_lite_disabled("enrich_capsule_content")
+            return self._engine.enrich_capsule_content(capsule_id)
         return execute_capsule_content_enrichment(capsule_id)
 
     def get_capsule_content(self, capsule_id: str) -> dict[str, Any]:
         """Read enriched content from app state — viewer only, no source folder access."""
         if self._is_lumo_lite():
-            return self._lumo_lite_disabled("get_capsule_content")
+            return self._engine.get_capsule_content(capsule_id)
         return fetch_capsule_content(capsule_id)
 
     def get_latest_preview_package(self) -> dict[str, Any]:

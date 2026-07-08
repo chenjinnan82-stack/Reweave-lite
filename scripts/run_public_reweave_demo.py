@@ -20,12 +20,13 @@ def _import_reweave() -> tuple[object, object, object, object, object]:
 
     sys.path.insert(0, str(ROOT))
     from pimos_lite.reweave_capsule_draft import draft_capsules
+    from pimos_lite.reweave_capsule_content import enrich_capsule_content
     from pimos_lite.reweave_capsule_warehouse import promote_source_drafts
     from pimos_lite.reweave_preview_pack import build_preview_package
     from pimos_lite.reweave_source_registry import add_source_box
     from pimos_lite.reweave_source_scanner import scan_source_box
 
-    return add_source_box, scan_source_box, draft_capsules, promote_source_drafts, build_preview_package
+    return add_source_box, scan_source_box, draft_capsules, promote_source_drafts, build_preview_package, enrich_capsule_content
 
 
 def _json(path: Path) -> object:
@@ -81,7 +82,7 @@ def run(source: Path, task: str, out: Path, *, include_local_paths: bool = False
         raise SystemExit(f"source folder not found: {source}")
     out = _safe_out(out)
 
-    add_source_box, scan_source_box, draft_capsules, promote_source_drafts, build_preview_package = _import_reweave()
+    add_source_box, scan_source_box, draft_capsules, promote_source_drafts, build_preview_package, enrich_capsule_content = _import_reweave()
 
     with tempfile.TemporaryDirectory(prefix="reweave-public-demo-state-") as state:
         os.environ["REWEAVE_STATE_DIR"] = state
@@ -92,6 +93,8 @@ def run(source: Path, task: str, out: Path, *, include_local_paths: bool = False
         draft = draft_capsules(box["id"])
         capsules = promote_source_drafts(box["id"])
         capsule_ids = [str(cap["id"]) for cap in capsules[:4]]
+        for cap_id in capsule_ids:
+            enrich_capsule_content(cap_id)
         source_box = _source_box_public(box, source, include_local_paths=include_local_paths)
         preview = build_preview_package(
             {
@@ -99,6 +102,7 @@ def run(source: Path, task: str, out: Path, *, include_local_paths: bool = False
                 "capsuleIds": capsule_ids,
                 "backend": "public_demo",
                 "sourceBoxes": [source_box],
+                "useEnrichedContent": True,
             }
         )
 
