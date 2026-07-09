@@ -52,6 +52,15 @@ python3 scripts/run_public_reweave_demo.py --template-case data-viewer
 
 Each case writes a runnable Small Project Pack and keeps source project writes at `0`.
 
+Use a real-project task template with your own Source Box:
+
+```bash
+python3 scripts/run_public_reweave_demo.py --list-task-templates
+python3 scripts/run_public_reweave_demo.py --source /path/to/your/old-project --task-template portfolio-viewer
+python3 scripts/run_public_reweave_demo.py --source /path/to/your/old-project --task-template operations-panel
+python3 scripts/run_public_reweave_demo.py --source /path/to/your/old-project --task-template artist-landing
+```
+
 ## Local Small Model
 
 Without Ollama, Reweave runs the deterministic demo:
@@ -173,6 +182,8 @@ Desktop loop:
 ```text
 Bind Source Box -> Scan -> Prepare -> Store -> select capsules -> Build Small Project Pack -> View provenance
 ```
+
+See [Desktop User Flow](docs/DESKTOP_USER_FLOW.md).
 
 Run the public checks:
 

@@ -108,6 +108,7 @@ def _build_index_html(
     content_aware: bool = False,
     snippet_context: dict[str, Any] | None = None,
 ) -> str:
+    profile = _task_profile(task)
     task_title = html.escape((task or "New Task Pack")[:MAX_TASK_LEN])
     capsule_names = [str(cap.get("name") or "Capsule") for cap in capsules[:4]]
     capsule_tags = sorted(
@@ -127,10 +128,7 @@ def _build_index_html(
             source_names.append(name)
     source_names = sorted(source_names)[:4]
 
-    summary = (
-        "A runnable small project pack assembled from selected project capsules. "
-        "Open this folder locally, review the provenance, then decide what to keep."
-    )
+    summary = str(profile["summary"])
     signal_items = "".join(
         f"<li>{html.escape(tag)}</li>" for tag in (capsule_tags or ["layout", "copy", "logic"])
     )
@@ -152,7 +150,7 @@ def _build_index_html(
         "<input class='reweave-step' type='checkbox' />"
         f"<span>{html.escape(step)}</span>"
         "</label>"
-        for step in _project_steps(capsules)
+        for step in _project_steps(capsules, profile)
     )
     excerpt_cards = ""
     if content_aware and isinstance(snippet_context, dict):
@@ -218,7 +216,7 @@ def _build_index_html(
     </header>
     <section class="task-output" aria-label="Generated task output">
       <div>
-        <p class="eyebrow">Small Project Pack</p>
+        <p class="eyebrow">{html.escape(str(profile["label"]))}</p>
         <h2>{task_title}</h2>
         <p>{html.escape(summary)}</p>
         <div class="capsule-badges">{capsule_badges}</div>
@@ -232,10 +230,10 @@ def _build_index_html(
     </section>
     <section class="project-app" aria-label="Runnable small project output">
       <div>
-        <p class="eyebrow">Generated output</p>
+        <p class="eyebrow">{html.escape(str(profile["output_label"]))}</p>
         <h2>{task_title}</h2>
         <p>This package is self-contained: no external scripts, no source-folder writes, and every reused capsule is recorded.</p>
-        <button id="reweaveDemoButton" type="button">Mark reviewed</button>
+        <button id="reweaveDemoButton" type="button">{html.escape(str(profile["action"]))}</button>
         <p id="reweaveDemoStatus">Ready for local review.</p>
       </div>
       <div>
@@ -250,6 +248,102 @@ def _build_index_html(
 </body>
 </html>
 """
+
+
+def _task_profile(task: str) -> dict[str, object]:
+    text = (task or "").lower()
+    if "portfolio" in text or "project viewer" in text:
+        return {
+            "id": "portfolio_viewer",
+            "label": "Portfolio Viewer",
+            "output_label": "Project gallery",
+            "action": "Review project",
+            "summary": "A browsable project gallery built from reusable capsules and source excerpts.",
+            "steps": ["Open project gallery", "Check source excerpts", "Review visual patterns", "Check provenance", "Confirm source writes stay 0"],
+            "output_kinds": ("portfolio_page", "portfolio_style", "portfolio_runtime"),
+        }
+    if "dashboard" in text:
+        return {
+            "id": "dashboard",
+            "label": "Operations Dashboard",
+            "output_label": "Status view",
+            "action": "Review status",
+            "summary": "A dashboard view for status cards, metric copy, and reusable operational signals.",
+            "steps": ["Check status cards", "Review metric copy", "Verify dashboard labels", "Check provenance", "Confirm source writes stay 0"],
+            "output_kinds": ("dashboard_page", "dashboard_style", "dashboard_runtime"),
+        }
+    if any(word in text for word in ("admin", "triage", "support")):
+        return {
+            "id": "admin_panel",
+            "label": "Admin Panel",
+            "output_label": "Triage board",
+            "action": "Review queue",
+            "summary": "A focused admin panel for queues, priority tags, and review actions.",
+            "steps": ["Check queue layout", "Review priority tags", "Verify triage action", "Check provenance", "Confirm source writes stay 0"],
+            "output_kinds": ("admin_page", "admin_style", "admin_runtime"),
+        }
+    if any(word in text for word in ("operations", "workorder", "panel", "dashboard")):
+        return {
+            "id": "operations_panel",
+            "label": "Operations Panel",
+            "output_label": "Workflow view",
+            "action": "Mark triaged",
+            "summary": "A compact operations view for queues, status signals, and reusable workflow patterns.",
+            "steps": ["Review queue state", "Check workflow signals", "Verify action labels", "Check provenance", "Confirm source writes stay 0"],
+            "output_kinds": ("operations_page", "operations_style", "operations_runtime"),
+        }
+    if "form" in text or "quote" in text:
+        return {
+            "id": "form_tool",
+            "label": "Form Tool",
+            "output_label": "Quote flow",
+            "action": "Review form",
+            "summary": "A compact form tool for collecting input, showing a summary, and preserving source-backed copy.",
+            "steps": ["Check form fields", "Review summary state", "Verify action labels", "Check provenance", "Confirm source writes stay 0"],
+            "output_kinds": ("form_page", "form_style", "form_runtime"),
+        }
+    if "data viewer" in text or "calendar" in text:
+        return {
+            "id": "data_viewer",
+            "label": "Data Viewer",
+            "output_label": "Readable records",
+            "action": "Review records",
+            "summary": "A readable data view for grouped records, status copy, and source-backed labels.",
+            "steps": ["Check record layout", "Review status labels", "Check data grouping", "Check provenance", "Confirm source writes stay 0"],
+            "output_kinds": ("data_page", "data_style", "data_runtime"),
+        }
+    if "artist" in text or "creator" in text or "artwork" in text:
+        return {
+            "id": "artist_landing",
+            "label": "Artist Landing",
+            "output_label": "Story page",
+            "action": "Review landing",
+            "summary": "A focused landing page shaped around creator copy, visual rhythm, and reusable source cues.",
+            "steps": ["Check hero story", "Review featured sections", "Check source excerpts", "Check provenance", "Confirm source writes stay 0"],
+            "output_kinds": ("landing_page", "landing_style", "landing_runtime"),
+        }
+    if "landing" in text:
+        return {
+            "id": "landing_page",
+            "label": "Landing Page",
+            "output_label": "Launch page",
+            "action": "Review launch",
+            "summary": "A focused landing page with launch copy, sections, and a local review checklist.",
+            "steps": ["Check hero copy", "Review launch sections", "Check progress state", "Check provenance", "Confirm source writes stay 0"],
+            "output_kinds": ("landing_page", "landing_style", "landing_runtime"),
+        }
+    return {
+        "id": "small_project_pack",
+        "label": "Small Project Pack",
+        "output_label": "Generated output",
+        "action": "Mark reviewed",
+        "summary": (
+            "A runnable small project pack assembled from selected project capsules. "
+            "Open this folder locally, review the provenance, then decide what to keep."
+        ),
+        "steps": None,
+        "output_kinds": ("project_page", "project_style", "project_runtime"),
+    }
 
 
 def _build_preview_readme(task: str, snippet_context: dict[str, Any]) -> str:
@@ -299,7 +393,9 @@ def _style_tokens(snippet_context: dict[str, Any] | None) -> dict[str, str]:
     return {"accent": accent, "soft": "#f8fbf8"}
 
 
-def _project_steps(capsules: list[dict[str, Any]]) -> list[str]:
+def _project_steps(capsules: list[dict[str, Any]], profile: dict[str, object] | None = None) -> list[str]:
+    if profile and isinstance(profile.get("steps"), list):
+        return [str(step) for step in profile["steps"]][:5]
     names = [str(cap.get("name") or "Capsule") for cap in capsules[:3]]
     steps = [f"Review {name}" for name in names]
     steps.extend(["Check provenance", "Confirm source writes stay 0"])
@@ -449,7 +545,9 @@ def _sanitize_source_boxes(rows: Any, *, include_local_paths: bool = False) -> l
 
 
 def _build_task_pack(task: str, capsules: list[dict[str, Any]], *, selection_mode: str = "selected_capsules") -> dict[str, Any]:
+    profile = _task_profile(task)
     capsule_ids = [str(c.get("id") or "") for c in capsules if c.get("id")]
+    output_kinds = list(profile["output_kinds"])
     capsules_used = [
         {
             "id": cap.get("id"),
@@ -464,6 +562,7 @@ def _build_task_pack(task: str, capsules: list[dict[str, Any]], *, selection_mod
         "schema_version": "reweave_task_pack.v1",
         "mode": "task_pack_preview",
         "package_kind": "small_project_pack",
+        "task_profile": profile["id"],
         "task": task,
         "task_scope": "preview_only",
         "selection_mode": selection_mode,
@@ -473,17 +572,17 @@ def _build_task_pack(task: str, capsules: list[dict[str, Any]], *, selection_mod
         "planned_outputs": [
             {
                 "path": "index.html",
-                "kind": "project_page",
+                "kind": output_kinds[0],
                 "capsule_ids": capsule_ids,
             },
             {
                 "path": "styles.css",
-                "kind": "project_style",
+                "kind": output_kinds[1],
                 "capsule_ids": capsule_ids,
             },
             {
                 "path": "app.js",
-                "kind": "project_runtime",
+                "kind": output_kinds[2],
                 "capsule_ids": capsule_ids,
             },
         ],

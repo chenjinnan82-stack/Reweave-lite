@@ -52,6 +52,15 @@ python3 scripts/run_public_reweave_demo.py --template-case data-viewer
 
 每个案例都会生成可打开的 Small Project Pack，并保持 source project writes 为 `0`。
 
+用你自己的旧项目跑真实任务模板：
+
+```bash
+python3 scripts/run_public_reweave_demo.py --list-task-templates
+python3 scripts/run_public_reweave_demo.py --source /path/to/your/old-project --task-template portfolio-viewer
+python3 scripts/run_public_reweave_demo.py --source /path/to/your/old-project --task-template operations-panel
+python3 scripts/run_public_reweave_demo.py --source /path/to/your/old-project --task-template artist-landing
+```
+
 ## 本地小模型
 
 不使用 Ollama 时，Reweave 会跑 deterministic demo：
@@ -174,6 +183,8 @@ examples/source_boxes/ops-status-card
 ```text
 Bind Source Box -> Scan -> Prepare -> Store -> 选择胶囊 -> Build Small Project Pack -> 查看 provenance
 ```
+
+见 [Desktop User Flow](docs/DESKTOP_USER_FLOW.md)。
 
 运行公开仓库自带检查：
 

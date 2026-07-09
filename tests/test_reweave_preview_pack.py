@@ -52,7 +52,8 @@ class ReweavePreviewPackTest(unittest.TestCase):
         for name in ("index.html", "styles.css", "app.js", "task_pack.json", "capsules_used.json", "provenance.json", "summary.md"):
             self.assertTrue((preview_path / name).is_file())
         html = (preview_path / "index.html").read_text(encoding="utf-8")
-        self.assertIn("Small Project Pack", html)
+        self.assertIn("Form Tool", html)
+        self.assertIn("Check form fields", html)
         self.assertIn("reweaveDemoButton", html)
         self.assertIn("project-checklist", html)
         self.assertIn("reweave-step", html)
@@ -63,6 +64,7 @@ class ReweavePreviewPackTest(unittest.TestCase):
         task_pack = json.loads((preview_path / "task_pack.json").read_text(encoding="utf-8"))
         self.assertEqual(task_pack["mode"], "task_pack_preview")
         self.assertEqual(task_pack["package_kind"], "small_project_pack")
+        self.assertEqual(task_pack["task_profile"], "form_tool")
         self.assertEqual(task_pack["selection_mode"], "manual")
         self.assertFalse(task_pack["source_project_write"])
         self.assertEqual(task_pack["selected_capsule_ids"], cap_ids[:2])
@@ -74,6 +76,25 @@ class ReweavePreviewPackTest(unittest.TestCase):
             {"index.html", "styles.css", "app.js"},
         )
         self.assertTrue(all(item["source_project_write"] is False for item in provenance["outputs"]))
+
+    def test_operations_task_uses_task_specific_preview_profile(self) -> None:
+        cap_ids = self._promote_capsules()
+        result = preview.build_preview_package(
+            {"taskText": "Build an operations panel", "capsuleIds": cap_ids[:2], "backend": "local"}
+        )
+
+        preview_path = Path(result["previewPath"])
+        html = (preview_path / "index.html").read_text(encoding="utf-8")
+        task_pack = json.loads((preview_path / "task_pack.json").read_text(encoding="utf-8"))
+
+        self.assertIn("Operations Panel", html)
+        self.assertIn("Review queue state", html)
+        self.assertIn("Mark triaged", html)
+        self.assertEqual(task_pack["task_profile"], "operations_panel")
+        self.assertEqual(
+            [item["kind"] for item in task_pack["planned_outputs"]],
+            ["operations_page", "operations_style", "operations_runtime"],
+        )
 
     def test_latest_preview_restored(self) -> None:
         cap_ids = self._promote_capsules()

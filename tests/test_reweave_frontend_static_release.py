@@ -136,3 +136,16 @@ def test_frontend_readme_matches_public_read_only_surface() -> None:
     assert "view/open/copy" not in text
     assert "python3 -m http.server 8765" in text
     assert "No frontend apply/export/open-folder write path is exposed." in text
+
+
+def test_desktop_user_flow_doc_is_linked() -> None:
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    readme_cn = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
+    doc = ROOT / "docs" / "DESKTOP_USER_FLOW.md"
+    assert doc.is_file()
+    assert "docs/DESKTOP_USER_FLOW.md" in readme
+    assert "docs/DESKTOP_USER_FLOW.md" in readme_cn
+    text = doc.read_text(encoding="utf-8")
+    assert "Bind Source Box" in text
+    assert "Build Small Project Pack" in text
+    assert "Real source project writes stay off." in text

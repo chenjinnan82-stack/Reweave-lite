@@ -17,6 +17,13 @@ TEMPLATE_CASES = {
     "admin-panel": "support-ticket-triage",
     "data-viewer": "content-calendar",
 }
+TEMPLATE_LABELS = {
+    "dashboard": "Operations Dashboard",
+    "landing-page": "Landing Page",
+    "form-tool": "Form Tool",
+    "admin-panel": "Admin Panel",
+    "data-viewer": "Data Viewer",
+}
 
 
 def test_llm_file_block_parser_accepts_common_markers() -> None:
@@ -86,7 +93,8 @@ def test_public_reweave_demo_outputs_task_pack(tmp_path: Path) -> None:
     html = (out / "index.html").read_text(encoding="utf-8")
     styles = (out / "styles.css").read_text(encoding="utf-8")
     app_js = (out / "app.js").read_text(encoding="utf-8")
-    assert "Small Project Pack" in html
+    assert "Form Tool" in html
+    assert "Check form fields" in html
     assert "reweaveDemoButton" in html
     assert "project-checklist" in html
     assert "reweave-step" in html
@@ -143,12 +151,89 @@ def test_public_reweave_demo_runs_five_source_boxes(tmp_path: Path) -> None:
         assert task_pack["template_case"]["source"].endswith(source_name)
         assert payload["source"]["label"] == source_name
         assert snippets_used["snippets"]
-        assert "Small Project Pack" in html
+        assert TEMPLATE_LABELS[case_id] in html
         assert "project-checklist" in html
         assert "reweave-step" in html
         assert "local checks complete" in app_js
         assert "Source excerpts used" in html
         _assert_local_assets_exist(out)
+
+
+def test_public_reweave_demo_supports_real_project_task_templates(tmp_path: Path) -> None:
+    listed = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "run_public_reweave_demo.py"),
+            "--list-task-templates",
+        ],
+        check=True,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    choices = json.loads(listed.stdout)
+    assert {item["id"] for item in choices["task_templates"]} == {
+        "portfolio-viewer",
+        "operations-panel",
+        "artist-landing",
+    }
+
+    source = ROOT / "examples" / "source_boxes" / "customer-quote-widget"
+    out = tmp_path / "reweave_task_template"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "run_public_reweave_demo.py"),
+            "--source",
+            str(source),
+            "--task-template",
+            "operations-panel",
+            "--out",
+            str(out),
+        ],
+        check=True,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout)
+    task_pack = json.loads((out / "task_pack.json").read_text(encoding="utf-8"))
+    assert payload["source_project_write"] is False
+    assert payload["task_template"]["id"] == "operations-panel"
+    assert task_pack["task_template"]["id"] == "operations-panel"
+    assert task_pack["task_profile"] == "operations_panel"
+    assert task_pack["task"] == "Build an operations panel"
+    html = (out / "index.html").read_text(encoding="utf-8")
+    assert "Operations Panel" in html
+    assert "Review queue state" in html
+    assert "Mark triaged" in html
+    assert (out / "index.html").is_file()
+    assert (out / "provenance.json").is_file()
+    _assert_local_assets_exist(out)
+
+    portfolio_out = tmp_path / "reweave_task_template_portfolio"
+    subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "run_public_reweave_demo.py"),
+            "--source",
+            str(source),
+            "--task-template",
+            "portfolio-viewer",
+            "--out",
+            str(portfolio_out),
+        ],
+        check=True,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    portfolio_pack = json.loads((portfolio_out / "task_pack.json").read_text(encoding="utf-8"))
+    portfolio_html = (portfolio_out / "index.html").read_text(encoding="utf-8")
+    assert portfolio_pack["task_profile"] == "portfolio_viewer"
+    assert "Portfolio Viewer" in portfolio_html
+    assert "Open project gallery" in portfolio_html
+    assert "Review project" in portfolio_html
 
 
 def test_public_reweave_demo_supports_manual_capsule_selection(tmp_path: Path) -> None:

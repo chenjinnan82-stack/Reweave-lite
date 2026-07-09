@@ -47,6 +47,23 @@ TEMPLATE_CASES: dict[str, dict[str, str]] = {
         "purpose": "calendar cards, publishing status, and readable data rows",
     },
 }
+TASK_TEMPLATES: dict[str, dict[str, str]] = {
+    "portfolio-viewer": {
+        "kind": "portfolio_viewer",
+        "task": "Build a portfolio project viewer",
+        "purpose": "turn an old personal or portfolio site into a browsable project viewer",
+    },
+    "operations-panel": {
+        "kind": "operations_panel",
+        "task": "Build an operations panel",
+        "purpose": "reuse an old business tool or workflow demo as a compact operations panel",
+    },
+    "artist-landing": {
+        "kind": "artist_landing",
+        "task": "Build an artist landing page",
+        "purpose": "reuse an old artwork, event, or creator page as a focused landing page",
+    },
+}
 
 
 def _import_reweave() -> tuple[object, object, object, object, object, object, object]:
@@ -137,6 +154,10 @@ def _public_template_cases() -> list[dict[str, str]]:
     return [{"id": case_id, **payload} for case_id, payload in TEMPLATE_CASES.items()]
 
 
+def _public_task_templates() -> list[dict[str, str]]:
+    return [{"id": template_id, **payload} for template_id, payload in TASK_TEMPLATES.items()]
+
+
 def _select_capsules(capsules: list[dict[str, object]], selectors: list[str]) -> list[dict[str, object]]:
     if not selectors:
         return capsules[:4]
@@ -169,6 +190,7 @@ def run(
     llm_timeout: float = 60,
     require_llm: bool = False,
     template_case: str | None = None,
+    task_template: str | None = None,
 ) -> dict[str, object]:
     source = source.expanduser().resolve()
     if not source.is_dir():
@@ -232,6 +254,10 @@ def run(
         }
         if template_case:
             task_pack["template_case"] = {"id": template_case, **TEMPLATE_CASES[template_case]}
+            task_pack["task_profile"] = TEMPLATE_CASES[template_case]["kind"]
+        if task_template:
+            task_pack["task_template"] = {"id": task_template, **TASK_TEMPLATES[task_template]}
+            task_pack["task_profile"] = TASK_TEMPLATES[task_template]["kind"]
         _write_json(out / "task_pack.json", task_pack)
         llm_result: dict[str, object] = {"enabled": False}
         if llm == "ollama":
@@ -274,6 +300,7 @@ def run(
             "llm": llm_result,
             "source_project_write": False,
             "template_case": task_pack.get("template_case"),
+            "task_template": task_pack.get("task_template"),
         }
 
 
@@ -285,6 +312,8 @@ def main() -> None:
     parser.add_argument("--list-capsules", action="store_true", help="List capsule choices for a Source Box and exit without writing an output pack.")
     parser.add_argument("--list-template-cases", action="store_true", help="List the five public template cases and exit without writing an output pack.")
     parser.add_argument("--template-case", choices=tuple(TEMPLATE_CASES), help="Run one public template case: dashboard, landing-page, form-tool, admin-panel, or data-viewer.")
+    parser.add_argument("--list-task-templates", action="store_true", help="List reusable task templates for your own Source Box and exit.")
+    parser.add_argument("--task-template", choices=tuple(TASK_TEMPLATES), help="Use a reusable task prompt with your own --source.")
     parser.add_argument("--select-capsule", action="append", default=[], help="Select a capsule by id, exact name, or text match. Repeat up to four times.")
     parser.add_argument("--include-local-paths", action="store_true", help="Include local source paths in stdout and task_pack.json; provenance stays redacted.")
     parser.add_argument("--llm", choices=("none", "ollama"), default="none", help="Optional local model pass. Default: none.")
@@ -296,10 +325,14 @@ def main() -> None:
     if args.list_template_cases:
         print(json.dumps({"ok": True, "template_cases": _public_template_cases(), "source_project_write": False}, indent=2, ensure_ascii=False))
         return
+    if args.list_task_templates:
+        print(json.dumps({"ok": True, "task_templates": _public_task_templates(), "source_project_write": False}, indent=2, ensure_ascii=False))
+        return
 
     case = TEMPLATE_CASES.get(args.template_case or "") if args.template_case else None
+    task_template = TASK_TEMPLATES.get(args.task_template or "") if args.task_template else None
     source = args.source or (case["source"] if case else DEFAULT_SOURCE)
-    task = args.task or (case["task"] if case else DEFAULT_TASK)
+    task = args.task or (task_template["task"] if task_template else case["task"] if case else DEFAULT_TASK)
 
     result = run(
         Path(source),
@@ -314,6 +347,7 @@ def main() -> None:
         llm_timeout=args.llm_timeout,
         require_llm=args.require_llm,
         template_case=args.template_case,
+        task_template=args.task_template,
     )
     print(json.dumps(result, indent=2, ensure_ascii=False))
 
