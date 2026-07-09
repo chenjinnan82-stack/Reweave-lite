@@ -4,6 +4,8 @@
 
 Reweave-lite turns old project folders into reusable capsules and previewable Task Packs.
 
+Latest release note: [v0.1.9 - Source Box to Small Project Pack](releases/v0.1.9.md).
+
 ### What Works
 
 - Public Source Box examples.

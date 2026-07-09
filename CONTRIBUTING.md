@@ -5,6 +5,8 @@ Thanks for helping Reweave-lite.
 ## Setup
 
 ```bash
+python3 -m venv .venv
+. .venv/bin/activate
 python -m pip install -r requirements-dev.txt
 python -m pytest tests -q
 node --check reweave_frontend/app.js

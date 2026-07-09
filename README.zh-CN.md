@@ -191,8 +191,10 @@ macOS 桌面 smoke 已验证：程序打开后先进入 Source Box 开屏，Gene
 运行公开仓库自带检查：
 
 ```bash
-python3 -m pip install -r requirements-dev.txt
-python3 -m pytest tests -q
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements-dev.txt
+python -m pytest tests -q
 node --check reweave_frontend/app.js
 ```
 
