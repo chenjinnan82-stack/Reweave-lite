@@ -25,5 +25,5 @@ jobs:
       - run: python scripts/run_public_reweave_demo.py --source examples/source_boxes/customer-quote-widget --task "Build a quote summary card"
       - name: Check public demo artifacts
         run: |
-          python -c "import tempfile; from pathlib import Path; out = Path(tempfile.gettempdir()) / 'reweave_public_demo'; missing = [name for name in ('task_pack.json', 'capsules_used.json', 'provenance.json', 'snippets_used.json') if not (out / name).is_file()]; raise SystemExit(('missing demo artifacts in %s: %s' % (out, missing)) if missing else 0)"
+          python -c "import tempfile; from pathlib import Path; out = Path(tempfile.gettempdir()) / 'reweave_public_demo'; missing = [name for name in ('task_intent.json', 'task_plan.json', 'quality_gate.json', 'task_pack.json', 'capsules_used.json', 'provenance.json', 'snippets_used.json') if not (out / name).is_file()]; raise SystemExit(('missing demo artifacts in %s: %s' % (out, missing)) if missing else 0)"
       - run: node --check reweave_frontend/app.js

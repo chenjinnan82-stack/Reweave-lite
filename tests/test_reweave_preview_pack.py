@@ -49,27 +49,49 @@ class ReweavePreviewPackTest(unittest.TestCase):
         preview_path = Path(result["previewPath"])
         self.assertTrue(preview_path.is_dir())
         self.assertEqual(preview_path.resolve().parent, preview.preview_packages_dir().resolve())
-        for name in ("index.html", "styles.css", "app.js", "task_pack.json", "capsules_used.json", "provenance.json", "summary.md"):
+        for name in ("index.html", "styles.css", "app.js", "task_intent.json", "task_plan.json", "quality_gate.json", "task_pack.json", "capsules_used.json", "provenance.json", "summary.md"):
             self.assertTrue((preview_path / name).is_file())
         html = (preview_path / "index.html").read_text(encoding="utf-8")
-        self.assertIn("Form Tool", html)
-        self.assertIn("Check form fields", html)
+        self.assertIn("Task Intent", html)
+        self.assertIn("Check task goal", html)
         self.assertIn("reweaveDemoButton", html)
         self.assertIn("project-checklist", html)
         self.assertIn("reweave-step", html)
+        self.assertIn("Plan files", html)
+        self.assertIn("Source-backed cues", html)
+        self.assertIn("capsule metadata only", html)
         self.assertIn("Client quote tool", html)
         app_js = (preview_path / "app.js").read_text(encoding="utf-8")
         self.assertIn("local checks complete", app_js)
         self.assertIn(".reweave-step", app_js)
         task_pack = json.loads((preview_path / "task_pack.json").read_text(encoding="utf-8"))
+        task_intent = json.loads((preview_path / "task_intent.json").read_text(encoding="utf-8"))
+        task_plan = json.loads((preview_path / "task_plan.json").read_text(encoding="utf-8"))
+        quality_gate = json.loads((preview_path / "quality_gate.json").read_text(encoding="utf-8"))
         self.assertEqual(task_pack["mode"], "task_pack_preview")
         self.assertEqual(task_pack["package_kind"], "small_project_pack")
-        self.assertEqual(task_pack["task_profile"], "form_tool")
+        self.assertEqual(task_pack["task_profile"], "task_driven")
+        self.assertEqual(task_pack["task_intent_path"], "task_intent.json")
+        self.assertEqual(task_pack["task_plan_path"], "task_plan.json")
+        self.assertEqual(task_pack["quality_gate_path"], "quality_gate.json")
+        self.assertEqual(task_pack["composer"]["mode"], "task_plan_and_snippets")
+        self.assertEqual(task_intent["output_type"], "tool")
+        self.assertIn("form", task_intent["capabilities"])
+        self.assertEqual(task_plan["output_type"], "tool")
+        self.assertEqual(task_plan["composer"]["mode"], "task_plan_and_snippets")
+        self.assertEqual({item["path"] for item in task_plan["outputs"]}, {"index.html", "styles.css", "app.js"})
+        self.assertTrue(task_plan["capsules"])
+        self.assertIn("check provenance.json", task_plan["acceptance"])
+        self.assertEqual(quality_gate["status"], "passed")
+        self.assertTrue(all(check["passed"] for check in quality_gate["checks"]))
         self.assertEqual(task_pack["selection_mode"], "manual")
         self.assertFalse(task_pack["source_project_write"])
         self.assertEqual(task_pack["selected_capsule_ids"], cap_ids[:2])
         provenance = json.loads((preview_path / "provenance.json").read_text(encoding="utf-8"))
         self.assertEqual(provenance["backend"], "local")
+        self.assertEqual(provenance["task_intent_path"], "task_intent.json")
+        self.assertEqual(provenance["task_plan_path"], "task_plan.json")
+        self.assertEqual(provenance["quality_gate_path"], "quality_gate.json")
         self.assertEqual(len(provenance["capsule_ids"]), 2)
         self.assertEqual(
             {item["path"] for item in provenance["outputs"]},
@@ -77,7 +99,7 @@ class ReweavePreviewPackTest(unittest.TestCase):
         )
         self.assertTrue(all(item["source_project_write"] is False for item in provenance["outputs"]))
 
-    def test_operations_task_uses_task_specific_preview_profile(self) -> None:
+    def test_operations_task_uses_task_intent_not_fixed_template_profile(self) -> None:
         cap_ids = self._promote_capsules()
         result = preview.build_preview_package(
             {"taskText": "Build an operations panel", "capsuleIds": cap_ids[:2], "backend": "local"}
@@ -86,14 +108,18 @@ class ReweavePreviewPackTest(unittest.TestCase):
         preview_path = Path(result["previewPath"])
         html = (preview_path / "index.html").read_text(encoding="utf-8")
         task_pack = json.loads((preview_path / "task_pack.json").read_text(encoding="utf-8"))
+        task_intent = json.loads((preview_path / "task_intent.json").read_text(encoding="utf-8"))
+        task_plan = json.loads((preview_path / "task_plan.json").read_text(encoding="utf-8"))
 
-        self.assertIn("Operations Panel", html)
-        self.assertIn("Review queue state", html)
-        self.assertIn("Mark triaged", html)
-        self.assertEqual(task_pack["task_profile"], "operations_panel")
+        self.assertIn("Task Intent", html)
+        self.assertIn("Review output", html)
+        self.assertEqual(task_pack["task_profile"], "task_driven")
+        self.assertEqual(task_intent["output_type"], "data_panel")
+        self.assertEqual(task_plan["output_type"], "data_panel")
+        self.assertIn("data", task_intent["capabilities"])
         self.assertEqual(
             [item["kind"] for item in task_pack["planned_outputs"]],
-            ["operations_page", "operations_style", "operations_runtime"],
+            ["data_panel_html", "task_style", "task_runtime"],
         )
 
     def test_latest_preview_restored(self) -> None:

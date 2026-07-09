@@ -17,15 +17,6 @@ TEMPLATE_CASES = {
     "admin-panel": "support-ticket-triage",
     "data-viewer": "content-calendar",
 }
-TEMPLATE_LABELS = {
-    "dashboard": "Operations Dashboard",
-    "landing-page": "Landing Page",
-    "form-tool": "Form Tool",
-    "admin-panel": "Admin Panel",
-    "data-viewer": "Data Viewer",
-}
-
-
 def test_llm_file_block_parser_accepts_common_markers() -> None:
     from pimos_lite.reweave_llm_pack import parse_file_blocks
 
@@ -71,14 +62,33 @@ def test_public_reweave_demo_outputs_task_pack(tmp_path: Path) -> None:
     payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["capsules_used"] > 0
-    for name in ("task_pack.json", "capsules_used.json", "provenance.json", "snippets_used.json", "summary.md"):
+    for name in ("task_intent.json", "task_plan.json", "quality_gate.json", "task_pack.json", "capsules_used.json", "provenance.json", "snippets_used.json", "summary.md"):
         assert (out / name).is_file()
     assert not (source / ".reweave").exists()
 
     task_pack = json.loads((out / "task_pack.json").read_text(encoding="utf-8"))
+    task_intent = json.loads((out / "task_intent.json").read_text(encoding="utf-8"))
+    task_plan = json.loads((out / "task_plan.json").read_text(encoding="utf-8"))
+    quality_gate = json.loads((out / "quality_gate.json").read_text(encoding="utf-8"))
     provenance = json.loads((out / "provenance.json").read_text(encoding="utf-8"))
     snippets_used = json.loads((out / "snippets_used.json").read_text(encoding="utf-8"))
     assert task_pack["source_project_write"] is False
+    assert task_pack["task_intent_path"] == "task_intent.json"
+    assert task_pack["task_plan_path"] == "task_plan.json"
+    assert task_pack["quality_gate_path"] == "quality_gate.json"
+    assert task_pack["quality_gate"]["status"] == "passed"
+    assert task_pack["task_intent"]["output_type"] == "tool"
+    assert task_pack["task_plan"]["output_type"] == "tool"
+    assert task_pack["task_plan"]["composer"]["mode"] == "task_plan_and_snippets"
+    assert task_intent["output_type"] == "tool"
+    assert task_plan["outputs"][0]["path"] == "index.html"
+    assert task_plan["capsules"]
+    assert task_plan["composer"]["optional_inputs"] == ["snippets_used.json"]
+    assert quality_gate["status"] == "passed"
+    assert all(check["passed"] for check in quality_gate["checks"])
+    assert "check provenance.json" in task_plan["acceptance"]
+    assert "form" in task_intent["capabilities"]
+    assert task_intent["retrieved_capsules"]
     assert task_pack["selected_capsule_ids"]
     assert provenance["source_boxes"][0]["label"] == "customer-quote-widget"
     assert "path" not in provenance["source_boxes"][0]
@@ -93,11 +103,14 @@ def test_public_reweave_demo_outputs_task_pack(tmp_path: Path) -> None:
     html = (out / "index.html").read_text(encoding="utf-8")
     styles = (out / "styles.css").read_text(encoding="utf-8")
     app_js = (out / "app.js").read_text(encoding="utf-8")
-    assert "Form Tool" in html
-    assert "Check form fields" in html
+    assert "Task Intent" in html
+    assert "Check task goal" in html
     assert "reweaveDemoButton" in html
     assert "project-checklist" in html
     assert "reweave-step" in html
+    assert "Plan files" in html
+    assert "Source-backed cues" in html
+    assert "capsule metadata only" not in html
     assert "--accent: #172033;" in styles
     assert "local checks complete" in app_js
     _assert_local_assets_exist(out)
@@ -139,19 +152,29 @@ def test_public_reweave_demo_runs_five_source_boxes(tmp_path: Path) -> None:
         assert payload["ok"] is True
         assert payload["source_project_write"] is False
         assert not (source / ".reweave").exists()
-        for required in ("index.html", "styles.css", "app.js", "task_pack.json", "capsules_used.json", "provenance.json", "snippets_used.json"):
+        for required in ("index.html", "styles.css", "app.js", "task_intent.json", "task_plan.json", "quality_gate.json", "task_pack.json", "capsules_used.json", "provenance.json", "snippets_used.json"):
             assert (out / required).is_file()
         task_pack = json.loads((out / "task_pack.json").read_text(encoding="utf-8"))
+        task_intent = json.loads((out / "task_intent.json").read_text(encoding="utf-8"))
+        task_plan = json.loads((out / "task_plan.json").read_text(encoding="utf-8"))
+        quality_gate = json.loads((out / "quality_gate.json").read_text(encoding="utf-8"))
         snippets_used = json.loads((out / "snippets_used.json").read_text(encoding="utf-8"))
         html = (out / "index.html").read_text(encoding="utf-8")
         app_js = (out / "app.js").read_text(encoding="utf-8")
         assert task_pack["source_project_write"] is False
         assert task_pack["project_type"] == "small_project_pack"
+        assert task_pack["task_intent_path"] == "task_intent.json"
+        assert task_pack["task_plan_path"] == "task_plan.json"
+        assert task_pack["quality_gate_path"] == "quality_gate.json"
+        assert task_intent["needed_files"] == ["index.html", "styles.css", "app.js"]
+        assert task_plan["source_project_write"] is False
+        assert task_plan["composer"]["mode"] == "task_plan_and_snippets"
+        assert quality_gate["status"] == "passed"
         assert task_pack["template_case"]["id"] == case_id
         assert task_pack["template_case"]["source"].endswith(source_name)
         assert payload["source"]["label"] == source_name
         assert snippets_used["snippets"]
-        assert TEMPLATE_LABELS[case_id] in html
+        assert "Task Intent" in html
         assert "project-checklist" in html
         assert "reweave-step" in html
         assert "local checks complete" in app_js
@@ -159,7 +182,7 @@ def test_public_reweave_demo_runs_five_source_boxes(tmp_path: Path) -> None:
         _assert_local_assets_exist(out)
 
 
-def test_public_reweave_demo_supports_real_project_task_templates(tmp_path: Path) -> None:
+def test_public_reweave_demo_keeps_task_templates_as_demo_shortcuts(tmp_path: Path) -> None:
     listed = subprocess.run(
         [
             sys.executable,
@@ -198,15 +221,20 @@ def test_public_reweave_demo_supports_real_project_task_templates(tmp_path: Path
     )
     payload = json.loads(result.stdout)
     task_pack = json.loads((out / "task_pack.json").read_text(encoding="utf-8"))
+    task_intent = json.loads((out / "task_intent.json").read_text(encoding="utf-8"))
+    task_plan = json.loads((out / "task_plan.json").read_text(encoding="utf-8"))
     assert payload["source_project_write"] is False
     assert payload["task_template"]["id"] == "operations-panel"
     assert task_pack["task_template"]["id"] == "operations-panel"
-    assert task_pack["task_profile"] == "operations_panel"
+    assert "task_profile" not in task_pack
+    assert task_pack["task_intent_path"] == "task_intent.json"
+    assert task_pack["task_plan_path"] == "task_plan.json"
+    assert task_intent["output_type"] == "data_panel"
+    assert task_plan["output_type"] == "data_panel"
     assert task_pack["task"] == "Build an operations panel"
     html = (out / "index.html").read_text(encoding="utf-8")
-    assert "Operations Panel" in html
-    assert "Review queue state" in html
-    assert "Mark triaged" in html
+    assert "Task Intent" in html
+    assert "Review output" in html
     assert (out / "index.html").is_file()
     assert (out / "provenance.json").is_file()
     _assert_local_assets_exist(out)
@@ -229,11 +257,12 @@ def test_public_reweave_demo_supports_real_project_task_templates(tmp_path: Path
         text=True,
     )
     portfolio_pack = json.loads((portfolio_out / "task_pack.json").read_text(encoding="utf-8"))
+    portfolio_intent = json.loads((portfolio_out / "task_intent.json").read_text(encoding="utf-8"))
     portfolio_html = (portfolio_out / "index.html").read_text(encoding="utf-8")
-    assert portfolio_pack["task_profile"] == "portfolio_viewer"
-    assert "Portfolio Viewer" in portfolio_html
-    assert "Open project gallery" in portfolio_html
-    assert "Review project" in portfolio_html
+    assert "task_profile" not in portfolio_pack
+    assert portfolio_intent["output_type"] == "data_panel"
+    assert "Task Intent" in portfolio_html
+    assert "Review output" in portfolio_html
 
 
 def test_default_capsule_selection_prefers_enrichable_capsules() -> None:
@@ -246,6 +275,26 @@ def test_default_capsule_selection_prefers_enrichable_capsules() -> None:
 
     selected = _select_enrichable_capsules(capsules, [], enrich)
     assert [cap["id"] for cap in selected] == ["good1", "good2", "good3", "good4"]
+
+
+def test_default_capsule_selection_uses_task_relevance() -> None:
+    from scripts.run_public_reweave_demo import _select_enrichable_capsules
+
+    capsules = [
+        {"id": "copy", "name": "Markdown Doc", "tags": ["docs", "copy"]},
+        {"id": "form", "name": "Quote Form", "tags": ["form", "input"]},
+        {"id": "style", "name": "Style Sheet", "tags": ["css", "layout"]},
+        {"id": "logic", "name": "Validation Script", "tags": ["javascript", "logic"]},
+        {"id": "misc", "name": "Misc Notes", "tags": ["notes"]},
+    ]
+
+    selected = _select_enrichable_capsules(
+        capsules,
+        [],
+        lambda capsule_id: {"ok": True},
+        task="Build a styled quote form with validation",
+    )
+    assert [cap["id"] for cap in selected[:3]] == ["form", "style", "logic"]
 
 
 def test_public_reweave_demo_supports_manual_capsule_selection(tmp_path: Path) -> None:
@@ -290,10 +339,15 @@ def test_public_reweave_demo_supports_manual_capsule_selection(tmp_path: Path) -
     )
     payload = json.loads(result.stdout)
     task_pack = json.loads((out / "task_pack.json").read_text(encoding="utf-8"))
+    task_intent = json.loads((out / "task_intent.json").read_text(encoding="utf-8"))
+    task_plan = json.loads((out / "task_plan.json").read_text(encoding="utf-8"))
     capsules_used = json.loads((out / "capsules_used.json").read_text(encoding="utf-8"))
     selected_names = [item["name"] for item in payload["selected_capsules"]]
     assert selected_names == ["Style Sheet", "Script Module"]
     assert task_pack["selection_mode"] == "manual"
+    assert task_intent["retrieved_capsules"]
+    assert task_plan["capsules"]
+    assert all(item.get("reason") for item in task_pack["selected_capsules"])
     assert [item["name"] for item in task_pack["selected_capsules"]] == selected_names
     assert [item["name"] for item in capsules_used] == selected_names
     assert task_pack["source_project_write"] is False

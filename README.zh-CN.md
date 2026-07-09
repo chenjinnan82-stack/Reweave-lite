@@ -25,7 +25,7 @@
 python3 scripts/run_public_reweave_demo.py
 ```
 
-输出 JSON 会打印产物目录和文件列表。预期输出包含可运行的 `index.html`、`styles.css`、`app.js`，以及 `task_pack.json`、`capsules_used.json`、`provenance.json` 和 `snippets_used.json`。
+输出 JSON 会打印产物目录和文件列表。预期输出包含可运行的 `index.html`、`styles.css`、`app.js`，以及 `task_intent.json`、`task_plan.json`、`quality_gate.json`、`task_pack.json`、`capsules_used.json`、`provenance.json` 和 `snippets_used.json`。
 
 **边界：** 源项目默认只读。Reweave-lite 生成小项目包 preview，不自动写入或覆盖你的项目。
 
@@ -52,14 +52,15 @@ python3 scripts/run_public_reweave_demo.py --template-case data-viewer
 
 每个案例都会生成可打开的 Small Project Pack，并保持 source project writes 为 `0`。
 
-用你自己的旧项目跑真实任务模板：
+用你自己的旧项目跑一句真实任务：
 
 ```bash
-python3 scripts/run_public_reweave_demo.py --list-task-templates
-python3 scripts/run_public_reweave_demo.py --source /path/to/your/old-project --task-template portfolio-viewer
-python3 scripts/run_public_reweave_demo.py --source /path/to/your/old-project --task-template operations-panel
-python3 scripts/run_public_reweave_demo.py --source /path/to/your/old-project --task-template artist-landing
+python3 scripts/run_public_reweave_demo.py \
+  --source /path/to/your/old-project \
+  --task "Build a customer quote dashboard from this old project"
 ```
+
+`--task-template` 仍保留为 demo 捷径，但主线是 `--task`。
 
 ## 本地小模型
 
@@ -130,6 +131,9 @@ JSON / provenance 里预期能看到：
 - 在 CLI 中列出胶囊，并手动选择要复用的胶囊。
 - 可选使用本地 Ollama 小模型优化 Small Project Pack。
 - 生成 Small Project Pack preview，包含：
+  - `task_intent.json`
+  - `task_plan.json`
+  - `quality_gate.json`
   - 可运行的 `index.html`、`styles.css`、`app.js`
   - `task_pack.json`
   - `capsules_used.json`
@@ -217,7 +221,7 @@ REWEAVE_RUNTIME_STATE_PATH=/path/to/frontend_runtime_state.json \
 
 - GitHub Actions 会运行 Reweave 测试。
 - GitHub Actions 会在 Ubuntu 和 Windows 上运行公开 Task Pack demo。
-- GitHub Actions 会检查 `task_pack.json`、`capsules_used.json` 和 `provenance.json`。
+- GitHub Actions 会检查 `task_intent.json`、`task_plan.json`、`quality_gate.json`、`task_pack.json`、`capsules_used.json` 和 `provenance.json`。
 - GitHub Actions 会检查前端 JavaScript 语法。
 - 默认启动不依赖私有工作区路径。
 - Source project writes 默认保持关闭。

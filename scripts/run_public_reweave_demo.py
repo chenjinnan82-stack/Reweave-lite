@@ -6,6 +6,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -65,6 +66,15 @@ TASK_TEMPLATES: dict[str, dict[str, str]] = {
         "purpose": "reuse an old artwork, event, or creator page as a focused landing page",
     },
 }
+CAPABILITY_KEYWORDS = {
+    "form": ("form", "quote", "input", "submit", "customer", "field"),
+    "table": ("table", "list", "queue", "record", "calendar", "row"),
+    "copy": ("copy", "landing", "content", "message", "hero", "story"),
+    "style": ("style", "css", "brand", "visual", "layout", "design"),
+    "logic": ("logic", "workflow", "action", "filter", "calculate", "triage", "interaction"),
+    "data": ("data", "dashboard", "metric", "status", "chart", "viewer", "panel"),
+}
+STOP_WORDS = {"a", "an", "and", "as", "build", "from", "for", "into", "old", "project", "the", "this", "to", "with"}
 
 
 def _import_reweave() -> tuple[object, object, object, object, object, object, object]:
@@ -140,8 +150,8 @@ def _capsule_match_text(cap: dict[str, object]) -> str:
     return " ".join(str(part or "") for part in parts).lower()
 
 
-def _public_capsule(cap: dict[str, object]) -> dict[str, object]:
-    return {
+def _public_capsule(cap: dict[str, object], *, reason: str | None = None) -> dict[str, object]:
+    payload = {
         "id": cap.get("id"),
         "name": cap.get("name"),
         "type": cap.get("type"),
@@ -149,6 +159,9 @@ def _public_capsule(cap: dict[str, object]) -> dict[str, object]:
         "tags": list(cap.get("tags") or []),
         "source_id": cap.get("source_id"),
     }
+    if reason:
+        payload["reason"] = reason
+    return payload
 
 
 def _public_template_cases() -> list[dict[str, str]]:
@@ -177,10 +190,38 @@ def _select_capsules(capsules: list[dict[str, object]], selectors: list[str]) ->
     return selected[:4]
 
 
+def _task_terms(task: str) -> set[str]:
+    return {word for word in re.findall(r"[a-z0-9]+", task.lower()) if len(word) > 2 and word not in STOP_WORDS}
+
+
+def _task_capabilities(task: str) -> list[str]:
+    text = task.lower()
+    return [
+        name
+        for name, words in CAPABILITY_KEYWORDS.items()
+        if any(word in text for word in words)
+    ] or ["copy", "style"]
+
+
+def _capsule_score(task: str, cap: dict[str, object], *, enrichable: bool = False) -> int:
+    # ponytail: metadata scoring; add embeddings only after this fails on real cases.
+    text = _capsule_match_text(cap)
+    score = 2 if enrichable else 0
+    score += sum(3 for term in _task_terms(task) if term in text)
+    for capability in _task_capabilities(task):
+        words = CAPABILITY_KEYWORDS[capability]
+        if capability in text:
+            score += 6
+        score += sum(2 for word in words if word in text)
+    return score
+
+
 def _select_enrichable_capsules(
     capsules: list[dict[str, object]],
     selectors: list[str],
     enrich_capsule_content: Callable[[str], dict[str, object]],
+    *,
+    task: str = "",
 ) -> list[dict[str, object]]:
     selected = _select_capsules(capsules, selectors)
     if selectors:
@@ -188,20 +229,23 @@ def _select_enrichable_capsules(
             enrich_capsule_content(str(cap["id"]))
         return selected
 
-    enrichable: list[dict[str, object]] = []
-    for cap in capsules:
+    ranked = sorted(
+        enumerate(capsules),
+        key=lambda item: (-_capsule_score(task, item[1]), item[0]),
+    )
+    candidates = [cap for _, cap in ranked[:8]]
+    enriched: dict[str, bool] = {}
+    for cap in candidates:
         result = enrich_capsule_content(str(cap["id"]))
-        if isinstance(result, dict) and result.get("ok"):
-            enrichable.append(cap)
-        if len(enrichable) >= 4:
-            break
-    if len(enrichable) < 4:
-        for cap in selected:
-            if cap not in enrichable:
-                enrichable.append(cap)
-            if len(enrichable) >= 4:
-                break
-    return enrichable[:4]
+        enriched[str(cap.get("id") or "")] = bool(isinstance(result, dict) and result.get("ok"))
+    selected = sorted(
+        enumerate(candidates),
+        key=lambda item: (
+            -_capsule_score(task, item[1], enrichable=enriched.get(str(item[1].get("id") or ""), False)),
+            item[0],
+        ),
+    )
+    return [cap for _, cap in selected[:4]]
 
 
 def run(
@@ -236,7 +280,7 @@ def run(
         scan = scan_source_box(box["id"])
         draft = draft_capsules(box["id"])
         capsules = promote_source_drafts(box["id"])
-        selected_capsules = _select_enrichable_capsules(capsules, select_capsules or [], enrich_capsule_content)
+        selected_capsules = _select_enrichable_capsules(capsules, select_capsules or [], enrich_capsule_content, task=task)
         capsule_ids = [str(cap["id"]) for cap in selected_capsules]
         if list_capsules:
             return {
@@ -266,24 +310,43 @@ def run(
                 shutil.copytree(item, target)
             else:
                 shutil.copy2(item, target)
+        task_intent = _json(out / "task_intent.json") if (out / "task_intent.json").is_file() else {}
+        task_plan = _json(out / "task_plan.json") if (out / "task_plan.json").is_file() else {}
+        quality_gate = _json(out / "quality_gate.json") if (out / "quality_gate.json").is_file() else {}
+        reasons = {
+            str(item.get("id")): str(item.get("reason"))
+            for item in (task_intent.get("retrieved_capsules") if isinstance(task_intent, dict) else []) or []
+            if isinstance(item, dict) and item.get("id")
+        }
+        public_capsules = [
+            _public_capsule(cap, reason=reasons.get(str(cap.get("id"))))
+            for cap in selected_capsules
+        ]
 
         task_pack = {
             "schema_version": "reweave_public_task_pack.v1",
             "project_type": "small_project_pack",
             "task": task,
+            "task_intent_path": "task_intent.json",
+            "task_intent": task_intent,
+            "task_plan_path": "task_plan.json",
+            "task_plan": task_plan,
+            "quality_gate_path": "quality_gate.json",
+            "quality_gate": quality_gate,
             "source_box": source_box,
             "selected_capsule_ids": capsule_ids,
-            "selected_capsules": [_public_capsule(cap) for cap in selected_capsules],
-            "selection_mode": "manual" if select_capsules else "default_first_four",
+            "selected_capsules": public_capsules,
+            "retrieved_capsules": task_intent.get("retrieved_capsules", []) if isinstance(task_intent, dict) else [],
+            "selection_mode": "manual" if select_capsules else "task_retrieval",
             "output_files": _public_files(out),
             "source_project_write": False,
         }
         if template_case:
             task_pack["template_case"] = {"id": template_case, **TEMPLATE_CASES[template_case]}
-            task_pack["task_profile"] = TEMPLATE_CASES[template_case]["kind"]
+            task_pack["demo_shortcut"] = "template_case"
         if task_template:
             task_pack["task_template"] = {"id": task_template, **TASK_TEMPLATES[task_template]}
-            task_pack["task_profile"] = TASK_TEMPLATES[task_template]["kind"]
+            task_pack["demo_shortcut"] = "task_template"
         _write_json(out / "task_pack.json", task_pack)
         llm_result: dict[str, object] = {"enabled": False}
         if llm == "ollama":
@@ -322,7 +385,10 @@ def run(
             "task": task,
             "files": _public_files(out),
             "capsules_used": len(_json(out / "capsules_used.json")),
-            "selected_capsules": [_public_capsule(cap) for cap in selected_capsules],
+            "selected_capsules": public_capsules,
+            "task_intent": task_intent,
+            "task_plan": task_plan,
+            "quality_gate": quality_gate,
             "llm": llm_result,
             "source_project_write": False,
             "template_case": task_pack.get("template_case"),

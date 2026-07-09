@@ -25,7 +25,7 @@ Old project -> Source Box -> Capsules -> Small Project Pack -> New Web
 python3 scripts/run_public_reweave_demo.py
 ```
 
-The JSON result prints the output folder and files. Expected output includes runnable `index.html`, `styles.css`, `app.js`, plus `task_pack.json`, `capsules_used.json`, `provenance.json`, and `snippets_used.json`.
+The JSON result prints the output folder and files. Expected output includes runnable `index.html`, `styles.css`, `app.js`, plus `task_intent.json`, `task_plan.json`, `quality_gate.json`, `task_pack.json`, `capsules_used.json`, `provenance.json`, and `snippets_used.json`.
 
 **Boundary:** source projects are read-only by default. Reweave-lite previews small project packs; it does not auto-write or overwrite your project.
 
@@ -52,14 +52,15 @@ python3 scripts/run_public_reweave_demo.py --template-case data-viewer
 
 Each case writes a runnable Small Project Pack and keeps source project writes at `0`.
 
-Use a real-project task template with your own Source Box:
+Use your own old project with a plain task:
 
 ```bash
-python3 scripts/run_public_reweave_demo.py --list-task-templates
-python3 scripts/run_public_reweave_demo.py --source /path/to/your/old-project --task-template portfolio-viewer
-python3 scripts/run_public_reweave_demo.py --source /path/to/your/old-project --task-template operations-panel
-python3 scripts/run_public_reweave_demo.py --source /path/to/your/old-project --task-template artist-landing
+python3 scripts/run_public_reweave_demo.py \
+  --source /path/to/your/old-project \
+  --task "Build a customer quote dashboard from this old project"
 ```
+
+`--task-template` still exists as a demo shortcut, but the main path is `--task`.
 
 ## Local Small Model
 
@@ -129,6 +130,9 @@ The inspiration is a spider spinning silk: old project threads are cleaned, join
 - Lets the CLI list capsules and manually select the ones to reuse.
 - Optionally lets a local Ollama model refine the Small Project Pack.
 - Builds a Small Project Pack preview with:
+  - `task_intent.json`
+  - `task_plan.json`
+  - `quality_gate.json`
   - runnable `index.html`, `styles.css`, `app.js`
   - `task_pack.json`
   - `capsules_used.json`
@@ -216,7 +220,7 @@ REWEAVE_RUNTIME_STATE_PATH=/path/to/frontend_runtime_state.json \
 
 - GitHub Actions runs the Reweave test suite.
 - GitHub Actions runs the public Task Pack demo on Ubuntu and Windows.
-- GitHub Actions checks `task_pack.json`, `capsules_used.json`, and `provenance.json`.
+- GitHub Actions checks `task_intent.json`, `task_plan.json`, `quality_gate.json`, `task_pack.json`, `capsules_used.json`, and `provenance.json`.
 - GitHub Actions checks frontend JavaScript syntax.
 - Local default launch does not depend on private workspace paths.
 - Source project writes stay off by default.

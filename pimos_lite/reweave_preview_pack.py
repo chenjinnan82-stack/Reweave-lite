@@ -108,7 +108,8 @@ def _build_index_html(
     content_aware: bool = False,
     snippet_context: dict[str, Any] | None = None,
 ) -> str:
-    profile = _task_profile(task)
+    profile = _task_profile(task, capsules)
+    task_plan = _task_plan(_task_intent(task, capsules))
     task_title = html.escape((task or "New Task Pack")[:MAX_TASK_LEN])
     capsule_names = [str(cap.get("name") or "Capsule") for cap in capsules[:4]]
     capsule_tags = sorted(
@@ -135,15 +136,22 @@ def _build_index_html(
     source_items = "".join(
         f"<li>{html.escape(name)}</li>" for name in (source_names or ["local Source Box"])
     )
+    plan_items = "".join(
+        f"<li>{html.escape(str(item.get('path')))} — {html.escape(str(item.get('purpose')))}</li>"
+        for item in task_plan["outputs"]
+        if isinstance(item, dict)
+    )
+    source_cues = _source_highlights(snippet_context) if content_aware else []
+    cue_items = "".join(f"<li>{html.escape(cue)}</li>" for cue in source_cues)
     capsule_badges = "".join(
         f"<span>{html.escape(name)}</span>" for name in (capsule_names or ["Selected capsule"])
     )
     project_cards = "".join(
         "<article>"
         f"<strong>{html.escape(str(cap.get('name') or 'Capsule'))}</strong>"
-        f"<p>{html.escape(str(cap.get('role') or 'Selected project pattern'))}</p>"
+        f"<p>{html.escape(str(cap.get('reason') or 'Selected project pattern'))}</p>"
         "</article>"
-        for cap in (capsules[:4] or [{"name": "Project shell", "role": "Generated local output"}])
+        for cap in (task_plan["capsules"][:4] or [{"name": "Project shell", "reason": "Generated local output"}])
     )
     checklist = "".join(
         "<label>"
@@ -222,8 +230,12 @@ def _build_index_html(
         <div class="capsule-badges">{capsule_badges}</div>
       </div>
       <aside>
+        <strong>Plan files</strong>
+        <ul>{plan_items}</ul>
         <strong>Reused signals</strong>
         <ul>{signal_items}</ul>
+        <strong>Source-backed cues</strong>
+        <ul>{cue_items or "<li>capsule metadata only</li>"}</ul>
         <strong>Source Boxes</strong>
         <ul>{source_items}</ul>
       </aside>
@@ -250,100 +262,210 @@ def _build_index_html(
 """
 
 
-def _task_profile(task: str) -> dict[str, object]:
-    text = (task or "").lower()
-    if "portfolio" in text or "project viewer" in text:
-        return {
-            "id": "portfolio_viewer",
-            "label": "Portfolio Viewer",
-            "output_label": "Project gallery",
-            "action": "Review project",
-            "summary": "A browsable project gallery built from reusable capsules and source excerpts.",
-            "steps": ["Open project gallery", "Check source excerpts", "Review visual patterns", "Check provenance", "Confirm source writes stay 0"],
-            "output_kinds": ("portfolio_page", "portfolio_style", "portfolio_runtime"),
-        }
-    if "dashboard" in text:
-        return {
-            "id": "dashboard",
-            "label": "Operations Dashboard",
-            "output_label": "Status view",
-            "action": "Review status",
-            "summary": "A dashboard view for status cards, metric copy, and reusable operational signals.",
-            "steps": ["Check status cards", "Review metric copy", "Verify dashboard labels", "Check provenance", "Confirm source writes stay 0"],
-            "output_kinds": ("dashboard_page", "dashboard_style", "dashboard_runtime"),
-        }
-    if any(word in text for word in ("admin", "triage", "support")):
-        return {
-            "id": "admin_panel",
-            "label": "Admin Panel",
-            "output_label": "Triage board",
-            "action": "Review queue",
-            "summary": "A focused admin panel for queues, priority tags, and review actions.",
-            "steps": ["Check queue layout", "Review priority tags", "Verify triage action", "Check provenance", "Confirm source writes stay 0"],
-            "output_kinds": ("admin_page", "admin_style", "admin_runtime"),
-        }
-    if any(word in text for word in ("operations", "workorder", "panel", "dashboard")):
-        return {
-            "id": "operations_panel",
-            "label": "Operations Panel",
-            "output_label": "Workflow view",
-            "action": "Mark triaged",
-            "summary": "A compact operations view for queues, status signals, and reusable workflow patterns.",
-            "steps": ["Review queue state", "Check workflow signals", "Verify action labels", "Check provenance", "Confirm source writes stay 0"],
-            "output_kinds": ("operations_page", "operations_style", "operations_runtime"),
-        }
-    if "form" in text or "quote" in text:
-        return {
-            "id": "form_tool",
-            "label": "Form Tool",
-            "output_label": "Quote flow",
-            "action": "Review form",
-            "summary": "A compact form tool for collecting input, showing a summary, and preserving source-backed copy.",
-            "steps": ["Check form fields", "Review summary state", "Verify action labels", "Check provenance", "Confirm source writes stay 0"],
-            "output_kinds": ("form_page", "form_style", "form_runtime"),
-        }
-    if "data viewer" in text or "calendar" in text:
-        return {
-            "id": "data_viewer",
-            "label": "Data Viewer",
-            "output_label": "Readable records",
-            "action": "Review records",
-            "summary": "A readable data view for grouped records, status copy, and source-backed labels.",
-            "steps": ["Check record layout", "Review status labels", "Check data grouping", "Check provenance", "Confirm source writes stay 0"],
-            "output_kinds": ("data_page", "data_style", "data_runtime"),
-        }
-    if "artist" in text or "creator" in text or "artwork" in text:
-        return {
-            "id": "artist_landing",
-            "label": "Artist Landing",
-            "output_label": "Story page",
-            "action": "Review landing",
-            "summary": "A focused landing page shaped around creator copy, visual rhythm, and reusable source cues.",
-            "steps": ["Check hero story", "Review featured sections", "Check source excerpts", "Check provenance", "Confirm source writes stay 0"],
-            "output_kinds": ("landing_page", "landing_style", "landing_runtime"),
-        }
-    if "landing" in text:
-        return {
-            "id": "landing_page",
-            "label": "Landing Page",
-            "output_label": "Launch page",
-            "action": "Review launch",
-            "summary": "A focused landing page with launch copy, sections, and a local review checklist.",
-            "steps": ["Check hero copy", "Review launch sections", "Check progress state", "Check provenance", "Confirm source writes stay 0"],
-            "output_kinds": ("landing_page", "landing_style", "landing_runtime"),
-        }
+CAPABILITY_KEYWORDS = {
+    "form": ("form", "quote", "input", "submit", "customer", "field"),
+    "table": ("table", "list", "queue", "record", "calendar", "row"),
+    "copy": ("copy", "landing", "content", "message", "hero", "story"),
+    "style": ("style", "css", "brand", "visual", "layout", "design"),
+    "logic": ("logic", "workflow", "action", "filter", "calculate", "triage", "interaction"),
+    "data": ("data", "dashboard", "metric", "status", "chart", "viewer", "panel"),
+}
+
+
+def _capsule_reason(cap: dict[str, Any], capabilities: list[str]) -> str:
+    text = " ".join(
+        str(part or "")
+        for part in (
+            cap.get("name"),
+            cap.get("type"),
+            cap.get("role"),
+            " ".join(str(tag) for tag in (cap.get("tags") or [])),
+        )
+    ).lower()
+    matched = [capability for capability in capabilities if capability in text]
+    if matched:
+        return "matches " + ", ".join(matched[:3]) + " need"
+    return str(cap.get("role") or "selected for source-backed task context")
+
+
+def _task_intent(task: str, capsules: list[dict[str, Any]]) -> dict[str, Any]:
+    # ponytail: keyword intent is enough for v0; replace with parser only when real tasks beat it.
+    task_text = (task or "").lower()
+    text = " ".join(
+        [task or ""]
+        + [
+            " ".join(
+                str(part or "")
+                for part in (
+                    cap.get("name"),
+                    cap.get("type"),
+                    cap.get("role"),
+                    " ".join(str(tag) for tag in (cap.get("tags") or [])),
+                )
+            )
+            for cap in capsules
+            if isinstance(cap, dict)
+        ]
+    ).lower()
+    capabilities = [
+        name
+        for name, words in CAPABILITY_KEYWORDS.items()
+        if any(word in text for word in words)
+    ] or ["copy", "style"]
+    if any(word in task_text for word in ("component", "react", "tsx", "widget")):
+        output_type = "component"
+    elif any(word in task_text for word in ("doc", "document", "report", "readme")):
+        output_type = "document"
+    elif any(word in task_text for word in ("dashboard", "panel", "viewer", "table", "calendar", "data")):
+        output_type = "data_panel"
+    elif any(word in task_text for word in ("tool", "form", "quote", "interaction")):
+        output_type = "tool"
+    else:
+        output_type = "page"
     return {
-        "id": "small_project_pack",
-        "label": "Small Project Pack",
-        "output_label": "Generated output",
-        "action": "Mark reviewed",
-        "summary": (
-            "A runnable small project pack assembled from selected project capsules. "
-            "Open this folder locally, review the provenance, then decide what to keep."
-        ),
-        "steps": None,
-        "output_kinds": ("project_page", "project_style", "project_runtime"),
+        "schema_version": "reweave_task_intent.v1",
+        "task": (task or "Build a small project pack")[:MAX_TASK_LEN],
+        "goal": (task or "Build a small project pack")[:MAX_TASK_LEN],
+        "output_type": output_type,
+        "needed_files": ["index.html", "styles.css", "app.js"],
+        "capabilities": capabilities,
+        "retrieved_capsules": [
+            {
+                "id": cap.get("id"),
+                "name": cap.get("name"),
+                "source_id": cap.get("source_id"),
+                "reason": _capsule_reason(cap, capabilities),
+            }
+            for cap in capsules
+            if isinstance(cap, dict)
+        ],
+        "source_project_write": False,
     }
+
+
+def _task_profile(task: str, capsules: list[dict[str, Any]] | None = None) -> dict[str, object]:
+    intent = _task_intent(task, capsules or [])
+    output_type = str(intent["output_type"])
+    capabilities = [str(item) for item in intent["capabilities"]]
+    return {
+        "id": "task_driven",
+        "label": "Task Intent",
+        "output_label": output_type.replace("_", " ").title(),
+        "action": "Review output",
+        "summary": "A runnable small project pack assembled from the task, selected capsules, and source excerpts.",
+        "steps": [
+            "Check task goal",
+            "Review " + ", ".join(capabilities[:3]) + " signals",
+            "Check source excerpts",
+            "Check provenance",
+            "Confirm source writes stay 0",
+        ],
+        "output_kinds": (f"{output_type}_html", "task_style", "task_runtime"),
+    }
+
+
+def _task_plan(task_intent: dict[str, Any]) -> dict[str, Any]:
+    capsule_ids = [str(item.get("id")) for item in task_intent.get("retrieved_capsules", []) if isinstance(item, dict) and item.get("id")]
+    output_type = str(task_intent.get("output_type") or "page")
+    return {
+        "schema_version": "reweave_task_plan.v1",
+        "task": task_intent.get("task"),
+        "output_type": output_type,
+        "source_project_write": False,
+        "composer": {
+            "mode": "task_plan_and_snippets",
+            "inputs": ["task_intent.json", "task_plan.json", "capsules_used.json"],
+            "optional_inputs": ["snippets_used.json"],
+        },
+        "outputs": [
+            {
+                "path": "index.html",
+                "purpose": f"render the {output_type} for local review",
+                "capsule_ids": capsule_ids,
+            },
+            {
+                "path": "styles.css",
+                "purpose": "carry source-backed visual structure and spacing",
+                "capsule_ids": capsule_ids,
+            },
+            {
+                "path": "app.js",
+                "purpose": "add only local preview interaction and review checks",
+                "capsule_ids": capsule_ids,
+            },
+        ],
+        "capsules": list(task_intent.get("retrieved_capsules") or []),
+        "acceptance": [
+            "open index.html locally",
+            "confirm index.html, styles.css, and app.js exist",
+            "check capsules_used.json",
+            "check provenance.json",
+            "confirm source writes stay 0",
+        ],
+    }
+
+
+def _quality_gate(root: Path, task: str, task_plan: dict[str, Any], *, content_aware: bool) -> dict[str, Any]:
+    html_text = (root / "index.html").read_text(encoding="utf-8") if (root / "index.html").is_file() else ""
+    planned = [
+        str(item.get("path"))
+        for item in task_plan.get("outputs", [])
+        if isinstance(item, dict) and item.get("path")
+    ]
+    reasons = [
+        str(item.get("reason"))
+        for item in task_plan.get("capsules", [])
+        if isinstance(item, dict) and item.get("reason")
+    ]
+    checks = [
+        {
+            "name": "planned_outputs_exist",
+            "passed": all((root / path).is_file() for path in planned),
+        },
+        {
+            "name": "planned_outputs_match_core_files",
+            "passed": set(planned) == {"index.html", "styles.css", "app.js"},
+        },
+        {
+            "name": "task_visible_in_html",
+            "passed": html.escape((task or "")[:MAX_TASK_LEN]) in html_text,
+        },
+        {
+            "name": "capsule_reason_visible_in_html",
+            "passed": bool(reasons) and any(html.escape(reason) in html_text for reason in reasons),
+        },
+        {
+            "name": "source_cues_visible_in_html",
+            "passed": (not content_aware) or ("Source excerpts used" in html_text) or ("Source-backed cues" in html_text and "capsule metadata only" not in html_text),
+        },
+    ]
+    return {
+        "schema_version": "reweave_quality_gate.v1",
+        "status": "passed" if all(check["passed"] for check in checks) else "failed",
+        "checks": checks,
+        "source_project_write": False,
+    }
+
+
+def _source_highlights(snippet_context: dict[str, Any] | None) -> list[str]:
+    if not isinstance(snippet_context, dict):
+        return []
+    highlights: list[str] = []
+    for cap in snippet_context.get("capsules") if isinstance(snippet_context.get("capsules"), list) else []:
+        if not isinstance(cap, dict):
+            continue
+        for snip in cap.get("snippets") if isinstance(cap.get("snippets"), list) else []:
+            if not isinstance(snip, dict):
+                continue
+            excerpt = str(snip.get("preview_excerpt") or "")
+            candidates = re.findall(r">([^<>]{3,80})<", excerpt) or excerpt.splitlines()
+            for raw in candidates:
+                text = re.sub(r"\s+", " ", raw).strip(" -_•\t")
+                if 3 <= len(text) <= 80 and text not in highlights:
+                    highlights.append(text)
+                if len(highlights) >= 6:
+                    return highlights
+    return highlights
 
 
 def _build_preview_readme(task: str, snippet_context: dict[str, Any]) -> str:
@@ -545,25 +667,24 @@ def _sanitize_source_boxes(rows: Any, *, include_local_paths: bool = False) -> l
 
 
 def _build_task_pack(task: str, capsules: list[dict[str, Any]], *, selection_mode: str = "selected_capsules") -> dict[str, Any]:
-    profile = _task_profile(task)
+    task_intent = _task_intent(task, capsules)
+    task_plan = _task_plan(task_intent)
+    profile = _task_profile(task, capsules)
     capsule_ids = [str(c.get("id") or "") for c in capsules if c.get("id")]
     output_kinds = list(profile["output_kinds"])
-    capsules_used = [
-        {
-            "id": cap.get("id"),
-            "name": cap.get("name"),
-            "source_id": cap.get("source_id"),
-            "reason": cap.get("role") or "selected for task context",
-        }
-        for cap in capsules
-        if isinstance(cap, dict)
-    ]
+    capsules_used = list(task_intent["retrieved_capsules"])
     return {
         "schema_version": "reweave_task_pack.v1",
         "mode": "task_pack_preview",
         "package_kind": "small_project_pack",
         "task_profile": profile["id"],
         "task": task,
+        "task_intent_path": "task_intent.json",
+        "task_intent": task_intent,
+        "task_plan_path": "task_plan.json",
+        "task_plan": task_plan,
+        "quality_gate_path": "quality_gate.json",
+        "composer": task_plan["composer"],
         "task_scope": "preview_only",
         "selection_mode": selection_mode,
         "source_project_write": False,
@@ -590,7 +711,7 @@ def _build_task_pack(task: str, capsules: list[dict[str, Any]], *, selection_mod
             {
                 "path": "preview/index.html",
                 "action": "preview_only",
-                "reason": "run the generated small project locally",
+                "reason": task_plan["outputs"][0]["purpose"],
             },
             {
                 "path": "task_pack.json",
@@ -598,16 +719,8 @@ def _build_task_pack(task: str, capsules: list[dict[str, Any]], *, selection_mod
                 "reason": "record task scope, capsule inputs, and checks",
             },
         ],
-        "validation": [
-            "open index.html locally",
-            "check capsules_used.json",
-            "check provenance.json",
-        ],
-        "checks": [
-            "review preview output",
-            "review capsules_used.json",
-            "review provenance.json",
-        ],
+        "validation": task_plan["acceptance"],
+        "checks": task_plan["acceptance"],
         "effects": {
             "source_project_write": False,
             "preview_output_write": True,
@@ -669,6 +782,9 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
         "generated_at": stamp,
         "backend": str(payload.get("backend") or "local"),
         "task": task,
+        "task_intent_path": "task_intent.json",
+        "task_plan_path": "task_plan.json",
+        "quality_gate_path": "quality_gate.json",
         "capsule_ids": [c.get("id") for c in capsules],
         "capsules": [_capsule_provenance_entry(c) for c in capsules],
         "outputs": [
@@ -702,10 +818,14 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
 
     selection_mode = str(payload.get("selectionMode") or payload.get("selection_mode") or "selected_capsules")
     task_pack = _build_task_pack(task, capsules, selection_mode=selection_mode)
-    files = ["index.html", "styles.css", "app.js", "task_pack.json", "capsules_used.json", "provenance.json", "summary.md"]
+    task_intent = task_pack["task_intent"]
+    task_plan = task_pack["task_plan"]
+    files = ["index.html", "styles.css", "app.js", "task_intent.json", "task_plan.json", "task_pack.json", "capsules_used.json", "provenance.json", "summary.md"]
     _write_text(root / "index.html", _build_index_html(task, capsules, content_aware=content_aware_enabled, snippet_context=snippet_context))
     _write_text(root / "styles.css", _build_styles_css(snippet_context if content_aware_enabled else None))
     _write_text(root / "app.js", _build_app_js())
+    _write_text(root / "task_intent.json", json.dumps(task_intent, indent=2, ensure_ascii=False) + "\n")
+    _write_text(root / "task_plan.json", json.dumps(task_plan, indent=2, ensure_ascii=False) + "\n")
     _write_text(root / "task_pack.json", json.dumps(task_pack, indent=2, ensure_ascii=False) + "\n")
     _write_text(root / "capsules_used.json", json.dumps(capsules_used, indent=2, ensure_ascii=False) + "\n")
     _write_text(root / "provenance.json", json.dumps(provenance, indent=2, ensure_ascii=False) + "\n")
@@ -722,6 +842,12 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
         files.append("snippets_used.json")
         _write_text(root / "PREVIEW_README.md", _build_preview_readme(task, snippet_context))
         files.append("PREVIEW_README.md")
+
+    quality_gate = _quality_gate(root, task, task_plan, content_aware=content_aware_enabled)
+    _write_text(root / "quality_gate.json", json.dumps(quality_gate, indent=2, ensure_ascii=False) + "\n")
+    files.append("quality_gate.json")
+    if quality_gate["status"] != "passed":
+        raise ValueError("preview quality gate failed")
 
     manifest = {
         "schema_version": PREVIEW_SCHEMA_VERSION,
@@ -835,7 +961,10 @@ def load_latest_preview() -> dict[str, Any] | None:
                     "index.html",
                     "styles.css",
                     "app.js",
+                    "task_intent.json",
+                    "task_plan.json",
                     "task_pack.json",
+                    "quality_gate.json",
                     "capsules_used.json",
                     "provenance.json",
                     "summary.md",
