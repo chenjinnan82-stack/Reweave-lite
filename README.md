@@ -39,19 +39,6 @@ python3 scripts/run_public_reweave_demo.py --source examples/source_boxes/suppor
 
 The first command shows available capsules. The second builds a Small Project Pack from manually selected capsules. The third runs the same chain on another public Source Box.
 
-Five public template cases:
-
-```bash
-python3 scripts/run_public_reweave_demo.py --list-template-cases
-python3 scripts/run_public_reweave_demo.py --template-case dashboard
-python3 scripts/run_public_reweave_demo.py --template-case landing-page
-python3 scripts/run_public_reweave_demo.py --template-case form-tool
-python3 scripts/run_public_reweave_demo.py --template-case admin-panel
-python3 scripts/run_public_reweave_demo.py --template-case data-viewer
-```
-
-Each case writes a runnable Small Project Pack and keeps source project writes at `0`.
-
 Use your own old project with a plain task:
 
 ```bash
@@ -60,7 +47,7 @@ python3 scripts/run_public_reweave_demo.py \
   --task "Build a customer quote dashboard from this old project"
 ```
 
-`--task-template` still exists as a demo shortcut, but the main path is `--task`.
+The public product path is task-driven: describe what you want, let Reweave retrieve capsules from the Source Box, then inspect the generated pack and provenance.
 
 ## Local Small Model
 

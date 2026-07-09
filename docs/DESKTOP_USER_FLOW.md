@@ -7,8 +7,9 @@ The desktop app is the human path for the same safe chain used by the CLI.
 ```text
 Bind Source Box
 -> Scan
--> Prepare
--> Store
+-> Draft Capsules
+-> Store Capsules
+-> Describe Task
 -> Select capsules
 -> Build Small Project Pack
 -> View provenance
@@ -29,6 +30,6 @@ A desktop smoke is considered good enough when:
 - a source folder can be bound;
 - scan / prepare / store can run;
 - capsules can be selected;
-- Build Small Project Pack returns `task_pack.json`;
+- Build Small Project Pack returns `task_intent.json`, `task_plan.json`, `quality_gate.json`, and `task_pack.json`;
 - generated package files include `index.html`, `styles.css`, `app.js`, `capsules_used.json`, `provenance.json`, and `snippets_used.json`;
 - the original source file content is unchanged.

@@ -40,6 +40,24 @@ def _assert_local_assets_exist(out: Path) -> None:
         assert (out / asset).is_file(), asset
 
 
+def test_public_reweave_demo_help_is_task_driven() -> None:
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "run_public_reweave_demo.py"),
+            "--help",
+        ],
+        check=True,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    assert "--source SOURCE" in result.stdout
+    assert "--task TASK" in result.stdout
+    assert "--template-case" not in result.stdout
+    assert "--task-template" not in result.stdout
+
+
 def test_public_reweave_demo_outputs_task_pack(tmp_path: Path) -> None:
     source = ROOT / "examples" / "source_boxes" / "customer-quote-widget"
     out = tmp_path / "reweave_demo"
@@ -130,6 +148,7 @@ def test_public_reweave_demo_runs_five_source_boxes(tmp_path: Path) -> None:
     )
     payload = json.loads(listed.stdout)
     assert {item["id"] for item in payload["template_cases"]} == set(TEMPLATE_CASES)
+    assert payload["warnings"] == ["legacy demo shortcut; prefer --source + --task for the product path"]
 
     for case_id, source_name in TEMPLATE_CASES.items():
         source = ROOT / "examples" / "source_boxes" / source_name
@@ -172,6 +191,8 @@ def test_public_reweave_demo_runs_five_source_boxes(tmp_path: Path) -> None:
         assert quality_gate["status"] == "passed"
         assert task_pack["template_case"]["id"] == case_id
         assert task_pack["template_case"]["source"].endswith(source_name)
+        assert payload["warnings"] == ["legacy demo shortcut; prefer --source + --task for the product path"]
+        assert task_pack["warnings"] == ["legacy demo shortcut; prefer --source + --task for the product path"]
         assert payload["source"]["label"] == source_name
         assert snippets_used["snippets"]
         assert "Task Intent" in html
@@ -195,6 +216,7 @@ def test_public_reweave_demo_keeps_task_templates_as_demo_shortcuts(tmp_path: Pa
         text=True,
     )
     choices = json.loads(listed.stdout)
+    assert choices["warnings"] == ["legacy demo shortcut; prefer --source + --task for the product path"]
     assert {item["id"] for item in choices["task_templates"]} == {
         "portfolio-viewer",
         "operations-panel",
@@ -224,8 +246,10 @@ def test_public_reweave_demo_keeps_task_templates_as_demo_shortcuts(tmp_path: Pa
     task_intent = json.loads((out / "task_intent.json").read_text(encoding="utf-8"))
     task_plan = json.loads((out / "task_plan.json").read_text(encoding="utf-8"))
     assert payload["source_project_write"] is False
+    assert payload["warnings"] == ["legacy demo shortcut; prefer --source + --task for the product path"]
     assert payload["task_template"]["id"] == "operations-panel"
     assert task_pack["task_template"]["id"] == "operations-panel"
+    assert task_pack["warnings"] == ["legacy demo shortcut; prefer --source + --task for the product path"]
     assert "task_profile" not in task_pack
     assert task_pack["task_intent_path"] == "task_intent.json"
     assert task_pack["task_plan_path"] == "task_plan.json"

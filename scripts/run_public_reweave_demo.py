@@ -17,6 +17,7 @@ MARKER = ".reweave_public_demo"
 DEFAULT_OUT = Path(tempfile.gettempdir()) / "reweave_public_demo"
 DEFAULT_SOURCE = "examples/source_boxes/customer-quote-widget"
 DEFAULT_TASK = "Build a quote summary card"
+LEGACY_SHORTCUT_WARNING = "legacy demo shortcut; prefer --source + --task for the product path"
 TEMPLATE_CASES: dict[str, dict[str, str]] = {
     "dashboard": {
         "kind": "dashboard",
@@ -347,6 +348,8 @@ def run(
         if task_template:
             task_pack["task_template"] = {"id": task_template, **TASK_TEMPLATES[task_template]}
             task_pack["demo_shortcut"] = "task_template"
+        if template_case or task_template:
+            task_pack["warnings"] = [LEGACY_SHORTCUT_WARNING]
         _write_json(out / "task_pack.json", task_pack)
         llm_result: dict[str, object] = {"enabled": False}
         if llm == "ollama":
@@ -393,6 +396,7 @@ def run(
             "source_project_write": False,
             "template_case": task_pack.get("template_case"),
             "task_template": task_pack.get("task_template"),
+            "warnings": task_pack.get("warnings", []),
         }
 
 
@@ -402,10 +406,10 @@ def main() -> None:
     parser.add_argument("--task")
     parser.add_argument("--out", default=str(DEFAULT_OUT))
     parser.add_argument("--list-capsules", action="store_true", help="List capsule choices for a Source Box and exit without writing an output pack.")
-    parser.add_argument("--list-template-cases", action="store_true", help="List the five public template cases and exit without writing an output pack.")
-    parser.add_argument("--template-case", choices=tuple(TEMPLATE_CASES), help="Run one public template case: dashboard, landing-page, form-tool, admin-panel, or data-viewer.")
-    parser.add_argument("--list-task-templates", action="store_true", help="List reusable task templates for your own Source Box and exit.")
-    parser.add_argument("--task-template", choices=tuple(TASK_TEMPLATES), help="Use a reusable task prompt with your own --source.")
+    parser.add_argument("--list-template-cases", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--template-case", choices=tuple(TEMPLATE_CASES), help=argparse.SUPPRESS)
+    parser.add_argument("--list-task-templates", action="store_true", help=argparse.SUPPRESS)
+    parser.add_argument("--task-template", choices=tuple(TASK_TEMPLATES), help=argparse.SUPPRESS)
     parser.add_argument("--select-capsule", action="append", default=[], help="Select a capsule by id, exact name, or text match. Repeat up to four times.")
     parser.add_argument("--include-local-paths", action="store_true", help="Include local source paths in stdout and task_pack.json; provenance stays redacted.")
     parser.add_argument("--llm", choices=("none", "ollama"), default="none", help="Optional local model pass. Default: none.")
@@ -415,10 +419,10 @@ def main() -> None:
     parser.add_argument("--require-llm", action="store_true", help="Fail instead of falling back when local model generation fails.")
     args = parser.parse_args()
     if args.list_template_cases:
-        print(json.dumps({"ok": True, "template_cases": _public_template_cases(), "source_project_write": False}, indent=2, ensure_ascii=False))
+        print(json.dumps({"ok": True, "template_cases": _public_template_cases(), "source_project_write": False, "warnings": [LEGACY_SHORTCUT_WARNING]}, indent=2, ensure_ascii=False))
         return
     if args.list_task_templates:
-        print(json.dumps({"ok": True, "task_templates": _public_task_templates(), "source_project_write": False}, indent=2, ensure_ascii=False))
+        print(json.dumps({"ok": True, "task_templates": _public_task_templates(), "source_project_write": False, "warnings": [LEGACY_SHORTCUT_WARNING]}, indent=2, ensure_ascii=False))
         return
 
     case = TEMPLATE_CASES.get(args.template_case or "") if args.template_case else None

@@ -39,19 +39,6 @@ python3 scripts/run_public_reweave_demo.py --source examples/source_boxes/suppor
 
 第一条列出可选胶囊。第二条用手动选择的胶囊生成 Small Project Pack。第三条换一个公开 Source Box 跑同一条链路。
 
-5 个公开模板案例：
-
-```bash
-python3 scripts/run_public_reweave_demo.py --list-template-cases
-python3 scripts/run_public_reweave_demo.py --template-case dashboard
-python3 scripts/run_public_reweave_demo.py --template-case landing-page
-python3 scripts/run_public_reweave_demo.py --template-case form-tool
-python3 scripts/run_public_reweave_demo.py --template-case admin-panel
-python3 scripts/run_public_reweave_demo.py --template-case data-viewer
-```
-
-每个案例都会生成可打开的 Small Project Pack，并保持 source project writes 为 `0`。
-
 用你自己的旧项目跑一句真实任务：
 
 ```bash
@@ -60,7 +47,7 @@ python3 scripts/run_public_reweave_demo.py \
   --task "Build a customer quote dashboard from this old project"
 ```
 
-`--task-template` 仍保留为 demo 捷径，但主线是 `--task`。
+公开产品主线是 task-driven：描述你要做什么，Reweave 从 Source Box 检索胶囊，再生成可检查来源的 Small Project Pack。
 
 ## 本地小模型
 
