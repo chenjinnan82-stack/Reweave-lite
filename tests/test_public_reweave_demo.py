@@ -236,6 +236,18 @@ def test_public_reweave_demo_supports_real_project_task_templates(tmp_path: Path
     assert "Review project" in portfolio_html
 
 
+def test_default_capsule_selection_prefers_enrichable_capsules() -> None:
+    from scripts.run_public_reweave_demo import _select_enrichable_capsules
+
+    capsules = [{"id": "bad"}, {"id": "good1"}, {"id": "good2"}, {"id": "good3"}, {"id": "good4"}]
+
+    def enrich(capsule_id: str) -> dict[str, object]:
+        return {"ok": capsule_id.startswith("good")}
+
+    selected = _select_enrichable_capsules(capsules, [], enrich)
+    assert [cap["id"] for cap in selected] == ["good1", "good2", "good3", "good4"]
+
+
 def test_public_reweave_demo_supports_manual_capsule_selection(tmp_path: Path) -> None:
     source = ROOT / "examples" / "source_boxes" / "customer-quote-widget"
     listed = subprocess.run(

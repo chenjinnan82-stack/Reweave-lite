@@ -55,6 +55,18 @@ class ReweaveSourceScannerTest(unittest.TestCase):
         self.assertFalse(names_in_node)
         self.assertEqual(summary["extensions"].get(".js", 0), 0)
 
+    def test_venv_prefix_dirs_are_not_sampled(self) -> None:
+        root = self._state_dir / "venv-prefix"
+        root.mkdir()
+        (root / ".venv-reweave").mkdir()
+        (root / ".venv-reweave" / "main.py").write_text("print('dependency')", encoding="utf-8")
+        (root / "app.py").write_text("print('app')", encoding="utf-8")
+
+        summary = scanner.scan_directory_readonly(root, source_id="source_venv", label="venv")
+
+        self.assertEqual(summary["extensions"].get(".py"), 1)
+        self.assertEqual(summary["sample_paths_by_extension"][".py"], ["app.py"])
+
     def test_does_not_read_file_contents(self) -> None:
         root = self._state_dir / "read-guard"
         root.mkdir()

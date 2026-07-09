@@ -9,6 +9,7 @@ import os
 import shutil
 import tempfile
 from pathlib import Path
+from typing import Callable
 
 ROOT = Path(__file__).resolve().parents[1]
 MARKER = ".reweave_public_demo"
@@ -176,6 +177,33 @@ def _select_capsules(capsules: list[dict[str, object]], selectors: list[str]) ->
     return selected[:4]
 
 
+def _select_enrichable_capsules(
+    capsules: list[dict[str, object]],
+    selectors: list[str],
+    enrich_capsule_content: Callable[[str], dict[str, object]],
+) -> list[dict[str, object]]:
+    selected = _select_capsules(capsules, selectors)
+    if selectors:
+        for cap in selected:
+            enrich_capsule_content(str(cap["id"]))
+        return selected
+
+    enrichable: list[dict[str, object]] = []
+    for cap in capsules:
+        result = enrich_capsule_content(str(cap["id"]))
+        if isinstance(result, dict) and result.get("ok"):
+            enrichable.append(cap)
+        if len(enrichable) >= 4:
+            break
+    if len(enrichable) < 4:
+        for cap in selected:
+            if cap not in enrichable:
+                enrichable.append(cap)
+            if len(enrichable) >= 4:
+                break
+    return enrichable[:4]
+
+
 def run(
     source: Path,
     task: str,
@@ -208,10 +236,8 @@ def run(
         scan = scan_source_box(box["id"])
         draft = draft_capsules(box["id"])
         capsules = promote_source_drafts(box["id"])
-        selected_capsules = _select_capsules(capsules, select_capsules or [])
+        selected_capsules = _select_enrichable_capsules(capsules, select_capsules or [], enrich_capsule_content)
         capsule_ids = [str(cap["id"]) for cap in selected_capsules]
-        for cap_id in capsule_ids:
-            enrich_capsule_content(cap_id)
         if list_capsules:
             return {
                 "ok": True,

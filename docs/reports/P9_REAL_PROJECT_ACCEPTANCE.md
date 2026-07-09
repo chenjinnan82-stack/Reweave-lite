@@ -22,12 +22,12 @@ Scope: 10 local non-demo Source Boxes. Local paths are intentionally redacted.
 | simple_adder | operations-panel | usable | 4 capsules, files complete |
 | fibo_test | portfolio-viewer | usable | 4 capsules, files complete |
 | haypile | operations-panel | usable | 4 capsules, files complete |
-| reweave_standalone | operations-panel | rejected | missing `snippets_used.json` |
+| reweave_standalone | operations-panel | usable | 4 capsules, files complete |
 | meowbus_core | operations-panel | usable | 2 capsules, files complete |
 | old_reweave_frontend | portfolio-viewer | usable | 4 capsules, files complete |
-| luna | operations-panel | rejected | missing `snippets_used.json` |
+| luna | operations-panel | usable | 4 capsules, files complete |
 
-Summary: 8 usable / 10 total.
+Summary: 10 usable / 10 total.
 
 The target for this pass was at least 7 usable / 10. P9 passed.
 

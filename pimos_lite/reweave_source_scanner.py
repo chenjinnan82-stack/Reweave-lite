@@ -48,6 +48,10 @@ ENTRY_CANDIDATE_NAMES = frozenset(
 )
 
 
+def _is_ignored_dir(name: str) -> bool:
+    return name in IGNORED_DIR_NAMES or name.startswith(".venv")
+
+
 @dataclass(frozen=True)
 class ScanLimits:
     max_files: int = 800
@@ -202,7 +206,7 @@ def scan_directory_readonly(
                 continue
             if entry.is_dir():
                 counts["dirs_total"] += 1
-                if name in IGNORED_DIR_NAMES:
+                if _is_ignored_dir(name):
                     counts["files_skipped"] += 1
                     continue
                 walk(entry, depth + 1)
