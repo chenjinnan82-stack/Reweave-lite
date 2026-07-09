@@ -9,6 +9,8 @@ Reweave-lite turns old project folders into reusable capsules and previewable Ta
 - Public Source Box examples.
 - Local capsule draft, store, retrieval, and Task Pack preview.
 - Desktop shell with read-only runtime bridge.
+- Desktop smoke: Source Box onboarding loads first; Generate / Export / Open Folder stay hidden until eligible.
+- Bridge smoke: Source Box -> scan -> draft -> store -> Task Pack preview works without source writes.
 - Public demo script:
 
 ```bash

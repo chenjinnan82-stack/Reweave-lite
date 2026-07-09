@@ -183,6 +183,8 @@ Desktop loop:
 Bind Source Box -> Scan -> Prepare -> Store -> select capsules -> Build Small Project Pack -> View provenance
 ```
 
+Desktop smoke verified on macOS: the app opens on Source Box onboarding, Generate / Export / Open Folder actions stay hidden until eligible, and the bridge flow can build a Task Pack preview without source writes.
+
 See [Desktop User Flow](docs/DESKTOP_USER_FLOW.md).
 
 Run the public checks:

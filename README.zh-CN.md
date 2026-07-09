@@ -184,6 +184,8 @@ examples/source_boxes/ops-status-card
 Bind Source Box -> Scan -> Prepare -> Store -> 选择胶囊 -> Build Small Project Pack -> 查看 provenance
 ```
 
+macOS 桌面 smoke 已验证：程序打开后先进入 Source Box 开屏，Generate / Export / Open Folder 在未满足条件前保持隐藏，bridge 主流程可以生成 Task Pack preview，且不写源项目。
+
 见 [Desktop User Flow](docs/DESKTOP_USER_FLOW.md)。
 
 运行公开仓库自带检查：
