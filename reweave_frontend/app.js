@@ -245,9 +245,12 @@
         '<span class="meta-icon" aria-hidden="true">◫</span> Capsules used: ' + capsulesUsed;
     }
     if (els.workflowStatus) {
+      var workflowText = hasTaskPackPreview
+        ? taskPackStatusFromFiles(data.generatedPackage.files || [])
+        : currentWorkflowStep(hasTaskPackPreview);
       els.workflowStatus.innerHTML =
         '<span class="meta-icon" aria-hidden="true">↳</span> Workflow: ' +
-        escapeHtml(currentWorkflowStep(hasTaskPackPreview));
+        escapeHtml(workflowText);
     }
     var metaLines = document.querySelectorAll(".generated-meta .meta-line");
     if (metaLines[2]) metaLines[2].innerHTML = '<span class="meta-icon" aria-hidden="true">◎</span> ' + previewText;
@@ -284,6 +287,20 @@
     var capsules = Array.isArray(data.warehouseCapsules) ? data.warehouseCapsules : data.capsules || [];
     if (!capsules.length) return "Store Capsules";
     return "Select capsules, then Build Small Project Pack";
+  }
+
+  function taskPackStatusFromFiles(files) {
+    files = Array.isArray(files) ? files : [];
+    var hasIntent = files.indexOf("task_intent.json") >= 0;
+    var hasPlan = files.indexOf("task_plan.json") >= 0;
+    var hasGate = files.indexOf("quality_gate.json") >= 0;
+    if (hasIntent && hasPlan && hasGate) {
+      return "Intent ready · Plan ready · Quality gate passed · Source writes 0";
+    }
+    if (files.indexOf("task_pack.json") >= 0) {
+      return "Task Pack ready · Source writes 0";
+    }
+    return "View provenance";
   }
 
   function bridgeCall(method, arg) {
@@ -1729,7 +1746,10 @@
     var html = '<div class="folder">' + escapeHtml(folder) + "</div>";
     files.forEach(function (f) {
       var cls = "file";
-      if (f === "capsules_used.json") cls += " highlight";
+      if (f === "task_intent.json") cls += " highlight";
+      else if (f === "task_plan.json") cls += " highlight";
+      else if (f === "quality_gate.json") cls += " highlight";
+      else if (f === "capsules_used.json") cls += " highlight";
       else if (f === "snippets_used.json") cls += " highlight";
       else if (f === "provenance.json") cls += " highlight-subtle";
       html += '<div class="' + cls + '">' + escapeHtml(f) + "</div>";

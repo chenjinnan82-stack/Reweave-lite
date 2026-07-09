@@ -844,6 +844,8 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
         files.append("PREVIEW_README.md")
 
     quality_gate = _quality_gate(root, task, task_plan, content_aware=content_aware_enabled)
+    task_pack["quality_gate"] = quality_gate
+    _write_text(root / "task_pack.json", json.dumps(task_pack, indent=2, ensure_ascii=False) + "\n")
     _write_text(root / "quality_gate.json", json.dumps(quality_gate, indent=2, ensure_ascii=False) + "\n")
     files.append("quality_gate.json")
     if quality_gate["status"] != "passed":

@@ -71,6 +71,8 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert 'new QWebChannel(qt.webChannelTransport' in app
     assert "function applyLumoLiteRuntimeView()" in app
     assert "function currentWorkflowStep(hasTaskPackPreview)" in app
+    assert "function taskPackStatusFromFiles(files)" in app
+    assert "Intent ready · Plan ready · Quality gate passed · Source writes 0" in app
     assert "View provenance" in app
     assert "function canBuildTaskPackPreview()" in app
     assert 'els.taskInput.disabled = !taskPackPreview;' in app
@@ -94,6 +96,9 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert 'els.generatedPreview.classList.toggle("hidden", !hasTaskPackPreview);' in app
     assert "Runtime artifacts" in app
     assert "capsules_used / trace receipts" in app
+    assert 'f === "task_intent.json"' in app
+    assert 'f === "task_plan.json"' in app
+    assert 'f === "quality_gate.json"' in app
     assert "capsules linked to this runtime" in app
     assert "No local generation history in read-only mode" in app
     assert "show && hasDesktopBridge() && (!isLumoLiteReadOnly() || canBuildTaskPackPreview())" in app
