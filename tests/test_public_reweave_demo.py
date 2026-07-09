@@ -19,6 +19,21 @@ SOURCE_BOXES = (
 )
 
 
+def test_llm_file_block_parser_accepts_common_markers() -> None:
+    from pimos_lite.reweave_llm_pack import parse_file_blocks
+
+    files = parse_file_blocks(
+        """### `index.html`
+<html></html>
+--- styles.css:
+body { color: black; }
+--- app.js ---
+console.log('ok');
+"""
+    )
+    assert set(files) == {"index.html", "styles.css", "app.js"}
+
+
 def _assert_local_assets_exist(out: Path) -> None:
     html = (out / "index.html").read_text(encoding="utf-8")
     for asset in re.findall(r"""(?:href|src)=["']([^"']+)["']""", html):
@@ -182,21 +197,16 @@ def test_public_reweave_demo_supports_optional_local_ollama(tmp_path: Path) -> N
   <head>
     <meta charset="utf-8">
     <title>LLM quote pack</title>
-    <link rel="stylesheet" href="styles.css">
+    <link rel="stylesheet" href="/missing.css">
   </head>
   <body>
     <main><h1>LLM quote pack</h1><p id="quoteSummary">Ready</p></main>
-    <script src="app.js"></script>
+    <script src="/missing.js"></script>
   </body>
 </html>
 --- styles.css ---
 body { font-family: system-ui, sans-serif; }
 main { max-width: 640px; margin: 2rem auto; }
---- app.js ---
-document.addEventListener('DOMContentLoaded', function () {
-  const target = document.getElementById('quoteSummary');
-  if (target) target.textContent = 'Local model pack ready';
-});
 """
             payload = json.dumps({"response": body}).encode("utf-8")
             self.send_response(200)
@@ -248,8 +258,16 @@ document.addEventListener('DOMContentLoaded', function () {
     provenance = json.loads((out / "provenance.json").read_text(encoding="utf-8"))
     task_pack = json.loads((out / "task_pack.json").read_text(encoding="utf-8"))
     assert payload["llm"]["applied"] is True
-    assert "LLM quote pack" in (out / "index.html").read_text(encoding="utf-8")
+    html = (out / "index.html").read_text(encoding="utf-8")
+    assert "LLM quote pack" in html
+    assert "/missing.css" not in html
+    assert "/missing.js" not in html
+    assert "styles.css" in html
+    assert "app.js" in html
+    assert (out / "app.js").is_file()
     assert provenance["llm_generation"]["model"] == "tiny-test"
+    assert "normalized_html_assets" in provenance["llm_generation"]["normalizations"]
+    assert "filled_missing_app_js" in provenance["llm_generation"]["normalizations"]
     assert provenance["llm_generation"]["local_http_call"] is True
     assert provenance["llm_generation"]["external_network_call"] is False
     assert provenance["llm_generation"]["source_project_write"] is False

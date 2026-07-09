@@ -62,6 +62,7 @@ Rules:
 - Return exactly three file blocks.
 - Do not use external CDNs or missing local files.
 - index.html may only reference styles.css and app.js.
+- Always include an app.js block, even if it only wires a tiny local interaction.
 - Keep it small, complete, and runnable by opening index.html.
 
 Format:
@@ -76,7 +77,13 @@ Format:
 
 
 def parse_file_blocks(text: str) -> dict[str, str]:
-    matches = list(re.finditer(r"^---\s*(index\.html|styles\.css|app\.js)\s*---\s*$", text, re.MULTILINE))
+    matches = list(
+        re.finditer(
+            r"^\s*(?:---|###)\s*`?(index\.html|styles\.css|app\.js)`?\s*(?:---|:)?\s*$",
+            text,
+            re.MULTILINE,
+        )
+    )
     files: dict[str, str] = {}
     for i, match in enumerate(matches):
         name = match.group(1)
@@ -100,6 +107,39 @@ def _local_assets_ok(html: str) -> bool:
         if asset not in allowed:
             return False
     return True
+
+
+def _normalize_html_assets(html: str) -> tuple[str, list[str]]:
+    warnings: list[str] = []
+    original = html
+    html = re.sub(r"<link\b[^>]*rel=[\"']?stylesheet[\"']?[^>]*>", "", html, flags=re.I)
+    html = re.sub(r"<script\b[^>]*src=[\"'][^\"']+[\"'][^>]*>\s*</script>", "", html, flags=re.I)
+    if "</head>" in html.lower():
+        html = re.sub(r"</head>", '  <link rel="stylesheet" href="styles.css">\n</head>', html, flags=re.I, count=1)
+    else:
+        html = '<link rel="stylesheet" href="styles.css">\n' + html
+    if "</body>" in html.lower():
+        html = re.sub(r"</body>", '  <script src="app.js"></script>\n</body>', html, flags=re.I, count=1)
+    else:
+        html += '\n<script src="app.js"></script>\n'
+    if html != original:
+        warnings.append("normalized_html_assets")
+    return html, warnings
+
+
+def normalize_files(files: dict[str, str]) -> tuple[dict[str, str], list[str]]:
+    files = dict(files)
+    warnings: list[str] = []
+    if files.get("index.html"):
+        files["index.html"], asset_warnings = _normalize_html_assets(files["index.html"])
+        warnings.extend(asset_warnings)
+    if not files.get("styles.css", "").strip():
+        files["styles.css"] = "body { font-family: system-ui, sans-serif; }\n"
+        warnings.append("filled_missing_styles_css")
+    if not files.get("app.js", "").strip():
+        files["app.js"] = "document.addEventListener('DOMContentLoaded', function () { console.log('[Reweave] local model pack ready'); });\n"
+        warnings.append("filled_missing_app_js")
+    return files, warnings
 
 
 def _js_syntax_ok(js: str) -> bool:
@@ -141,7 +181,7 @@ def call_ollama(prompt: str, *, model: str, base_url: str, timeout: float) -> st
             "model": model,
             "prompt": prompt,
             "stream": False,
-            "options": {"temperature": 0.2},
+            "options": {"temperature": 0, "seed": 7},
         }
     ).encode("utf-8")
     req = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json"}, method="POST")
@@ -178,13 +218,13 @@ def apply_ollama_pack(
             base_url=base_url,
             timeout=timeout,
         )
-        files = parse_file_blocks(response)
+        files, warnings = normalize_files(parse_file_blocks(response))
         errors = validate_files(files)
         if errors:
             raise ValueError("invalid_llm_output:" + ",".join(errors))
         for name, content in files.items():
             (out / name).write_text(content, encoding="utf-8")
-        meta.update({"applied": True, "fallback_used": False})
+        meta.update({"applied": True, "fallback_used": False, "normalizations": warnings})
     except (OSError, TimeoutError, urllib.error.URLError, ValueError, json.JSONDecodeError) as exc:
         meta["error"] = str(exc)[:240]
         if require:
