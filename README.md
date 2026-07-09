@@ -39,6 +39,19 @@ python3 scripts/run_public_reweave_demo.py --source examples/source_boxes/suppor
 
 The first command shows available capsules. The second builds a Small Project Pack from manually selected capsules. The third runs the same chain on another public Source Box.
 
+Five public template cases:
+
+```bash
+python3 scripts/run_public_reweave_demo.py --list-template-cases
+python3 scripts/run_public_reweave_demo.py --template-case dashboard
+python3 scripts/run_public_reweave_demo.py --template-case landing-page
+python3 scripts/run_public_reweave_demo.py --template-case form-tool
+python3 scripts/run_public_reweave_demo.py --template-case admin-panel
+python3 scripts/run_public_reweave_demo.py --template-case data-viewer
+```
+
+Each case writes a runnable Small Project Pack and keeps source project writes at `0`.
+
 ## Local Small Model
 
 Without Ollama, Reweave runs the deterministic demo:
@@ -153,6 +166,12 @@ Try a public Source Box in the desktop app:
 ```text
 examples/source_boxes/customer-quote-widget
 examples/source_boxes/ops-status-card
+```
+
+Desktop loop:
+
+```text
+Bind Source Box -> Scan -> Prepare -> Store -> select capsules -> Build Small Project Pack -> View provenance
 ```
 
 Run the public checks:

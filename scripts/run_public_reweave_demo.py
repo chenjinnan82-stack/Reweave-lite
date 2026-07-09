@@ -13,6 +13,40 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 MARKER = ".reweave_public_demo"
 DEFAULT_OUT = Path(tempfile.gettempdir()) / "reweave_public_demo"
+DEFAULT_SOURCE = "examples/source_boxes/customer-quote-widget"
+DEFAULT_TASK = "Build a quote summary card"
+TEMPLATE_CASES: dict[str, dict[str, str]] = {
+    "dashboard": {
+        "kind": "dashboard",
+        "source": "examples/source_boxes/ops-status-card",
+        "task": "Build an operations dashboard",
+        "purpose": "status cards, metric copy, and review checklist",
+    },
+    "landing-page": {
+        "kind": "landing_page",
+        "source": "examples/source_boxes/launch-checklist",
+        "task": "Build a launch landing page",
+        "purpose": "launch sections, checklist copy, and progress state",
+    },
+    "form-tool": {
+        "kind": "form_tool",
+        "source": "examples/source_boxes/customer-quote-widget",
+        "task": "Build a customer quote form tool",
+        "purpose": "form shell, quote summary, and pricing interaction",
+    },
+    "admin-panel": {
+        "kind": "admin_panel",
+        "source": "examples/source_boxes/support-ticket-triage",
+        "task": "Build a support triage admin panel",
+        "purpose": "queue layout, priority tags, and triage action",
+    },
+    "data-viewer": {
+        "kind": "data_viewer",
+        "source": "examples/source_boxes/content-calendar",
+        "task": "Build a content calendar data viewer",
+        "purpose": "calendar cards, publishing status, and readable data rows",
+    },
+}
 
 
 def _import_reweave() -> tuple[object, object, object, object, object, object, object]:
@@ -99,6 +133,10 @@ def _public_capsule(cap: dict[str, object]) -> dict[str, object]:
     }
 
 
+def _public_template_cases() -> list[dict[str, str]]:
+    return [{"id": case_id, **payload} for case_id, payload in TEMPLATE_CASES.items()]
+
+
 def _select_capsules(capsules: list[dict[str, object]], selectors: list[str]) -> list[dict[str, object]]:
     if not selectors:
         return capsules[:4]
@@ -130,6 +168,7 @@ def run(
     ollama_url: str = "http://127.0.0.1:11434",
     llm_timeout: float = 60,
     require_llm: bool = False,
+    template_case: str | None = None,
 ) -> dict[str, object]:
     source = source.expanduser().resolve()
     if not source.is_dir():
@@ -191,6 +230,8 @@ def run(
             "output_files": _public_files(out),
             "source_project_write": False,
         }
+        if template_case:
+            task_pack["template_case"] = {"id": template_case, **TEMPLATE_CASES[template_case]}
         _write_json(out / "task_pack.json", task_pack)
         llm_result: dict[str, object] = {"enabled": False}
         if llm == "ollama":
@@ -232,15 +273,18 @@ def run(
             "selected_capsules": [_public_capsule(cap) for cap in selected_capsules],
             "llm": llm_result,
             "source_project_write": False,
+            "template_case": task_pack.get("template_case"),
         }
 
 
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--source", default="examples/source_boxes/customer-quote-widget")
-    parser.add_argument("--task", default="Build a quote summary card")
+    parser.add_argument("--source")
+    parser.add_argument("--task")
     parser.add_argument("--out", default=str(DEFAULT_OUT))
     parser.add_argument("--list-capsules", action="store_true", help="List capsule choices for a Source Box and exit without writing an output pack.")
+    parser.add_argument("--list-template-cases", action="store_true", help="List the five public template cases and exit without writing an output pack.")
+    parser.add_argument("--template-case", choices=tuple(TEMPLATE_CASES), help="Run one public template case: dashboard, landing-page, form-tool, admin-panel, or data-viewer.")
     parser.add_argument("--select-capsule", action="append", default=[], help="Select a capsule by id, exact name, or text match. Repeat up to four times.")
     parser.add_argument("--include-local-paths", action="store_true", help="Include local source paths in stdout and task_pack.json; provenance stays redacted.")
     parser.add_argument("--llm", choices=("none", "ollama"), default="none", help="Optional local model pass. Default: none.")
@@ -249,10 +293,17 @@ def main() -> None:
     parser.add_argument("--llm-timeout", type=float, default=60.0, help="Ollama request timeout in seconds.")
     parser.add_argument("--require-llm", action="store_true", help="Fail instead of falling back when local model generation fails.")
     args = parser.parse_args()
+    if args.list_template_cases:
+        print(json.dumps({"ok": True, "template_cases": _public_template_cases(), "source_project_write": False}, indent=2, ensure_ascii=False))
+        return
+
+    case = TEMPLATE_CASES.get(args.template_case or "") if args.template_case else None
+    source = args.source or (case["source"] if case else DEFAULT_SOURCE)
+    task = args.task or (case["task"] if case else DEFAULT_TASK)
 
     result = run(
-        Path(args.source),
-        args.task,
+        Path(source),
+        task,
         Path(args.out),
         include_local_paths=args.include_local_paths,
         select_capsules=args.select_capsule,
@@ -262,6 +313,7 @@ def main() -> None:
         ollama_url=args.ollama_url,
         llm_timeout=args.llm_timeout,
         require_llm=args.require_llm,
+        template_case=args.template_case,
     )
     print(json.dumps(result, indent=2, ensure_ascii=False))
 

@@ -10,13 +10,13 @@ from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
-SOURCE_BOXES = (
-    "customer-quote-widget",
-    "ops-status-card",
-    "support-ticket-triage",
-    "content-calendar",
-    "launch-checklist",
-)
+TEMPLATE_CASES = {
+    "dashboard": "ops-status-card",
+    "landing-page": "launch-checklist",
+    "form-tool": "customer-quote-widget",
+    "admin-panel": "support-ticket-triage",
+    "data-viewer": "content-calendar",
+}
 
 
 def test_llm_file_block_parser_accepts_common_markers() -> None:
@@ -96,17 +96,29 @@ def test_public_reweave_demo_outputs_task_pack(tmp_path: Path) -> None:
 
 
 def test_public_reweave_demo_runs_five_source_boxes(tmp_path: Path) -> None:
-    for name in SOURCE_BOXES:
-        source = ROOT / "examples" / "source_boxes" / name
-        out = tmp_path / f"reweave_{name}"
+    listed = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "run_public_reweave_demo.py"),
+            "--list-template-cases",
+        ],
+        check=True,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(listed.stdout)
+    assert {item["id"] for item in payload["template_cases"]} == set(TEMPLATE_CASES)
+
+    for case_id, source_name in TEMPLATE_CASES.items():
+        source = ROOT / "examples" / "source_boxes" / source_name
+        out = tmp_path / f"reweave_{case_id}"
         result = subprocess.run(
             [
                 sys.executable,
                 str(ROOT / "scripts" / "run_public_reweave_demo.py"),
-                "--source",
-                str(source),
-                "--task",
-                f"Build a small project from {name}",
+                "--template-case",
+                case_id,
                 "--out",
                 str(out),
             ],
@@ -127,6 +139,9 @@ def test_public_reweave_demo_runs_five_source_boxes(tmp_path: Path) -> None:
         app_js = (out / "app.js").read_text(encoding="utf-8")
         assert task_pack["source_project_write"] is False
         assert task_pack["project_type"] == "small_project_pack"
+        assert task_pack["template_case"]["id"] == case_id
+        assert task_pack["template_case"]["source"].endswith(source_name)
+        assert payload["source"]["label"] == source_name
         assert snippets_used["snippets"]
         assert "Small Project Pack" in html
         assert "project-checklist" in html

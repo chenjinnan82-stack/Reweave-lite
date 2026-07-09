@@ -39,6 +39,19 @@ python3 scripts/run_public_reweave_demo.py --source examples/source_boxes/suppor
 
 第一条列出可选胶囊。第二条用手动选择的胶囊生成 Small Project Pack。第三条换一个公开 Source Box 跑同一条链路。
 
+5 个公开模板案例：
+
+```bash
+python3 scripts/run_public_reweave_demo.py --list-template-cases
+python3 scripts/run_public_reweave_demo.py --template-case dashboard
+python3 scripts/run_public_reweave_demo.py --template-case landing-page
+python3 scripts/run_public_reweave_demo.py --template-case form-tool
+python3 scripts/run_public_reweave_demo.py --template-case admin-panel
+python3 scripts/run_public_reweave_demo.py --template-case data-viewer
+```
+
+每个案例都会生成可打开的 Small Project Pack，并保持 source project writes 为 `0`。
+
 ## 本地小模型
 
 不使用 Ollama 时，Reweave 会跑 deterministic demo：
@@ -154,6 +167,12 @@ py -3 scripts\run_public_reweave_demo.py `
 ```text
 examples/source_boxes/customer-quote-widget
 examples/source_boxes/ops-status-card
+```
+
+桌面闭环：
+
+```text
+Bind Source Box -> Scan -> Prepare -> Store -> 选择胶囊 -> Build Small Project Pack -> 查看 provenance
 ```
 
 运行公开仓库自带检查：
