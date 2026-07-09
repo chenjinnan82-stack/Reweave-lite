@@ -1337,10 +1337,10 @@
     renderHistory();
     renderSources();
     bindMainEvents();
-    if (data.sampleTask) {
+    if (data.sampleTask && els.taskInput) {
       els.taskInput.value = data.sampleTask;
     }
-    els.reweaveResponse.textContent = "";
+    if (els.reweaveResponse) els.reweaveResponse.textContent = "";
     setAppState("idle");
     applyLumoLiteRuntimeView();
     openFirstLumoLiteCapsule();
@@ -1398,6 +1398,7 @@
   }
 
   function renderCapsuleStrip() {
+    if (!els.capsuleCount || !els.capsuleStrip) return;
     els.capsuleCount.textContent = String((data.capsules || []).length);
     els.capsuleStrip.innerHTML = "";
     getVisibleCapsules().forEach(function (cap) {
@@ -1462,16 +1463,24 @@
   function showCapsuleReader(cap) {
     clearReaderContentPanel();
     setRuntimeSidecarVisible(false);
-    $("reader-icon").textContent = cap.icon;
-    $("reader-name").textContent = cap.name;
-    $("reader-type").textContent = cap.type;
-    $("reader-source").textContent = t("fromSource") + " " + capsuleSourceLabel(cap);
+    var readerIcon = $("reader-icon");
+    var readerName = $("reader-name");
+    var readerType = $("reader-type");
+    var readerSource = $("reader-source");
+    var readerTags = $("reader-tags");
+    var readerRole = $("reader-role");
+    var readerPreview = $("reader-preview");
+    if (!readerIcon || !readerName || !readerType || !readerSource || !readerTags || !readerRole || !readerPreview) return;
+    readerIcon.textContent = cap.icon;
+    readerName.textContent = cap.name;
+    readerType.textContent = cap.type;
+    readerSource.textContent = t("fromSource") + " " + capsuleSourceLabel(cap);
     var tagBits = (cap.tags || []).slice();
     if (isMetadataCapsule(cap)) tagBits.unshift("metadata-only");
     if (cap.origin === "manual_promote") tagBits.unshift("manual promote");
     if (cap.origin === "lumo_lite_capsule_warehouse") tagBits.unshift("read-only receipt");
-    $("reader-tags").textContent = t("tagsPrefix") + " " + tagBits.join(" · ");
-    $("reader-role").textContent = t("rolePrefix") + " " + (cap.role || "");
+    readerTags.textContent = t("tagsPrefix") + " " + tagBits.join(" · ");
+    readerRole.textContent = t("rolePrefix") + " " + (cap.role || "");
     var previewLines = [];
     var isLumoLiteReceipt = cap.origin === "lumo_lite_capsule_warehouse";
     if (isMetadataCapsule(cap)) {
@@ -1510,9 +1519,9 @@
     var bodyPreview = (cap.preview || []).join("\n");
     if (previewLines.length) {
       if (bodyPreview && !isLumoLiteReceipt) previewLines.push("", bodyPreview);
-      $("reader-preview").textContent = previewLines.join("\n");
+      readerPreview.textContent = previewLines.join("\n");
     } else {
-      $("reader-preview").textContent = bodyPreview;
+      readerPreview.textContent = bodyPreview;
     }
     var actions = document.querySelector(".reader-actions");
     if (actions) {
@@ -2054,8 +2063,10 @@
   }
 
   function renderSources() {
-    $("sources-count").textContent = String((data.sourceBoxes || []).length);
+    var count = $("sources-count");
     var list = $("sources-list");
+    if (!count || !list) return;
+    count.textContent = String((data.sourceBoxes || []).length);
     list.innerHTML = "";
     (data.sourceBoxes || []).forEach(function (src) {
       var li = document.createElement("li");
