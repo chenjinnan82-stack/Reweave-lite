@@ -39,7 +39,15 @@ python3 scripts/run_public_reweave_demo.py --source examples/source_boxes/suppor
 
 第一条列出可选胶囊。第二条用手动选择的胶囊生成 Small Project Pack。第三条换一个公开 Source Box 跑同一条链路。
 
-可选本地小模型增强：
+## 本地小模型
+
+不使用 Ollama 时，Reweave 会跑 deterministic demo：
+
+```bash
+python3 scripts/run_public_reweave_demo.py
+```
+
+使用 Ollama 时，Reweave 会让本地小模型优化同一个 Small Project Pack：
 
 ```bash
 ollama pull qwen2.5-coder:1.5b
@@ -51,6 +59,34 @@ python3 scripts/run_public_reweave_demo.py \
   --llm ollama \
   --model qwen2.5-coder:1.5b
 ```
+
+如果你要严格证明模型真的参与了，增加 `--require-llm`：
+
+```bash
+python3 scripts/run_public_reweave_demo.py \
+  --source examples/source_boxes/customer-quote-widget \
+  --task "Build a styled quote interaction" \
+  --select-capsule "Style Sheet" \
+  --select-capsule "Script Module" \
+  --llm ollama \
+  --model qwen2.5-coder:1.5b \
+  --require-llm
+```
+
+JSON / provenance 里预期能看到：
+
+```json
+{
+  "llm": {
+    "provider": "ollama",
+    "model": "qwen2.5-coder:1.5b",
+    "applied": true,
+    "source_project_write": false
+  }
+}
+```
+
+`qwen2.5-coder:1.5b` 已在 5 个公开 Source Box 上复现通过。见 [P7 Local Ollama Reproduction](docs/reports/P7_LOCAL_OLLAMA_REPRODUCTION.md)。
 
 如果 Ollama 没有运行，Reweave 会回退到稳定的 deterministic Small Project Pack；除非你显式加 `--require-llm`。provenance 会记录本地模型是否真的参与生成。
 

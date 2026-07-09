@@ -39,7 +39,15 @@ python3 scripts/run_public_reweave_demo.py --source examples/source_boxes/suppor
 
 The first command shows available capsules. The second builds a Small Project Pack from manually selected capsules. The third runs the same chain on another public Source Box.
 
-Optional local small-model pass:
+## Local Small Model
+
+Without Ollama, Reweave runs the deterministic demo:
+
+```bash
+python3 scripts/run_public_reweave_demo.py
+```
+
+With Ollama, Reweave asks a local small model to refine the same Small Project Pack:
 
 ```bash
 ollama pull qwen2.5-coder:1.5b
@@ -51,6 +59,34 @@ python3 scripts/run_public_reweave_demo.py \
   --llm ollama \
   --model qwen2.5-coder:1.5b
 ```
+
+If you want strict proof that the model participated, add `--require-llm`:
+
+```bash
+python3 scripts/run_public_reweave_demo.py \
+  --source examples/source_boxes/customer-quote-widget \
+  --task "Build a styled quote interaction" \
+  --select-capsule "Style Sheet" \
+  --select-capsule "Script Module" \
+  --llm ollama \
+  --model qwen2.5-coder:1.5b \
+  --require-llm
+```
+
+Expected proof in the JSON / provenance:
+
+```json
+{
+  "llm": {
+    "provider": "ollama",
+    "model": "qwen2.5-coder:1.5b",
+    "applied": true,
+    "source_project_write": false
+  }
+}
+```
+
+Reweave was reproduced with `qwen2.5-coder:1.5b` on all 5 public Source Boxes. See [P7 Local Ollama Reproduction](docs/reports/P7_LOCAL_OLLAMA_REPRODUCTION.md).
 
 If Ollama is not running, Reweave falls back to the deterministic Small Project Pack unless `--require-llm` is set. Provenance records whether the local model was actually used.
 
