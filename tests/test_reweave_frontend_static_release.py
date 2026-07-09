@@ -36,6 +36,8 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert 'placeholder="Current Runtime / read-only"' in index
     assert "GENERATION INPUT" in index
     assert 'id="generation-input-note"' in index
+    assert 'id="workflow-status"' in index
+    assert "Workflow: Bind Source Box" in index
     assert '<h3 class="generated-title">Current Runtime</h3>' in index
     assert 'class="btn-secondary btn-open-folder hidden"' in index
     assert '<span id="sources-count">0</span> bound' in index
@@ -68,6 +70,8 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert 'classList.toggle("hidden", !allowed)' in app
     assert 'new QWebChannel(qt.webChannelTransport' in app
     assert "function applyLumoLiteRuntimeView()" in app
+    assert "function currentWorkflowStep(hasTaskPackPreview)" in app
+    assert "View provenance" in app
     assert "function canBuildTaskPackPreview()" in app
     assert 'els.taskInput.disabled = !taskPackPreview;' in app
     assert 'els.btnGenerate.classList.toggle("hidden", !taskPackPreview);' in app

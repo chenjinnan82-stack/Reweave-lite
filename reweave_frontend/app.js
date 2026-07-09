@@ -244,9 +244,14 @@
       els.genCapsulesUsed.innerHTML =
         '<span class="meta-icon" aria-hidden="true">◫</span> Capsules used: ' + capsulesUsed;
     }
+    if (els.workflowStatus) {
+      els.workflowStatus.innerHTML =
+        '<span class="meta-icon" aria-hidden="true">↳</span> Workflow: ' +
+        escapeHtml(currentWorkflowStep(hasTaskPackPreview));
+    }
     var metaLines = document.querySelectorAll(".generated-meta .meta-line");
-    if (metaLines[1]) metaLines[1].innerHTML = '<span class="meta-icon" aria-hidden="true">◎</span> ' + previewText;
-    if (metaLines[2]) metaLines[2].innerHTML = '<span class="meta-icon" aria-hidden="true">⛓</span> ' + traceText;
+    if (metaLines[2]) metaLines[2].innerHTML = '<span class="meta-icon" aria-hidden="true">◎</span> ' + previewText;
+    if (metaLines[3]) metaLines[3].innerHTML = '<span class="meta-icon" aria-hidden="true">⛓</span> ' + traceText;
     if (els.runtimeSidecarMode) els.runtimeSidecarMode.textContent = "read-only";
     if (els.runtimeSidecarSource) {
       els.runtimeSidecarSource.textContent = summary.acceptance_line || "Capsule state and trace receipts";
@@ -266,6 +271,19 @@
     var openFolder = $("btn-open-folder");
     if (openFolder) openFolder.classList.add("hidden");
     if (els.reweaveResponse) els.reweaveResponse.textContent = responseText;
+  }
+
+  function currentWorkflowStep(hasTaskPackPreview) {
+    if (hasTaskPackPreview) return "View provenance";
+    var sources = Array.isArray(data.sourceBoxes) ? data.sourceBoxes : [];
+    if (!sources.length) return "Bind Source Box";
+    var needsScan = sources.some(function (src) {
+      return (src.scan_status || "not_scanned") === "not_scanned";
+    });
+    if (needsScan) return "Scan Source Box";
+    var capsules = Array.isArray(data.warehouseCapsules) ? data.warehouseCapsules : data.capsules || [];
+    if (!capsules.length) return "Store Capsules";
+    return "Select capsules, then Build Small Project Pack";
   }
 
   function bridgeCall(method, arg) {
@@ -1360,6 +1378,7 @@
     els.reweaveResponse = $("reweave-response");
     els.generatedTree = $("generated-tree");
     els.generatedPreview = $("generated-preview");
+    els.workflowStatus = $("workflow-status");
     els.genCapsulesUsed = $("gen-capsules-used");
     els.reader = $("capsule-reader");
     els.historyPopover = $("history-popover");
