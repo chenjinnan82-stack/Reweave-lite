@@ -19,7 +19,12 @@ REQUIRED_SURFACE_FILES = (
     "pimos_lite/reweave_lumo_lite_state.py",
     "pimos_lite/reweave_preview_viewer.py",
     "reweave_frontend/app.js",
+    "reweave_frontend/artifacts.js",
+    "reweave_frontend/bridge.js",
+    "reweave_frontend/capsule_reader.js",
     "reweave_frontend/index.html",
+    "reweave_frontend/renderers.js",
+    "reweave_frontend/source_workflow.js",
     "start_reweave_static.sh",
 )
 RELEASE_INCLUDED_SURFACE_FILES = REQUIRED_SURFACE_FILES
@@ -36,13 +41,17 @@ RELEASE_EXCLUDED_SUPPORT_FILES = (
     "pimos_lite/reweave_luna_client.py",
     "pimos_lite/reweave_preview_export.py",
     "pimos_lite/reweave_preview_pack.py",
+    "pimos_lite/reweave_project_renderer.py",
     "pimos_lite/reweave_promote.py",
+    "pimos_lite/reweave_quality_gate.py",
     "pimos_lite/reweave_release_surface_audit.py",
     "pimos_lite/reweave_reuse_suggestions.py",
     "pimos_lite/reweave_review_queue.py",
     "pimos_lite/reweave_snippet_context.py",
     "pimos_lite/reweave_source_registry.py",
     "pimos_lite/reweave_source_scanner.py",
+    "pimos_lite/reweave_task_intent.py",
+    "pimos_lite/reweave_task_plan.py",
 )
 
 SURFACE_GLOBS = (

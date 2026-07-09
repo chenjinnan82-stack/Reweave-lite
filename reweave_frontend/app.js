@@ -69,19 +69,18 @@
   var currentPreviewPackageId = "";
   var previewViewerMode = "view";
   var lumoLiteArtifacts = [];
+  var bridgeHelpers = window.ReweaveBridgeHelpers || {};
+  var renderers = window.ReweaveRenderers || {};
+  var artifactRenderers = window.ReweaveArtifacts || {};
+  var sourceWorkflow = window.ReweaveSourceWorkflow || {};
+  var capsuleReader = window.ReweaveCapsuleReader || {};
 
   function $(id) {
     return document.getElementById(id);
   }
 
   function parseBridgeJson(raw) {
-    if (!raw) return null;
-    if (typeof raw === "object") return raw;
-    try {
-      return JSON.parse(raw);
-    } catch (e) {
-      return null;
-    }
+    return bridgeHelpers.parseBridgeJson ? bridgeHelpers.parseBridgeJson(raw) : null;
   }
 
   function hasDesktopBridge() {
@@ -89,29 +88,25 @@
   }
 
   function desktopCapability(name) {
-    if (!desktopShellState) return false;
-    if (Object.prototype.hasOwnProperty.call(desktopShellState, name)) {
-      return desktopShellState[name] === true;
-    }
-    return false;
+    return bridgeHelpers.desktopCapability
+      ? bridgeHelpers.desktopCapability(desktopShellState, name)
+      : false;
   }
 
   function isLumoLiteReadOnly() {
-    return !!(
-      (desktopShellState &&
-        (desktopShellState.engine === "lumo_lite" ||
-          desktopShellState.backend === "lumo_lite" ||
-          desktopShellState.lumoLiteMode)) ||
-      (data && data.lumoLiteMode)
-    );
+    return bridgeHelpers.isLumoLiteReadOnly
+      ? bridgeHelpers.isLumoLiteReadOnly(desktopShellState, data)
+      : false;
   }
 
   function isLumoLiteState(state) {
-    return !!(state && (state.engine === "lumo_lite" || state.backend === "lumo_lite" || state.lumoLiteMode));
+    return bridgeHelpers.isLumoLiteState ? bridgeHelpers.isLumoLiteState(state) : false;
   }
 
   function canBuildTaskPackPreview() {
-    return isLumoLiteReadOnly() && desktopCapability("canGeneratePreview");
+    return bridgeHelpers.canBuildTaskPackPreview
+      ? bridgeHelpers.canBuildTaskPackPreview(desktopShellState, data)
+      : false;
   }
 
   function clearLumoLiteMockState() {
@@ -290,17 +285,9 @@
   }
 
   function taskPackStatusFromFiles(files) {
-    files = Array.isArray(files) ? files : [];
-    var hasIntent = files.indexOf("task_intent.json") >= 0;
-    var hasPlan = files.indexOf("task_plan.json") >= 0;
-    var hasGate = files.indexOf("quality_gate.json") >= 0;
-    if (hasIntent && hasPlan && hasGate) {
-      return "Intent ready · Plan ready · Quality gate passed · Source writes 0";
-    }
-    if (files.indexOf("task_pack.json") >= 0) {
-      return "Task Pack ready · Source writes 0";
-    }
-    return "View provenance";
+    return renderers.taskPackStatusFromFiles
+      ? renderers.taskPackStatusFromFiles(files)
+      : "View provenance";
   }
 
   function bridgeCall(method, arg) {
@@ -393,20 +380,7 @@
     data.sourceBoxes.forEach(function (s, i) {
       if (s.id === source.id || (source.path && s.path === source.path)) idx = i;
     });
-    var entry = {
-      id: source.id,
-      label: source.label,
-      path: source.path,
-      status: source.status || "bound",
-      scan_status: source.scan_status || "not_scanned",
-      draft_status: source.draft_status || "not_drafted",
-      warehouse_status: source.warehouse_status || "",
-      last_scanned_at: source.last_scanned_at,
-      last_drafted_at: source.last_drafted_at,
-      last_promoted_at: source.last_promoted_at,
-      promoted_capsule_count: source.promoted_capsule_count,
-      last_error: source.last_error,
-    };
+    var entry = sourceWorkflow.normalizeSource ? sourceWorkflow.normalizeSource(source) : source;
     if (idx >= 0) {
       data.sourceBoxes[idx] = entry;
     } else {
@@ -415,43 +389,11 @@
   }
 
   function normalizeDockCapsule(c) {
-    if (!c) return null;
-    var src = c.source;
-    var sourceLabel = typeof src === "string" ? src : (src && src.label) || "";
-    var sourceId = c.source_id || (src && src.source_id) || "";
-    return {
-      id: c.id,
-      name: c.name,
-      type: c.type,
-      serial: c.serial,
-      icon: c.icon || "◫",
-      source: sourceLabel,
-      source_id: sourceId,
-      source_box: typeof src === "object" && src ? src : c.source_box || null,
-      tags: c.tags || [],
-      role: c.role || "",
-      preview: c.preview || [],
-      status: c.status || "active",
-      origin: c.origin,
-      risk: c.risk,
-      content_mode: c.content_mode,
-      lumo_lite_receipt: c.lumo_lite_receipt,
-      lineage: c.lineage,
-      snippet: c.snippet,
-      content_enrichment: c.content_enrichment,
-      content_risk: c.content_risk,
-    };
+    return capsuleReader.normalizeCapsule ? capsuleReader.normalizeCapsule(c) : c || null;
   }
 
   function isMetadataCapsule(cap) {
-    return !!(
-      cap &&
-      (cap.content_mode === "metadata_snippet" ||
-        cap.content_mode === "metadata_only" ||
-        cap.risk === "metadata_only_promoted" ||
-        cap.origin === "lumo_lite_capsule_warehouse" ||
-        cap.origin === "manual_promote")
-    );
+    return capsuleReader.isMetadataCapsule ? capsuleReader.isMetadataCapsule(cap) : false;
   }
 
   function isCapsuleGenerateEligible(cap) {
@@ -486,21 +428,8 @@
     }
     if (Array.isArray(state.sourceBoxes)) {
       data.sourceBoxes = state.sourceBoxes.map(function (s) {
-        return {
-          id: s.id,
-          label: s.label,
-          path: s.path,
-          status: s.status || "bound",
-          scan_status: s.scan_status || "not_scanned",
-          draft_status: s.draft_status || "not_drafted",
-          warehouse_status: s.warehouse_status || "",
-          last_scanned_at: s.last_scanned_at,
-          last_drafted_at: s.last_drafted_at,
-          last_promoted_at: s.last_promoted_at,
-          promoted_capsule_count: s.promoted_capsule_count,
-          last_error: s.last_error,
-        };
-      });
+        return sourceWorkflow.normalizeSource ? sourceWorkflow.normalizeSource(s) : s;
+      }).filter(Boolean);
     }
     if (Array.isArray(state.warehouseCapsules)) {
       applyWarehouseCapsules(state.warehouseCapsules);
@@ -1098,24 +1027,17 @@
   }
 
   function sourceScanLabel(src) {
-    if (preparingSourceIds[src.id]) return "Preparing...";
-    if (scanningSourceIds[src.id]) return "Scanning...";
-    if (verifyingSourceIds[src.id]) return "Verifying...";
-    if (previewingSourceIds[src.id]) return "Previewing...";
-    if (reviewingSourceIds[src.id]) return "Reviewing...";
-    if (src.status === "read_only" || src.scan_status === "read_only") return "Read-only";
-    if (src.warehouse_status === "promoted") {
-      var n = src.promoted_capsule_count;
-      var base = n ? n + " capsules" : "Ready";
-      if (data.lunaReuseBySource && data.lunaReuseBySource[src.id]) {
-        return base + " · Suggested by Luna";
-      }
-      return base;
+    if (sourceWorkflow.sourceScanLabel) {
+      return sourceWorkflow.sourceScanLabel(src, {
+        preparing: !!preparingSourceIds[src.id],
+        scanning: !!scanningSourceIds[src.id],
+        verifying: !!verifyingSourceIds[src.id],
+        previewing: !!previewingSourceIds[src.id],
+        reviewing: !!reviewingSourceIds[src.id],
+        lunaReuse: !!(data.lunaReuseBySource && data.lunaReuseBySource[src.id]),
+      });
     }
-    var scan = src.scan_status || "not_scanned";
-    if (scan === "scanned") return "Scanned";
-    if (scan === "failed") return "Failed";
-    return "Not scanned";
+    return src.scan_status || "not_scanned";
   }
 
   function getGenerateCandidateIds() {
@@ -1255,13 +1177,7 @@
   }
 
   function getCapsuleSerial(cap) {
-    if (cap && cap.serial) return cap.serial;
-    if (!cap || !cap.id) return "00";
-    var h = 0;
-    for (var i = 0; i < cap.id.length; i += 1) {
-      h = (h * 31 + cap.id.charCodeAt(i)) % 997;
-    }
-    return ("0" + h.toString(16)).slice(-2).toUpperCase();
+    return capsuleReader.serial ? capsuleReader.serial(cap) : "00";
   }
 
   function applyLocale() {
@@ -1427,10 +1343,7 @@
   }
 
   function capsuleSourceLabel(cap) {
-    if (!cap) return "";
-    if (typeof cap.source === "string" && cap.source) return cap.source;
-    if (cap.source_box && cap.source_box.label) return cap.source_box.label;
-    return cap.source_id || "";
+    return capsuleReader.sourceLabel ? capsuleReader.sourceLabel(cap) : "";
   }
 
   function renderCapsuleStrip() {
@@ -1511,54 +1424,12 @@
     readerName.textContent = cap.name;
     readerType.textContent = cap.type;
     readerSource.textContent = t("fromSource") + " " + capsuleSourceLabel(cap);
-    var tagBits = (cap.tags || []).slice();
-    if (isMetadataCapsule(cap)) tagBits.unshift("metadata-only");
-    if (cap.origin === "manual_promote") tagBits.unshift("manual promote");
-    if (cap.origin === "lumo_lite_capsule_warehouse") tagBits.unshift("read-only receipt");
+    var tagBits = capsuleReader.tagBits ? capsuleReader.tagBits(cap) : (cap.tags || []).slice();
     readerTags.textContent = t("tagsPrefix") + " " + tagBits.join(" · ");
     readerRole.textContent = t("rolePrefix") + " " + (cap.role || "");
-    var previewLines = [];
-    var isLumoLiteReceipt = cap.origin === "lumo_lite_capsule_warehouse";
-    if (isMetadataCapsule(cap)) {
-      if (cap.risk) previewLines.push("risk: " + cap.risk);
-      if (cap.content_mode) previewLines.push("content_mode: " + cap.content_mode);
-      if (cap.status && cap.status !== "active") previewLines.push("status: " + cap.status);
-      if (cap.content_enrichment && cap.content_enrichment.status === "enriched") {
-        previewLines.push(
-          "Content preview available · Snippets " + (cap.content_enrichment.snippet_count || 0)
-        );
-      }
-      if (cap.lumo_lite_receipt && typeof cap.lumo_lite_receipt === "object") {
-        previewLines.push("lumo_lite_receipt:");
-        ["warehouse_status", "invocation_status", "assembly_status", "reason", "trace_path"].forEach(function (key) {
-          var val = cap.lumo_lite_receipt[key];
-          if (val != null && val !== "") previewLines.push("  " + key + ": " + val);
-        });
-        (cap.lumo_lite_receipt.evidence_package_paths || []).slice(0, 3).forEach(function (path) {
-          previewLines.push("  evidence: " + path);
-        });
-        (cap.lumo_lite_receipt.blocked_reasons || []).slice(0, 3).forEach(function (reason) {
-          previewLines.push("  blocked: " + reason);
-        });
-      }
-      if (!isLumoLiteReceipt && cap.lineage && typeof cap.lineage === "object") {
-        previewLines.push("lineage:");
-        Object.keys(cap.lineage).forEach(function (key) {
-          var val = cap.lineage[key];
-          if (val != null && val !== "") previewLines.push("  " + key + ": " + val);
-        });
-      }
-      if (cap.snippet && cap.snippet.description) {
-        previewLines.push("", String(cap.snippet.description));
-      }
-    }
-    var bodyPreview = (cap.preview || []).join("\n");
-    if (previewLines.length) {
-      if (bodyPreview && !isLumoLiteReceipt) previewLines.push("", bodyPreview);
-      readerPreview.textContent = previewLines.join("\n");
-    } else {
-      readerPreview.textContent = bodyPreview;
-    }
+    readerPreview.textContent = capsuleReader.previewText
+      ? capsuleReader.previewText(cap)
+      : (cap.preview || []).join("\n");
     var actions = document.querySelector(".reader-actions");
     if (actions) {
       var useBtn = $("btn-use-in-task");
@@ -1743,18 +1614,9 @@
     var pkg = data.generatedPackage || { folder: "Current Runtime", files: [] };
     var folder = pkg.folder || "new_project/";
     var files = pkg.files || [];
-    var html = '<div class="folder">' + escapeHtml(folder) + "</div>";
-    files.forEach(function (f) {
-      var cls = "file";
-      if (f === "task_intent.json") cls += " highlight";
-      else if (f === "task_plan.json") cls += " highlight";
-      else if (f === "quality_gate.json") cls += " highlight";
-      else if (f === "capsules_used.json") cls += " highlight";
-      else if (f === "snippets_used.json") cls += " highlight";
-      else if (f === "provenance.json") cls += " highlight-subtle";
-      html += '<div class="' + cls + '">' + escapeHtml(f) + "</div>";
-    });
-    els.generatedTree.innerHTML = html;
+    els.generatedTree.innerHTML = renderers.renderFileTree
+      ? renderers.renderFileTree(folder, files, escapeHtml)
+      : '<div class="folder">' + escapeHtml(folder) + "</div>";
     els.generatedPreview.classList.remove("hidden");
     if (els.generatedPackage) {
       els.generatedPackage.classList.remove("runtime-read-only");
@@ -1801,62 +1663,16 @@
     if (!els.lumoArtifactsBody) return;
     var artifacts = payload && Array.isArray(payload.artifacts) ? payload.artifacts : lumoLiteArtifacts;
     lumoLiteArtifacts = artifacts.slice();
-    if (!artifacts.length) {
-      els.lumoArtifactsBody.innerHTML = '<p class="preview-viewer-meta">No Lumo Lite artifacts in runtime state.</p>';
-      return;
-    }
-    var html = '<p class="preview-viewer-mode"><strong>Read-only local artifacts</strong></p>';
-    html += '<ul class="preview-viewer-list lumo-artifact-list">';
-    artifacts.forEach(function (item) {
-      var status = item.exists ? (item.is_dir ? "folder" : "file") : "missing";
-      html +=
-        '<li data-artifact-id="' +
-        escapeHtml(item.id) +
-        '">' +
-        '<span class="lumo-artifact-title">' +
-        escapeHtml(item.label || item.basename || item.kind) +
-        "</span>" +
-        '<span class="preview-viewer-meta">' +
-        escapeHtml(item.kind + " · " + status) +
-        "</span>" +
-        '<code class="lumo-artifact-path">' +
-        escapeHtml(shortExportPath(item.path || "")) +
-        "</code>" +
-        '<div class="lumo-artifact-actions">' +
-        '<button type="button" class="btn-ghost btn-artifact-view" data-artifact-id="' +
-        escapeHtml(item.id) +
-        '">View</button>' +
-        '<button type="button" class="btn-ghost btn-artifact-copy" data-artifact-path="' +
-        escapeHtml(item.path || "") +
-        '">Copy path</button>' +
-        "</div>" +
-        "</li>";
-    });
-    html += "</ul>";
-    els.lumoArtifactsBody.innerHTML = html;
+    els.lumoArtifactsBody.innerHTML = artifactRenderers.renderArtifactList
+      ? artifactRenderers.renderArtifactList(artifacts, shortExportPath, escapeHtml)
+      : "";
   }
 
   function renderLumoLiteArtifactDetail(payload) {
     if (!els.lumoArtifactsBody || !payload || !payload.ok) return;
-    var item = payload.artifact || {};
-    var html = '<p class="preview-viewer-mode"><strong>' + escapeHtml(item.label || item.basename || "Artifact") + "</strong></p>";
-    html += '<p class="preview-viewer-meta">' + escapeHtml((item.kind || "artifact") + " · " + (item.exists ? "exists" : "missing")) + "</p>";
-    html += '<p class="preview-viewer-meta">' + escapeHtml(item.path || "") + "</p>";
-    if (Array.isArray(item.directory_entries) && item.directory_entries.length) {
-      html += '<p class="preview-viewer-label">Directory</p><ul class="preview-viewer-list">';
-      item.directory_entries.slice(0, 20).forEach(function (entry) {
-        html += "<li>" + escapeHtml(entry.kind + " · " + entry.name) + "</li>";
-      });
-      html += "</ul>";
-    }
-    if (item.json_preview) {
-      html += '<p class="preview-viewer-label">JSON preview</p><pre class="lumo-artifact-preview">' + escapeHtml(JSON.stringify(item.json_preview, null, 2).slice(0, 4000)) + "</pre>";
-    } else if (item.text_preview) {
-      html += '<p class="preview-viewer-label">Text preview</p><pre class="lumo-artifact-preview">' + escapeHtml(String(item.text_preview).slice(0, 4000)) + "</pre>";
-    }
-    html += '<p class="preview-viewer-meta">Read-only · no apply · no promote · no dispatch</p>';
-    html += '<button type="button" class="btn-ghost btn-artifacts-back">Back to artifacts</button>';
-    els.lumoArtifactsBody.innerHTML = html;
+    els.lumoArtifactsBody.innerHTML = artifactRenderers.renderArtifactDetail
+      ? artifactRenderers.renderArtifactDetail(payload, escapeHtml)
+      : "";
   }
 
   function openLumoArtifactsPopover() {

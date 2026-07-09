@@ -58,6 +58,14 @@ def test_public_reweave_demo_help_is_task_driven() -> None:
     assert "--task-template" not in result.stdout
 
 
+def test_public_demo_reuses_shared_task_intent_helpers() -> None:
+    text = (ROOT / "scripts" / "run_public_reweave_demo.py").read_text(encoding="utf-8")
+    assert "CAPABILITY_KEYWORDS =" not in text
+    assert "STOP_WORDS =" not in text
+    assert "score_capsule_for_task" in text
+    assert "reweave_task_intent" in text
+
+
 def test_public_reweave_demo_outputs_task_pack(tmp_path: Path) -> None:
     source = ROOT / "examples" / "source_boxes" / "customer-quote-widget"
     out = tmp_path / "reweave_demo"

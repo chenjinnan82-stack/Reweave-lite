@@ -6,13 +6,19 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import shutil
+import sys
 import tempfile
 from pathlib import Path
 from typing import Callable
 
 ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from pimos_lite.reweave_task_intent import capsule_match_text as shared_capsule_match_text
+from pimos_lite.reweave_task_intent import score_capsule_for_task
+
 MARKER = ".reweave_public_demo"
 DEFAULT_OUT = Path(tempfile.gettempdir()) / "reweave_public_demo"
 DEFAULT_SOURCE = "examples/source_boxes/customer-quote-widget"
@@ -67,21 +73,11 @@ TASK_TEMPLATES: dict[str, dict[str, str]] = {
         "purpose": "reuse an old artwork, event, or creator page as a focused landing page",
     },
 }
-CAPABILITY_KEYWORDS = {
-    "form": ("form", "quote", "input", "submit", "customer", "field"),
-    "table": ("table", "list", "queue", "record", "calendar", "row"),
-    "copy": ("copy", "landing", "content", "message", "hero", "story"),
-    "style": ("style", "css", "brand", "visual", "layout", "design"),
-    "logic": ("logic", "workflow", "action", "filter", "calculate", "triage", "interaction"),
-    "data": ("data", "dashboard", "metric", "status", "chart", "viewer", "panel"),
-}
-STOP_WORDS = {"a", "an", "and", "as", "build", "from", "for", "into", "old", "project", "the", "this", "to", "with"}
 
 
 def _import_reweave() -> tuple[object, object, object, object, object, object, object]:
-    import sys
-
-    sys.path.insert(0, str(ROOT))
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
     from pimos_lite.reweave_capsule_draft import draft_capsules
     from pimos_lite.reweave_capsule_content import enrich_capsule_content
     from pimos_lite.reweave_llm_pack import apply_ollama_pack
@@ -141,14 +137,7 @@ def _public_files(out: Path) -> list[str]:
 
 
 def _capsule_match_text(cap: dict[str, object]) -> str:
-    parts = [
-        cap.get("id"),
-        cap.get("name"),
-        cap.get("type"),
-        cap.get("role"),
-        " ".join(str(tag) for tag in (cap.get("tags") or []) if tag),
-    ]
-    return " ".join(str(part or "") for part in parts).lower()
+    return shared_capsule_match_text(cap)
 
 
 def _public_capsule(cap: dict[str, object], *, reason: str | None = None) -> dict[str, object]:
@@ -191,30 +180,8 @@ def _select_capsules(capsules: list[dict[str, object]], selectors: list[str]) ->
     return selected[:4]
 
 
-def _task_terms(task: str) -> set[str]:
-    return {word for word in re.findall(r"[a-z0-9]+", task.lower()) if len(word) > 2 and word not in STOP_WORDS}
-
-
-def _task_capabilities(task: str) -> list[str]:
-    text = task.lower()
-    return [
-        name
-        for name, words in CAPABILITY_KEYWORDS.items()
-        if any(word in text for word in words)
-    ] or ["copy", "style"]
-
-
 def _capsule_score(task: str, cap: dict[str, object], *, enrichable: bool = False) -> int:
-    # ponytail: metadata scoring; add embeddings only after this fails on real cases.
-    text = _capsule_match_text(cap)
-    score = 2 if enrichable else 0
-    score += sum(3 for term in _task_terms(task) if term in text)
-    for capability in _task_capabilities(task):
-        words = CAPABILITY_KEYWORDS[capability]
-        if capability in text:
-            score += 6
-        score += sum(2 for word in words if word in text)
-    return score
+    return score_capsule_for_task(task, cap, enrichable=enrichable)
 
 
 def _select_enrichable_capsules(

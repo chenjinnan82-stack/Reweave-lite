@@ -321,11 +321,12 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
         self.assertNotIn('url.setQuery("desktop=1&main=1")', text)
 
     def test_frontend_desktop_capability_defaults_to_closed(self) -> None:
-        app_js = Path(__file__).resolve().parents[1] / "reweave_frontend" / "app.js"
-        text = app_js.read_text(encoding="utf-8")
+        bridge_js = Path(__file__).resolve().parents[1] / "reweave_frontend" / "bridge.js"
+        text = bridge_js.read_text(encoding="utf-8")
 
-        self.assertIn("if (!desktopShellState) return false;", text)
-        self.assertIn("return desktopShellState[name] === true;", text)
+        self.assertIn("function desktopCapability(state, name)", text)
+        self.assertIn("if (!state) return false;", text)
+        self.assertIn("return state[name] === true;", text)
 
     def test_frontend_lumo_lite_clears_mock_runtime_state(self) -> None:
         app_js = Path(__file__).resolve().parents[1] / "reweave_frontend" / "app.js"

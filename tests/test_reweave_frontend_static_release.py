@@ -10,12 +10,26 @@ ROOT = Path(__file__).resolve().parents[1]
 
 def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     app = (ROOT / "reweave_frontend" / "app.js").read_text(encoding="utf-8")
+    bridge = (ROOT / "reweave_frontend" / "bridge.js").read_text(encoding="utf-8")
+    renderers = (ROOT / "reweave_frontend" / "renderers.js").read_text(encoding="utf-8")
+    artifacts = (ROOT / "reweave_frontend" / "artifacts.js").read_text(encoding="utf-8")
+    source_workflow = (ROOT / "reweave_frontend" / "source_workflow.js").read_text(encoding="utf-8")
+    capsule_reader = (ROOT / "reweave_frontend" / "capsule_reader.js").read_text(encoding="utf-8")
+    frontend = "\n".join([app, bridge, renderers, artifacts, source_workflow, capsule_reader])
     index = (ROOT / "reweave_frontend" / "index.html").read_text(encoding="utf-8")
     mock = (ROOT / "reweave_frontend" / "mock-data.json").read_text(encoding="utf-8")
     styles = (ROOT / "reweave_frontend" / "styles.css").read_text(encoding="utf-8")
 
     assert (ROOT / "reweave_frontend" / "assets" / "reweave-icon.svg").exists()
     assert 'src="assets/reweave-icon.svg"' in index
+    assert '<script src="bridge.js"></script>' in index
+    assert '<script src="renderers.js"></script>' in index
+    assert '<script src="artifacts.js"></script>' in index
+    assert '<script src="source_workflow.js"></script>' in index
+    assert '<script src="capsule_reader.js"></script>' in index
+    assert index.index('src="bridge.js"') < index.index('src="app.js"')
+    assert index.index('src="source_workflow.js"') < index.index('src="app.js"')
+    assert index.index('src="capsule_reader.js"') < index.index('src="app.js"')
     assert ".logo-mark::before" not in styles
     assert ".logo-mark::after" not in styles
     assert 'class="btn-ghost btn-add-source hidden" disabled' in index
@@ -47,7 +61,23 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert '"cleaningSteps":["Current Runtime / artifacts"]' in index
     assert "function normalizeMockFallback()" in app
     assert 'data.lumoLiteMode = "read_only_runtime_artifact_viewer";' in app
-    assert "data && data.lumoLiteMode" in app
+    assert "function isLumoLiteReadOnly(state, fallbackData)" in bridge
+    assert "fallbackData && fallbackData.lumoLiteMode" in bridge
+    assert "var bridgeHelpers = window.ReweaveBridgeHelpers || {};" in app
+    assert "var renderers = window.ReweaveRenderers || {};" in app
+    assert "var artifactRenderers = window.ReweaveArtifacts || {};" in app
+    assert "var sourceWorkflow = window.ReweaveSourceWorkflow || {};" in app
+    assert "var capsuleReader = window.ReweaveCapsuleReader || {};" in app
+    assert "window.ReweaveSourceWorkflow" in source_workflow
+    assert "window.ReweaveCapsuleReader" in capsule_reader
+    assert "normalizeSource: normalizeSource" in source_workflow
+    assert "sourceScanLabel: sourceScanLabel" in source_workflow
+    assert "normalizeCapsule: normalizeCapsule" in capsule_reader
+    assert "previewText: previewText" in capsule_reader
+    assert "sourceWorkflow.normalizeSource" in app
+    assert "sourceWorkflow.sourceScanLabel" in app
+    assert "capsuleReader.normalizeCapsule" in app
+    assert "capsuleReader.previewText" in app
     assert "data.sourceBoxes = [];" in app
     assert "data.capsules = [];" in app
     assert "data.warehouseCapsules = [];" in app
@@ -72,7 +102,7 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert "function applyLumoLiteRuntimeView()" in app
     assert "function currentWorkflowStep(hasTaskPackPreview)" in app
     assert "function taskPackStatusFromFiles(files)" in app
-    assert "Intent ready · Plan ready · Quality gate passed · Source writes 0" in app
+    assert "Intent ready · Plan ready · Quality gate passed · Source writes 0" in renderers
     assert "View provenance" in app
     assert "function canBuildTaskPackPreview()" in app
     assert 'els.taskInput.disabled = !taskPackPreview;' in app
@@ -87,18 +117,18 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert "summary.product_capability_line || summary.line" in app
     assert 'responseBits.push("Product base ready");' not in app
     assert 'responseBits.push("Task pack ready");' not in app
-    assert "btn-artifact-view" in app
-    assert "btn-artifact-copy" in app
-    assert "btn-artifact-open" not in app
-    assert "Opened Lumo Lite artifact." not in app
+    assert "btn-artifact-view" in artifacts
+    assert "btn-artifact-copy" in artifacts
+    assert "btn-artifact-open" not in frontend
+    assert "Opened Lumo Lite artifact." not in frontend
     assert 'data.generatedPackage || { folder: "Current Runtime", files: [] }' in app
     assert 'els.generatedPackage.classList.toggle("runtime-read-only", !hasTaskPackPreview);' in app
     assert 'els.generatedPreview.classList.toggle("hidden", !hasTaskPackPreview);' in app
     assert "Runtime artifacts" in app
     assert "capsules_used / trace receipts" in app
-    assert 'f === "task_intent.json"' in app
-    assert 'f === "task_plan.json"' in app
-    assert 'f === "quality_gate.json"' in app
+    assert 'name === "task_intent.json"' in renderers
+    assert 'name === "task_plan.json"' in renderers
+    assert 'name === "quality_gate.json"' in renderers
     assert "capsules linked to this runtime" in app
     assert "No local generation history in read-only mode" in app
     assert "show && hasDesktopBridge() && (!isLumoLiteReadOnly() || canBuildTaskPackPreview())" in app

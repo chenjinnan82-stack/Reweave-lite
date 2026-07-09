@@ -33,6 +33,60 @@ from pimos_lite.reweave_source_registry import get_source_box
 from pimos_lite.reweave_source_scanner import load_summary
 
 APP_SERVICE_VERSION = "v0"
+LUMO_LITE_MODE = "read_only"
+PUBLIC_PRODUCT_ACTIONS = frozenset(
+    {
+        "get_initial_state",
+        "bind_source_folder",
+        "scan_source",
+        "draft_source",
+        "promote_source",
+        "get_source",
+        "enrich_capsule_content",
+        "get_capsule_content",
+        "generate_preview",
+        "list_lumo_lite_artifacts",
+        "get_lumo_lite_artifact",
+        "get_lumo_lite_artifact_path",
+    }
+)
+LEGACY_WORKBENCH_ACTIONS = frozenset(
+    {
+        "verify_source_suggestions",
+        "preview_governance_for_source",
+        "create_review_queue_for_source",
+        "update_review_decision",
+        "promote_review_item",
+        "list_warehouse_capsules",
+        "update_capsule_status",
+        "export_preview_package",
+    }
+)
+SUPPORT_VIEWER_ACTIONS = frozenset(
+    {
+        "get_latest_preview_package",
+        "get_preview_package",
+        "compare_preview_packages",
+    }
+)
+
+
+def release_boundary_for_action(action: str) -> str:
+    if action in PUBLIC_PRODUCT_ACTIONS:
+        return "public_product"
+    if action in LEGACY_WORKBENCH_ACTIONS:
+        return "legacy_workbench"
+    if action in SUPPORT_VIEWER_ACTIONS:
+        return "support_viewer"
+    return "unknown"
+
+
+def public_product_actions() -> tuple[str, ...]:
+    return tuple(sorted(PUBLIC_PRODUCT_ACTIONS))
+
+
+def legacy_workbench_actions() -> tuple[str, ...]:
+    return tuple(sorted(LEGACY_WORKBENCH_ACTIONS))
 
 
 class ReweaveAppService:
@@ -51,8 +105,17 @@ class ReweaveAppService:
     def _is_lumo(self) -> bool:
         return self._engine.__class__.__name__ == "LumoReweaveEngine"
 
-    def _lumo_lite_disabled(self, action: str) -> dict[str, Any]:
-        return {"ok": False, "engine": "lumo_lite", "mode": "read_only", "error": "lumo_lite_read_only", "action": action}
+    def _lumo_lite_disabled(self, action: str, **extra: Any) -> dict[str, Any]:
+        result = {
+            "ok": False,
+            "engine": "lumo_lite",
+            "mode": LUMO_LITE_MODE,
+            "error": "lumo_lite_read_only",
+            "action": action,
+            "release_boundary": release_boundary_for_action(action),
+        }
+        result.update(extra)
+        return result
 
     def get_initial_state(self) -> dict[str, Any]:
         state = self._engine.get_initial_state()
@@ -256,7 +319,7 @@ class ReweaveAppService:
     def promote_review_item(self, source_id: str, review_id: str) -> dict[str, Any]:
         """Explicit promote — approved review item to local warehouse only."""
         if self._is_lumo_lite():
-            return {"ok": False, "engine": "lumo_lite", "error": "lumo_lite_read_only"}
+            return self._lumo_lite_disabled("promote_review_item")
         result = execute_promote_review_item(source_id, review_id)
         if result.get("ok"):
             result["warehouseCapsules"] = list_warehouse_capsules(include_inactive=True)
@@ -265,24 +328,16 @@ class ReweaveAppService:
 
     def list_warehouse_capsules(self, *, include_inactive: bool = True) -> dict[str, Any]:
         if self._is_lumo_lite():
-            return {
-                "ok": False,
-                "engine": "lumo_lite",
-                "error": "lumo_lite_read_only",
-                "capsules": [],
-                "count": 0,
-            }
+            return self._lumo_lite_disabled("list_warehouse_capsules", capsules=[], count=0)
         capsules = list_warehouse_capsules(include_inactive=include_inactive)
         return {"ok": True, "capsules": capsules, "count": len(capsules)}
 
     def update_capsule_status(self, capsule_id: str, status: str) -> dict[str, Any]:
         if self._is_lumo_lite():
-            return {
-                "ok": False,
-                "engine": "lumo_lite",
-                "error": "lumo_lite_read_only",
-                "capsule_id": (capsule_id or "").strip(),
-            }
+            return self._lumo_lite_disabled(
+                "update_capsule_status",
+                capsule_id=(capsule_id or "").strip(),
+            )
         capsule_id = (capsule_id or "").strip()
         status = (status or "").strip()
         if not capsule_id or not status:

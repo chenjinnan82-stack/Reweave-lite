@@ -12,8 +12,15 @@ from unittest.mock import patch
 from pimos_lite import reweave_capsule_draft as draft
 from pimos_lite import reweave_capsule_warehouse as warehouse
 from pimos_lite import reweave_preview_pack as preview
+from pimos_lite.reweave_quality_gate import build_quality_gate
+from pimos_lite.reweave_project_renderer import build_app_js
+from pimos_lite.reweave_project_renderer import build_index_html
+from pimos_lite.reweave_project_renderer import build_preview_readme
+from pimos_lite.reweave_project_renderer import build_styles_css
 from pimos_lite import reweave_source_registry as registry
 from pimos_lite import reweave_source_scanner as scanner
+from pimos_lite.reweave_task_intent import build_task_intent
+from pimos_lite.reweave_task_plan import build_task_plan
 
 
 class ReweavePreviewPackTest(unittest.TestCase):
@@ -121,6 +128,15 @@ class ReweavePreviewPackTest(unittest.TestCase):
             [item["kind"] for item in task_pack["planned_outputs"]],
             ["data_panel_html", "task_style", "task_runtime"],
         )
+
+    def test_preview_pack_uses_split_task_helpers(self) -> None:
+        self.assertIs(preview._task_intent, build_task_intent)
+        self.assertIs(preview._task_plan, build_task_plan)
+        self.assertIs(preview._quality_gate, build_quality_gate)
+        self.assertIs(preview._build_index_html, build_index_html)
+        self.assertIs(preview._build_styles_css, build_styles_css)
+        self.assertIs(preview._build_app_js, build_app_js)
+        self.assertIs(preview._build_preview_readme, build_preview_readme)
 
     def test_latest_preview_restored(self) -> None:
         cap_ids = self._promote_capsules()

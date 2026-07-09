@@ -6,8 +6,18 @@ import os
 import unittest
 from unittest.mock import patch
 
-from pimos_lite.reweave_app_service import APP_SERVICE_VERSION, ReweaveAppService
+from pimos_lite.reweave_app_service import (
+    APP_SERVICE_VERSION,
+    LEGACY_WORKBENCH_ACTIONS,
+    PUBLIC_PRODUCT_ACTIONS,
+    SUPPORT_VIEWER_ACTIONS,
+    ReweaveAppService,
+    legacy_workbench_actions,
+    public_product_actions,
+    release_boundary_for_action,
+)
 from pimos_lite.reweave_engine.local import LocalReweaveEngine
+from pimos_lite.reweave_engine.lumo_lite import LumoLiteReweaveEngine
 
 
 class ReweaveAppServiceTest(unittest.TestCase):
@@ -36,6 +46,43 @@ class ReweaveAppServiceTest(unittest.TestCase):
             state = service.get_initial_state()
             self.assertEqual(state["backend"], "lumo")
             self.assertFalse(state["engineStatus"]["available"])
+
+    def test_lumo_lite_blocked_service_actions_share_release_boundary_shape(self) -> None:
+        service = ReweaveAppService(engine=LumoLiteReweaveEngine())
+        results = [
+            service.create_review_queue_for_source("source_alpha"),
+            service.promote_review_item("source_alpha", "review_alpha"),
+            service.list_warehouse_capsules(),
+            service.update_capsule_status("capsule_alpha", "disabled"),
+            service.export_preview_package("package_alpha", "/tmp/export", "zip"),
+        ]
+
+        self.assertEqual(
+            {item["action"] for item in results},
+            {
+                "create_review_queue_for_source",
+                "promote_review_item",
+                "list_warehouse_capsules",
+                "update_capsule_status",
+                "export_preview_package",
+            },
+        )
+        self.assertTrue(all(item["ok"] is False for item in results))
+        self.assertTrue(all(item["engine"] == "lumo_lite" for item in results))
+        self.assertTrue(all(item["mode"] == "read_only" for item in results))
+        self.assertTrue(all(item["error"] == "lumo_lite_read_only" for item in results))
+        self.assertTrue(all(item["release_boundary"] == "legacy_workbench" for item in results))
+
+    def test_release_boundaries_are_explicit_and_disjoint(self) -> None:
+        self.assertFalse(PUBLIC_PRODUCT_ACTIONS & LEGACY_WORKBENCH_ACTIONS)
+        self.assertFalse(PUBLIC_PRODUCT_ACTIONS & SUPPORT_VIEWER_ACTIONS)
+        self.assertFalse(LEGACY_WORKBENCH_ACTIONS & SUPPORT_VIEWER_ACTIONS)
+        self.assertEqual(release_boundary_for_action("generate_preview"), "public_product")
+        self.assertEqual(release_boundary_for_action("export_preview_package"), "legacy_workbench")
+        self.assertEqual(release_boundary_for_action("get_preview_package"), "support_viewer")
+        self.assertEqual(release_boundary_for_action("made_up_action"), "unknown")
+        self.assertIn("generate_preview", public_product_actions())
+        self.assertIn("export_preview_package", legacy_workbench_actions())
 
 
 if __name__ == "__main__":
