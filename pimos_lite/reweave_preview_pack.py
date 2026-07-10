@@ -24,6 +24,7 @@ from pimos_lite.reweave_snippet_context import (
     count_snippets,
 )
 from pimos_lite.reweave_source_registry import state_dir
+from pimos_lite.reweave_source_scanner import load_summary
 from pimos_lite.reweave_task_intent import MAX_TASK_LEN
 from pimos_lite.reweave_task_intent import build_task_intent as _task_intent
 from pimos_lite.reweave_task_intent import build_task_profile as _task_profile
@@ -136,6 +137,16 @@ def _resolve_capsules(capsule_ids: list[str]) -> list[dict[str, Any]]:
         if cap and is_generate_eligible(cap):
             resolved.append(cap)
     return resolved
+
+
+def _project_graph_for_capsules(capsules: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for capsule in capsules:
+        source_id = str(capsule.get("source_id") or "")
+        summary = load_summary(source_id) if source_id else None
+        graph = summary.get("project_graph") if isinstance(summary, dict) else None
+        if isinstance(graph, dict) and graph.get("project_kind") == "react_vite":
+            return {"source_id": source_id, **graph}
+    return None
 
 
 def _capsule_used_entry(cap: dict[str, Any]) -> dict[str, Any]:
@@ -355,7 +366,8 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
         provenance["content_aware_generate"] = {"enabled": False}
 
     selection_mode = str(payload.get("selectionMode") or payload.get("selection_mode") or "selected_capsules")
-    task_intent = _task_intent(task, capsules)
+    project_graph = _project_graph_for_capsules(capsules)
+    task_intent = _task_intent(task, capsules, project_graph=project_graph)
     task_plan = _task_plan(task_intent)
     candidate_contract = (
         snippet_context.get("behavior_contract")
@@ -399,6 +411,13 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
         task_profile=task_profile,
         selection_mode=selection_mode,
     )
+    if project_graph is not None:
+        task_pack["project_graph_path"] = "project_graph.json"
+        provenance["project_graph"] = {
+            "path": "project_graph.json",
+            "source_id": project_graph.get("source_id"),
+            "source_project_write": False,
+        }
     if behavior_contract is not None:
         task_pack["behavior_contract_path"] = "behavior_contract.json"
         task_pack["behavior_adaptation_path"] = "behavior_adaptation.json"
@@ -463,6 +482,9 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
     _write_text(root / "capsules_used.json", json.dumps(capsules_used, indent=2, ensure_ascii=False) + "\n")
     _write_text(root / "provenance.json", json.dumps(provenance, indent=2, ensure_ascii=False) + "\n")
     _write_text(root / "summary.md", _build_summary_md(task, capsules))
+    if project_graph is not None:
+        _write_text(root / "project_graph.json", json.dumps(project_graph, indent=2, ensure_ascii=False) + "\n")
+        files.append("project_graph.json")
     if behavior_contract is not None:
         _write_text(root / "behavior_contract.json", json.dumps(behavior_contract, indent=2, ensure_ascii=False) + "\n")
         _write_text(root / "behavior_adaptation.json", json.dumps(behavior_adaptation, indent=2, ensure_ascii=False) + "\n")

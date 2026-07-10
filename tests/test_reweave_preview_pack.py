@@ -121,6 +121,55 @@ class ReweavePreviewPackTest(unittest.TestCase):
         )
         self.assertTrue(all(item["source_project_write"] is False for item in provenance["outputs"]))
 
+    def test_react_vite_graph_flows_into_preview_only_task_plan(self) -> None:
+        root = self._state_dir / "react-vite-preview-source"
+        source = root / "src"
+        source.mkdir(parents=True)
+        (root / "package.json").write_text(
+            json.dumps(
+                {
+                    "name": "react-quote",
+                    "dependencies": {"react": "^19.0.0"},
+                    "devDependencies": {"vite": "^7.0.0"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        (source / "main.tsx").write_text(
+            "import App from './App';\nimport './styles.css';\n",
+            encoding="utf-8",
+        )
+        (source / "App.tsx").write_text(
+            "export default function App() { return <button>Quote</button>; }\n",
+            encoding="utf-8",
+        )
+        (source / "styles.css").write_text("button { color: teal; }\n", encoding="utf-8")
+        before = {path.name: path.read_bytes() for path in source.iterdir()}
+        box = registry.add_source_box(root)
+        scanner.scan_source_box(box["id"])
+        draft.draft_capsules(box["id"])
+        cap_ids = [cap["id"] for cap in warehouse.promote_source_drafts(box["id"])]
+
+        result = preview.build_preview_package(
+            {"taskText": "Build a React quote component", "capsuleIds": cap_ids, "backend": "local"}
+        )
+
+        preview_path = Path(result["previewPath"])
+        graph = json.loads((preview_path / "project_graph.json").read_text(encoding="utf-8"))
+        intent = json.loads((preview_path / "task_intent.json").read_text(encoding="utf-8"))
+        plan = json.loads((preview_path / "task_plan.json").read_text(encoding="utf-8"))
+        provenance = json.loads((preview_path / "provenance.json").read_text(encoding="utf-8"))
+        self.assertEqual(graph["project_kind"], "react_vite")
+        self.assertEqual(intent["project_context"]["graph_status"], "analyzed")
+        self.assertEqual(
+            [item["path"] for item in plan["project_targets"]],
+            ["src/main.tsx", "src/App.tsx", "src/styles.css"],
+        )
+        self.assertTrue(all(item["write_mode"] == "preview_only" for item in plan["project_targets"]))
+        self.assertEqual(plan["project_graph_path"], "project_graph.json")
+        self.assertFalse(provenance["project_graph"]["source_project_write"])
+        self.assertEqual(before, {path.name: path.read_bytes() for path in source.iterdir()})
+
     def test_operations_task_uses_task_intent_not_fixed_template_profile(self) -> None:
         cap_ids = self._promote_capsules()
         result = preview.build_preview_package(
