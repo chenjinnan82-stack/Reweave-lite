@@ -162,6 +162,8 @@ class ReweaveSourceScannerTest(unittest.TestCase):
         self.assertEqual(graph["status"], "analyzed")
         self.assertEqual(graph["project_kind"], "react_vite")
         self.assertEqual(graph["entrypoints"], ["src/main.tsx"])
+        self.assertEqual(graph["runtime_files"], ["src/main.tsx", "src/App.tsx", "src/app.css"])
+        self.assertTrue(graph["runtime_closure_bounded"])
         self.assertEqual(graph["counts"], {"nodes": 3, "edges": 2, "unresolved": 0})
         self.assertIn({"from": "src/main.tsx", "to": "src/App.tsx"}, graph["edges"])
         self.assertIn({"from": "src/main.tsx", "to": "src/app.css"}, graph["edges"])

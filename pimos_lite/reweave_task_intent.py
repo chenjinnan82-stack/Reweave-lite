@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from pimos_lite.reweave_project_graph import MAX_RUNTIME_FILES
+
 MAX_TASK_LEN = 240
 
 CAPABILITY_KEYWORDS = {
@@ -144,9 +146,12 @@ def _project_context(project_graph: dict[str, Any] | None) -> dict[str, Any] | N
     if not project_graph or project_graph.get("project_kind") != "react_vite":
         return None
     nodes = [item for item in project_graph.get("nodes", []) if isinstance(item, dict)]
-    ordered = []
-    for kind in ("entry", "component", "style", "module"):
-        ordered.extend(item for item in nodes if item.get("kind") == kind)
+    nodes_by_path = {str(item.get("path") or ""): item for item in nodes}
+    runtime_files = [str(path) for path in project_graph.get("runtime_files", []) if path]
+    ordered = [nodes_by_path[path] for path in runtime_files if path in nodes_by_path]
+    if not ordered:
+        for kind in ("entry", "component", "style", "module"):
+            ordered.extend(item for item in nodes if item.get("kind") == kind)
     candidate_files = []
     seen: set[str] = set()
     for node in ordered:
@@ -161,12 +166,14 @@ def _project_context(project_graph: dict[str, Any] | None) -> dict[str, Any] | N
                 "write_mode": "preview_only",
             }
         )
-        if len(candidate_files) == 5:
+        if len(candidate_files) == MAX_RUNTIME_FILES:
             break
     return {
         "project_kind": "react_vite",
         "graph_status": project_graph.get("status"),
         "entrypoints": list(project_graph.get("entrypoints") or []),
+        "runtime_file_count": len(runtime_files),
+        "runtime_closure_bounded": len(runtime_files) <= MAX_RUNTIME_FILES,
         "candidate_files": candidate_files,
         "source_project_write": False,
     }

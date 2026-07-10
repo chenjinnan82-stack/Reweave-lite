@@ -86,8 +86,14 @@ def _run_react_child(root: Path, expected_text: str) -> int:
         return 0
 
     app = QApplication.instance() or QApplication(["reweave-react-validation"])
+    console_messages: list[str] = []
+
+    class ValidationPage(QWebEnginePage):
+        def javaScriptConsoleMessage(self, _level: Any, message: str, _line: int, _source: str) -> None:
+            console_messages.append(message[:240])
+
     profile = QWebEngineProfile()
-    page = QWebEnginePage(profile)
+    page = ValidationPage(profile)
     settings = page.settings()
     settings.setAttribute(QWebEngineSettings.LocalContentCanAccessFileUrls, True)
     settings.setAttribute(QWebEngineSettings.LocalContentCanAccessRemoteUrls, False)
@@ -95,10 +101,15 @@ def _run_react_child(root: Path, expected_text: str) -> int:
     snapshot_js = (
         "JSON.stringify({text:(document.body.innerText||'').trim(),"
         "root:(document.getElementById('root')||{}).innerText||'',"
-        "button:!!document.querySelector('button')})"
+        "state:(document.body.innerText||'').trim()+'|'+"
+        "Array.from(document.querySelectorAll('input,textarea,select')).map(function(el){"
+        "return String(el.value||el.checked||'');}).join('|'),"
+        "buttons:document.querySelectorAll('button').length})"
     )
 
     def finish(result: dict[str, Any]) -> None:
+        if console_messages:
+            result.setdefault("console_messages", console_messages[-5:])
         output.update(result)
         app.quit()
 
@@ -110,33 +121,67 @@ def _run_react_child(root: Path, expected_text: str) -> int:
         if not str(before.get("root") or "").strip():
             finish(_receipt("failed", "react_root_not_rendered"))
             return
-        if expected_text and expected_text not in str(before.get("text") or ""):
-            finish(_receipt("failed", "adapted_task_text_not_rendered"))
-            return
-        if not before.get("button"):
+        button_count = min(int(before.get("buttons") or 0), 12)
+        if not button_count:
             finish(_receipt("needs_review", "react_button_not_found", rendered=True))
             return
 
-        def inspect_after(after_raw: Any) -> None:
-            try:
-                after = json.loads(after_raw) if isinstance(after_raw, str) else {}
-            except json.JSONDecodeError:
-                after = {}
-            changed = str(before.get("text") or "") != str(after.get("text") or "")
-            finish(
-                _receipt(
-                    "passed" if changed else "needs_review",
-                    "react_interaction_changed_dom" if changed else "react_interaction_unchanged",
-                    rendered=True,
-                    interaction_present=True,
-                    interaction_changed=changed,
+        def try_button(index: int, current: dict[str, Any]) -> None:
+            if index >= button_count:
+                finish(
+                    _receipt(
+                        "needs_review",
+                        "react_interaction_unchanged",
+                        rendered=True,
+                        interaction_present=True,
+                        interaction_changed=False,
+                        buttons_checked=button_count,
+                    )
                 )
+                return
+
+            def inspect_after(after_raw: Any) -> None:
+                try:
+                    after = json.loads(after_raw) if isinstance(after_raw, str) else {}
+                except json.JSONDecodeError:
+                    after = {}
+                changed = str(current.get("state") or "") != str(after.get("state") or "")
+                task_rendered = (
+                    not expected_text
+                    or expected_text in str(before.get("text") or "")
+                    or expected_text in str(after.get("text") or "")
+                )
+                if changed:
+                    finish(
+                        _receipt(
+                            "passed" if task_rendered else "needs_review",
+                            "react_interaction_changed_dom"
+                            if task_rendered
+                            else "adapted_task_text_not_rendered",
+                            rendered=True,
+                            task_text_rendered=task_rendered,
+                            interaction_present=True,
+                            interaction_changed=True,
+                            button_index=index,
+                        )
+                    )
+                    return
+                try_button(index + 1, after)
+
+            script = (
+                "(function(){var button=document.querySelectorAll('button')["
+                f"{index}];if(!button||button.disabled)return false;button.click();return true;}})()"
+            )
+            page.runJavaScript(
+                script,
+                lambda clicked: (
+                    QTimer.singleShot(500, lambda: page.runJavaScript(snapshot_js, inspect_after))
+                    if clicked
+                    else try_button(index + 1, current)
+                ),
             )
 
-        page.runJavaScript(
-            "(function(){var button=document.querySelector('button');if(!button)return false;button.click();return true;})()",
-            lambda _clicked: QTimer.singleShot(500, lambda: page.runJavaScript(snapshot_js, inspect_after)),
-        )
+        try_button(0, before)
 
     def loaded(ok: bool) -> None:
         if not ok:

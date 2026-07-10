@@ -23,6 +23,7 @@ from pimos_lite.reweave_reuse_suggestions import load_reuse_suggestions
 from pimos_lite.reweave_capsule_verifier import load_verification
 from pimos_lite.reweave_source_registry import get_source_box, state_dir
 from pimos_lite.reweave_source_scanner import load_summary
+from pimos_lite.reweave_project_graph import MAX_RUNTIME_FILES
 
 CONTENT_SCHEMA_VERSION = 1
 MAX_FILES = 5
@@ -677,6 +678,33 @@ def collect_candidate_paths(capsule: dict[str, Any], summary: dict[str, Any]) ->
     return [p for p in paths if is_allowed_relative_path(p)][:MAX_FILES]
 
 
+def _complete_react_project_files(
+    source_root: Path,
+    capsule: dict[str, Any],
+    summary: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[str], bool]:
+    tags = {str(tag).lower() for tag in capsule.get("tags", []) if tag}
+    graph = summary.get("project_graph") if isinstance(summary.get("project_graph"), dict) else {}
+    paths = [str(path) for path in graph.get("runtime_files", []) if path]
+    if "react" not in tags or graph.get("project_kind") != "react_vite" or not paths:
+        return [], [], False
+    files: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    total_bytes = 0
+    for relative in paths[:MAX_RUNTIME_FILES]:
+        item, warning = _complete_text_file(source_root, relative)
+        if item is None:
+            warnings.append(warning)
+            continue
+        if total_bytes + int(item["bytes"]) > MAX_BEHAVIOR_TOTAL_BYTES:
+            warnings.append("project_total_bytes_exceeded")
+            break
+        files.append(item)
+        total_bytes += int(item["bytes"])
+    complete = len(paths) <= MAX_RUNTIME_FILES and len(files) == len(paths)
+    return files, warnings, complete
+
+
 def _read_text_snippet(file_path: Path, max_bytes: int) -> tuple[str, int, bool]:
     raw = file_path.read_bytes()[: max_bytes + 1]
     if b"\x00" in raw[:max_bytes]:
@@ -830,6 +858,15 @@ def enrich_capsule_content(capsule_id: str) -> dict[str, Any]:
         "snippets": snippets,
         "warnings": warnings,
     }
+    project_files, project_warnings, project_files_complete = _complete_react_project_files(
+        source_path,
+        capsule,
+        summary,
+    )
+    if project_files:
+        record["project_files"] = project_files
+        record["project_files_complete"] = project_files_complete
+        record["warnings"].extend(project_warnings)
     behavior_contract = build_frontend_behavior_contract(source_path, summary, capsule)
     if behavior_contract is not None:
         record["behavior_contract"] = behavior_contract

@@ -11,6 +11,7 @@ from typing import Any
 
 SOURCE_EXTENSIONS = (".js", ".jsx", ".ts", ".tsx", ".css")
 MAX_GRAPH_FILES = 200
+MAX_RUNTIME_FILES = 32
 MAX_SOURCE_BYTES = 262144
 _IMPORT_RE = re.compile(
     r"(?:import|export)\s+(?:[^'\"]*?\s+from\s+)?['\"]([^'\"]+)['\"]"
@@ -60,6 +61,23 @@ def _read_source(path: Path) -> str | None:
         return raw.decode("utf-8")
     except UnicodeDecodeError:
         return None
+
+
+def _runtime_files(entrypoints: list[str], edges: list[dict[str, str]]) -> list[str]:
+    imports: dict[str, list[str]] = {}
+    for edge in edges:
+        imports.setdefault(edge["from"], []).append(edge["to"])
+    queue = list(entrypoints)
+    ordered: list[str] = []
+    seen: set[str] = set()
+    while queue:
+        path = queue.pop(0)
+        if path in seen:
+            continue
+        seen.add(path)
+        ordered.append(path)
+        queue.extend(imports.get(path, []))
+    return ordered
 
 
 def _resolve_local_import(source_path: str, specifier: str, known: set[str]) -> str | None:
@@ -154,6 +172,7 @@ def inspect_react_vite_project(root: Path) -> dict[str, Any]:
             kind = "module"
         nodes.append({"path": relative, "kind": kind, "imports": imports})
 
+    runtime_files = _runtime_files(entrypoints, edges)
     warnings = []
     if not entrypoints:
         warnings.append("entrypoint_not_found")
@@ -175,6 +194,9 @@ def inspect_react_vite_project(root: Path) -> dict[str, Any]:
             if isinstance(name, str) and isinstance(version, str)
         },
         "entrypoints": entrypoints,
+        "runtime_files": runtime_files,
+        "runtime_file_limit": MAX_RUNTIME_FILES,
+        "runtime_closure_bounded": len(runtime_files) <= MAX_RUNTIME_FILES,
         "nodes": nodes,
         "edges": edges,
         "external_dependencies": sorted(external),

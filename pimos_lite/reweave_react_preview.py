@@ -34,6 +34,13 @@ def _complete_snippets(capsule_ids: list[str], targets: list[str]) -> tuple[dict
     files: dict[str, str] = {}
     for capsule_id in capsule_ids:
         record = load_capsule_content(capsule_id)
+        project_files = record.get("project_files") if isinstance(record, dict) else None
+        for item in project_files if isinstance(project_files, list) else []:
+            if not isinstance(item, dict):
+                continue
+            relative = str(item.get("relative_path") or "")
+            if relative in wanted and isinstance(item.get("content"), str):
+                files.setdefault(relative, str(item["content"]))
         snippets = record.get("snippets") if isinstance(record, dict) else None
         for snippet in snippets if isinstance(snippets, list) else []:
             if not isinstance(snippet, dict):
@@ -109,7 +116,13 @@ def _adapt_static_slots(
     project_targets: list[dict[str, Any]],
 ) -> tuple[dict[str, str], dict[str, Any]]:
     slots = _static_text_slots(files, project_targets)
-    selected = next((slot for slot in slots if slot["kind"] == "heading"), None)
+    headings = [slot for slot in slots if slot["kind"] == "heading"]
+
+    def heading_priority(slot: dict[str, Any]) -> tuple[int, str]:
+        stem = Path(str(slot.get("file") or "")).stem.lower()
+        return (0 if stem == "app" else 1 if "home" in stem else 2, str(slot.get("file") or ""))
+
+    selected = min(headings, key=heading_priority) if headings else None
     public_slots = [{key: value for key, value in slot.items() if key != "occurrence"} for slot in slots]
     if selected is None:
         return dict(files), {
@@ -160,7 +173,7 @@ def _compile(project_root: Path, entrypoint: str, external_dependencies: list[st
     script = (
         "const esbuild=require(process.argv[1]);"
         "esbuild.buildSync({entryPoints:[process.argv[2]],outfile:process.argv[3],"
-        "bundle:true,platform:'browser',format:'esm',logLevel:'silent',"
+        "bundle:true,platform:'browser',format:'esm',jsx:'automatic',logLevel:'silent',"
         "external:JSON.parse(process.argv[4]),nodePaths:[process.argv[5]]});"
     )
     try:
@@ -232,6 +245,14 @@ def build_react_preview(
     entrypoints = [str(item) for item in project_graph.get("entrypoints", []) if item]
     if not target_paths or not entrypoints or entrypoints[0] not in target_paths:
         return _receipt("needs_review", "project_targets_incomplete", missing_files=target_paths)
+    runtime_files = [str(path) for path in project_graph.get("runtime_files", []) if path]
+    missing_targets = sorted(set(runtime_files) - set(target_paths))
+    if missing_targets:
+        return _receipt(
+            "needs_review",
+            "project_runtime_closure_unbounded",
+            missing_files=missing_targets,
+        )
     files, missing = _complete_snippets(capsule_ids, target_paths)
     if missing:
         return _receipt("needs_review", "complete_project_files_unavailable", missing_files=missing)

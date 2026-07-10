@@ -69,6 +69,22 @@ class ReweavePreviewPackTest(unittest.TestCase):
         self.assertEqual(receipt["status"], "needs_review")
         self.assertEqual(receipt["reason"], "safe_static_heading_not_found")
 
+    def test_react_preview_prefers_home_heading_over_hidden_subpage(self) -> None:
+        files = {
+            "src/pages/CapturePage.tsx": "export default () => <h1>Capture</h1>;",
+            "src/pages/HomePage.tsx": "export default () => <h1>Home</h1>;",
+        }
+        targets = [
+            {"path": "src/pages/CapturePage.tsx", "kind": "component"},
+            {"path": "src/pages/HomePage.tsx", "kind": "component"},
+        ]
+
+        updated, receipt = react_preview._adapt_static_slots(files, "Build a review helper", targets)
+
+        self.assertIn("Build a review helper", updated["src/pages/HomePage.tsx"])
+        self.assertIn("Capture", updated["src/pages/CapturePage.tsx"])
+        self.assertEqual(receipt["changes"][0]["slot_id"], "src/pages/HomePage.tsx:h1:0")
+
     def test_react_preview_marks_extra_runtime_dependency_for_review(self) -> None:
         project = self._state_dir / "react-extra-dependency"
         (project / "src").mkdir(parents=True)
@@ -206,6 +222,16 @@ class ReweavePreviewPackTest(unittest.TestCase):
         cap_ids = [cap["id"] for cap in promoted]
         for cap_id in cap_ids:
             content.enrich_capsule_content(cap_id)
+        project_content = next(
+            record
+            for record in (content.load_capsule_content(cap_id) for cap_id in cap_ids)
+            if isinstance(record, dict) and record.get("project_files")
+        )
+        self.assertTrue(project_content["project_files_complete"])
+        self.assertEqual(
+            [item["relative_path"] for item in project_content["project_files"]],
+            ["src/main.tsx", "src/App.tsx", "src/styles.css"],
+        )
 
         result = preview.build_preview_package(
             {
