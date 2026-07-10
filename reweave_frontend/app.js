@@ -120,6 +120,12 @@
       enrichContent: "补充内容",
       copied: "已复制",
       enrichedContentPreview: "使用补充内容预览",
+      localModelRefinement: "本地模型优化",
+      localModelOff: "关闭",
+      localModelReady: "就绪",
+      localModelRunning: "处理中",
+      localModelApplied: "已应用",
+      localModelFallback: "已回退",
       openFolderButton: "打开文件夹",
       exportZip: "导出 ZIP",
       exportCopy: "导出副本",
@@ -247,6 +253,12 @@
       enrichContent: "Enrich content",
       copied: "Copied",
       enrichedContentPreview: "Use enriched content preview",
+      localModelRefinement: "Local model refinement",
+      localModelOff: "Off",
+      localModelReady: "Ready",
+      localModelRunning: "Running",
+      localModelApplied: "Applied",
+      localModelFallback: "Fallback",
       openFolderButton: "Open in folder",
       exportZip: "Export zip",
       exportCopy: "Export copy",
@@ -280,6 +292,7 @@
   var lastPreviewPath = "";
   var pendingGeneratePromise = null;
   var useEnrichedContentPreview = false;
+  var useBoundedLocalModel = false;
   var currentPreviewPackageId = "";
   var previewViewerMode = "view";
   var lumoLiteArtifacts = [];
@@ -1358,6 +1371,26 @@
     }
   }
 
+  function setLocalModelStatus(key) {
+    var status = $("local-model-status");
+    if (!status) return;
+    status.setAttribute("data-i18n", key);
+    status.textContent = t(key);
+  }
+
+  function updateLocalModelToggle() {
+    var wrap = $("local-model-toggle-wrap");
+    var checkbox = $("use-local-model");
+    if (!wrap || !checkbox) return;
+    var supported = hasDesktopBridge() && desktopCapability("canUseBoundedLocalModel");
+    wrap.classList.toggle("hidden", !supported);
+    if (!supported) {
+      useBoundedLocalModel = false;
+      checkbox.checked = false;
+      setLocalModelStatus("localModelOff");
+    }
+  }
+
   function notifyDesktopGenerate(text, ids) {
     if (!hasDesktopBridge()) {
       pendingGeneratePromise = null;
@@ -1369,6 +1402,9 @@
       capsules: ids.map(findCapsule).filter(Boolean),
       selectionMode: usedCapsuleIds.length > 0 ? "manual" : "auto_match",
       useEnrichedContent: !!(useEnrichedContentPreview && anyEnrichedInIds(ids)),
+      localModel: useBoundedLocalModel
+        ? { enabled: true, provider: "ollama", model: "qwen2.5-coder:1.5b" }
+        : { enabled: false },
       sourceBoxes: (data.sourceBoxes || []).map(function (s) {
         return { id: s.id, label: s.label, path: s.path || "", status: s.status };
       }),
@@ -1394,6 +1430,11 @@
     }
     if (result.contentAwareGenerate) {
       data.contentAwareGenerate = result.contentAwareGenerate;
+    }
+    if (result.localModel && result.localModel.enabled) {
+      setLocalModelStatus(result.localModel.applied ? "localModelApplied" : "localModelFallback");
+    } else if (useBoundedLocalModel) {
+      setLocalModelStatus("localModelFallback");
     }
   }
 
@@ -1647,6 +1688,7 @@
     els.runtimeSidecarMode = $("runtime-sidecar-mode");
     els.runtimeSidecarSource = $("runtime-sidecar-source");
     els.runtimeSidecarStatus = $("runtime-sidecar-status");
+    updateLocalModelToggle();
   }
 
   function shortName(name) {
@@ -2394,6 +2436,13 @@
         useEnrichedContentPreview = !!enrichedCheckbox.checked;
       });
     }
+    var localModelCheckbox = $("use-local-model");
+    if (localModelCheckbox) {
+      localModelCheckbox.addEventListener("change", function () {
+        useBoundedLocalModel = !!localModelCheckbox.checked;
+        setLocalModelStatus(useBoundedLocalModel ? "localModelReady" : "localModelOff");
+      });
+    }
     els.taskInput.addEventListener("keydown", function (e) {
       if (e.key === "Enter") {
         e.preventDefault();
@@ -2644,6 +2693,7 @@
     }
 
     notifyDesktopGenerate(text, ids);
+    if (useBoundedLocalModel) setLocalModelStatus("localModelRunning");
 
     isGenerating = true;
     setAppState("invoking");
@@ -2763,6 +2813,7 @@
     function blockReadyRender(message) {
       isGenerating = false;
       pendingGeneratePromise = null;
+      if (useBoundedLocalModel) setLocalModelStatus("localModelFallback");
       if (els.taskBay) els.taskBay.classList.remove("is-invoking");
       if (isLumoLiteReadOnly()) applyLumoLiteRuntimeView();
       if (els.btnGenerate) els.btnGenerate.disabled = !canBuildTaskPackPreview();

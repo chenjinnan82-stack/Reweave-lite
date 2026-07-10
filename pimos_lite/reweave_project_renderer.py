@@ -13,6 +13,144 @@ from pimos_lite.reweave_task_plan import build_task_plan as _task_plan
 
 MAX_SNIPPET_LINES = 12
 
+
+def _behavior_file(contract: dict[str, Any], role: str) -> dict[str, Any] | None:
+    files = contract.get("files") if isinstance(contract.get("files"), dict) else {}
+    value = files.get(role)
+    return value if isinstance(value, dict) else None
+
+
+def _simple_tag_text(source: str, tag: str) -> str:
+    match = re.search(rf"<{tag}\b[^>]*>([^<>]+)</{tag}>", source, flags=re.IGNORECASE)
+    return html.unescape(match.group(1).strip()) if match else ""
+
+
+def _task_heading(task: str) -> str:
+    value = re.sub(r"(?i)^\s*(?:build|create|make|generate)\s+(?:(?:a|an|the)\s+)?", "", task or "").strip()
+    value = (value or task or "Reweave project")[:120]
+    return value[:1].upper() + value[1:] if value[:1].isascii() else value
+
+
+def _safe_text_slots(source: str) -> list[dict[str, Any]]:
+    slots: list[dict[str, Any]] = []
+    for tag in ("p", "h2", "h3", "button", "option"):
+        pattern = re.compile(rf"<{tag}\b[^>]*>([^<>]+)</{tag}>", flags=re.IGNORECASE)
+        for occurrence, match in enumerate(pattern.finditer(source)):
+            value = html.unescape(match.group(1).strip())
+            if 2 <= len(value) <= 160:
+                slots.append(
+                    {
+                        "slot_id": f"{tag}:{occurrence}",
+                        "tag": tag,
+                        "occurrence": occurrence,
+                        "kind": "data_item" if tag == "option" else "text",
+                        "value": value,
+                    }
+                )
+    return slots[:24]
+
+
+def _safe_style_variables(contract: dict[str, Any]) -> list[dict[str, str]]:
+    css = str((_behavior_file(contract, "style") or {}).get("content") or "")
+    return [
+        {"name": match.group(1), "value": match.group(2)}
+        for match in re.finditer(r"(--[a-zA-Z0-9_-]+)\s*:\s*(#[0-9a-fA-F]{3,8})\b", css)
+    ][:12]
+
+
+def build_behavior_adaptation(task: str, contract: dict[str, Any]) -> dict[str, Any]:
+    source = str((_behavior_file(contract, "entry") or {}).get("content") or "")
+    heading = _task_heading(task)
+    patches = [
+        {"target": "document_title", "from": _simple_tag_text(source, "title"), "to": heading},
+        {"target": "primary_heading", "from": _simple_tag_text(source, "h1"), "to": heading},
+    ]
+    patches = [patch for patch in patches if patch["from"] and patch["from"] != patch["to"]]
+    interactions = contract.get("interactions") if isinstance(contract.get("interactions"), dict) else {}
+    protected_ids = {
+        str(item.get("id") or "")
+        for item in interactions.get("controls", [])
+        if isinstance(item, dict) and item.get("id")
+    }
+    protected_ids.update(str(item) for item in interactions.get("state_target_ids", []) if item)
+    protected_ids.update(
+        str(item.get("target_id") or "")
+        for item in interactions.get("events", [])
+        if isinstance(item, dict) and item.get("target_id")
+    )
+    protected_selectors = sorted(
+        str(item.get("target_selector") or "")
+        for item in interactions.get("events", [])
+        if isinstance(item, dict) and item.get("target_selector")
+    )
+    return {
+        "schema_version": 1,
+        "mode": "safe_text_adaptation",
+        "task_heading": heading,
+        "patches": patches,
+        "allowed_text_slots": _safe_text_slots(source),
+        "allowed_style_variables": _safe_style_variables(contract),
+        "protected": {
+            "dom_ids": sorted(protected_ids),
+            "selectors": protected_selectors,
+            "events": list(interactions.get("events") or []),
+            "script_sha256": str((_behavior_file(contract, "script") or {}).get("sha256") or ""),
+        },
+    }
+
+
+def _apply_behavior_adaptation(source: str, adaptation: dict[str, Any]) -> str:
+    tags = {"document_title": "title", "primary_heading": "h1"}
+    for patch in adaptation.get("patches") if isinstance(adaptation.get("patches"), list) else []:
+        if not isinstance(patch, dict) or patch.get("target") not in tags:
+            continue
+        tag = tags[str(patch["target"])]
+        replacement = html.escape(str(patch.get("to") or ""))
+        pattern = re.compile(rf"(<{tag}\b[^>]*>)[^<>]+(</{tag}>)", flags=re.IGNORECASE)
+        source = pattern.sub(
+            lambda match: f"{match.group(1)}{replacement}{match.group(2)}",
+            source,
+            count=1,
+        )
+    return source
+
+
+def _build_behavior_index_html(task: str, contract: dict[str, Any], adaptation: dict[str, Any]) -> str:
+    entry = _behavior_file(contract, "entry") or {}
+    source = _apply_behavior_adaptation(str(entry.get("content") or ""), adaptation)
+    source = re.sub(
+        r"<link\b[^>]*\brel=[\"'][^\"']*stylesheet[^\"']*[\"'][^>]*>",
+        "",
+        source,
+        flags=re.IGNORECASE,
+    )
+    source = re.sub(
+        r"<script\b[^>]*\bsrc=[\"'][^\"']+[\"'][^>]*>\s*</script>",
+        "",
+        source,
+        flags=re.IGNORECASE,
+    )
+    task_meta = f'<meta name="reweave-task" content="{html.escape((task or "")[:MAX_TASK_LEN], quote=True)}">'
+    stylesheet = '<link rel="stylesheet" href="styles.css">'
+    if re.search(r"</head>", source, flags=re.IGNORECASE):
+        source = re.sub(r"</head>", f"  {task_meta}\n  {stylesheet}\n</head>", source, count=1, flags=re.IGNORECASE)
+    else:
+        source = task_meta + "\n" + stylesheet + "\n" + source
+    source = re.sub(
+        r"<html(\s|>)",
+        r'<html data-reweave-behavior="closed" data-reweave-adaptation="safe-text"\1',
+        source,
+        count=1,
+        flags=re.IGNORECASE,
+    )
+    footer = '<p class="reweave-build-notes"><a href="review.html">View build notes</a></p>'
+    script = '<script src="app.js"></script>'
+    if re.search(r"</body>", source, flags=re.IGNORECASE):
+        source = re.sub(r"</body>", f"  {footer}\n  {script}\n</body>", source, count=1, flags=re.IGNORECASE)
+    else:
+        source += "\n" + footer + "\n" + script + "\n"
+    return source
+
 def build_index_html(
     task: str,
     capsules: list[dict[str, Any]],
@@ -20,7 +158,15 @@ def build_index_html(
     content_aware: bool = False,
     snippet_context: dict[str, Any] | None = None,
     task_profile: dict[str, object] | None = None,
+    behavior_contract: dict[str, Any] | None = None,
+    behavior_adaptation: dict[str, Any] | None = None,
 ) -> str:
+    if behavior_contract and behavior_contract.get("status") == "closed":
+        return _build_behavior_index_html(
+            task,
+            behavior_contract,
+            behavior_adaptation or build_behavior_adaptation(task, behavior_contract),
+        )
     profile = task_profile or _task_profile(task, capsules)
     task_text = (task or "New Task Pack")[:MAX_TASK_LEN]
     source_page = _source_page_content(snippet_context) if content_aware else {}
@@ -407,7 +553,14 @@ def _hex_luminance(color: str) -> float:
     return 0.2126 * red + 0.7152 * green + 0.0722 * blue
 
 
-def build_styles_css(snippet_context: dict[str, Any] | None = None) -> str:
+def build_styles_css(
+    snippet_context: dict[str, Any] | None = None,
+    behavior_contract: dict[str, Any] | None = None,
+) -> str:
+    if behavior_contract and behavior_contract.get("status") == "closed":
+        style = _behavior_file(behavior_contract, "style") or {}
+        source = str(style.get("content") or "")
+        return source.rstrip() + "\n\n.reweave-build-notes { margin: 1rem; font: 14px/1.4 system-ui, sans-serif; }\n"
     tokens = _style_tokens(snippet_context)
     css = """:root {
   --accent: __ACCENT__;
@@ -454,7 +607,10 @@ body {
     return css.replace("__ACCENT__", tokens["accent"]).replace("__SOFT__", tokens["soft"])
 
 
-def build_app_js() -> str:
+def build_app_js(behavior_contract: dict[str, Any] | None = None) -> str:
+    if behavior_contract and behavior_contract.get("status") == "closed":
+        script = _behavior_file(behavior_contract, "script") or {}
+        return str(script.get("content") or "")
     return """document.addEventListener('DOMContentLoaded', function () {
   const button = document.getElementById('reweaveDemoButton');
   const status = document.getElementById('reweaveDemoStatus');

@@ -224,6 +224,31 @@ class ReweavePreviewPackTest(unittest.TestCase):
         self.assertNotIn("<script>alert(1)</script>", html)
         self.assertNotIn("<img src=x>", html)
 
+    def test_behavior_adaptation_escapes_task_and_preserves_contract_ids(self) -> None:
+        contract = {
+            "status": "closed",
+            "files": {
+                "entry": {
+                    "content": '<html><head><title>Old</title></head><body><h1>Old heading</h1><button id="runBtn">Run</button></body></html>'
+                },
+                "script": {"content": "document.getElementById('runBtn')", "sha256": "demo"},
+            },
+            "interactions": {
+                "controls": [{"id": "runBtn"}],
+                "events": [{"target_id": "runBtn", "event": "click"}],
+                "state_target_ids": [],
+            },
+        }
+        html = preview._build_index_html(
+            "Build <script>alert(1)</script>",
+            [],
+            behavior_contract=contract,
+        )
+
+        self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", html)
+        self.assertNotIn("<script>alert(1)</script>", html)
+        self.assertIn('id="runBtn"', html)
+
     def test_preview_package_redacts_source_box_paths_by_default(self) -> None:
         result = preview.build_preview_package(
             {

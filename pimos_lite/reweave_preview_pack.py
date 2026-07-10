@@ -11,6 +11,7 @@ from typing import Any
 from pimos_lite.reweave_capsule_warehouse import get_capsule, is_generate_eligible, list_capsules
 from pimos_lite.reweave_quality_gate import build_quality_gate as _quality_gate
 from pimos_lite.reweave_project_renderer import build_app_js as _build_app_js
+from pimos_lite.reweave_project_renderer import build_behavior_adaptation as _build_behavior_adaptation
 from pimos_lite.reweave_project_renderer import build_index_html as _build_index_html
 from pimos_lite.reweave_project_renderer import build_preview_readme as _build_preview_readme
 from pimos_lite.reweave_project_renderer import build_review_html as _build_review_html
@@ -284,7 +285,7 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
     use_enriched = bool(payload.get("useEnrichedContent"))
     snippet_context: dict[str, Any] | None = None
     if use_enriched:
-        snippet_context = build_snippet_context(capsule_ids)
+        snippet_context = build_snippet_context(capsule_ids, task=task)
 
     stamp = _utc_now_iso()
     folder_name = _folder_name(task, stamp)
@@ -335,6 +336,34 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
     selection_mode = str(payload.get("selectionMode") or payload.get("selection_mode") or "selected_capsules")
     task_intent = _task_intent(task, capsules)
     task_plan = _task_plan(task_intent)
+    candidate_contract = (
+        snippet_context.get("behavior_contract")
+        if isinstance(snippet_context, dict) and isinstance(snippet_context.get("behavior_contract"), dict)
+        else None
+    )
+    behavior_contract = (
+        candidate_contract
+        if payload.get("reuseBehavior") is True and candidate_contract and candidate_contract.get("status") == "closed"
+        else None
+    )
+    behavior_adaptation = _build_behavior_adaptation(task, behavior_contract) if behavior_contract else None
+    if behavior_contract is not None:
+        selection = behavior_contract.get("selection") if isinstance(behavior_contract.get("selection"), dict) else {}
+        task_intent["behavior_reuse"] = {
+            "status": "selected",
+            "mode": behavior_contract.get("mode"),
+            "entry_path": behavior_contract.get("entry_path"),
+            "capsule_id": selection.get("capsule_id"),
+            "reason": selection.get("reason"),
+        }
+        task_plan["composer"] = {
+            "mode": "closed_frontend_module",
+            "inputs": ["task_intent.json", "task_plan.json", "behavior_contract.json", "behavior_adaptation.json", "capsules_used.json"],
+            "optional_inputs": ["snippets_used.json"],
+        }
+        task_plan["behavior_contract_path"] = "behavior_contract.json"
+        task_plan["behavior_adaptation_path"] = "behavior_adaptation.json"
+        task_plan["acceptance"].append("run declared behavior interactions")
     task_profile = _task_profile(task, capsules, task_intent=task_intent)
     task_pack = _build_task_pack(
         task,
@@ -344,6 +373,30 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
         task_profile=task_profile,
         selection_mode=selection_mode,
     )
+    if behavior_contract is not None:
+        task_pack["behavior_contract_path"] = "behavior_contract.json"
+        task_pack["behavior_adaptation_path"] = "behavior_adaptation.json"
+        task_pack["behavior_reuse"] = {
+            "status": "enabled",
+            "mode": behavior_contract.get("mode"),
+            "entry_path": behavior_contract.get("entry_path"),
+            "runtime_validation": "required",
+            "adaptation_mode": behavior_adaptation.get("mode") if behavior_adaptation else None,
+        }
+        provenance["behavior_reuse"] = {
+            "status": "enabled",
+            "mode": behavior_contract.get("mode"),
+            "contract_path": "behavior_contract.json",
+            "adaptation_path": "behavior_adaptation.json",
+            "source_read_at_generate_time": False,
+            "source_project_write": False,
+        }
+    elif payload.get("reuseBehavior") is True:
+        task_pack["behavior_reuse"] = {
+            "status": "unavailable",
+            "reason": "no_closed_frontend_module",
+        }
+        provenance["behavior_reuse"] = dict(task_pack["behavior_reuse"])
     files = ["index.html", "review.html", "styles.css", "app.js", "task_intent.json", "task_plan.json", "task_pack.json", "capsules_used.json", "provenance.json", "summary.md"]
     _write_text(
         root / "index.html",
@@ -353,6 +406,8 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
             content_aware=content_aware_enabled,
             snippet_context=snippet_context,
             task_profile=task_profile,
+            behavior_contract=behavior_contract,
+            behavior_adaptation=behavior_adaptation,
         ),
     )
     _write_text(
@@ -365,13 +420,21 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
             task_plan=task_plan,
         ),
     )
-    _write_text(root / "styles.css", _build_styles_css(snippet_context if content_aware_enabled else None))
-    _write_text(root / "app.js", _build_app_js())
+    _write_text(
+        root / "styles.css",
+        _build_styles_css(snippet_context if content_aware_enabled else None, behavior_contract=behavior_contract),
+    )
+    _write_text(root / "app.js", _build_app_js(behavior_contract))
     _write_text(root / "task_intent.json", json.dumps(task_intent, indent=2, ensure_ascii=False) + "\n")
     _write_text(root / "task_plan.json", json.dumps(task_plan, indent=2, ensure_ascii=False) + "\n")
     _write_text(root / "capsules_used.json", json.dumps(capsules_used, indent=2, ensure_ascii=False) + "\n")
     _write_text(root / "provenance.json", json.dumps(provenance, indent=2, ensure_ascii=False) + "\n")
     _write_text(root / "summary.md", _build_summary_md(task, capsules))
+    if behavior_contract is not None:
+        _write_text(root / "behavior_contract.json", json.dumps(behavior_contract, indent=2, ensure_ascii=False) + "\n")
+        _write_text(root / "behavior_adaptation.json", json.dumps(behavior_adaptation, indent=2, ensure_ascii=False) + "\n")
+        files.append("behavior_contract.json")
+        files.append("behavior_adaptation.json")
 
     snippets_used_count = 0
     if content_aware_enabled and snippet_context:
@@ -385,7 +448,14 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
         _write_text(root / "PREVIEW_README.md", _build_preview_readme(task, snippet_context))
         files.append("PREVIEW_README.md")
 
-    quality_gate = _quality_gate(root, task, task_plan, content_aware=content_aware_enabled)
+    quality_gate = _quality_gate(
+        root,
+        task,
+        task_plan,
+        content_aware=content_aware_enabled,
+        behavior_contract=behavior_contract,
+        behavior_adaptation=behavior_adaptation,
+    )
     task_pack["quality_gate"] = quality_gate
     _write_text(root / "task_pack.json", json.dumps(task_pack, indent=2, ensure_ascii=False) + "\n")
     _write_text(root / "quality_gate.json", json.dumps(quality_gate, indent=2, ensure_ascii=False) + "\n")
@@ -423,6 +493,8 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
     if content_aware_enabled:
         stats["contentAware"] = "Content-aware preview"
         stats["snippetsUsed"] = snippets_used_count
+    if behavior_contract is not None:
+        stats["behaviorReuse"] = "Closed frontend module"
 
     content_aware_generate = {
         "enabled": use_enriched,

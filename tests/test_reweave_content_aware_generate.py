@@ -129,6 +129,39 @@ class ReweaveContentAwareGenerateTest(unittest.TestCase):
             for snip in cap["snippets"]:
                 self.assertLessEqual(snip["excerpt_chars"], 1200)
 
+    def test_behavior_contract_selection_uses_task_relevance(self) -> None:
+        capsules = {
+            "copy": {
+                "id": "copy",
+                "name": "Landing Copy",
+                "tags": ["copy"],
+                "status": "active",
+                "content_enrichment": {"status": "enriched"},
+            },
+            "form": {
+                "id": "form",
+                "name": "Quote Form",
+                "tags": ["form", "quote"],
+                "status": "active",
+                "content_enrichment": {"status": "enriched"},
+            },
+        }
+        records = {
+            cap_id: {
+                "snippets": [{"preview": cap["name"], "relative_path": "index.html"}],
+                "behavior_contract": {"status": "closed", "entry_path": "index.html"},
+            }
+            for cap_id, cap in capsules.items()
+        }
+        with (
+            patch("pimos_lite.reweave_snippet_context.get_capsule", side_effect=capsules.get),
+            patch("pimos_lite.reweave_snippet_context.is_generate_eligible", return_value=True),
+            patch("pimos_lite.reweave_snippet_context.load_capsule_content", side_effect=records.get),
+        ):
+            ctx = build_snippet_context(["copy", "form"], task="Build a customer quote form")
+
+        self.assertEqual(ctx["behavior_contract"]["selection"]["capsule_id"], "form")
+
     def test_total_char_limit(self) -> None:
         cap = warehouse.get_capsule(self.capsule_id)
         assert cap

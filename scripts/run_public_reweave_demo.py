@@ -267,6 +267,7 @@ def run(
                 "backend": "public_demo",
                 "sourceBoxes": [source_box],
                 "useEnrichedContent": True,
+                "reuseBehavior": True,
             }
         )
 
@@ -301,6 +302,9 @@ def run(
             "task_plan": task_plan,
             "quality_gate_path": "quality_gate.json",
             "quality_gate": quality_gate,
+            "behavior_contract_path": preview.get("taskPack", {}).get("behavior_contract_path"),
+            "behavior_adaptation_path": preview.get("taskPack", {}).get("behavior_adaptation_path"),
+            "behavior_reuse": preview.get("taskPack", {}).get("behavior_reuse", {"status": "unavailable"}),
             "source_box": source_box,
             "selected_capsule_ids": capsule_ids,
             "selected_capsules": public_capsules,
@@ -359,6 +363,7 @@ def run(
             "task_intent": task_intent,
             "task_plan": task_plan,
             "quality_gate": quality_gate,
+            "behavior_reuse": task_pack.get("behavior_reuse"),
             "llm": llm_result,
             "source_project_write": False,
             "template_case": task_pack.get("template_case"),

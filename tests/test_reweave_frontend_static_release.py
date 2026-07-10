@@ -71,6 +71,8 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert 'placeholder="Source project read-only; local preview enabled"' in index
     assert "GENERATION INPUT" in index
     assert 'id="generation-input-note"' in index
+    assert 'id="use-local-model"' in index
+    assert 'data-i18n="localModelRefinement"' in index
     assert 'id="workflow-status"' in index
     assert 'id="workflow-status"' in index
     assert 'class="generated-title" data-i18n="currentRuntime"' in index
@@ -133,6 +135,10 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert "Build Small Project Pack" in app
     assert "Small Project Pack ready" in app
     assert 'selectionMode: usedCapsuleIds.length > 0 ? "manual" : "auto_match"' in app
+    assert 'desktopCapability("canUseBoundedLocalModel")' in app
+    assert 'model: "qwen2.5-coder:1.5b"' in app
+    assert 'setLocalModelStatus("localModelRunning")' in app
+    assert 'if (useBoundedLocalModel) setLocalModelStatus("localModelFallback");' in app
     assert "Generate will use exactly these capsules." in app
     assert ".generation-input-note" in styles
     assert 'openFolder.classList.add("hidden");' in app

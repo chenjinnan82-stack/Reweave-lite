@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import Any
 
 from pimos_lite.reweave_capsule_content import enrich_capsule_content as enrich_local_capsule_content
@@ -23,6 +25,7 @@ from pimos_lite.reweave_lumo_lite_state import (
     lumo_lite_source_boxes,
     map_capsule_warehouse_to_reweave_capsules,
 )
+from pimos_lite.reweave_llm_pack import apply_ollama_pack
 from pimos_lite.reweave_source_registry import add_source_box, get_source_box, list_source_boxes
 from pimos_lite.reweave_source_scanner import list_summary_lights
 from pimos_lite.reweave_source_scanner import scan_source_box as execute_source_scan
@@ -61,6 +64,7 @@ def lumo_lite_engine_status(load_result: dict[str, Any]) -> dict[str, Any]:
             "governance_apply": False,
             "recovery_promote": False,
             "llm_generation": False,
+            "bounded_local_model": "payload_opt_in",
             "write_source_folder": False,
             "network_call": False,
         },
@@ -192,6 +196,7 @@ class LumoLiteReweaveEngine:
             "canDraftCapsules": True,
             "canPromoteDrafts": True,
             "canGeneratePreview": True,
+            "canUseBoundedLocalModel": True,
             "canOpenPreviewFolder": False,
             "bridge": {
                 "network_call": False,
@@ -253,14 +258,54 @@ class LumoLiteReweaveEngine:
                 "backend": "lumo_lite_task_pack",
                 "taskPack": True,
                 "useEnrichedContent": use_enriched,
+                "reuseBehavior": True,
             }
         )
         if not isinstance(result.get("taskPack"), dict):
             raise ValueError("preview core did not return taskPack")
+        local_model = payload.get("localModel") if isinstance(payload.get("localModel"), dict) else {}
+        model_meta: dict[str, Any] = {"enabled": False, "local_http_call": False, "applied": False}
+        if local_model.get("enabled") is True:
+            selected_capsules = payload.get("capsules") if isinstance(payload.get("capsules"), list) else []
+            provider = str(local_model.get("provider") or "ollama").strip().lower()
+            model = str(local_model.get("model") or "qwen2.5-coder:1.5b").strip()
+            base_url = str(local_model.get("baseUrl") or "http://127.0.0.1:11434").strip()
+            try:
+                timeout = max(1.0, min(120.0, float(local_model.get("timeout") or 60)))
+            except (TypeError, ValueError):
+                timeout = 60.0
+            if provider != "ollama":
+                model_meta = {
+                    "enabled": True,
+                    "provider": provider,
+                    "model": model,
+                    "local_http_call": False,
+                    "external_network_call": False,
+                    "source_project_write": False,
+                    "applied": False,
+                    "fallback_used": True,
+                    "error": "unsupported_local_model_provider",
+                }
+            else:
+                model_meta = apply_ollama_pack(
+                    Path(result["previewPath"]),
+                    task=str(payload.get("taskText") or payload.get("task") or "New tool"),
+                    selected_capsules=[cap for cap in selected_capsules if isinstance(cap, dict)],
+                    snippet_context=result.get("snippetContext"),
+                    model=model,
+                    base_url=base_url,
+                    timeout=timeout,
+                    bounded_only=True,
+                )
+                root = Path(result["previewPath"])
+                result["taskPack"] = json.loads((root / "task_pack.json").read_text(encoding="utf-8"))
+                result["provenance"] = json.loads((root / "provenance.json").read_text(encoding="utf-8"))
         result["mode"] = "task_pack_preview"
         result["source_project_write"] = False
         result["dispatch"] = False
-        result["network_call"] = False
+        result["localModel"] = model_meta
+        result["model_call"] = bool(model_meta.get("local_http_call"))
+        result["network_call"] = bool(model_meta.get("local_http_call"))
         return result
 
     def list_lumo_lite_artifacts(self) -> dict[str, Any]:

@@ -11,6 +11,7 @@ from unittest.mock import patch
 
 from pimos_lite.reweave_app_service import ReweaveAppService
 from pimos_lite.reweave_capsule_content import (
+    build_frontend_behavior_contract,
     collect_candidate_paths,
     content_file_path,
     enrich_capsule_content,
@@ -84,6 +85,87 @@ class ReweaveCapsuleContentTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertGreaterEqual(result["snippet_count"], 1)
         self.assertTrue(content_file_path(self.capsule_id).is_file())
+
+    def test_closed_frontend_module_contract_keeps_complete_files_and_events(self) -> None:
+        (self._source_dir / "index.html").write_text(
+            '<!doctype html><html><head><link rel="stylesheet" href="styles.css"></head>'
+            '<body><input id="amount"><button id="runBtn">Run</button><p id="status"></p>'
+            '<script src="app.js"></script></body></html>',
+            encoding="utf-8",
+        )
+        (self._source_dir / "app.js").write_text(
+            "const runBtn = document.getElementById('runBtn');\n"
+            "runBtn.addEventListener('click', () => { document.getElementById('status').textContent = 'done'; });\n",
+            encoding="utf-8",
+        )
+        summary = scanner.scan_source_box(self.source_id)
+        contract = build_frontend_behavior_contract(
+            self._source_dir,
+            summary,
+            {"name": "Page Shell"},
+        )
+
+        assert contract
+        self.assertEqual(contract["status"], "closed")
+        self.assertEqual(contract["mode"], "whole_frontend_module")
+        self.assertIn("textContent = 'done'", contract["files"]["script"]["content"])
+        self.assertIn({"target_id": "runBtn", "event": "click"}, contract["interactions"]["events"])
+        self.assertFalse(contract["safety"]["source_project_write"])
+
+    def test_frontend_module_contract_blocks_multiple_scripts(self) -> None:
+        (self._source_dir / "extra.js").write_text("console.log('extra')", encoding="utf-8")
+        (self._source_dir / "index.html").write_text(
+            '<html><body><script src="app.js"></script><script src="extra.js"></script></body></html>',
+            encoding="utf-8",
+        )
+        summary = scanner.scan_source_box(self.source_id)
+        contract = build_frontend_behavior_contract(self._source_dir, summary, {"name": "Page Shell"})
+
+        assert contract
+        self.assertEqual(contract["status"], "blocked")
+        self.assertIn("multiple_scripts_not_supported", contract["blockers"])
+
+    def test_frontend_module_contract_blocks_static_html(self) -> None:
+        (self._source_dir / "index.html").write_text("<html><body>Static page</body></html>", encoding="utf-8")
+        summary = scanner.scan_source_box(self.source_id)
+        contract = build_frontend_behavior_contract(self._source_dir, summary, {"name": "Page Shell"})
+
+        assert contract
+        self.assertEqual(contract["status"], "blocked")
+        self.assertIn("missing_local_script", contract["blockers"])
+        self.assertIn("missing_behavior_events", contract["blockers"])
+
+    def test_frontend_module_contract_blocks_runtime_network_dependency(self) -> None:
+        (self._source_dir / "index.html").write_text(
+            '<html><body><button id="runBtn">Run</button><script src="app.js"></script></body></html>',
+            encoding="utf-8",
+        )
+        (self._source_dir / "app.js").write_text(
+            "document.getElementById('runBtn').addEventListener('click', () => fetch('/api/run'));",
+            encoding="utf-8",
+        )
+        summary = scanner.scan_source_box(self.source_id)
+        contract = build_frontend_behavior_contract(self._source_dir, summary, {"name": "Page Shell"})
+
+        assert contract
+        self.assertEqual(contract["status"], "blocked")
+        self.assertIn("runtime_dependency:fetch", contract["blockers"])
+
+    def test_frontend_module_contract_blocks_unobservable_click_state(self) -> None:
+        (self._source_dir / "index.html").write_text(
+            '<html><body><button id="runBtn">Run</button><script src="app.js"></script></body></html>',
+            encoding="utf-8",
+        )
+        (self._source_dir / "app.js").write_text(
+            "let count = 0; document.getElementById('runBtn').addEventListener('click', () => { count += 1; });",
+            encoding="utf-8",
+        )
+        summary = scanner.scan_source_box(self.source_id)
+        contract = build_frontend_behavior_contract(self._source_dir, summary, {"name": "Page Shell"})
+
+        assert contract
+        self.assertEqual(contract["status"], "blocked")
+        self.assertIn("missing_observable_state_target", contract["blockers"])
 
     def test_disabled_capsule_cannot_enrich(self) -> None:
         warehouse.update_capsule_status(self.capsule_id, "disabled")

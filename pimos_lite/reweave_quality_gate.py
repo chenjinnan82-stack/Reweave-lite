@@ -2,16 +2,27 @@
 
 from __future__ import annotations
 
+import hashlib
 import html
+import re
 from pathlib import Path
 from typing import Any
 
 from pimos_lite.reweave_task_intent import MAX_TASK_LEN
 
 
-def build_quality_gate(root: Path, task: str, task_plan: dict[str, Any], *, content_aware: bool) -> dict[str, Any]:
+def build_quality_gate(
+    root: Path,
+    task: str,
+    task_plan: dict[str, Any],
+    *,
+    content_aware: bool,
+    behavior_contract: dict[str, Any] | None = None,
+    behavior_adaptation: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     html_text = (root / "index.html").read_text(encoding="utf-8") if (root / "index.html").is_file() else ""
     review_text = (root / "review.html").read_text(encoding="utf-8") if (root / "review.html").is_file() else ""
+    app_text = (root / "app.js").read_text(encoding="utf-8") if (root / "app.js").is_file() else ""
     planned = [
         str(item.get("path"))
         for item in task_plan.get("outputs", [])
@@ -68,9 +79,71 @@ def build_quality_gate(root: Path, task: str, task_plan: dict[str, Any], *, cont
             or ("Source-backed cues" in review_text and "capsule metadata only" not in review_text),
         },
     ]
+    if behavior_contract is not None:
+        interactions = behavior_contract.get("interactions") if isinstance(behavior_contract.get("interactions"), dict) else {}
+        events = interactions.get("events") if isinstance(interactions.get("events"), list) else []
+        protected = behavior_adaptation.get("protected") if isinstance(behavior_adaptation, dict) and isinstance(behavior_adaptation.get("protected"), dict) else {}
+        expected_ids = [str(item) for item in protected.get("dom_ids", []) if item]
+        expected_selectors = [str(item) for item in protected.get("selectors", []) if item]
+        source_script = behavior_contract.get("files", {}).get("script", {}) if isinstance(behavior_contract.get("files"), dict) else {}
+        expected_script_sha = str(source_script.get("sha256") or "") if isinstance(source_script, dict) else ""
+        actual_script_sha = hashlib.sha256((root / "app.js").read_bytes()).hexdigest()
+        task_heading = str(behavior_adaptation.get("task_heading") or "") if isinstance(behavior_adaptation, dict) else ""
+        adaptation_targets = {
+            str(item.get("target") or "")
+            for item in behavior_adaptation.get("patches", [])
+            if isinstance(behavior_adaptation, dict) and isinstance(item, dict)
+        }
+        heading_required = bool(adaptation_targets & {"document_title", "primary_heading"})
+        checks.extend(
+            [
+                {
+                    "name": "behavior_contract_materialized",
+                    "passed": (root / "behavior_contract.json").is_file()
+                    and 'data-reweave-behavior="closed"' in html_text,
+                },
+                {
+                    "name": "behavior_adaptation_materialized",
+                    "passed": (root / "behavior_adaptation.json").is_file()
+                    and 'data-reweave-adaptation="safe-text"' in html_text
+                    and bool(task_heading)
+                    and (not heading_required or html.escape(task_heading) in html_text),
+                },
+                {
+                    "name": "behavior_dom_contract_preserved",
+                    "passed": bool(expected_ids or expected_selectors)
+                    and all(
+                        re.search(rf'\bid\s*=\s*["\']{re.escape(item)}["\']', html_text)
+                        for item in expected_ids
+                    )
+                    and all(selector.lstrip("#.") in html_text for selector in expected_selectors),
+                },
+                {
+                    "name": "behavior_script_preserved",
+                    "passed": bool(expected_script_sha) and actual_script_sha == expected_script_sha,
+                },
+                {
+                    "name": "behavior_event_bindings_preserved",
+                    "passed": bool(events)
+                    and all(
+                        (
+                            str(item.get("target_id") or "") in html_text
+                            or str(item.get("target_selector") or "").lstrip("#.") in html_text
+                        )
+                        and str(item.get("event") or "") in app_text
+                        for item in events
+                        if isinstance(item, dict)
+                    ),
+                },
+            ]
+        )
     return {
         "schema_version": "reweave_quality_gate.v1",
         "status": "passed" if all(check["passed"] for check in checks) else "failed",
         "checks": checks,
         "source_project_write": False,
+        "behavior_reuse": {
+            "status": "static_verified" if behavior_contract is not None else "not_selected",
+            "runtime_validation": "required" if behavior_contract is not None else "not_required",
+        },
     }

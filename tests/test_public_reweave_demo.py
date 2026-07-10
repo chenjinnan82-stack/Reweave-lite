@@ -7,6 +7,7 @@ import sys
 import threading
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
+from unittest.mock import patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,6 +31,25 @@ console.log('ok');
 """
     )
     assert set(files) == {"index.html", "styles.css", "app.js"}
+
+
+def test_bounded_adaptation_rejects_unknown_slots_and_html() -> None:
+    from pimos_lite.reweave_llm_pack import parse_bounded_adaptation
+
+    adaptation = {
+        "allowed_text_slots": [{"slot_id": "p:0"}],
+        "allowed_style_variables": [{"name": "--accent"}],
+    }
+    for response in (
+        '{"text_patches":[{"slot_id":"p:9","value":"No"}],"style_patches":[]}',
+        '{"text_patches":[{"slot_id":"p:0","value":"<script>bad</script>"}],"style_patches":[]}',
+        '{"text_patches":[{"slot_id":"p:0","value":"New plain text"}],"style_patches":[]}',
+    ):
+        try:
+            parse_bounded_adaptation(response, adaptation)
+        except ValueError:
+            continue
+        raise AssertionError("unsafe bounded adaptation was accepted")
 
 
 def _assert_local_assets_exist(out: Path) -> None:
@@ -88,7 +108,7 @@ def test_public_reweave_demo_outputs_task_pack(tmp_path: Path) -> None:
     payload = json.loads(result.stdout)
     assert payload["ok"] is True
     assert payload["capsules_used"] > 0
-    for name in ("task_intent.json", "task_plan.json", "quality_gate.json", "task_pack.json", "capsules_used.json", "provenance.json", "snippets_used.json", "summary.md"):
+    for name in ("task_intent.json", "task_plan.json", "quality_gate.json", "task_pack.json", "capsules_used.json", "provenance.json", "snippets_used.json", "behavior_contract.json", "behavior_adaptation.json", "summary.md"):
         assert (out / name).is_file()
     assert not (source / ".reweave").exists()
 
@@ -98,6 +118,8 @@ def test_public_reweave_demo_outputs_task_pack(tmp_path: Path) -> None:
     quality_gate = json.loads((out / "quality_gate.json").read_text(encoding="utf-8"))
     provenance = json.loads((out / "provenance.json").read_text(encoding="utf-8"))
     snippets_used = json.loads((out / "snippets_used.json").read_text(encoding="utf-8"))
+    behavior_contract = json.loads((out / "behavior_contract.json").read_text(encoding="utf-8"))
+    behavior_adaptation = json.loads((out / "behavior_adaptation.json").read_text(encoding="utf-8"))
     assert task_pack["source_project_write"] is False
     assert task_pack["task_intent_path"] == "task_intent.json"
     assert task_pack["task_plan_path"] == "task_plan.json"
@@ -105,11 +127,16 @@ def test_public_reweave_demo_outputs_task_pack(tmp_path: Path) -> None:
     assert task_pack["quality_gate"]["status"] == "passed"
     assert task_pack["task_intent"]["output_type"] == "tool"
     assert task_pack["task_plan"]["output_type"] == "tool"
-    assert task_pack["task_plan"]["composer"]["mode"] == "task_plan_and_snippets"
+    assert task_pack["task_plan"]["composer"]["mode"] == "closed_frontend_module"
     assert task_intent["output_type"] == "tool"
     assert task_plan["outputs"][0]["path"] == "index.html"
     assert task_plan["capsules"]
     assert task_plan["composer"]["optional_inputs"] == ["snippets_used.json"]
+    assert task_pack["behavior_reuse"]["status"] == "enabled"
+    assert task_pack["behavior_reuse"]["runtime_validation"] == "required"
+    assert task_pack["behavior_reuse"]["adaptation_mode"] == "safe_text_adaptation"
+    assert task_intent["behavior_reuse"]["capsule_id"] == behavior_contract["selection"]["capsule_id"]
+    assert quality_gate["behavior_reuse"]["status"] == "static_verified"
     assert quality_gate["status"] == "passed"
     assert all(check["passed"] for check in quality_gate["checks"])
     assert "check provenance.json" in task_plan["acceptance"]
@@ -132,13 +159,13 @@ def test_public_reweave_demo_outputs_task_pack(tmp_path: Path) -> None:
     app_js = (out / "app.js").read_text(encoding="utf-8")
     assert "Task Intent" not in html
     assert "Task Intent" in review_html
-    assert "reweaveDemoButton" in html
+    assert "Quote summary card" in html
+    assert "Prepare a customer estimate" not in html
+    assert "quoteButton" in html
     assert "Client name" in html
     assert "Project size" in html
-    assert "data-reweave-field" in html
     assert "Select a package to preview pricing." in html
-    assert "project-app\" aria-label" in html
-    assert "project-cards" not in html
+    assert 'data-reweave-behavior="closed"' in html
     assert "Plan files" not in html
     assert "Planned outputs" in review_html
     assert "Source-backed cues" not in html
@@ -149,9 +176,55 @@ def test_public_reweave_demo_outputs_task_pack(tmp_path: Path) -> None:
     assert "Source Boxes" in review_html
     assert "provenance" in review_html.lower()
     assert "capsule metadata only" not in html
-    assert "--accent: #172033;" in styles
-    assert "data-reweave-field" in app_js
+    assert "--ink: #172033;" in styles
+    assert "quoteButton" in app_js
+    assert "Estimated budget" in app_js
+    assert app_js == (source / "quote.js").read_text(encoding="utf-8")
+    assert behavior_adaptation["mode"] == "safe_text_adaptation"
+    assert {item["target"] for item in behavior_adaptation["patches"]} == {
+        "document_title",
+        "primary_heading",
+    }
+    assert {"clientName", "projectSize", "quoteButton", "quoteSummary"}.issubset(
+        behavior_adaptation["protected"]["dom_ids"]
+    )
     _assert_local_assets_exist(out)
+
+
+def test_behavior_pack_without_title_or_heading_still_passes(tmp_path: Path) -> None:
+    source = tmp_path / "counter-source"
+    source.mkdir()
+    (source / "index.html").write_text(
+        '<html><head><link rel="stylesheet" href="styles.css"></head><body>'
+        '<button id="go">Go</button><script src="app.js"></script></body></html>',
+        encoding="utf-8",
+    )
+    (source / "styles.css").write_text("button { color: #111; }", encoding="utf-8")
+    (source / "app.js").write_text(
+        "document.getElementById('go').addEventListener('click', () => {});",
+        encoding="utf-8",
+    )
+    out = tmp_path / "reweave_counter"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "run_public_reweave_demo.py"),
+            "--source",
+            str(source),
+            "--task",
+            "Build a daily action counter",
+            "--out",
+            str(out),
+        ],
+        check=True,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout)
+
+    assert payload["quality_gate"]["status"] == "passed"
+    assert "Build a daily action counter" in (out / "index.html").read_text(encoding="utf-8")
 
 
 def test_public_reweave_demo_runs_five_source_boxes(tmp_path: Path) -> None:
@@ -208,7 +281,10 @@ def test_public_reweave_demo_runs_five_source_boxes(tmp_path: Path) -> None:
         assert task_pack["quality_gate_path"] == "quality_gate.json"
         assert task_intent["needed_files"] == ["index.html", "styles.css", "app.js"]
         assert task_plan["source_project_write"] is False
-        assert task_plan["composer"]["mode"] == "task_plan_and_snippets"
+        behavior_expected = case_id in {"landing-page", "form-tool"}
+        assert task_plan["composer"]["mode"] == (
+            "closed_frontend_module" if behavior_expected else "task_plan_and_snippets"
+        )
         assert quality_gate["status"] == "passed"
         assert task_pack["template_case"]["id"] == case_id
         assert task_pack["template_case"]["source"].endswith(source_name)
@@ -220,7 +296,13 @@ def test_public_reweave_demo_runs_five_source_boxes(tmp_path: Path) -> None:
         assert "Task Intent" in review_html
         assert "project-checklist" not in html
         assert "reweave-step" not in html
-        assert "local follow-up" in app_js
+        if behavior_expected:
+            assert task_pack["behavior_reuse"]["status"] == "enabled"
+            assert (out / "behavior_contract.json").is_file()
+            assert 'data-reweave-behavior="closed"' in html
+        else:
+            assert task_pack["behavior_reuse"]["status"] == "unavailable"
+            assert "local follow-up" in app_js
         assert "provenance" not in html.lower()
         assert "Source excerpts used" not in html
         assert "Source excerpts used" in review_html
@@ -285,7 +367,7 @@ def test_public_reweave_demo_keeps_task_templates_as_demo_shortcuts(tmp_path: Pa
     review_html = (out / "review.html").read_text(encoding="utf-8")
     assert "Task Intent" not in html
     assert "Task Intent" in review_html
-    assert "reweaveDemoButton" in html
+    assert "quoteButton" in html
     assert (out / "index.html").is_file()
     assert (out / "provenance.json").is_file()
     _assert_local_assets_exist(out)
@@ -315,7 +397,7 @@ def test_public_reweave_demo_keeps_task_templates_as_demo_shortcuts(tmp_path: Pa
     portfolio_review_html = (portfolio_out / "review.html").read_text(encoding="utf-8")
     assert "Task Intent" not in portfolio_html
     assert "Task Intent" in portfolio_review_html
-    assert "reweaveDemoButton" in portfolio_html
+    assert "quoteButton" in portfolio_html
 
 
 def test_artist_source_content_drives_generated_page(tmp_path: Path) -> None:
@@ -341,12 +423,17 @@ def test_artist_source_content_drives_generated_page(tmp_path: Path) -> None:
     review_html = (out / "review.html").read_text(encoding="utf-8")
     styles = (out / "styles.css").read_text(encoding="utf-8")
     assert "Mira Vale Studio" in html
+    assert "Artist landing page" in html
     assert "Mira builds layered ink studies" in html
     assert "Request a studio preview" in html
     assert "Glasshouse Notes" in html
     assert "Task Intent" not in html
     assert "Source excerpts used" in review_html
-    assert "--accent: #1d241f;" in styles
+    assert "color: #1d241f;" in styles
+    app_js = (out / "app.js").read_text(encoding="utf-8")
+    behavior = json.loads((out / "behavior_contract.json").read_text(encoding="utf-8"))
+    assert "visitLink.addEventListener" in app_js
+    assert {"target_selector": ".visit-link", "event": "click"} in behavior["interactions"]["events"]
 
 
 def test_default_capsule_selection_prefers_enrichable_capsules() -> None:
@@ -555,6 +642,189 @@ def test_public_reweave_demo_rejects_remote_ollama_url_without_network(tmp_path:
     assert "ollama_url_must_be_localhost" in payload["llm"]["error"]
     assert provenance["llm_generation"]["external_network_call"] is False
     assert provenance["llm_generation"]["source_project_write"] is False
+
+
+def test_bounded_only_ollama_skips_pack_without_closed_behavior(tmp_path: Path) -> None:
+    from pimos_lite.reweave_llm_pack import apply_ollama_pack
+
+    out = tmp_path / "preview"
+    out.mkdir()
+    (out / "task_pack.json").write_text(
+        json.dumps({"behavior_reuse": {"status": "unavailable"}}),
+        encoding="utf-8",
+    )
+    (out / "provenance.json").write_text(json.dumps({}), encoding="utf-8")
+
+    with patch("pimos_lite.reweave_llm_pack.call_ollama") as call_model:
+        meta = apply_ollama_pack(
+            out,
+            task="Build a small page",
+            selected_capsules=[],
+            snippet_context=None,
+            model="tiny-test",
+            base_url="http://127.0.0.1:11434",
+            bounded_only=True,
+        )
+
+    call_model.assert_not_called()
+    assert meta["error"] == "no_closed_behavior_module"
+    assert meta["local_http_call"] is False
+    assert meta["source_project_write"] is False
+    receipt = json.loads((out / "task_pack.json").read_text(encoding="utf-8"))
+    assert receipt["llm_generation"]["error"] == "no_closed_behavior_module"
+
+
+def test_public_reweave_demo_applies_bounded_llm_adaptation_to_behavior_pack(tmp_path: Path) -> None:
+    captured: dict[str, str] = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self) -> None:
+            length = int(self.headers.get("Content-Length", "0"))
+            request = json.loads(self.rfile.read(length).decode("utf-8"))
+            captured["prompt"] = str(request.get("prompt") or "")
+            response = json.dumps(
+                {
+                    "text_patches": [
+                        {"slot_id": "p:0", "value": "Renovation quote desk"},
+                        {"slot_id": "button:0", "value": "Calculate renovation budget"},
+                        {"slot_id": "option:0", "value": "Room refresh"},
+                    ],
+                    "style_patches": [{"name": "--accent", "value": "#2563eb"}],
+                }
+            )
+            payload = json.dumps({"response": response}).encode("utf-8")
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            self.wfile.write(payload)
+
+        def log_message(self, format: str, *args: object) -> None:
+            return
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    source = ROOT / "examples" / "source_boxes" / "customer-quote-widget"
+    out = tmp_path / "reweave_behavior_bounded_llm"
+    try:
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(ROOT / "scripts" / "run_public_reweave_demo.py"),
+                "--source",
+                str(source),
+                "--task",
+                "Build a renovation quote tool",
+                "--llm",
+                "ollama",
+                "--model",
+                "tiny-bounded-test",
+                "--ollama-url",
+                f"http://127.0.0.1:{server.server_port}",
+                "--out",
+                str(out),
+            ],
+            check=True,
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+        )
+    finally:
+        server.shutdown()
+        thread.join(timeout=5)
+    payload = json.loads(result.stdout)
+    task_pack = json.loads((out / "task_pack.json").read_text(encoding="utf-8"))
+    provenance = json.loads((out / "provenance.json").read_text(encoding="utf-8"))
+    adaptation = json.loads((out / "behavior_adaptation.json").read_text(encoding="utf-8"))
+    html = (out / "index.html").read_text(encoding="utf-8")
+    styles = (out / "styles.css").read_text(encoding="utf-8")
+
+    assert payload["llm"]["applied"] is True
+    assert payload["llm"]["mode"] == "bounded_behavior_adaptation"
+    assert payload["llm"]["text_patch_count"] == 3
+    assert payload["llm"]["style_patch_count"] == 1
+    assert task_pack["quality_gate"]["status"] == "passed"
+    assert task_pack["behavior_reuse"]["bounded_llm_adaptation"] == "applied"
+    assert provenance["behavior_reuse"]["bounded_llm_adaptation"] == "applied"
+    assert "Renovation quote desk" in html
+    assert "Calculate renovation budget" in html
+    assert "Room refresh" in html
+    assert "--accent: #2563eb" in styles
+    assert adaptation["llm_adaptation"]["model"] == "tiny-bounded-test"
+    assert (out / "app.js").read_text(encoding="utf-8") == (source / "quote.js").read_text(encoding="utf-8")
+    assert "Estimated budget" not in captured["prompt"]
+
+
+def test_public_reweave_demo_keeps_behavior_pack_when_bounded_llm_is_unavailable(tmp_path: Path) -> None:
+    source = ROOT / "examples" / "source_boxes" / "customer-quote-widget"
+    out = tmp_path / "reweave_behavior_llm_fallback"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "run_public_reweave_demo.py"),
+            "--source",
+            str(source),
+            "--task",
+            "Build a renovation quote tool",
+            "--llm",
+            "ollama",
+            "--ollama-url",
+            "http://127.0.0.1:9",
+            "--out",
+            str(out),
+        ],
+        check=True,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    payload = json.loads(result.stdout)
+    task_pack = json.loads((out / "task_pack.json").read_text(encoding="utf-8"))
+
+    assert payload["llm"]["applied"] is False
+    assert payload["llm"]["fallback_used"] is True
+    assert payload["llm"]["mode"] == "bounded_behavior_adaptation"
+    assert payload["llm"]["local_http_call"] is True
+    assert task_pack["quality_gate"]["status"] == "passed"
+    assert "quoteButton" in (out / "index.html").read_text(encoding="utf-8")
+    assert (out / "app.js").read_text(encoding="utf-8") == (source / "quote.js").read_text(encoding="utf-8")
+
+
+def test_bounded_adaptation_rolls_back_when_quality_gate_fails(tmp_path: Path) -> None:
+    from pimos_lite.reweave_llm_pack import apply_bounded_behavior_adaptation
+
+    source = ROOT / "examples" / "source_boxes" / "customer-quote-widget"
+    out = tmp_path / "reweave_bounded_rollback"
+    subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "run_public_reweave_demo.py"),
+            "--source",
+            str(source),
+            "--task",
+            "Build a renovation quote tool",
+            "--out",
+            str(out),
+        ],
+        check=True,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    paths = [out / name for name in ("index.html", "styles.css", "behavior_adaptation.json", "quality_gate.json", "task_pack.json")]
+    before = {path: path.read_bytes() for path in paths}
+    response = '{"text_patches":[{"slot_id":"p:0","value":"Renovation desk"}],"style_patches":[]}'
+
+    with patch("pimos_lite.reweave_llm_pack.build_quality_gate", return_value={"status": "failed"}):
+        try:
+            apply_bounded_behavior_adaptation(out, response, model="test")
+        except ValueError:
+            pass
+        else:
+            raise AssertionError("failed bounded quality gate did not reject adaptation")
+
+    assert all(path.read_bytes() == before[path] for path in paths)
 
 
 def test_public_reweave_demo_refuses_repo_output() -> None:

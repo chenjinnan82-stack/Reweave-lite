@@ -918,19 +918,30 @@ input:focus-visible {
   box-shadow: none;
 }
 
-.enriched-content-toggle {
+.generation-options {
   display: flex;
   align-items: center;
-  gap: 0.4rem;
+  flex-wrap: wrap;
+  gap: 0.35rem 1rem;
   margin: 0.45rem 0 0.15rem 0.35rem;
+}
+
+.generation-option {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
   font-size: 0.72rem;
   color: #6b5d4a;
   cursor: pointer;
   user-select: none;
 }
 
-.enriched-content-toggle input {
+.generation-option input {
   margin: 0;
+}
+
+.generation-option-status {
+  color: var(--text-secondary);
 }
 
 .content-aware-note {

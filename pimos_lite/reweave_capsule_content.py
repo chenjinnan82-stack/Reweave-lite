@@ -2,11 +2,14 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 from datetime import datetime, timezone
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from pimos_lite.reweave_capsule_warehouse import (
     GENERATE_ELIGIBLE_STATUSES,
@@ -25,6 +28,18 @@ CONTENT_SCHEMA_VERSION = 1
 MAX_FILES = 5
 MAX_BYTES_PER_FILE = 4096
 MAX_TOTAL_BYTES = 16000
+MAX_BEHAVIOR_FILE_BYTES = 65536
+MAX_BEHAVIOR_TOTAL_BYTES = 131072
+RUNTIME_DEPENDENCY_PATTERNS = (
+    ("fetch", r"\bfetch\s*\("),
+    ("xml_http_request", r"\bXMLHttpRequest\b"),
+    ("web_socket", r"\bWebSocket\s*\("),
+    ("event_source", r"\bEventSource\s*\("),
+    ("send_beacon", r"\bnavigator\.sendBeacon\s*\("),
+    ("dynamic_import", r"\bimport\s*\("),
+    ("module_import", r"(?m)^\s*import\s+"),
+    ("commonjs_require", r"\brequire\s*\("),
+)
 
 ALLOWED_EXTENSIONS = frozenset(
     {
@@ -196,6 +211,232 @@ def resolve_safe_path(source_root: Path, relative: str) -> Path | None:
     if not candidate.is_file():
         return None
     return candidate
+
+
+class _FrontendEntryParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.styles: list[str] = []
+        self.scripts: list[str] = []
+        self.assets: list[str] = []
+        self.controls: list[dict[str, str]] = []
+        self._button: dict[str, str] | None = None
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = {key.lower(): str(value or "") for key, value in attrs}
+        tag = tag.lower()
+        if tag == "link" and "stylesheet" in values.get("rel", "").lower() and values.get("href"):
+            self.styles.append(values["href"])
+        elif tag == "script" and values.get("src"):
+            self.scripts.append(values["src"])
+        elif tag in {"img", "source", "video", "audio"} and values.get("src"):
+            self.assets.append(values["src"])
+        elif tag in {"input", "select", "textarea"}:
+            self.controls.append(
+                {
+                    "kind": tag,
+                    "id": values.get("id", ""),
+                    "name": values.get("name", ""),
+                    "type": values.get("type", ""),
+                }
+            )
+        elif tag == "button":
+            self._button = {"kind": "button", "id": values.get("id", ""), "name": values.get("name", ""), "text": ""}
+
+    def handle_data(self, data: str) -> None:
+        if self._button is not None:
+            self._button["text"] = (self._button.get("text", "") + " " + data).strip()
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "button" and self._button is not None:
+            self.controls.append(self._button)
+            self._button = None
+
+
+def _frontend_reference(entry_path: str, raw: str) -> tuple[str, str]:
+    value = (raw or "").strip()
+    parsed = urlsplit(value)
+    if parsed.scheme or parsed.netloc or value.startswith("//"):
+        return "external", value
+    if value.startswith(("#", "data:")):
+        return "ignored", value
+    if not parsed.path or parsed.path.startswith("/"):
+        return "blocked", value
+    relative = _normalize_rel_path((Path(entry_path).parent / parsed.path).as_posix())
+    return ("local", relative) if is_allowed_relative_path(relative) else ("blocked", relative)
+
+
+def _complete_text_file(source_root: Path, relative: str) -> tuple[dict[str, Any] | None, str]:
+    path = resolve_safe_path(source_root, relative)
+    if path is None:
+        return None, f"unsafe_or_missing:{relative}"
+    try:
+        raw = path.read_bytes()
+    except OSError:
+        return None, f"read_failed:{relative}"
+    if len(raw) > MAX_BEHAVIOR_FILE_BYTES:
+        return None, f"file_too_large:{relative}"
+    if b"\x00" in raw:
+        return None, f"binary_content:{relative}"
+    try:
+        text = raw.decode("utf-8")
+    except UnicodeDecodeError:
+        return None, f"non_utf8:{relative}"
+    cleaned, redacted = redact_secrets(text)
+    if redacted:
+        return None, f"secret_detected:{relative}"
+    return {
+        "relative_path": _normalize_rel_path(relative),
+        "sha256": hashlib.sha256(raw).hexdigest(),
+        "bytes": len(raw),
+        "content": cleaned,
+    }, ""
+
+
+def _behavior_interactions(parser: _FrontendEntryParser, script: str) -> dict[str, Any]:
+    names: dict[str, dict[str, str]] = {}
+    for pattern in (
+        r"(?:const|let|var)\s+(\w+)\s*=\s*document\.getElementById\(['\"]([^'\"]+)['\"]\)",
+        r"(\w+)\s*:\s*document\.getElementById\(['\"]([^'\"]+)['\"]\)",
+    ):
+        names.update(
+            {match.group(1): {"target_id": match.group(2)} for match in re.finditer(pattern, script)}
+        )
+    for match in re.finditer(
+        r"(?:const|let|var)\s+(\w+)\s*=\s*document\.querySelector\(['\"]([^'\"]+)['\"]\)",
+        script,
+    ):
+        names[match.group(1)] = {"target_selector": match.group(2)}
+
+    events: list[dict[str, str]] = []
+    for match in re.finditer(
+        r"document\.getElementById\(['\"]([^'\"]+)['\"]\)\.addEventListener\(['\"]([^'\"]+)['\"]",
+        script,
+    ):
+        events.append({"target_id": match.group(1), "event": match.group(2)})
+    for match in re.finditer(
+        r"(?:(?:this\.)?elements\.)?(\w+)\.addEventListener\(['\"]([^'\"]+)['\"]",
+        script,
+    ):
+        target = names.get(match.group(1))
+        event = {**target, "event": match.group(2)} if target else None
+        if event and event not in events:
+            events.append(event)
+
+    referenced_ids = sorted(set(re.findall(r"getElementById\(['\"]([^'\"]+)['\"]\)", script)))
+    action_ids = {item["target_id"] for item in events if item.get("target_id")}
+    return {
+        "controls": parser.controls,
+        "events": events,
+        "state_target_ids": [target for target in referenced_ids if target not in action_ids],
+    }
+
+
+def build_frontend_behavior_contract(
+    source_root: Path,
+    summary: dict[str, Any],
+    capsule: dict[str, Any],
+) -> dict[str, Any] | None:
+    """Capture one complete standalone frontend module during explicit enrichment."""
+    if str(capsule.get("name") or "") != "Page Shell":
+        return None
+    entries = [str(item) for item in summary.get("entry_candidates", []) if Path(str(item)).name == "index.html"]
+    if not entries:
+        return {"schema_version": 1, "status": "blocked", "blockers": ["missing_index_html"]}
+    entry_path = sorted(entries, key=lambda item: (len(Path(item).parts), item))[0]
+    entry, error = _complete_text_file(source_root, entry_path)
+    if entry is None:
+        return {"schema_version": 1, "status": "blocked", "entry_path": entry_path, "blockers": [error]}
+
+    parser = _FrontendEntryParser()
+    try:
+        parser.feed(str(entry["content"]))
+    except Exception:
+        return {"schema_version": 1, "status": "blocked", "entry_path": entry_path, "blockers": ["invalid_html"]}
+
+    blockers: list[str] = []
+    warnings: list[str] = []
+    local_styles: list[str] = []
+    local_scripts: list[str] = []
+    for raw in parser.styles:
+        kind, value = _frontend_reference(entry_path, raw)
+        if kind == "local" and value not in local_styles:
+            local_styles.append(value)
+        elif kind == "external":
+            warnings.append(f"external_style_omitted:{raw}")
+        elif kind == "blocked":
+            blockers.append(f"blocked_style:{raw}")
+    for raw in parser.scripts:
+        kind, value = _frontend_reference(entry_path, raw)
+        if kind == "local" and value not in local_scripts:
+            local_scripts.append(value)
+        elif kind == "external":
+            blockers.append(f"external_script:{raw}")
+        elif kind == "blocked":
+            blockers.append(f"blocked_script:{raw}")
+    for raw in parser.assets:
+        kind, _ = _frontend_reference(entry_path, raw)
+        if kind not in {"ignored"}:
+            blockers.append(f"asset_dependency:{raw}")
+    if len(local_styles) > 1:
+        blockers.append("multiple_stylesheets_not_supported")
+    if len(local_scripts) > 1:
+        blockers.append("multiple_scripts_not_supported")
+    if not local_scripts:
+        blockers.append("missing_local_script")
+
+    style = script = None
+    for relative, role in ((local_styles[0], "style") if local_styles else (None, None), (local_scripts[0], "script") if local_scripts else (None, None)):
+        if relative is None:
+            continue
+        file_record, file_error = _complete_text_file(source_root, relative)
+        if file_record is None:
+            blockers.append(file_error)
+        elif role == "style":
+            style = file_record
+        else:
+            script = file_record
+
+    total_bytes = int(entry["bytes"]) + int((style or {}).get("bytes", 0)) + int((script or {}).get("bytes", 0))
+    if total_bytes > MAX_BEHAVIOR_TOTAL_BYTES:
+        blockers.append("module_too_large")
+    script_text = str((script or {}).get("content") or "")
+    interactions = _behavior_interactions(parser, script_text)
+    if not interactions["events"]:
+        blockers.append("missing_behavior_events")
+    if not interactions["state_target_ids"]:
+        blockers.append("missing_observable_state_target")
+    blockers.extend(
+        f"runtime_dependency:{name}"
+        for name, pattern in RUNTIME_DEPENDENCY_PATTERNS
+        if re.search(pattern, script_text)
+    )
+    if blockers:
+        return {
+            "schema_version": 1,
+            "status": "blocked",
+            "entry_path": entry_path,
+            "dependencies": {"styles": local_styles, "scripts": local_scripts},
+            "blockers": sorted(set(blockers)),
+            "warnings": warnings,
+        }
+
+    return {
+        "schema_version": 1,
+        "status": "closed",
+        "mode": "whole_frontend_module",
+        "entry_path": entry_path,
+        "files": {"entry": entry, "style": style, "script": script},
+        "dependencies": {"styles": local_styles, "scripts": local_scripts, "external_styles_omitted": warnings},
+        "interactions": interactions,
+        "materialized_files": ["index.html", "styles.css", "app.js"],
+        "safety": {
+            "source_project_write": False,
+            "source_read_during_enrichment": True,
+            "source_read_at_generate_time": False,
+            "complete_files_only": True,
+        },
+    }
 
 
 def _dedupe_paths(paths: list[str]) -> list[str]:
@@ -510,6 +751,9 @@ def enrich_capsule_content(capsule_id: str) -> dict[str, Any]:
         "snippets": snippets,
         "warnings": warnings,
     }
+    behavior_contract = build_frontend_behavior_contract(source_path, summary, capsule)
+    if behavior_contract is not None:
+        record["behavior_contract"] = behavior_contract
     rel_path = save_capsule_content(capsule_id, record)
     _apply_enrichment_metadata(capsule_id, success=True, snippet_count=len(snippets))
 

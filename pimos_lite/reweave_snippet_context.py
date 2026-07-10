@@ -6,6 +6,7 @@ from typing import Any
 
 from pimos_lite.reweave_capsule_content import content_rel_path, load_capsule_content
 from pimos_lite.reweave_capsule_warehouse import get_capsule, is_generate_eligible
+from pimos_lite.reweave_task_intent import score_capsule_for_task
 
 MAX_CAPSULES = 3
 MAX_SNIPPETS_PER_CAPSULE = 2
@@ -34,7 +35,7 @@ def _truncate_excerpt(text: str, max_snippet: int, remaining_total: int) -> tupl
     return text[:limit], True
 
 
-def build_snippet_context(capsule_ids: list[str]) -> dict[str, Any]:
+def build_snippet_context(capsule_ids: list[str], *, task: str = "") -> dict[str, Any]:
     """Build bounded snippet context from capsule_contents app state only."""
     warnings: list[str] = []
     capsules_out: list[dict[str, Any]] = []
@@ -61,7 +62,6 @@ def build_snippet_context(capsule_ids: list[str]) -> dict[str, Any]:
         if not record:
             warnings.append(f"content_missing:{cap_id}")
             continue
-
         raw_snippets = record.get("snippets") if isinstance(record.get("snippets"), list) else []
         snippet_entries: list[dict[str, Any]] = []
 
@@ -106,9 +106,32 @@ def build_snippet_context(capsule_ids: list[str]) -> dict[str, Any]:
         )
         seen_capsules += 1
 
+    behavior_candidates: list[tuple[int, int, str, dict[str, Any]]] = []
+    for position, cap_id in enumerate(capsule_ids):
+        cap = get_capsule(cap_id)
+        record = load_capsule_content(cap_id)
+        candidate = record.get("behavior_contract") if isinstance(record, dict) else None
+        if not cap or not is_generate_eligible(cap) or not isinstance(candidate, dict):
+            continue
+        if candidate.get("status") != "closed":
+            continue
+        behavior_candidates.append(
+            (score_capsule_for_task(task, cap, enrichable=True), -position, cap_id, candidate)
+        )
+    behavior_contract = None
+    if behavior_candidates:
+        score, _position, cap_id, candidate = max(behavior_candidates, key=lambda item: (item[0], item[1]))
+        behavior_contract = dict(candidate)
+        behavior_contract["selection"] = {
+            "capsule_id": cap_id,
+            "score": score,
+            "reason": "highest task metadata match among closed behavior modules",
+        }
+
     return {
         "mode": "content_aware_preview",
         "capsules": capsules_out,
+        "behavior_contract": behavior_contract,
         "limits": dict(CONTEXT_LIMITS),
         "warnings": warnings,
     }

@@ -175,11 +175,13 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
         self.assertTrue(state["lumoLiteAvailable"])
         self.assertEqual(state["engineStatus"]["mode"], "source_read_only_preview_write")
         self.assertFalse(state["engineStatus"]["capabilities"]["network_call"])
+        self.assertEqual(state["engineStatus"]["capabilities"]["bounded_local_model"], "payload_opt_in")
         self.assertTrue(state["engineStatus"]["capabilities"]["capsule_warehouse_read"])
         self.assertFalse(state["engineStatus"]["capabilities"]["capsule_warehouse_management"])
         self.assertTrue(state["engineStatus"]["capabilities"]["warehouse"])
         self.assertEqual(state["engineStatus"]["capabilities"]["generate_preview"], "task_pack_preview")
         self.assertTrue(state["canGeneratePreview"])
+        self.assertTrue(state["canUseBoundedLocalModel"])
         self.assertTrue(state["canChooseSourceFolder"])
         self.assertTrue(state["canScanSourceBox"])
         self.assertTrue(state["canDraftCapsules"])
@@ -413,6 +415,8 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
         self.assertFalse(result["source_project_write"])
         self.assertFalse(result["dispatch"])
         self.assertFalse(result["network_call"])
+        self.assertFalse(result["model_call"])
+        self.assertFalse(result["localModel"]["enabled"])
         self.assertIn("task_pack.json", result["generatedPackage"]["files"])
         self.assertTrue((root / "task_pack.json").is_file())
         pack = json.loads((root / "task_pack.json").read_text(encoding="utf-8"))
@@ -421,6 +425,69 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
         self.assertEqual(pack["mode"], "task_pack_preview")
         self.assertEqual(pack["capsules_used"][0]["id"], "capsule_alpha")
         self.assertIn("task_pack.json", viewer["package"]["files"])
+
+    def test_lumo_lite_engine_applies_opt_in_bounded_local_model(self) -> None:
+        preview_root = self._root / "preview"
+        preview_root.mkdir()
+        task_pack = {"behavior_reuse": {"status": "enabled"}}
+        provenance = {"content_aware_generate": {"enabled": True}}
+        (preview_root / "task_pack.json").write_text(json.dumps(task_pack), encoding="utf-8")
+        (preview_root / "provenance.json").write_text(json.dumps(provenance), encoding="utf-8")
+        base_result = {
+            "ok": True,
+            "previewPath": str(preview_root),
+            "taskPack": task_pack,
+            "provenance": provenance,
+            "snippetContext": {"capsules": []},
+        }
+        applied_meta = {
+            "enabled": True,
+            "provider": "ollama",
+            "model": "tiny-test",
+            "local_http_call": True,
+            "external_network_call": False,
+            "source_project_write": False,
+            "applied": True,
+            "fallback_used": False,
+            "mode": "bounded_behavior_adaptation",
+        }
+
+        def apply_stub(out: Path, **kwargs: object) -> dict[str, object]:
+            self.assertEqual(out, preview_root)
+            self.assertTrue(kwargs["bounded_only"])
+            updated_pack = {**task_pack, "llm_generation": applied_meta}
+            updated_provenance = {**provenance, "llm_generation": applied_meta}
+            (out / "task_pack.json").write_text(json.dumps(updated_pack), encoding="utf-8")
+            (out / "provenance.json").write_text(json.dumps(updated_provenance), encoding="utf-8")
+            return applied_meta
+
+        engine = LumoLiteReweaveEngine(runtime_state_path=str(self._runtime_state))
+        with (
+            patch("pimos_lite.reweave_engine.lumo_lite.build_preview_package", return_value=base_result),
+            patch("pimos_lite.reweave_engine.lumo_lite.apply_ollama_pack", side_effect=apply_stub) as apply_model,
+        ):
+            result = engine.generate_preview(
+                {
+                    "taskText": "Build a renovation budget estimator",
+                    "capsuleIds": ["capsule_alpha"],
+                    "capsules": [{"id": "capsule_alpha"}],
+                    "localModel": {
+                        "enabled": True,
+                        "provider": "ollama",
+                        "model": "tiny-test",
+                        "baseUrl": "http://127.0.0.1:11434",
+                        "timeout": 5,
+                    },
+                }
+            )
+
+        apply_model.assert_called_once()
+        self.assertTrue(result["network_call"])
+        self.assertTrue(result["model_call"])
+        self.assertTrue(result["localModel"]["applied"])
+        self.assertEqual(result["taskPack"]["llm_generation"]["mode"], "bounded_behavior_adaptation")
+        self.assertEqual(result["provenance"]["llm_generation"]["provider"], "ollama")
+        self.assertFalse(result["source_project_write"])
 
     def test_factory_selects_lumo_lite_without_touching_legacy_lumo(self) -> None:
         with patch.dict(os.environ, {"REWEAVE_ENGINE": "lumo_lite"}):

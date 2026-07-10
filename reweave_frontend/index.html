@@ -97,10 +97,18 @@
                 <span aria-hidden="true">→</span>
               </button>
             </div>
-            <label id="enriched-content-toggle-wrap" class="enriched-content-toggle hidden" for="use-enriched-content">
-              <input type="checkbox" id="use-enriched-content" />
-              <span data-i18n="enrichedContentPreview">Use enriched content preview</span>
-            </label>
+            <div class="generation-options">
+              <label id="enriched-content-toggle-wrap" class="generation-option hidden" for="use-enriched-content">
+                <input type="checkbox" id="use-enriched-content" />
+                <span data-i18n="enrichedContentPreview">Use enriched content preview</span>
+              </label>
+              <label id="local-model-toggle-wrap" class="generation-option hidden" for="use-local-model">
+                <input type="checkbox" id="use-local-model" />
+                <span data-i18n="localModelRefinement">Local model refinement</span>
+                <span aria-hidden="true">·</span>
+                <span id="local-model-status" class="generation-option-status" data-i18n="localModelOff">Off</span>
+              </label>
+            </div>
             <div class="used-dock used-dock-tray">
               <span class="used-dock-label"><span data-i18n="generationInput">GENERATION INPUT</span> (<span id="used-count">0</span>)</span>
               <div id="used-capsule-dock" class="used-chips">
