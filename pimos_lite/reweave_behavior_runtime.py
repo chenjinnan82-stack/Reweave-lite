@@ -79,7 +79,12 @@ def validate_react_preview_behavior(
 def _run_react_child(root: Path, expected_text: str) -> int:
     try:
         from PySide6.QtCore import QTimer, QUrl
-        from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineSettings
+        from PySide6.QtWebEngineCore import (
+            QWebEnginePage,
+            QWebEngineProfile,
+            QWebEngineSettings,
+            QWebEngineUrlRequestInterceptor,
+        )
         from PySide6.QtWidgets import QApplication
     except ImportError:
         print(json.dumps(_receipt("unavailable", "pyside6_unavailable")))
@@ -87,12 +92,33 @@ def _run_react_child(root: Path, expected_text: str) -> int:
 
     app = QApplication.instance() or QApplication(["reweave-react-validation"])
     console_messages: list[str] = []
+    blocked_requests: list[str] = []
+    allowed_root = root.resolve()
 
     class ValidationPage(QWebEnginePage):
         def javaScriptConsoleMessage(self, _level: Any, message: str, _line: int, _source: str) -> None:
             console_messages.append(message[:240])
 
+    class PreviewRequestInterceptor(QWebEngineUrlRequestInterceptor):
+        def interceptRequest(self, info: Any) -> None:
+            url = info.requestUrl()
+            scheme = url.scheme().lower()
+            if scheme in {"data", "blob", "about"}:
+                return
+            allowed = False
+            if scheme == "file":
+                try:
+                    Path(url.toLocalFile()).resolve().relative_to(allowed_root)
+                    allowed = True
+                except (OSError, ValueError):
+                    pass
+            if not allowed:
+                blocked_requests.append(scheme or "unknown")
+                info.block(True)
+
     profile = QWebEngineProfile()
+    request_interceptor = PreviewRequestInterceptor()
+    profile.setUrlRequestInterceptor(request_interceptor)
     page = ValidationPage(profile)
     settings = page.settings()
     settings.setAttribute(QWebEngineSettings.LocalContentCanAccessFileUrls, True)
@@ -108,6 +134,8 @@ def _run_react_child(root: Path, expected_text: str) -> int:
     )
 
     def finish(result: dict[str, Any]) -> None:
+        result.setdefault("request_scope", "preview_root_only")
+        result.setdefault("blocked_request_count", len(blocked_requests))
         if console_messages:
             result.setdefault("console_messages", console_messages[-5:])
         output.update(result)

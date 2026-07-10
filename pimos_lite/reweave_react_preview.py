@@ -29,11 +29,18 @@ def _receipt(status: str, reason: str, **extra: Any) -> dict[str, Any]:
     }
 
 
-def _complete_snippets(capsule_ids: list[str], targets: list[str]) -> tuple[dict[str, str], list[str]]:
+def _complete_snippets(
+    capsule_ids: list[str],
+    targets: list[str],
+    *,
+    source_id: str = "",
+) -> tuple[dict[str, str], list[str]]:
     wanted = set(targets)
     files: dict[str, str] = {}
     for capsule_id in capsule_ids:
         record = load_capsule_content(capsule_id)
+        if source_id and isinstance(record, dict) and str(record.get("source_id") or "") != source_id:
+            continue
         project_files = record.get("project_files") if isinstance(record, dict) else None
         for item in project_files if isinstance(project_files, list) else []:
             if not isinstance(item, dict):
@@ -253,7 +260,11 @@ def build_react_preview(
             "project_runtime_closure_unbounded",
             missing_files=missing_targets,
         )
-    files, missing = _complete_snippets(capsule_ids, target_paths)
+    files, missing = _complete_snippets(
+        capsule_ids,
+        target_paths,
+        source_id=str(project_graph.get("source_id") or ""),
+    )
     if missing:
         return _receipt("needs_review", "complete_project_files_unavailable", missing_files=missing)
     files, adaptation = _adapt_static_slots(files, task, project_targets)

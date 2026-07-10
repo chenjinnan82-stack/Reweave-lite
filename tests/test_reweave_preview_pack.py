@@ -59,6 +59,27 @@ class ReweavePreviewPackTest(unittest.TestCase):
         self.assertEqual(files, {})
         self.assertEqual(missing, ["src/App.tsx"])
 
+    def test_react_preview_does_not_mix_project_files_from_another_source(self) -> None:
+        records = {
+            "cap_other": {
+                "source_id": "box_other",
+                "project_files": [{"relative_path": "src/App.tsx", "content": "wrong"}],
+            },
+            "cap_primary": {
+                "source_id": "box_primary",
+                "project_files": [{"relative_path": "src/App.tsx", "content": "correct"}],
+            },
+        }
+        with patch.object(react_preview, "load_capsule_content", side_effect=records.get):
+            files, missing = react_preview._complete_snippets(
+                ["cap_other", "cap_primary"],
+                ["src/App.tsx"],
+                source_id="box_primary",
+            )
+
+        self.assertEqual(files, {"src/App.tsx": "correct"})
+        self.assertEqual(missing, [])
+
     def test_react_preview_does_not_replace_dynamic_heading(self) -> None:
         files = {"src/App.tsx": "export default () => <h1>{title}</h1>;"}
         targets = [{"path": "src/App.tsx", "kind": "component"}]
