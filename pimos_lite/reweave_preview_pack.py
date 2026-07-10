@@ -431,6 +431,17 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
             capsule_ids,
             list(task_plan.get("project_targets") or []),
         )
+        react_adaptation = (
+            dict(react_preview.get("adaptation"))
+            if isinstance(react_preview.get("adaptation"), dict)
+            else {}
+        )
+        task_intent["react_adaptation"] = react_adaptation
+        task_plan["react_adaptation_path"] = "react_adaptation.json"
+        optional_inputs = task_plan["composer"].setdefault("optional_inputs", [])
+        if "react_adaptation.json" not in optional_inputs:
+            optional_inputs.append("react_adaptation.json")
+        task_plan["acceptance"].append("review safe React text-slot adaptation")
         task_pack["react_preview"] = react_preview
         task_pack["react_adaptation_path"] = "react_adaptation.json"
         provenance["react_preview"] = {

@@ -63,7 +63,7 @@ class ReweavePreviewPackTest(unittest.TestCase):
         files = {"src/App.tsx": "export default () => <h1>{title}</h1>;"}
         targets = [{"path": "src/App.tsx", "kind": "component"}]
 
-        updated, receipt = react_preview._adapt_static_heading(files, "Build a quote tool", targets)
+        updated, receipt = react_preview._adapt_static_slots(files, "Build a quote tool", targets)
 
         self.assertEqual(updated, files)
         self.assertEqual(receipt["status"], "needs_review")
@@ -174,7 +174,7 @@ class ReweavePreviewPackTest(unittest.TestCase):
         )
         (source / "App.tsx").write_text(
             "import React from 'react';\n"
-            "export default function App() { return <main><h1>Old quote</h1><button>Quote</button></main>; }\n",
+            "export default function App() { return <main><h1>Old quote</h1><p>Old summary</p><button>Quote</button></main>; }\n",
             encoding="utf-8",
         )
         (source / "styles.css").write_text("button { color: teal; }\n", encoding="utf-8")
@@ -215,7 +215,17 @@ class ReweavePreviewPackTest(unittest.TestCase):
         self.assertEqual(compile_receipt["status"], "passed")
         self.assertEqual(compile_receipt["compile_scope"], "local_modules_external_dependencies_not_bundled")
         self.assertEqual(adaptation_receipt["status"], "applied")
-        self.assertEqual(adaptation_receipt["mode"], "static_jsx_heading")
+        self.assertEqual(adaptation_receipt["mode"], "safe_static_text_slots")
+        self.assertEqual(
+            [slot["slot_id"] for slot in adaptation_receipt["slots"]],
+            ["src/App.tsx:h1:0", "src/App.tsx:p:0", "src/App.tsx:button:0"],
+        )
+        self.assertEqual(
+            intent["react_adaptation"]["changes"][0]["slot_id"],
+            "src/App.tsx:h1:0",
+        )
+        self.assertEqual(plan["react_adaptation_path"], "react_adaptation.json")
+        self.assertIn("react_adaptation.json", plan["composer"]["optional_inputs"])
         self.assertTrue((preview_path / "react_project" / "src" / "App.tsx").is_file())
         self.assertIn(
             "Build a React quote component",

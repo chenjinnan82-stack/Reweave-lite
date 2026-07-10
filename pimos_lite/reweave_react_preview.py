@@ -53,47 +53,88 @@ def _write_text(path: Path, content: str) -> None:
         handle.write(content)
 
 
-def _adapt_static_heading(
+def _static_text_slots(
     files: dict[str, str],
-    task: str,
     project_targets: list[dict[str, Any]],
-) -> tuple[dict[str, str], dict[str, Any]]:
+) -> list[dict[str, Any]]:
     component_paths = [
         str(item.get("path") or "")
         for item in project_targets
         if isinstance(item, dict) and item.get("kind") == "component"
     ]
-    replacement = html.escape((task or "Reweave task")[:160], quote=False)
-    replacement = replacement.replace("{", "&#123;").replace("}", "&#125;")
-    updated = dict(files)
+    slots: list[dict[str, Any]] = []
     for relative in component_paths:
         source = files.get(relative)
         if source is None:
             continue
-        for tag in ("h1", "h2"):
+        for tag, kind in (("h1", "heading"), ("h2", "heading"), ("p", "description"), ("button", "action")):
             pattern = re.compile(
                 rf"(<{tag}\b[^>]*>)([^<>{{}}\r\n]{{1,160}})(</{tag}>)",
                 flags=re.IGNORECASE,
             )
-            if not pattern.search(source):
-                continue
-            updated[relative] = pattern.sub(
-                lambda match: f"{match.group(1)}{replacement}{match.group(3)}",
-                source,
-                count=1,
+            slots.extend(
+                {
+                    "slot_id": f"{relative}:{tag}:{occurrence}",
+                    "file": relative,
+                    "tag": tag,
+                    "occurrence": occurrence,
+                    "kind": kind,
+                }
+                for occurrence, _match in enumerate(pattern.finditer(source))
             )
-            return updated, {
-                "status": "applied",
-                "mode": "static_jsx_heading",
-                "file": relative,
-                "tag": tag,
-                "task_heading": replacement,
-                "source_project_write": False,
-            }
+    return slots
+
+
+def _replace_static_slot(source: str, slot: dict[str, Any], replacement: str) -> str:
+    tag = str(slot.get("tag") or "")
+    wanted = int(slot.get("occurrence") or 0)
+    pattern = re.compile(
+        rf"(<{tag}\b[^>]*>)([^<>{{}}\r\n]{{1,160}})(</{tag}>)",
+        flags=re.IGNORECASE,
+    )
+    occurrence = -1
+
+    def replace(match: re.Match[str]) -> str:
+        nonlocal occurrence
+        occurrence += 1
+        return f"{match.group(1)}{replacement}{match.group(3)}" if occurrence == wanted else match.group(0)
+
+    return pattern.sub(replace, source)
+
+
+def _adapt_static_slots(
+    files: dict[str, str],
+    task: str,
+    project_targets: list[dict[str, Any]],
+) -> tuple[dict[str, str], dict[str, Any]]:
+    slots = _static_text_slots(files, project_targets)
+    selected = next((slot for slot in slots if slot["kind"] == "heading"), None)
+    public_slots = [{key: value for key, value in slot.items() if key != "occurrence"} for slot in slots]
+    if selected is None:
+        return dict(files), {
+            "status": "needs_review",
+            "mode": "safe_static_text_slots",
+            "reason": "safe_static_heading_not_found",
+            "slots": public_slots,
+            "changes": [],
+            "source_project_write": False,
+        }
+    replacement = html.escape((task or "Reweave task")[:160], quote=False)
+    replacement = replacement.replace("{", "&#123;").replace("}", "&#125;")
+    updated = dict(files)
+    relative = str(selected["file"])
+    updated[relative] = _replace_static_slot(updated[relative], selected, replacement)
     return updated, {
-        "status": "needs_review",
-        "mode": "static_jsx_heading",
-        "reason": "safe_static_heading_not_found",
+        "status": "applied",
+        "mode": "safe_static_text_slots",
+        "slots": public_slots,
+        "changes": [
+            {
+                "slot_id": selected["slot_id"],
+                "reason": "task_goal",
+                "value": replacement,
+            }
+        ],
         "source_project_write": False,
     }
 
@@ -178,7 +219,7 @@ def build_react_preview(
     files, missing = _complete_snippets(capsule_ids, target_paths)
     if missing:
         return _receipt("needs_review", "complete_project_files_unavailable", missing_files=missing)
-    files, adaptation = _adapt_static_heading(files, task, project_targets)
+    files, adaptation = _adapt_static_slots(files, task, project_targets)
 
     project_root = root / "react_project"
     project_root.mkdir(parents=True, exist_ok=False)
