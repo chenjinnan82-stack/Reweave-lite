@@ -9,10 +9,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from pimos_lite import reweave_capsule_content as content
 from pimos_lite import reweave_capsule_draft as draft
 from pimos_lite import reweave_capsule_warehouse as warehouse
 from pimos_lite import reweave_preview_pack as preview
 from pimos_lite import reweave_project_renderer as renderer
+from pimos_lite import reweave_react_preview as react_preview
 from pimos_lite.reweave_quality_gate import build_quality_gate
 from pimos_lite.reweave_behavior_runtime import validate_preview_behavior
 from pimos_lite.reweave_project_renderer import build_app_js
@@ -39,6 +41,23 @@ class ReweavePreviewPackTest(unittest.TestCase):
 
     def test_empty_behavior_contract_has_no_search_text(self) -> None:
         self.assertEqual(behavior_contract_search_text({}), "")
+
+    def test_react_preview_rejects_truncated_capsule_files(self) -> None:
+        record = {
+            "snippets": [
+                {
+                    "relative_path": "src/App.tsx",
+                    "preview": "export default function App() {}",
+                    "truncated": True,
+                    "redacted": False,
+                }
+            ]
+        }
+        with patch.object(react_preview, "load_capsule_content", return_value=record):
+            files, missing = react_preview._complete_snippets(["cap_react"], ["src/App.tsx"])
+
+        self.assertEqual(files, {})
+        self.assertEqual(missing, ["src/App.tsx"])
 
     def test_runtime_validation_without_behavior_contract_does_not_start_qt(self) -> None:
         result = validate_preview_behavior(self._state_dir)
@@ -129,17 +148,22 @@ class ReweavePreviewPackTest(unittest.TestCase):
             json.dumps(
                 {
                     "name": "react-quote",
-                    "dependencies": {"react": "^19.0.0"},
+                    "dependencies": {"react": "^19.0.0", "react-dom": "^19.0.0"},
                     "devDependencies": {"vite": "^7.0.0"},
                 }
             ),
             encoding="utf-8",
         )
         (source / "main.tsx").write_text(
-            "import App from './App';\nimport './styles.css';\n",
+            "import React from 'react';\n"
+            "import { createRoot } from 'react-dom/client';\n"
+            "import App from './App';\n"
+            "import './styles.css';\n"
+            "createRoot(document.getElementById('root')!).render(<App />);\n",
             encoding="utf-8",
         )
         (source / "App.tsx").write_text(
+            "import React from 'react';\n"
             "export default function App() { return <button>Quote</button>; }\n",
             encoding="utf-8",
         )
@@ -148,10 +172,18 @@ class ReweavePreviewPackTest(unittest.TestCase):
         box = registry.add_source_box(root)
         scanner.scan_source_box(box["id"])
         draft.draft_capsules(box["id"])
-        cap_ids = [cap["id"] for cap in warehouse.promote_source_drafts(box["id"])]
+        promoted = warehouse.promote_source_drafts(box["id"])
+        cap_ids = [cap["id"] for cap in promoted]
+        for cap_id in cap_ids:
+            content.enrich_capsule_content(cap_id)
 
         result = preview.build_preview_package(
-            {"taskText": "Build a React quote component", "capsuleIds": cap_ids, "backend": "local"}
+            {
+                "taskText": "Build a React quote component",
+                "capsuleIds": cap_ids,
+                "backend": "local",
+                "useEnrichedContent": True,
+            }
         )
 
         preview_path = Path(result["previewPath"])
@@ -159,6 +191,7 @@ class ReweavePreviewPackTest(unittest.TestCase):
         intent = json.loads((preview_path / "task_intent.json").read_text(encoding="utf-8"))
         plan = json.loads((preview_path / "task_plan.json").read_text(encoding="utf-8"))
         provenance = json.loads((preview_path / "provenance.json").read_text(encoding="utf-8"))
+        compile_receipt = json.loads((preview_path / "react_compile.json").read_text(encoding="utf-8"))
         self.assertEqual(graph["project_kind"], "react_vite")
         self.assertEqual(intent["project_context"]["graph_status"], "analyzed")
         self.assertEqual(
@@ -168,6 +201,11 @@ class ReweavePreviewPackTest(unittest.TestCase):
         self.assertTrue(all(item["write_mode"] == "preview_only" for item in plan["project_targets"]))
         self.assertEqual(plan["project_graph_path"], "project_graph.json")
         self.assertFalse(provenance["project_graph"]["source_project_write"])
+        self.assertEqual(compile_receipt["status"], "passed")
+        self.assertEqual(compile_receipt["compile_scope"], "local_modules_external_dependencies_not_bundled")
+        self.assertTrue((preview_path / "react_project" / "src" / "App.tsx").is_file())
+        self.assertTrue((preview_path / "react_project" / "dist" / "app.js").is_file())
+        self.assertFalse(compile_receipt["source_project_write"])
         self.assertEqual(before, {path.name: path.read_bytes() for path in source.iterdir()})
 
     def test_operations_task_uses_task_intent_not_fixed_template_profile(self) -> None:

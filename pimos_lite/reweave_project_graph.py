@@ -100,11 +100,9 @@ def inspect_react_vite_project(root: Path) -> dict[str, Any]:
     if not isinstance(package, dict):
         return {**base, "status": "unavailable", "warnings": ["package_manifest_invalid"]}
 
-    dependencies: dict[str, Any] = {}
-    for key in ("dependencies", "devDependencies"):
-        value = package.get(key)
-        if isinstance(value, dict):
-            dependencies.update(value)
+    runtime_dependencies = package.get("dependencies") if isinstance(package.get("dependencies"), dict) else {}
+    dev_dependencies = package.get("devDependencies") if isinstance(package.get("devDependencies"), dict) else {}
+    dependencies = {**runtime_dependencies, **dev_dependencies}
     if "react" not in dependencies or "vite" not in dependencies:
         kind = "react" if "react" in dependencies else "vite" if "vite" in dependencies else "unknown"
         return {**base, "project_kind": kind}
@@ -166,6 +164,16 @@ def inspect_react_vite_project(root: Path) -> dict[str, Any]:
         "status": "analyzed" if entrypoints else "partial",
         "project_kind": "react_vite",
         "package_name": str(package.get("name") or ""),
+        "package_dependencies": {
+            str(name): str(version)
+            for name, version in runtime_dependencies.items()
+            if isinstance(name, str) and isinstance(version, str)
+        },
+        "package_dev_dependencies": {
+            str(name): str(version)
+            for name, version in dev_dependencies.items()
+            if isinstance(name, str) and isinstance(version, str)
+        },
         "entrypoints": entrypoints,
         "nodes": nodes,
         "edges": edges,

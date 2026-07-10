@@ -90,6 +90,8 @@ EXTENSION_HINTS: tuple[tuple[str, str], ...] = (
     ("page", ".html"),
     ("javascript", ".js"),
     ("script", ".js"),
+    ("jsx", ".jsx"),
+    ("tsx", ".tsx"),
     ("typescript", ".ts"),
     ("json", ".json"),
     ("markdown", ".md"),
@@ -627,6 +629,21 @@ def _paths_from_summary_extension_samples(capsule: dict[str, Any], summary: dict
     return paths
 
 
+def _paths_from_project_graph(capsule: dict[str, Any], summary: dict[str, Any]) -> list[str]:
+    tags = {str(tag).lower() for tag in capsule.get("tags", []) if tag}
+    graph = summary.get("project_graph") if isinstance(summary.get("project_graph"), dict) else {}
+    if "react" not in tags or graph.get("project_kind") != "react_vite":
+        return []
+    nodes = graph.get("nodes") if isinstance(graph.get("nodes"), list) else []
+    return [
+        str(node.get("path"))
+        for node in nodes
+        if isinstance(node, dict)
+        and node.get("path")
+        and node.get("kind") in {"entry", "component", "style", "module"}
+    ][:MAX_FILES]
+
+
 def collect_candidate_paths(capsule: dict[str, Any], summary: dict[str, Any]) -> list[str]:
     """Collect candidate relative paths without scanning the full source tree."""
     source_id = str(capsule.get("source_id") or "")
@@ -646,6 +663,9 @@ def collect_candidate_paths(capsule: dict[str, Any], summary: dict[str, Any]) ->
         paths.extend(_paths_from_reuse_assets(source_id, suggestion_id))
 
     paths = _dedupe_paths(paths)
+
+    if not paths:
+        paths = _dedupe_paths(_paths_from_project_graph(capsule, summary))
 
     if not paths:
         paths = _dedupe_paths(_paths_from_summary_extension_samples(capsule, summary))

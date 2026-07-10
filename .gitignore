@@ -11,6 +11,7 @@ htmlcov/
 .venv/
 .venv-reweave/
 venv/
+node_modules/
 
 # Local demo outputs
 /demo_*/

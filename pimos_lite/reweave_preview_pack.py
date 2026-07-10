@@ -11,6 +11,7 @@ from typing import Any
 
 from pimos_lite.reweave_capsule_warehouse import get_capsule, is_generate_eligible, list_capsules
 from pimos_lite.reweave_quality_gate import build_quality_gate as _quality_gate
+from pimos_lite.reweave_react_preview import build_react_preview as _build_react_preview
 from pimos_lite.reweave_project_renderer import build_app_js as _build_app_js
 from pimos_lite.reweave_project_renderer import build_behavior_adaptation as _build_behavior_adaptation
 from pimos_lite.reweave_project_renderer import build_index_html as _build_index_html
@@ -40,6 +41,11 @@ def preview_acceptance(task_pack: dict[str, Any]) -> dict[str, str]:
         return {"verdict": "rejected", "reason": "quality_gate_failed"}
     if quality_status != "passed":
         return {"verdict": "needs_review", "reason": "quality_gate_not_reported"}
+    react_preview = task_pack.get("react_preview") if isinstance(task_pack.get("react_preview"), dict) else {}
+    if react_preview.get("status") == "failed":
+        return {"verdict": "rejected", "reason": "react_compile_failed"}
+    if react_preview and react_preview.get("status") != "passed":
+        return {"verdict": "needs_review", "reason": "react_compile_not_verified"}
     behavior = task_pack.get("behavior_reuse") if isinstance(task_pack.get("behavior_reuse"), dict) else {}
     if behavior.get("status") != "enabled":
         return {"verdict": "needs_review", "reason": "closed_behavior_unavailable"}
@@ -418,6 +424,21 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
             "source_id": project_graph.get("source_id"),
             "source_project_write": False,
         }
+        react_preview = _build_react_preview(
+            root,
+            task,
+            project_graph,
+            capsule_ids,
+            list(task_plan.get("project_targets") or []),
+        )
+        task_pack["react_preview"] = react_preview
+        provenance["react_preview"] = {
+            "receipt_path": "react_compile.json",
+            "status": react_preview.get("status"),
+            "source_project_write": False,
+        }
+    else:
+        react_preview = None
     if behavior_contract is not None:
         task_pack["behavior_contract_path"] = "behavior_contract.json"
         task_pack["behavior_adaptation_path"] = "behavior_adaptation.json"
@@ -485,6 +506,9 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
     if project_graph is not None:
         _write_text(root / "project_graph.json", json.dumps(project_graph, indent=2, ensure_ascii=False) + "\n")
         files.append("project_graph.json")
+    if react_preview is not None:
+        _write_text(root / "react_compile.json", json.dumps(react_preview, indent=2, ensure_ascii=False) + "\n")
+        files.extend(["react_compile.json", "react_project/"])
     if behavior_contract is not None:
         _write_text(root / "behavior_contract.json", json.dumps(behavior_contract, indent=2, ensure_ascii=False) + "\n")
         _write_text(root / "behavior_adaptation.json", json.dumps(behavior_adaptation, indent=2, ensure_ascii=False) + "\n")

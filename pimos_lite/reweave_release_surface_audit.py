@@ -46,6 +46,7 @@ RELEASE_EXCLUDED_SUPPORT_FILES = (
     "pimos_lite/reweave_project_renderer.py",
     "pimos_lite/reweave_promote.py",
     "pimos_lite/reweave_quality_gate.py",
+    "pimos_lite/reweave_react_preview.py",
     "pimos_lite/reweave_release_surface_audit.py",
     "pimos_lite/reweave_reuse_suggestions.py",
     "pimos_lite/reweave_review_queue.py",

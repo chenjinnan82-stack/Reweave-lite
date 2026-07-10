@@ -497,6 +497,30 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
 
             self.assertEqual(result["previewAcceptance"], {"verdict": verdict, "reason": reason})
 
+    def test_lumo_lite_engine_rejects_unverified_react_preview(self) -> None:
+        engine = LumoLiteReweaveEngine(runtime_state_path=str(self._runtime_state))
+        for status, verdict, reason in (
+            ("failed", "rejected", "react_compile_failed"),
+            ("unavailable", "needs_review", "react_compile_not_verified"),
+            ("needs_review", "needs_review", "react_compile_not_verified"),
+        ):
+            task_pack = {
+                "quality_gate": {"status": "passed"},
+                "react_preview": {"status": status},
+                "behavior_reuse": {"status": "enabled"},
+                "behavior_validation": {"status": "passed"},
+            }
+            with (
+                self.subTest(status=status),
+                patch(
+                    "pimos_lite.reweave_engine.lumo_lite.build_preview_package",
+                    return_value={"ok": True, "previewPath": str(self._root), "taskPack": task_pack},
+                ),
+            ):
+                result = engine.generate_preview({"taskText": "Build a React tool"})
+
+            self.assertEqual(result["previewAcceptance"], {"verdict": verdict, "reason": reason})
+
     def test_lumo_lite_engine_records_successful_runtime_validation(self) -> None:
         preview_root = self._root / "validated-preview"
         preview_root.mkdir()
