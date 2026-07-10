@@ -12,10 +12,12 @@ from unittest.mock import patch
 from pimos_lite import reweave_capsule_draft as draft
 from pimos_lite import reweave_capsule_warehouse as warehouse
 from pimos_lite import reweave_preview_pack as preview
+from pimos_lite import reweave_project_renderer as renderer
 from pimos_lite.reweave_quality_gate import build_quality_gate
 from pimos_lite.reweave_project_renderer import build_app_js
 from pimos_lite.reweave_project_renderer import build_index_html
 from pimos_lite.reweave_project_renderer import build_preview_readme
+from pimos_lite.reweave_project_renderer import build_review_html
 from pimos_lite.reweave_project_renderer import build_styles_css
 from pimos_lite import reweave_source_registry as registry
 from pimos_lite import reweave_source_scanner as scanner
@@ -56,21 +58,23 @@ class ReweavePreviewPackTest(unittest.TestCase):
         preview_path = Path(result["previewPath"])
         self.assertTrue(preview_path.is_dir())
         self.assertEqual(preview_path.resolve().parent, preview.preview_packages_dir().resolve())
-        for name in ("index.html", "styles.css", "app.js", "task_intent.json", "task_plan.json", "quality_gate.json", "task_pack.json", "capsules_used.json", "provenance.json", "summary.md"):
+        for name in ("index.html", "review.html", "styles.css", "app.js", "task_intent.json", "task_plan.json", "quality_gate.json", "task_pack.json", "capsules_used.json", "provenance.json", "summary.md"):
             self.assertTrue((preview_path / name).is_file())
         html = (preview_path / "index.html").read_text(encoding="utf-8")
-        self.assertIn("Task Intent", html)
-        self.assertIn("Check task goal", html)
+        review_html = (preview_path / "review.html").read_text(encoding="utf-8")
+        self.assertNotIn("Task Intent", html)
         self.assertIn("reweaveDemoButton", html)
-        self.assertIn("project-checklist", html)
-        self.assertIn("reweave-step", html)
-        self.assertIn("Plan files", html)
-        self.assertIn("Source-backed cues", html)
-        self.assertIn("capsule metadata only", html)
+        self.assertIn("review.html", html)
+        self.assertNotIn("Plan files", html)
+        self.assertIn("Task Intent", review_html)
+        self.assertIn("Planned outputs", review_html)
+        self.assertNotIn("Source-backed cues", html)
+        self.assertNotIn("capsule metadata only", html)
+        self.assertIn("Reused signals", review_html)
+        self.assertIn("Source Boxes", review_html)
         self.assertIn("Client quote tool", html)
         app_js = (preview_path / "app.js").read_text(encoding="utf-8")
-        self.assertIn("local checks complete", app_js)
-        self.assertIn(".reweave-step", app_js)
+        self.assertIn("local follow-up", app_js)
         task_pack = json.loads((preview_path / "task_pack.json").read_text(encoding="utf-8"))
         task_intent = json.loads((preview_path / "task_intent.json").read_text(encoding="utf-8"))
         task_plan = json.loads((preview_path / "task_plan.json").read_text(encoding="utf-8"))
@@ -118,7 +122,9 @@ class ReweavePreviewPackTest(unittest.TestCase):
         task_intent = json.loads((preview_path / "task_intent.json").read_text(encoding="utf-8"))
         task_plan = json.loads((preview_path / "task_plan.json").read_text(encoding="utf-8"))
 
-        self.assertIn("Task Intent", html)
+        review_html = (preview_path / "review.html").read_text(encoding="utf-8")
+        self.assertNotIn("Task Intent", html)
+        self.assertIn("Task Intent", review_html)
         self.assertIn("Review output", html)
         self.assertEqual(task_pack["task_profile"], "task_driven")
         self.assertEqual(task_intent["output_type"], "data_panel")
@@ -129,6 +135,37 @@ class ReweavePreviewPackTest(unittest.TestCase):
             ["data_panel_html", "task_style", "task_runtime"],
         )
 
+    def test_task_contract_is_shared_across_pack_renderer_gate_and_provenance(self) -> None:
+        cap_ids = self._promote_capsules()
+        with (
+            patch.object(renderer, "_task_intent", side_effect=AssertionError("renderer recomputed task intent")),
+            patch.object(renderer, "_task_profile", side_effect=AssertionError("renderer recomputed task profile")),
+        ):
+            result = preview.build_preview_package(
+                {"taskText": "Build a customer quote dashboard", "capsuleIds": cap_ids[:2], "selectionMode": "manual"}
+            )
+
+        root = Path(result["previewPath"])
+        task_pack = json.loads((root / "task_pack.json").read_text(encoding="utf-8"))
+        task_intent = json.loads((root / "task_intent.json").read_text(encoding="utf-8"))
+        task_plan = json.loads((root / "task_plan.json").read_text(encoding="utf-8"))
+        quality_gate = json.loads((root / "quality_gate.json").read_text(encoding="utf-8"))
+        provenance = json.loads((root / "provenance.json").read_text(encoding="utf-8"))
+        review_html = (root / "review.html").read_text(encoding="utf-8")
+
+        self.assertEqual(result["taskPack"], task_pack)
+        self.assertEqual(task_pack["task_intent"], task_intent)
+        self.assertEqual(task_pack["task_plan"], task_plan)
+        self.assertEqual(task_pack["quality_gate"], quality_gate)
+        expected_paths = {"index.html", "styles.css", "app.js"}
+        self.assertEqual({item["path"] for item in task_pack["planned_outputs"]}, expected_paths)
+        self.assertEqual({item["path"] for item in task_plan["outputs"]}, expected_paths)
+        self.assertEqual({item["path"] for item in provenance["outputs"]}, expected_paths)
+        self.assertTrue(all(item["reason"] in review_html for item in task_plan["capsules"]))
+        self.assertEqual(result["generatedPackage"]["files"].count("task_pack.json"), 1)
+        self.assertFalse(task_pack["source_project_write"])
+        self.assertEqual(quality_gate["status"], "passed")
+
     def test_preview_pack_uses_split_task_helpers(self) -> None:
         self.assertIs(preview._task_intent, build_task_intent)
         self.assertIs(preview._task_plan, build_task_plan)
@@ -137,6 +174,12 @@ class ReweavePreviewPackTest(unittest.TestCase):
         self.assertIs(preview._build_styles_css, build_styles_css)
         self.assertIs(preview._build_app_js, build_app_js)
         self.assertIs(preview._build_preview_readme, build_preview_readme)
+        self.assertIs(preview._build_review_html, build_review_html)
+
+    def test_source_cues_reject_code_fragments(self) -> None:
+        self.assertEqual(renderer._clean_source_cue("// DOM elements"), "")
+        self.assertEqual(renderer._clean_source_cue("target: document.getElementById('target'),"), "")
+        self.assertEqual(renderer._clean_source_cue("Daily hydration target"), "Daily hydration target")
 
     def test_latest_preview_restored(self) -> None:
         cap_ids = self._promote_capsules()
@@ -165,8 +208,19 @@ class ReweavePreviewPackTest(unittest.TestCase):
         )
 
         self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", html)
-        self.assertIn("&lt;img src=x&gt;", html)
-        self.assertIn("&lt;script&gt;bad()&lt;/script&gt;", html)
+        review_html = preview._build_review_html(
+            "<script>alert(1)</script>",
+            [
+                {
+                    "name": "<img src=x>",
+                    "type": "<b>",
+                    "role": "<script>role</script>",
+                    "preview": ["<script>bad()</script>"],
+                }
+            ],
+        )
+        self.assertIn("&lt;img src=x&gt;", review_html)
+        self.assertIn("&lt;script&gt;bad()&lt;/script&gt;", review_html)
         self.assertNotIn("<script>alert(1)</script>", html)
         self.assertNotIn("<img src=x>", html)
 

@@ -33,7 +33,7 @@ from pimos_lite.reweave_source_registry import get_source_box
 from pimos_lite.reweave_source_scanner import load_summary
 
 APP_SERVICE_VERSION = "v0"
-LUMO_LITE_MODE = "read_only"
+LUMO_LITE_MODE = "source_read_only_preview_write"
 PUBLIC_PRODUCT_ACTIONS = frozenset(
     {
         "get_initial_state",

@@ -173,7 +173,7 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
         self.assertEqual(state["backend"], "lumo_lite")
         self.assertEqual(state["engine"], "lumo_lite")
         self.assertTrue(state["lumoLiteAvailable"])
-        self.assertEqual(state["engineStatus"]["mode"], "read_only_runtime_artifact_viewer")
+        self.assertEqual(state["engineStatus"]["mode"], "source_read_only_preview_write")
         self.assertFalse(state["engineStatus"]["capabilities"]["network_call"])
         self.assertTrue(state["engineStatus"]["capabilities"]["capsule_warehouse_read"])
         self.assertFalse(state["engineStatus"]["capabilities"]["capsule_warehouse_management"])
@@ -380,7 +380,9 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
         self.assertEqual(task_pack["selected_capsule_ids"], [promoted[0]["id"]])
         self.assertTrue((preview_root / "snippets_used.json").is_file())
         html = (preview_root / "index.html").read_text(encoding="utf-8")
-        self.assertIn("Source excerpts used", html)
+        review_html = (preview_root / "review.html").read_text(encoding="utf-8")
+        self.assertNotIn("Source excerpts used", html)
+        self.assertIn("Source excerpts used", review_html)
         self.assertIn("Legacy quote shell", html)
 
     def test_lumo_lite_engine_builds_task_pack_preview_without_source_write(self) -> None:
@@ -414,6 +416,8 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
         self.assertIn("task_pack.json", result["generatedPackage"]["files"])
         self.assertTrue((root / "task_pack.json").is_file())
         pack = json.loads((root / "task_pack.json").read_text(encoding="utf-8"))
+        self.assertEqual(result["taskPack"], pack)
+        self.assertEqual(result["generatedPackage"]["files"].count("task_pack.json"), 1)
         self.assertEqual(pack["mode"], "task_pack_preview")
         self.assertEqual(pack["capsules_used"][0]["id"], "capsule_alpha")
         self.assertIn("task_pack.json", viewer["package"]["files"])

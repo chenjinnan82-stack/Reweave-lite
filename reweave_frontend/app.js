@@ -13,44 +13,258 @@
 
   var STR = {
     zh: {
-      privacy: "All local. Nothing leaves your machine.",
-      history: "History",
-      taskPlaceholder: "描述你要重新织出的工具或页面...",
-      usedPlaceholder: "选中的胶囊将停靠在这里",
-      generationAuto: "未手动选择时会自动匹配胶囊。",
-      generationManual: "Generation input: {count} selected. Generate will use exactly these capsules.",
-      selecting: "Reweave 正在挑选胶囊…",
-      readyResponse: "Reweave 使用了 {count} 个胶囊，并已准备本地预览包。",
-      docked: "已停靠到任务区。",
-      openFolder: "已在 Finder 中打开本地预览文件夹。",
-      openFolderMock: "仅本地预览 — 打开文件夹为模拟操作。",
-      useInTask: "Use in task",
-      openCapsule: "Open capsule",
+      privacy: "本地运行，数据不会离开此设备。",
+      history: "历史",
+      artifacts: "构建资料",
+      welcomeKicker: "来源箱 · 当前运行状态 · 构建资料",
+      welcomeTagline: "绑定一个旧项目文件夹，将其整理为可复用胶囊。",
+      welcomePhilosophy: "不是复制，是消化后再织。",
+      sourceBox: "来源箱",
+      bindSourceBox: "绑定来源箱",
+      sourceBoxNote: "选择一个旧项目文件夹，整理为胶囊。",
+      sourceBoxReadOnlyNote: "本地绑定、只读扫描，不写入源项目。",
+      sourceBoxBindingDisabled: "来源箱绑定尚未开放。",
+      viewCurrentRuntime: "查看当前运行状态",
+      cleaningRuntime: "正在载入运行状态与构建资料",
+      capsules: "胶囊",
+      taskPlaceholder: "描述你想从旧项目重新织出的页面或工具…",
+      taskPackPlaceholder: "描述你想生成的小项目包…",
+      runtimePlaceholder: "源项目只读，本地预览可写",
+      buildSmallProjectPack: "生成小项目包",
+      generationInput: "生成输入",
+      usedPlaceholder: "选中的胶囊会出现在这里",
+      generationAuto: "未手动选择时，系统会自动匹配胶囊。",
+      generationManual: "已选择 {count} 个胶囊；本次生成只使用这些胶囊。",
+      selecting: "正在选择胶囊…",
+      readyResponse: "已使用 {count} 个胶囊生成本地项目预览。",
+      generationFailed: "生成失败，请检查任务和胶囊状态。",
+      taskPackUnavailable: "小项目包预览当前不可用。",
+      localPreview: "本地预览",
+      newTask: "新任务",
+      docked: "已加入本次任务。",
+      openFolder: "已打开本地预览文件夹。",
+      openFolderMock: "当前仅支持本地预览。",
+      useInTask: "用于任务",
+      openCapsule: "查看胶囊",
+      readOnly: "只读",
+      sourceReadOnly: "源项目只读",
       capsulesUsed: "个胶囊已使用",
-      readerLabel: "Capsule Reader",
-      fromSource: "from",
-      tagsPrefix: "tags",
-      rolePrefix: "role",
+      readerLabel: "胶囊详情",
+      fromSource: "来源",
+      tagsPrefix: "标签",
+      rolePrefix: "选用原因",
+      preview: "预览",
+      previewStatus: "预览状态",
+      status: "状态",
+      currentRuntime: "当前运行状态",
+      runtime: "运行状态",
+      smallProjectPack: "小项目包",
+      runtimeArtifacts: "运行资料",
+      runtimeTraceFiles: "胶囊使用记录 / 追溯凭证",
+      workflow: "工作流",
+      traceAvailable: "追溯可用",
+      traceUnavailable: "追溯不可用",
+      previewReady: "预览已就绪",
+      previewNotReady: "预览未就绪",
+      smallProjectPackReady: "小项目包已就绪",
+      capsulesLinked: "当前运行状态关联了 {count} 个胶囊",
+      noCapsuleUsage: "当前运行状态未报告胶囊使用记录",
+      productSummary: "产品能力：{capability} · 源项目写入：{writes} · 追溯：{trace}",
+      capabilityReady: "就绪",
+      capabilityReview: "需复核",
+      capabilityUnavailable: "不可用",
+      sourceWrites: "源项目写入",
+      trace: "追溯",
+      ready: "就绪",
+      unavailable: "不可用",
+      notReady: "未就绪",
+      unknown: "未知",
+      workflowViewProvenance: "查看来源记录",
+      workflowBindSource: "绑定来源箱",
+      workflowScanSource: "扫描来源箱",
+      workflowStoreCapsules: "胶囊入仓",
+      workflowBuildPack: "选择胶囊，然后生成小项目包",
+      workflowIntentReady: "任务意图就绪 · 计划就绪 · 质量门通过 · 源项目写入 0",
+      workflowPackReady: "小项目包就绪 · 源项目写入 0",
+      viewPackage: "查看项目包",
+      compareLast: "对比上次结果",
+      sources: "来源箱",
+      bound: "已绑定",
+      addSource: "添加来源箱",
+      lastUsed: "最近使用：2 天前",
+      previewPackage: "预览项目包",
+      close: "关闭",
+      switchLanguage: "切换语言",
+      noHistoryReadOnly: "暂无本地预览历史",
+      noHistory: "暂无历史",
+      historyMeta: "使用了 {count} 个胶囊 · {note}",
+      scan: "扫描",
+      store: "入仓",
+      prepare: "准备",
+      sourcePreparing: "准备中…",
+      sourceScanning: "扫描中…",
+      sourceReady: "就绪",
+      sourceScanned: "已扫描",
+      sourceFailed: "失败",
+      sourceNotScanned: "未扫描",
+      artifactCopied: "构建资料路径已复制。",
+      runtimeReadOnlyMessage: "源项目只读；本地预览写入已启用。",
+      capsuleReadOnlyMessage: "该胶囊为只读状态。",
+      loadFailed: "加载本地演示数据失败，请通过桌面程序或本地服务运行。",
+      noPreviewPackage: "暂无预览项目包。",
+      noPreviousPackage: "暂无可对比的历史项目包。",
+      lunaPackIndexed: "Luna 索引已就绪",
+      contentAwarePreview: "内容感知预览",
+      snippets: "摘录",
+      viewContent: "查看内容",
+      enrichContent: "补充内容",
+      copied: "已复制",
+      enrichedContentPreview: "使用补充内容预览",
+      openFolderButton: "打开文件夹",
+      exportZip: "导出 ZIP",
+      exportCopy: "导出副本",
+      warnings: "警告",
+      truncated: "已截断",
+      redacted: "已脱敏",
+      verify: "验证",
+      review: "复核",
+      promote: "提升",
+      exported: "已导出",
+      approve: "通过",
+      reject: "拒绝",
+      defer: "稍后处理",
+      promoted: "已提升",
+      pending: "待处理",
+      approved: "已通过",
+      rejected: "已拒绝",
+      deferred: "已延后",
     },
     en: {
       privacy: "All local. Nothing leaves your machine.",
       history: "History",
+      artifacts: "Build notes",
+      welcomeKicker: "Source Box · Current Runtime · Build notes",
+      welcomeTagline: "Bind an old project folder and clean it into reusable capsules.",
+      welcomePhilosophy: "Digest first, then reweave.",
+      sourceBox: "Source Box",
+      bindSourceBox: "Bind Source Box",
+      sourceBoxNote: "Choose an old project folder to clean into capsules.",
+      sourceBoxReadOnlyNote: "Bind locally, scan read-only, no source writes.",
+      sourceBoxBindingDisabled: "Source Box binding is not enabled.",
+      viewCurrentRuntime: "View Current Runtime",
+      cleaningRuntime: "Loading runtime and build notes",
+      capsules: "Capsules",
       taskPlaceholder: "Describe the tool or page to reweave...",
+      taskPackPlaceholder: "Describe a small project pack...",
+      runtimePlaceholder: "Source project read-only; local preview enabled",
+      buildSmallProjectPack: "Build Small Project Pack",
+      generationInput: "Generation input",
       usedPlaceholder: "Selected capsules dock here",
       generationAuto: "Generate will auto-pick capsules if none are selected.",
       generationManual: "Generation input: {count} selected. Generate will use exactly these capsules.",
       selecting: "Reweave is selecting capsules…",
       readyResponse: "Reweave used {count} capsules and prepared a local preview package.",
+      generationFailed: "Generation failed. Check the task and capsule state.",
+      taskPackUnavailable: "Task Pack preview is unavailable.",
+      localPreview: "local preview",
+      newTask: "New task",
       docked: "docked for this task.",
       openFolder: "Opened local preview folder.",
-      openFolderMock: "Local preview only — folder open is mocked.",
+      openFolderMock: "Local preview only.",
       useInTask: "Use in task",
       openCapsule: "Open capsule",
+      readOnly: "Read-only",
+      sourceReadOnly: "Source project read-only",
       capsulesUsed: "capsules used",
       readerLabel: "Capsule Reader",
       fromSource: "from",
       tagsPrefix: "tags",
       rolePrefix: "role",
+      preview: "Preview",
+      previewStatus: "Preview status",
+      status: "Status",
+      currentRuntime: "Current Runtime",
+      runtime: "Runtime",
+      smallProjectPack: "Small Project Pack",
+      runtimeArtifacts: "Runtime artifacts",
+      runtimeTraceFiles: "capsules_used / trace receipts",
+      workflow: "Workflow",
+      traceAvailable: "Trace available",
+      traceUnavailable: "Trace unavailable",
+      previewReady: "Preview ready",
+      previewNotReady: "Preview not ready",
+      smallProjectPackReady: "Small Project Pack ready",
+      capsulesLinked: "{count} capsules linked to this runtime",
+      noCapsuleUsage: "No capsule usage reported by current runtime",
+      productSummary: "Product capability: {capability} · Source writes: {writes} · Trace: {trace}",
+      capabilityReady: "ready",
+      capabilityReview: "review",
+      capabilityUnavailable: "unavailable",
+      sourceWrites: "source writes",
+      trace: "trace",
+      ready: "ready",
+      unavailable: "unavailable",
+      notReady: "not ready",
+      unknown: "unknown",
+      workflowViewProvenance: "View provenance",
+      workflowBindSource: "Bind Source Box",
+      workflowScanSource: "Scan Source Box",
+      workflowStoreCapsules: "Store Capsules",
+      workflowBuildPack: "Select capsules, then Build Small Project Pack",
+      workflowIntentReady: "Intent ready · Plan ready · Quality gate passed · Source writes 0",
+      workflowPackReady: "Task Pack ready · Source writes 0",
+      viewPackage: "View package",
+      compareLast: "Compare last",
+      sources: "Sources",
+      bound: "bound",
+      addSource: "Add source",
+      lastUsed: "Last used 2d ago",
+      previewPackage: "Preview package",
+      close: "Close",
+      switchLanguage: "Switch language",
+      noHistoryReadOnly: "No local preview history yet",
+      noHistory: "No history yet",
+      historyMeta: "used {count} capsules · {note}",
+      scan: "Scan",
+      store: "Store",
+      prepare: "Prepare",
+      sourcePreparing: "Preparing…",
+      sourceScanning: "Scanning…",
+      sourceReady: "Ready",
+      sourceScanned: "Scanned",
+      sourceFailed: "Failed",
+      sourceNotScanned: "Not scanned",
+      artifactCopied: "Artifact path copied.",
+      runtimeReadOnlyMessage: "Source project read-only; local preview writes enabled.",
+      capsuleReadOnlyMessage: "This capsule is read-only.",
+      loadFailed: "Failed to load local demo data. Run the desktop app or a local server.",
+      noPreviewPackage: "No preview package is available.",
+      noPreviousPackage: "No previous package is available.",
+      lunaPackIndexed: "Luna pack indexed",
+      contentAwarePreview: "Content-aware preview",
+      snippets: "Snippets",
+      viewContent: "View content",
+      enrichContent: "Enrich content",
+      copied: "Copied",
+      enrichedContentPreview: "Use enriched content preview",
+      openFolderButton: "Open in folder",
+      exportZip: "Export zip",
+      exportCopy: "Export copy",
+      warnings: "Warnings",
+      truncated: "truncated",
+      redacted: "redacted",
+      verify: "Verify",
+      review: "Review",
+      promote: "Promote",
+      exported: "Exported",
+      approve: "Approve",
+      reject: "Reject",
+      defer: "Defer",
+      promoted: "Promoted",
+      pending: "Pending",
+      approved: "Approved",
+      rejected: "Rejected",
+      deferred: "Deferred",
     },
   };
 
@@ -69,6 +283,18 @@
   var currentPreviewPackageId = "";
   var previewViewerMode = "view";
   var lumoLiteArtifacts = [];
+  var BUILD_NOTE_FILES = {
+    "PREVIEW_README.md": true,
+    "capsules_used.json": true,
+    "frontend_runtime_state.json": true,
+    "provenance.json": true,
+    "quality_gate.json": true,
+    "snippets_used.json": true,
+    "summary.md": true,
+    "task_intent.json": true,
+    "task_pack.json": true,
+    "task_plan.json": true,
+  };
   var bridgeHelpers = window.ReweaveBridgeHelpers || {};
   var renderers = window.ReweaveRenderers || {};
   var artifactRenderers = window.ReweaveArtifacts || {};
@@ -126,9 +352,9 @@
     data.generateCapsuleIds = [];
     data.history = [];
     data.sampleTask = "";
-    data.lumoLiteMode = "read_only_runtime_artifact_viewer";
+    data.lumoLiteMode = "source_read_only_preview_write";
     data.lumoLiteRuntimeSummary = {
-      line: "Current Runtime / read-only",
+      line: "Source project read-only / local preview enabled",
       capsules_used: 0,
       preview_ready: false,
       trace_available: false,
@@ -163,14 +389,12 @@
     if (!bindBtn) return;
     var readOnly = hasDesktopBridge() && isLumoLiteReadOnly();
     var canBind = !hasDesktopBridge() || desktopCapability("canChooseSourceFolder");
-    bindBtn.textContent = "Bind Source Box";
+    bindBtn.textContent = t("bindSourceBox");
     bindBtn.disabled = !canBind;
     bindBtn.setAttribute("aria-disabled", canBind ? "false" : "true");
-    bindBtn.title = canBind ? "" : "Source Box binding is not enabled.";
+    bindBtn.title = canBind ? "" : t("sourceBoxBindingDisabled");
     if (note) {
-      note.textContent = readOnly
-        ? "Bind locally, scan read-only, no source writes."
-        : "Choose a source folder to clean into capsules.";
+      note.textContent = readOnly ? t("sourceBoxReadOnlyNote") : t("sourceBoxNote");
     }
     if (runtimeBtn) runtimeBtn.classList.toggle("hidden", !readOnly);
   }
@@ -182,42 +406,91 @@
     return data && data.lumoLiteRuntimeSummary ? data.lumoLiteRuntimeSummary : null;
   }
 
+  function lumoPreviewFiles() {
+    var seen = {};
+    return lumoLiteArtifacts.reduce(function (files, artifact) {
+      var name = artifact && artifact.kind === "preview_artifact" ? String(artifact.basename || "") : "";
+      if (name && !seen[name]) {
+        seen[name] = true;
+        files.push(name);
+      }
+      return files;
+    }, []);
+  }
+
+  function userFacingFiles(files) {
+    return (Array.isArray(files) ? files : []).filter(function (name) {
+      return !BUILD_NOTE_FILES[name];
+    });
+  }
+
   function applyLumoLiteRuntimeView() {
-    if (!isLumoLiteReadOnly() || !els.taskInput) return;
+    if (!els.taskInput) return;
+    if (!isLumoLiteReadOnly()) {
+      setRuntimeSidecarAvailable(false);
+      return;
+    }
     var summary = getLumoLiteRuntimeSummary() || {};
     var taskPackPreview = canBuildTaskPackPreview();
+    if (els.btnLumoArtifacts) {
+      els.btnLumoArtifacts.classList.toggle("hidden", lumoLiteArtifacts.length === 0);
+    }
+    var artifactFiles = lumoPreviewFiles();
+    var productFiles = userFacingFiles(artifactFiles);
     var hasTaskPackPreview =
       taskPackPreview &&
-      !!lastPreviewPath &&
-      data.generatedPackage &&
-      Array.isArray(data.generatedPackage.files) &&
-      data.generatedPackage.files.indexOf("task_pack.json") >= 0;
+      (productFiles.length > 0 ||
+        (!!lastPreviewPath &&
+          data.generatedPackage &&
+          Array.isArray(data.generatedPackage.files) &&
+          data.generatedPackage.files.indexOf("task_pack.json") >= 0));
     var capsulesUsed = Number(summary.capsules_used || 0);
-    var traceText = summary.trace_available ? "Trace available" : "Trace unavailable";
-    var previewText = hasTaskPackPreview ? "Small Project Pack ready" : summary.preview_ready ? "Preview ready" : "Preview not ready";
-    var responseText = summary.product_capability_line || summary.line || summary.acceptance_line || "Current Runtime / read-only";
+    var traceText = summary.trace_available ? t("traceAvailable") : t("traceUnavailable");
+    var previewText = hasTaskPackPreview
+      ? t("smallProjectPackReady")
+      : summary.preview_ready
+        ? t("previewReady")
+        : t("previewNotReady");
     var sourceWrites = summary.source_project_write_count;
-    if (sourceWrites === undefined || sourceWrites === null || sourceWrites === "") sourceWrites = "unknown";
+    if (sourceWrites === undefined || sourceWrites === null || sourceWrites === "") sourceWrites = t("unknown");
+    setRuntimeSidecarAvailable(
+      !!(summary.status || summary.preview_ready || summary.trace_available || sourceWrites === 0)
+    );
+    var capability =
+      sourceWrites === 0 && summary.trace_available
+        ? t("capabilityReady")
+        : summary.status
+          ? t("capabilityReview")
+          : t("capabilityUnavailable");
+    var responseText = formatText("productSummary", {
+      capability: capability,
+      writes: sourceWrites,
+      trace: summary.trace_available ? t("ready") : t("unavailable"),
+    });
 
     if (!taskPackPreview) els.taskInput.value = "";
-    els.taskInput.placeholder = taskPackPreview ? "Describe a small project pack..." : "Current Runtime / read-only";
+    els.taskInput.placeholder = taskPackPreview ? t("taskPackPlaceholder") : t("runtimePlaceholder");
     els.taskInput.disabled = !taskPackPreview;
     if (els.btnGenerate) {
       els.btnGenerate.disabled = !taskPackPreview;
       els.btnGenerate.setAttribute("aria-disabled", taskPackPreview ? "false" : "true");
-      els.btnGenerate.title = taskPackPreview ? "Build Small Project Pack" : "Current Runtime is read-only";
+      els.btnGenerate.title = taskPackPreview ? t("buildSmallProjectPack") : t("runtimeReadOnlyMessage");
       els.btnGenerate.classList.toggle("hidden", !taskPackPreview);
     }
     if (els.generatedPackage) {
       els.generatedPackage.classList.toggle("runtime-read-only", !hasTaskPackPreview);
     }
     var title = document.querySelector(".generated-title");
-    if (title) title.textContent = hasTaskPackPreview ? "Small Project Pack" : "Current Runtime";
-    if (els.generatedTree && !hasTaskPackPreview) {
+    if (title) title.textContent = hasTaskPackPreview ? t("smallProjectPack") : t("currentRuntime");
+    if (els.generatedTree && hasTaskPackPreview && productFiles.length > 0) {
+      els.generatedTree.innerHTML = renderers.renderFileTree
+        ? renderers.renderFileTree(t("smallProjectPack") + "/", productFiles, escapeHtml)
+        : '<div class="folder">' + escapeHtml(t("smallProjectPack")) + "/</div>";
+    } else if (els.generatedTree && !hasTaskPackPreview) {
       els.generatedTree.innerHTML =
-        '<div class="folder">Runtime artifacts</div>' +
+        '<div class="folder">' + escapeHtml(t("runtimeArtifacts")) + "</div>" +
         '<div class="file highlight">frontend_runtime_state.json</div>' +
-        '<div class="file highlight-subtle">capsules_used / trace receipts</div>';
+        '<div class="file highlight-subtle">' + escapeHtml(t("runtimeTraceFiles")) + "</div>";
     }
     if (els.generatedPreview) {
       els.generatedPreview.classList.toggle("hidden", !hasTaskPackPreview);
@@ -230,39 +503,51 @@
     if (els.usedCapsuleDock && !hasTaskPackPreview) {
       var usedText =
         capsulesUsed > 0
-          ? capsulesUsed + " capsules linked to this runtime"
-          : "No capsule usage reported by current runtime";
+          ? formatText("capsulesLinked", { count: capsulesUsed })
+          : t("noCapsuleUsage");
       els.usedCapsuleDock.innerHTML =
         '<span class="used-placeholder runtime-used-note">' + escapeHtml(usedText) + "</span>";
     }
     if (els.genCapsulesUsed && !hasTaskPackPreview) {
       els.genCapsulesUsed.innerHTML =
-        '<span class="meta-icon" aria-hidden="true">◫</span> Capsules used: ' + capsulesUsed;
+        '<span class="meta-icon" aria-hidden="true">◫</span> ' +
+        capsulesUsed +
+        " " +
+        escapeHtml(t("capsulesUsed"));
     }
     if (els.workflowStatus) {
       var workflowText = hasTaskPackPreview
-        ? taskPackStatusFromFiles(data.generatedPackage.files || [])
+        ? taskPackStatusFromFiles(artifactFiles.length ? artifactFiles : data.generatedPackage.files || [])
         : currentWorkflowStep(hasTaskPackPreview);
       els.workflowStatus.innerHTML =
-        '<span class="meta-icon" aria-hidden="true">↳</span> Workflow: ' +
+        '<span class="meta-icon" aria-hidden="true">↳</span> ' +
+        escapeHtml(t("workflow")) +
+        ": " +
         escapeHtml(workflowText);
     }
     var metaLines = document.querySelectorAll(".generated-meta .meta-line");
     if (metaLines[2]) metaLines[2].innerHTML = '<span class="meta-icon" aria-hidden="true">◎</span> ' + previewText;
     if (metaLines[3]) metaLines[3].innerHTML = '<span class="meta-icon" aria-hidden="true">⛓</span> ' + traceText;
-    if (els.runtimeSidecarMode) els.runtimeSidecarMode.textContent = "read-only";
+    if (els.runtimeSidecarMode) els.runtimeSidecarMode.textContent = t("sourceReadOnly");
     if (els.runtimeSidecarSource) {
-      els.runtimeSidecarSource.textContent = summary.acceptance_line || "Capsule state and trace receipts";
+      els.runtimeSidecarSource.textContent = responseText;
     }
     if (els.runtimeSidecarStatus) {
       els.runtimeSidecarStatus.textContent =
-        "source writes: " +
+        t("sourceWrites") +
+        ": " +
         sourceWrites +
-        "\ntrace: " +
-        (summary.trace_available ? "ready" : "unavailable") +
-        "\npreview: " +
-        (summary.preview_ready ? "ready" : "not ready") +
-        "\ncapsules: " +
+        "\n" +
+        t("trace") +
+        ": " +
+        (summary.trace_available ? t("ready") : t("unavailable")) +
+        "\n" +
+        t("preview") +
+        ": " +
+        (summary.preview_ready ? t("ready") : t("notReady")) +
+        "\n" +
+        t("capsules") +
+        ": " +
         capsulesUsed;
     }
     if (els.previewPackageActions) els.previewPackageActions.classList.add("hidden");
@@ -272,22 +557,29 @@
   }
 
   function currentWorkflowStep(hasTaskPackPreview) {
-    if (hasTaskPackPreview) return "View provenance";
+    if (hasTaskPackPreview) return t("workflowViewProvenance");
     var sources = Array.isArray(data.sourceBoxes) ? data.sourceBoxes : [];
-    if (!sources.length) return "Bind Source Box";
+    if (!sources.length) return t("workflowBindSource");
     var needsScan = sources.some(function (src) {
       return (src.scan_status || "not_scanned") === "not_scanned";
     });
-    if (needsScan) return "Scan Source Box";
+    if (needsScan) return t("workflowScanSource");
     var capsules = Array.isArray(data.warehouseCapsules) ? data.warehouseCapsules : data.capsules || [];
-    if (!capsules.length) return "Store Capsules";
-    return "Select capsules, then Build Small Project Pack";
+    if (!capsules.length) return t("workflowStoreCapsules");
+    return t("workflowBuildPack");
   }
 
   function taskPackStatusFromFiles(files) {
-    return renderers.taskPackStatusFromFiles
-      ? renderers.taskPackStatusFromFiles(files)
-      : "View provenance";
+    files = Array.isArray(files) ? files : [];
+    if (
+      files.indexOf("task_intent.json") >= 0 &&
+      files.indexOf("task_plan.json") >= 0 &&
+      files.indexOf("quality_gate.json") >= 0
+    ) {
+      return t("workflowIntentReady");
+    }
+    if (files.indexOf("task_pack.json") >= 0) return t("workflowPackReady");
+    return t("workflowViewProvenance");
   }
 
   function bridgeCall(method, arg) {
@@ -466,7 +758,7 @@
   function handleAddSource() {
     if (!hasDesktopBridge()) return;
     if (!desktopCapability("canChooseSourceFolder")) {
-      if (els.reweaveResponse) els.reweaveResponse.textContent = "Lumo Lite state is read-only.";
+      if (els.reweaveResponse) els.reweaveResponse.textContent = t("runtimeReadOnlyMessage");
       return;
     }
     bridgeCall("choose_source_folder").then(function (raw) {
@@ -661,7 +953,7 @@
       var warnBtn = document.createElement("button");
       warnBtn.type = "button";
       warnBtn.className = "btn-ghost btn-content-warnings";
-      warnBtn.textContent = "Warnings " + warnings.length;
+      warnBtn.textContent = t("warnings") + " " + warnings.length;
       var warnList = document.createElement("ul");
       warnList.className = "reader-content-warnings hidden";
       warnings.forEach(function (w) {
@@ -696,13 +988,13 @@
       if (snip.truncated) {
         var tBadge = document.createElement("span");
         tBadge.className = "reader-snippet-badge";
-        tBadge.textContent = "truncated";
+        tBadge.textContent = t("truncated");
         badges.appendChild(tBadge);
       }
       if (snip.redacted) {
         var rBadge = document.createElement("span");
         rBadge.className = "reader-snippet-badge reader-snippet-badge-redacted";
-        rBadge.textContent = "redacted";
+        rBadge.textContent = t("redacted");
         badges.appendChild(rBadge);
       }
       if (badges.childNodes.length) block.appendChild(badges);
@@ -808,7 +1100,7 @@
           var btn = document.createElement("button");
           btn.type = "button";
           btn.className = "btn-ghost btn-source-scan btn-review-decision";
-          btn.textContent = decision === "approved" ? "Approve" : decision === "rejected" ? "Reject" : "Defer";
+          btn.textContent = decision === "approved" ? t("approve") : decision === "rejected" ? t("reject") : t("defer");
           btn.addEventListener("click", function (e) {
             e.preventDefault();
             e.stopPropagation();
@@ -821,7 +1113,7 @@
           var promoteBtn = document.createElement("button");
           promoteBtn.type = "button";
           promoteBtn.className = "btn-ghost btn-source-scan btn-review-promote";
-          promoteBtn.textContent = "Promote";
+          promoteBtn.textContent = t("promote");
           promoteBtn.addEventListener("click", function (e) {
             e.preventDefault();
             e.stopPropagation();
@@ -832,7 +1124,7 @@
       } else {
         var tag = document.createElement("span");
         tag.className = "source-review-decision";
-        tag.textContent = item.promoted ? "Promoted" : item.decision;
+        tag.textContent = item.promoted ? t("promoted") : t(item.decision);
         row.appendChild(tag);
       }
       panel.appendChild(row);
@@ -1035,6 +1327,7 @@
         previewing: !!previewingSourceIds[src.id],
         reviewing: !!reviewingSourceIds[src.id],
         lunaReuse: !!(data.lunaReuseBySource && data.lunaReuseBySource[src.id]),
+        locale: locale,
       });
     }
     return src.scan_status || "not_scanned";
@@ -1043,7 +1336,7 @@
   function getGenerateCandidateIds() {
     if (usedCapsuleIds.length > 0) return usedCapsuleIds.slice();
     var text = els.taskInput ? els.taskInput.value.trim() : "";
-    return resolveGenerateIds(text || (data && data.sampleTask) || "New tool");
+    return resolveGenerateIds(text || (data && data.sampleTask) || t("newTask"));
   }
 
   function anyEnrichedInIds(ids) {
@@ -1153,6 +1446,18 @@
     return (STR[locale] && STR[locale][key]) || STR.en[key] || key;
   }
 
+  function formatText(key, values) {
+    var text = t(key);
+    Object.keys(values || {}).forEach(function (name) {
+      text = text.split("{" + name + "}").join(String(values[name]));
+    });
+    return text;
+  }
+
+  function prefersReducedMotion() {
+    return window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  }
+
   function setAppState(state) {
     appState = state;
     if (els.screenMain) {
@@ -1186,6 +1491,10 @@
       var key = el.getAttribute("data-i18n");
       if (key && t(key)) el.textContent = t(key);
     });
+    document.querySelectorAll("[data-i18n-aria-label]").forEach(function (el) {
+      var key = el.getAttribute("data-i18n-aria-label");
+      if (key && t(key)) el.setAttribute("aria-label", t(key));
+    });
     var input = $("task-input");
     if (input) input.placeholder = t("taskPlaceholder");
     var langBtn = $("btn-lang");
@@ -1199,7 +1508,7 @@
     if (els.generationInputNote) {
       els.generationInputNote.textContent =
         usedCapsuleIds.length > 0
-          ? t("generationManual").replace("{count}", String(usedCapsuleIds.length))
+          ? formatText("generationManual", { count: usedCapsuleIds.length })
           : t("generationAuto");
     }
     var useBtn = $("btn-use-in-task");
@@ -1208,6 +1517,15 @@
     if (openCapBtn) openCapBtn.textContent = t("openCapsule");
     var readerLabel = document.querySelector(".reader-slot-label");
     if (readerLabel) readerLabel.textContent = t("readerLabel").toUpperCase();
+    syncWelcomeSourceBoxMode();
+    if (data) {
+      renderHistory();
+      renderSources();
+    }
+    if (selectedCapsuleId && els.reader && !els.reader.classList.contains("hidden")) {
+      var selected = findCapsule(selectedCapsuleId);
+      if (selected) showCapsuleReader(selected);
+    }
     applyLumoLiteRuntimeView();
   }
 
@@ -1215,9 +1533,9 @@
     locale = locale === "zh" ? "en" : "zh";
     localStorage.setItem("reweave_locale", locale);
     applyLocale();
-    renderUsedChips();
+    if (els.usedCount && els.usedCapsuleDock) renderUsedChips();
     if (appState === "ready" && usedCapsuleIds.length > 0) {
-      finishGenerate(els.taskInput.value.trim() || data.sampleTask || "New tool", usedCapsuleIds.length, true);
+      finishGenerate(els.taskInput.value.trim() || data.sampleTask || t("smallProjectPack"), usedCapsuleIds.length, true);
     }
   }
 
@@ -1294,7 +1612,6 @@
     if (els.reweaveResponse) els.reweaveResponse.textContent = "";
     setAppState("idle");
     applyLumoLiteRuntimeView();
-    openFirstLumoLiteCapsule();
   }
 
   function cacheElements() {
@@ -1334,8 +1651,8 @@
 
   function shortName(name) {
     if (!name) return name;
-    if (name.length <= 14) return name;
-    return name.slice(0, 13) + "…";
+    if (name.length <= 18) return name;
+    return name.slice(0, 17) + "…";
   }
 
   function getVisibleCapsules() {
@@ -1436,7 +1753,7 @@
       if (useBtn) {
         var eligible = isCapsuleGenerateEligible(cap);
         useBtn.disabled = !eligible;
-        useBtn.textContent = eligible ? t("useInTask") : "Read-only";
+        useBtn.textContent = eligible ? t("useInTask") : t("readOnly");
       }
       var openBtn = $("btn-open-capsule");
       if (openBtn) openBtn.classList.toggle("hidden", cap.origin === "lumo_lite_capsule_warehouse");
@@ -1458,7 +1775,7 @@
         var enrichBtn = document.createElement("button");
         enrichBtn.type = "button";
         enrichBtn.className = "btn-ghost btn-capsule-enrich";
-        enrichBtn.textContent = "Enrich content";
+        enrichBtn.textContent = t("enrichContent");
         enrichBtn.addEventListener("click", function (e) {
           e.preventDefault();
           e.stopPropagation();
@@ -1478,7 +1795,7 @@
         var viewBtn = document.createElement("button");
         viewBtn.type = "button";
         viewBtn.className = "btn-ghost btn-capsule-view-content";
-        viewBtn.textContent = "View content";
+        viewBtn.textContent = t("viewContent");
         viewBtn.addEventListener("click", function (e) {
           e.preventDefault();
           e.stopPropagation();
@@ -1569,11 +1886,11 @@
     if (sidecar) sidecar.style.visibility = visible ? "" : "hidden";
   }
 
-  function openFirstLumoLiteCapsule() {
-    if (!isLumoLiteReadOnly() || selectedCapsuleId || !data.capsules.length || !els.reader) return;
-    requestAnimationFrame(function () {
-      selectCapsule(data.capsules[0].id);
-    });
+  function setRuntimeSidecarAvailable(available) {
+    var sidecar = document.querySelector(".runtime-sidecar");
+    var machine = document.querySelector(".machine-core");
+    if (sidecar) sidecar.classList.toggle("runtime-sidecar-unavailable", !available);
+    if (machine) machine.classList.toggle("sidecar-collapsed", !available);
   }
 
   function renderUsedChips() {
@@ -1602,10 +1919,9 @@
       els.usedCapsuleDock.appendChild(chip);
     });
     if (els.generationInputNote) {
-      els.generationInputNote.textContent = t("generationManual").replace(
-        "{count}",
-        String(usedCapsuleIds.length)
-      );
+      els.generationInputNote.textContent = formatText("generationManual", {
+        count: usedCapsuleIds.length,
+      });
     }
     updateEnrichedContentToggle();
   }
@@ -1613,10 +1929,14 @@
   function renderGeneratedPackage(showPreview) {
     var pkg = data.generatedPackage || { folder: "Current Runtime", files: [] };
     var folder = pkg.folder || "new_project/";
+    var folderParts = String(folder).split(/[/\\]/).filter(Boolean);
+    var folderLabel = folderParts.length ? folderParts[folderParts.length - 1] + "/" : folder;
     var files = pkg.files || [];
+    var visibleFiles = userFacingFiles(files);
+    if (!visibleFiles.length) visibleFiles = files;
     els.generatedTree.innerHTML = renderers.renderFileTree
-      ? renderers.renderFileTree(folder, files, escapeHtml)
-      : '<div class="folder">' + escapeHtml(folder) + "</div>";
+      ? renderers.renderFileTree(folderLabel, visibleFiles, escapeHtml)
+      : '<div class="folder">' + escapeHtml(folderLabel) + "</div>";
     els.generatedPreview.classList.remove("hidden");
     if (els.generatedPackage) {
       els.generatedPackage.classList.remove("runtime-read-only");
@@ -1629,12 +1949,18 @@
       els.genCapsulesUsed.innerHTML +=
         ' · <span class="luna-pack-note" title="' +
         escapeHtml(data.lunaPack.pack_id) +
-        '">Luna pack indexed</span>';
+        '">' +
+        escapeHtml(t("lunaPackIndexed")) +
+        "</span>";
     }
     if (data.contentAwareGenerate && data.contentAwareGenerate.enabled && els.genCapsulesUsed) {
       var sn = data.contentAwareGenerate.snippetsUsed || 0;
       els.genCapsulesUsed.innerHTML +=
-        ' · <span class="content-aware-note">Content-aware preview · Snippets ' +
+        ' · <span class="content-aware-note">' +
+        escapeHtml(t("contentAwarePreview")) +
+        " · " +
+        escapeHtml(t("snippets")) +
+        " " +
         sn +
         "</span>";
     }
@@ -1701,7 +2027,7 @@
     if (copyBtn) {
       var path = copyBtn.getAttribute("data-artifact-path") || "";
       if (navigator.clipboard && path) navigator.clipboard.writeText(path);
-      if (els.reweaveResponse) els.reweaveResponse.textContent = "Artifact path copied.";
+      if (els.reweaveResponse) els.reweaveResponse.textContent = t("artifactCopied");
       return;
     }
     if (viewBtn && hasDesktopBridge()) {
@@ -1845,7 +2171,7 @@
       var result = parseBridgeJson(raw);
       if (!result || !result.ok) {
         if (els.reweaveResponse) {
-          els.reweaveResponse.textContent = (result && result.error) || "No preview package";
+          els.reweaveResponse.textContent = (result && result.error) || t("noPreviewPackage");
         }
         return;
       }
@@ -1860,7 +2186,7 @@
       var result = parseBridgeJson(raw);
       if (!result || !result.ok) {
         if (els.reweaveResponse) {
-          els.reweaveResponse.textContent = (result && result.error) || "No previous package";
+          els.reweaveResponse.textContent = (result && result.error) || t("noPreviousPackage");
         }
         return;
       }
@@ -1883,7 +2209,7 @@
       var result = parseBridgeJson(raw);
       if (result && result.cancelled) return;
       if (result && result.ok && els.reweaveResponse) {
-        els.reweaveResponse.textContent = "Exported · " + shortExportPath(result.export_path);
+        els.reweaveResponse.textContent = t("exported") + " · " + shortExportPath(result.export_path);
         bridgeCall("get_preview_package", currentPreviewPackageId).then(function (viewRaw) {
           var viewResult = parseBridgeJson(viewRaw);
           if (viewResult && viewResult.ok) renderPreviewViewerPayload(viewResult);
@@ -1904,7 +2230,7 @@
     if (items.length === 0) {
       var empty = document.createElement("li");
       empty.className = "history-empty";
-      empty.textContent = isLumoLiteReadOnly() ? "No local generation history in read-only mode" : "No history yet";
+      empty.textContent = isLumoLiteReadOnly() ? t("noHistoryReadOnly") : t("noHistory");
       list.appendChild(empty);
       return;
     }
@@ -1912,7 +2238,9 @@
       var li = document.createElement("li");
       li.innerHTML =
         '<span class="hist-title">' + escapeHtml(item.title) + "</span>" +
-        '<span class="hist-meta">used ' + item.capsulesUsed + " capsules · " + escapeHtml(item.note) + "</span>";
+        '<span class="hist-meta">' +
+        escapeHtml(formatText("historyMeta", { count: item.capsulesUsed, note: item.note })) +
+        "</span>";
       list.appendChild(li);
     });
   }
@@ -1939,7 +2267,7 @@
           var scanBtn = document.createElement("button");
           scanBtn.type = "button";
           scanBtn.className = "btn-ghost btn-source-scan";
-          scanBtn.textContent = "Scan";
+          scanBtn.textContent = t("scan");
           scanBtn.addEventListener("click", function (e) {
             e.preventDefault();
             e.stopPropagation();
@@ -1950,7 +2278,7 @@
           var storeBtn = document.createElement("button");
           storeBtn.type = "button";
           storeBtn.className = "btn-ghost btn-source-scan";
-          storeBtn.textContent = "Store";
+          storeBtn.textContent = t("store");
           storeBtn.addEventListener("click", function (e) {
             e.preventDefault();
             e.stopPropagation();
@@ -1961,7 +2289,7 @@
           var prepBtn = document.createElement("button");
           prepBtn.type = "button";
           prepBtn.className = "btn-ghost btn-source-scan";
-          prepBtn.textContent = "Prepare";
+          prepBtn.textContent = t("prepare");
           prepBtn.addEventListener("click", function (e) {
             e.preventDefault();
             e.stopPropagation();
@@ -1975,7 +2303,7 @@
             var verifyBtn = document.createElement("button");
             verifyBtn.type = "button";
             verifyBtn.className = "btn-ghost btn-source-scan";
-            verifyBtn.textContent = "Verify";
+            verifyBtn.textContent = t("verify");
             verifyBtn.addEventListener("click", function (e) {
               e.preventDefault();
               e.stopPropagation();
@@ -1988,7 +2316,7 @@
               var previewBtn = document.createElement("button");
               previewBtn.type = "button";
               previewBtn.className = "btn-ghost btn-source-scan";
-              previewBtn.textContent = "Preview";
+              previewBtn.textContent = t("preview");
               previewBtn.addEventListener("click", function (e) {
                 e.preventDefault();
                 e.stopPropagation();
@@ -2001,7 +2329,7 @@
                 var reviewBtn = document.createElement("button");
                 reviewBtn.type = "button";
                 reviewBtn.className = "btn-ghost btn-source-scan";
-                reviewBtn.textContent = "Review";
+                reviewBtn.textContent = t("review");
                 reviewBtn.addEventListener("click", function (e) {
                   e.preventDefault();
                   e.stopPropagation();
@@ -2020,15 +2348,24 @@
                   promotedN = Math.max(promotedN, data.promotedCountBySource[src.id]);
                 }
                 right.textContent =
-                  "Review: Pending " +
+                  t("review") +
+                  ": " +
+                  t("pending") +
+                  " " +
                   (s.pending || 0) +
-                  " / Approved " +
+                  " / " +
+                  t("approved") +
+                  " " +
                   (s.approved || 0) +
-                  " / Rejected " +
+                  " / " +
+                  t("rejected") +
+                  " " +
                   (s.rejected || 0) +
-                  " / Deferred " +
+                  " / " +
+                  t("deferred") +
+                  " " +
                   (s.deferred || 0) +
-                  (promotedN ? " · Promoted " + promotedN : "");
+                  (promotedN ? " · " + t("promoted") + " " + promotedN : "");
                 appendReviewMiniPanel(li, src.id, reviewQueue);
               }
             }
@@ -2037,7 +2374,7 @@
           }
         }
       } else {
-        right.textContent = src.status || "bound";
+        right.textContent = src.status || t("bound");
       }
 
       li.appendChild(left);
@@ -2069,14 +2406,14 @@
       var cap = findCapsule(selectedCapsuleId);
       if (!cap) return;
       if (!isCapsuleGenerateEligible(cap)) {
-        els.reweaveResponse.textContent = "Lumo Lite capsule is read-only.";
+        els.reweaveResponse.textContent = t("capsuleReadOnlyMessage");
         return;
       }
       var capEl = ensureCapsuleElement(selectedCapsuleId);
       if (!capEl) return;
       setAppState("invoking");
       capEl.classList.add("scan-match");
-      emitReuseTrace(capEl, cap, function () {
+      emitReuseTrace(capEl, function () {
         if (capEl.parentNode) capEl.classList.remove("scan-match");
         dockCapsule(selectedCapsuleId, true);
         syncAppState();
@@ -2124,6 +2461,12 @@
       }
     });
 
+    document.addEventListener("keydown", function (e) {
+      if (e.key !== "Escape") return;
+      if (els.reader && !els.reader.classList.contains("hidden")) hideCapsuleReader();
+      closeAllPopovers();
+    });
+
     var addSourceBtn = document.querySelector(".btn-add-source");
     if (addSourceBtn) {
       addSourceBtn.addEventListener("click", function (e) {
@@ -2136,7 +2479,7 @@
 
     $("btn-open-folder").addEventListener("click", function () {
       if (isLumoLiteReadOnly()) {
-        els.reweaveResponse.textContent = "Current Runtime is read-only.";
+        els.reweaveResponse.textContent = t("runtimeReadOnlyMessage");
         return;
       }
       if (hasDesktopBridge() && lastPreviewPath) {
@@ -2203,6 +2546,7 @@
     var historyOpen = !els.historyPopover.classList.contains("hidden");
     var sourcesOpen = !els.sourcesPopover.classList.contains("hidden");
     var artifactsOpen = els.lumoArtifactsPopover && !els.lumoArtifactsPopover.classList.contains("hidden");
+    if (els.reader && !els.reader.classList.contains("hidden")) hideCapsuleReader();
     closeAllPopovers();
     if (which === "history" && !historyOpen) {
       els.historyPopover.classList.remove("hidden");
@@ -2288,10 +2632,10 @@
   function runGenerate() {
     if (isGenerating) return;
     if (!desktopCapability("canGeneratePreview")) {
-      els.reweaveResponse.textContent = "Lumo Lite state is read-only.";
+      els.reweaveResponse.textContent = t("runtimeReadOnlyMessage");
       return;
     }
-    var text = els.taskInput.value.trim() || data.sampleTask || "New tool";
+    var text = els.taskInput.value.trim() || data.sampleTask || t("newTask");
     var ids =
       usedCapsuleIds.length > 0 ? usedCapsuleIds.slice() : resolveGenerateIds(text);
     if (!ids.length && !canBuildTaskPackPreview()) {
@@ -2353,7 +2697,7 @@
     chipEl.classList.add("scan-match");
     setTimeout(function () {
       var liveEl = els.capsuleStrip.querySelector('[data-capsule-id="' + id + '"]') || chipEl;
-      emitReuseTrace(liveEl, cap, function () {
+      emitReuseTrace(liveEl, function () {
         if (liveEl.parentNode) liveEl.classList.remove("scan-match");
         dockCapsule(id, false);
         done();
@@ -2361,7 +2705,11 @@
     }, 200);
   }
 
-  function emitReuseTrace(fromEl, cap, callback) {
+  function emitReuseTrace(fromEl, callback) {
+    if (prefersReducedMotion()) {
+      callback();
+      return;
+    }
     var fromRect = fromEl.getBoundingClientRect();
     var dockRect = els.usedCapsuleDock.getBoundingClientRect();
     var slotIndex = usedCapsuleIds.length;
@@ -2369,26 +2717,22 @@
     var targetY = dockRect.top + dockRect.height * 0.5;
     var startX = fromRect.left + fromRect.width * 0.5;
     var startY = fromRect.bottom - 2;
-    var dx = targetX - startX;
-    var dy = targetY - startY;
-
-    var token = document.createElement("span");
-    token.className = "reuse-token-fly";
-    token.textContent = getCapsuleSerial(cap);
-    token.style.left = startX - 6 + "px";
-    token.style.top = startY - 5 + "px";
-    token.style.setProperty("--dx", dx + "px");
-    token.style.setProperty("--dy", dy + "px");
-    document.body.appendChild(token);
-
-    requestAnimationFrame(function () {
-      token.classList.add("is-traveling");
-    });
+    var svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    var path = document.createElementNS(svg.namespaceURI, "path");
+    var midY = Math.min(startY + 36, targetY);
+    svg.setAttribute("class", "reuse-trace-svg");
+    path.setAttribute("pathLength", "1");
+    path.setAttribute(
+      "d",
+      "M" + startX + " " + startY + " C " + startX + " " + midY + ", " + targetX + " " + midY + ", " + targetX + " " + targetY
+    );
+    svg.appendChild(path);
+    document.body.appendChild(svg);
 
     setTimeout(function () {
-      token.remove();
+      svg.remove();
       callback();
-    }, 280);
+    }, 300);
   }
 
   function dockCapsule(id, single) {
@@ -2420,19 +2764,28 @@
       isGenerating = false;
       pendingGeneratePromise = null;
       if (els.taskBay) els.taskBay.classList.remove("is-invoking");
-      if (els.btnGenerate) els.btnGenerate.disabled = true;
-      if (els.reweaveResponse) els.reweaveResponse.textContent = message;
       if (isLumoLiteReadOnly()) applyLumoLiteRuntimeView();
+      if (els.btnGenerate) els.btnGenerate.disabled = !canBuildTaskPackPreview();
+      if (els.reweaveResponse) els.reweaveResponse.textContent = message;
+      setAppState("error");
     }
 
     function finalize() {
       renderGeneratedPackage(true);
-      els.reweaveResponse.textContent = t("readyResponse").replace("{count}", String(count));
+      if (els.generatedPackage && !prefersReducedMotion()) {
+        els.generatedPackage.classList.remove("result-reveal");
+        void els.generatedPackage.offsetWidth;
+        els.generatedPackage.classList.add("result-reveal");
+        setTimeout(function () {
+          els.generatedPackage.classList.remove("result-reveal");
+        }, 300);
+      }
+      els.reweaveResponse.textContent = formatText("readyResponse", { count: count });
       if (!localeOnly) {
         renderHistory({
           title: taskText.length > 28 ? taskText.slice(0, 28) + "…" : taskText,
           capsulesUsed: count,
-          note: lastPreviewPath ? "local preview" : "preview package",
+          note: lastPreviewPath ? t("localPreview") : t("previewPackage"),
         });
       }
       isGenerating = false;
@@ -2445,18 +2798,18 @@
       pendingGeneratePromise.then(function (raw) {
         var result = parseBridgeJson(raw);
         if ((isLumoLiteReadOnly() && !canBuildTaskPackPreview()) || !result || result.ok === false) {
-          blockReadyRender(isLumoLiteReadOnly() ? "Task Pack preview unavailable." : "Preview generation failed.");
+          blockReadyRender(isLumoLiteReadOnly() ? t("taskPackUnavailable") : t("generationFailed"));
           return;
         }
         applyGenerateResult(result);
         finalize();
       }).catch(function () {
-        blockReadyRender("Preview generation failed.");
+        blockReadyRender(t("generationFailed"));
       });
       return;
     }
     if (isLumoLiteReadOnly() && !canBuildTaskPackPreview()) {
-      blockReadyRender("Current Runtime is read-only.");
+      blockReadyRender(t("runtimeReadOnlyMessage"));
       return;
     }
     finalize();
@@ -2496,7 +2849,7 @@
     loadMockData(function (err) {
       if (err) {
         console.error(err);
-        $("btn-select-folder").textContent = "Load mock-data.json failed (use a local server or file://)";
+        $("btn-select-folder").textContent = t("loadFailed");
         return;
       }
       applyLocale();

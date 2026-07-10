@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-from pathlib import Path
 from typing import Any
 
 from pimos_lite.reweave_capsule_content import enrich_capsule_content as enrich_local_capsule_content
@@ -30,6 +28,7 @@ from pimos_lite.reweave_source_scanner import list_summary_lights
 from pimos_lite.reweave_source_scanner import scan_source_box as execute_source_scan
 
 APP_VERSION = "0.3.0"
+LUMO_LITE_MODE = "source_read_only_preview_write"
 
 
 def lumo_lite_engine_status(load_result: dict[str, Any]) -> dict[str, Any]:
@@ -37,7 +36,7 @@ def lumo_lite_engine_status(load_result: dict[str, Any]) -> dict[str, Any]:
     return {
         "engine": "lumo_lite",
         "available": available,
-        "mode": "read_only_runtime_artifact_viewer",
+        "mode": LUMO_LITE_MODE,
         "runtime_state": {
             "status": load_result.get("status"),
             "path": load_result.get("path", ""),
@@ -116,7 +115,7 @@ def lumo_lite_runtime_summary(
     product_capability_line = f"Product capability: {product_capability} · Source writes: {source_writes} · Trace {trace_label}"
 
     return {
-        "mode": "read_only_runtime_artifact_viewer",
+        "mode": LUMO_LITE_MODE,
         "runtime": str(runtime_state.get("runtime") or "Current Runtime"),
         "status": status,
         "preview_ready": status == "preview_ready" or bool(warehouse.get("preview_path")),
@@ -170,7 +169,7 @@ class LumoLiteReweaveEngine:
             "appVersion": APP_VERSION,
             "skipWelcome": True,
             "lumoLiteAvailable": bool(load_result.get("ok")),
-            "lumoLiteMode": "read_only_runtime_artifact_viewer",
+            "lumoLiteMode": LUMO_LITE_MODE,
             "lumoLiteRuntimeStatePath": str(load_result.get("path") or ""),
             "lumoLiteRuntimeStateStatus": str(load_result.get("status") or ""),
             "lumoLiteRuntimeSummary": lumo_lite_runtime_summary(
@@ -199,7 +198,7 @@ class LumoLiteReweaveEngine:
                 "model_call": False,
                 "watcher": False,
                 "dispatch": False,
-                "mode": "read_only",
+                "mode": LUMO_LITE_MODE,
             },
         }
         if load_result.get("error"):
@@ -256,13 +255,8 @@ class LumoLiteReweaveEngine:
                 "useEnrichedContent": use_enriched,
             }
         )
-        pack = result.get("taskPack") if isinstance(result.get("taskPack"), dict) else _task_pack_from_preview(result)
-        root = Path(str(result["previewPath"]))
-        (root / "task_pack.json").write_text(json.dumps(pack, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-        files = result.setdefault("generatedPackage", {}).setdefault("files", [])
-        if "task_pack.json" not in files:
-            files.append("task_pack.json")
-        result["taskPack"] = pack
+        if not isinstance(result.get("taskPack"), dict):
+            raise ValueError("preview core did not return taskPack")
         result["mode"] = "task_pack_preview"
         result["source_project_write"] = False
         result["dispatch"] = False
@@ -283,7 +277,7 @@ class LumoLiteReweaveEngine:
         result = {
             "ok": False,
             "engine": "lumo_lite",
-            "mode": "read_only",
+            "mode": LUMO_LITE_MODE,
             "error": error,
             "dispatch": False,
             "network_call": False,
@@ -303,46 +297,3 @@ def _merge_source_boxes(*groups: list[dict[str, Any]]) -> list[dict[str, Any]]:
             if source_id:
                 merged[source_id] = dict(source)
     return list(merged.values())
-
-
-def _task_pack_from_preview(result: dict[str, Any]) -> dict[str, Any]:
-    provenance = result.get("provenance") if isinstance(result.get("provenance"), dict) else {}
-    task = str(provenance.get("task") or "")
-    capsules = result.get("capsulesUsed") if isinstance(result.get("capsulesUsed"), list) else []
-    return {
-        "schema_version": 1,
-        "mode": "task_pack_preview",
-        "task": task,
-        "planned_files": [
-            {
-                "path": "preview/index.html",
-                "action": "preview_only",
-                "reason": "show selected capsule context for this task",
-            },
-            {
-                "path": "task_pack.json",
-                "action": "plan_only",
-                "reason": "record task scope, capsule inputs, and checks",
-            },
-        ],
-        "capsules_used": [
-            {
-                "id": cap.get("id"),
-                "name": cap.get("name"),
-                "source_id": cap.get("source_id"),
-                "reason": cap.get("role") or "selected for task context",
-            }
-            for cap in capsules
-            if isinstance(cap, dict)
-        ],
-        "checks": [
-            "review preview output",
-            "review capsules_used.json",
-            "review provenance.json",
-        ],
-        "effects": {
-            "source_project_write": False,
-            "preview_output_write": True,
-            "manual_real_write": False,
-        },
-    }

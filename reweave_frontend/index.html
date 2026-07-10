@@ -13,16 +13,16 @@
       <div class="welcome-inner">
         <img class="logo-mark" src="assets/reweave-icon.svg" alt="" aria-hidden="true">
         <h1 class="brand-name">Reweave</h1>
-        <p class="brand-engine">Source Box · Current Runtime · artifacts</p>
-        <p class="brand-tagline">Bind a source folder, then clean it into reusable capsules.</p>
-        <p class="brand-tagline-zh">不是复制，是消化后再织。</p>
+        <p class="brand-engine" data-i18n="welcomeKicker">Source Box · Current Runtime · Build notes</p>
+        <p class="brand-tagline" data-i18n="welcomeTagline">Bind an old project folder and clean it into reusable capsules.</p>
+        <p class="brand-tagline-zh" data-i18n="welcomePhilosophy">Digest first, then reweave.</p>
         <div class="folder-slot">
-          <span class="folder-slot-label">SOURCE BOX</span>
-          <button type="button" id="btn-select-folder" class="btn-primary btn-folder">Bind Source Box</button>
-          <p id="source-box-mode-note" class="source-box-mode-note">Choose a source folder to clean into capsules.</p>
+          <span class="folder-slot-label" data-i18n="sourceBox">SOURCE BOX</span>
+          <button type="button" id="btn-select-folder" class="btn-primary btn-folder" data-i18n="bindSourceBox">Bind Source Box</button>
+          <p id="source-box-mode-note" class="source-box-mode-note" data-i18n="sourceBoxNote">Choose an old project folder to clean into capsules.</p>
         </div>
-        <button type="button" id="btn-view-runtime" class="btn-ghost btn-view-runtime hidden">View Current Runtime</button>
-        <button type="button" id="btn-welcome-lang" class="btn-ghost btn-welcome-lang">中 / EN</button>
+        <button type="button" id="btn-view-runtime" class="btn-ghost btn-view-runtime hidden" data-i18n="viewCurrentRuntime">View Current Runtime</button>
+        <button type="button" id="btn-welcome-lang" class="btn-ghost btn-welcome-lang" data-i18n-aria-label="switchLanguage">中 / EN</button>
         <p class="privacy-note">
           <span class="lock-glyph" aria-hidden="true"></span>
           <span data-i18n="privacy">All local. Nothing leaves your machine.</span>
@@ -37,7 +37,7 @@
       <div class="cleaning-inner">
         <img class="logo-mark small" src="assets/reweave-icon.svg" alt="" aria-hidden="true">
         <h2 class="cleaning-title">Reweave</h2>
-        <p class="cleaning-sub">Loading runtime artifacts</p>
+        <p class="cleaning-sub" data-i18n="cleaningRuntime">Loading runtime and build notes</p>
         <ul id="cleaning-steps" class="cleaning-steps"></ul>
         <div class="progress-track" aria-hidden="true">
           <div id="progress-bar" class="progress-bar"></div>
@@ -53,14 +53,14 @@
         <img class="logo-mark tiny" src="assets/reweave-icon.svg" alt="" aria-hidden="true">
         <span class="brand-name-inline">Reweave</span>
         <span class="engine-dot" aria-hidden="true">●</span>
-        <span class="engine-label">Current Runtime</span>
+          <span class="engine-label" data-i18n="currentRuntime">Current Runtime</span>
         <span class="engine-sep" aria-hidden="true">·</span>
-        <span class="engine-label engine-label-sub">read-only</span>
+        <span class="engine-label engine-label-sub" data-i18n="sourceReadOnly">source project read-only</span>
       </div>
       <div class="top-bar-right">
-        <button type="button" id="btn-lang" class="btn-ghost btn-lang" aria-label="Switch language">中 / EN</button>
+        <button type="button" id="btn-lang" class="btn-ghost btn-lang" aria-label="Switch language" data-i18n-aria-label="switchLanguage">中 / EN</button>
         <button type="button" id="btn-lumo-artifacts" class="btn-ghost btn-collapsed hidden" aria-expanded="false" aria-controls="lumo-artifacts-popover">
-          <span class="btn-icon" aria-hidden="true">◎</span> Artifacts
+          <span class="btn-icon" aria-hidden="true">◎</span> <span data-i18n="artifacts">Build notes</span>
         </button>
         <button type="button" id="btn-history" class="btn-ghost btn-collapsed" aria-expanded="false" aria-controls="history-popover">
           <span class="btn-icon" aria-hidden="true">◷</span> <span data-i18n="history">History</span>
@@ -74,7 +74,7 @@
       <aside id="capsule-dock" class="capsule-window" aria-label="Capsules">
         <div class="capsule-window-frame">
           <div class="capsule-dock-head">
-            <span class="capsule-dock-title">Capsules</span>
+            <span class="capsule-dock-title" data-i18n="capsules">Capsules</span>
             <span id="capsule-count" class="capsule-count">12</span>
           </div>
           <div id="capsule-strip" class="capsule-strip" role="list"></div>
@@ -90,19 +90,19 @@
                 type="text"
                 id="task-input"
                 class="task-input"
-                placeholder="Current Runtime / read-only"
+                placeholder="Source project read-only; local preview enabled"
                 autocomplete="off"
               >
-              <button type="button" id="btn-generate" class="btn-amber btn-generate-round" aria-label="Generate">
+              <button type="button" id="btn-generate" class="btn-amber btn-generate-round" aria-label="Build Small Project Pack" data-i18n-aria-label="buildSmallProjectPack">
                 <span aria-hidden="true">→</span>
               </button>
             </div>
             <label id="enriched-content-toggle-wrap" class="enriched-content-toggle hidden" for="use-enriched-content">
               <input type="checkbox" id="use-enriched-content" />
-              <span>Use enriched content preview</span>
+              <span data-i18n="enrichedContentPreview">Use enriched content preview</span>
             </label>
             <div class="used-dock used-dock-tray">
-              <span class="used-dock-label">GENERATION INPUT (<span id="used-count">0</span>)</span>
+              <span class="used-dock-label"><span data-i18n="generationInput">GENERATION INPUT</span> (<span id="used-count">0</span>)</span>
               <div id="used-capsule-dock" class="used-chips">
                 <span class="used-placeholder">选中的胶囊将停靠在这里</span>
               </div>
@@ -115,12 +115,12 @@
 
       <!-- Current runtime -->
       <section id="generated-package" class="generated-package output-pack" aria-label="Current runtime">
-        <h3 class="generated-title">Current Runtime</h3>
+        <h3 class="generated-title" data-i18n="currentRuntime">Current Runtime</h3>
         <div class="generated-body">
           <div class="generated-files">
             <div id="generated-tree" class="file-tree"></div>
             <div id="generated-preview" class="generated-preview">
-              <p class="preview-label">Preview status</p>
+              <p class="preview-label" data-i18n="previewStatus">Preview status</p>
               <div class="preview-wire">
                 <div class="wire-bar"></div>
                 <div class="wire-row"></div>
@@ -130,15 +130,15 @@
             </div>
           </div>
           <div class="generated-meta">
-            <p id="workflow-status" class="meta-line"><span class="meta-icon" aria-hidden="true">↳</span> Workflow: Bind Source Box</p>
-            <p id="gen-capsules-used" class="meta-line"><span class="meta-icon" aria-hidden="true">◫</span> Capsules used: 0</p>
-            <p class="meta-line"><span class="meta-icon" aria-hidden="true">◎</span> Preview not ready</p>
-            <p class="meta-line"><span class="meta-icon" aria-hidden="true">⛓</span> Trace unavailable</p>
+            <p id="workflow-status" class="meta-line"><span class="meta-icon" aria-hidden="true">↳</span> <span data-i18n="workflow">Workflow</span>: <span data-i18n="workflowBindSource">Bind Source Box</span></p>
+            <p id="gen-capsules-used" class="meta-line"><span class="meta-icon" aria-hidden="true">◫</span> 0 <span data-i18n="capsulesUsed">capsules used</span></p>
+            <p class="meta-line"><span class="meta-icon" aria-hidden="true">◎</span> <span data-i18n="previewNotReady">Preview not ready</span></p>
+            <p class="meta-line"><span class="meta-icon" aria-hidden="true">⛓</span> <span data-i18n="traceUnavailable">Trace unavailable</span></p>
             <div id="preview-package-actions" class="preview-package-actions hidden">
-              <button type="button" class="btn-ghost btn-preview-view" id="btn-view-package">View package</button>
-              <button type="button" class="btn-ghost btn-preview-compare" id="btn-compare-last">Compare last</button>
+              <button type="button" class="btn-ghost btn-preview-view" id="btn-view-package" data-i18n="viewPackage">View package</button>
+              <button type="button" class="btn-ghost btn-preview-compare" id="btn-compare-last" data-i18n="compareLast">Compare last</button>
             </div>
-            <button type="button" class="btn-secondary btn-open-folder hidden" id="btn-open-folder"><span class="meta-icon" aria-hidden="true">⌁</span> Open in folder</button>
+            <button type="button" class="btn-secondary btn-open-folder hidden" id="btn-open-folder"><span class="meta-icon" aria-hidden="true">⌁</span> <span data-i18n="openFolderButton">Open in folder</span></button>
           </div>
         </div>
       </section>
@@ -148,13 +148,13 @@
           <span class="reader-icon" aria-hidden="true">◫</span>
           <div>
             <div class="reader-title-row">
-              <span id="runtime-sidecar-title" class="reader-name">Runtime</span>
-              <span id="runtime-sidecar-mode" class="reader-type">read-only</span>
+              <span id="runtime-sidecar-title" class="reader-name" data-i18n="runtime">Runtime</span>
+              <span id="runtime-sidecar-mode" class="reader-type" data-i18n="sourceReadOnly">source project read-only</span>
             </div>
             <p id="runtime-sidecar-source" class="reader-source">Capsule state and trace receipts</p>
           </div>
         </div>
-        <p class="reader-label">Status</p>
+            <p class="reader-label" data-i18n="status">Status</p>
         <div id="runtime-sidecar-status" class="reader-preview">source writes: unknown
 trace: pending
 preview: pending</div>
@@ -164,7 +164,7 @@ preview: pending</div>
 
     <footer class="bottom-bar">
       <button type="button" id="btn-sources" class="btn-ghost btn-collapsed" aria-expanded="false" aria-controls="sources-popover">
-        <span class="sources-dot" aria-hidden="true">●</span> Sources <span id="sources-count">0</span> bound
+        <span class="sources-dot" aria-hidden="true">●</span> <span data-i18n="sources">Sources</span> <span id="sources-count">0</span> <span data-i18n="bound">bound</span>
       </button>
       <p class="bottom-privacy">
         <span class="lock-glyph" aria-hidden="true"></span>
@@ -179,8 +179,8 @@ preview: pending</div>
   </svg>
   <aside id="capsule-reader" class="popover capsule-reader hidden" role="dialog" aria-label="Capsule reader" aria-modal="false">
     <div class="reader-frame" aria-hidden="true"></div>
-    <button type="button" class="popover-close" id="reader-close" aria-label="Close">×</button>
-    <p class="reader-slot-label">CAPSULE READER</p>
+    <button type="button" class="popover-close" id="reader-close" aria-label="Close" data-i18n-aria-label="close">×</button>
+    <p class="reader-slot-label" data-i18n="readerLabel">CAPSULE READER</p>
     <div class="reader-head">
       <span id="reader-icon" class="reader-icon"></span>
       <div>
@@ -193,33 +193,33 @@ preview: pending</div>
     </div>
     <p id="reader-tags" class="reader-tags"></p>
     <p id="reader-role" class="reader-role"></p>
-    <p class="reader-label">preview</p>
+    <p class="reader-label" data-i18n="preview">Preview</p>
     <pre id="reader-preview" class="reader-preview"></pre>
     <div class="reader-actions">
-      <button type="button" id="btn-use-in-task" class="btn-secondary">Use in task</button>
-      <button type="button" id="btn-open-capsule" class="btn-ghost">Open capsule</button>
+      <button type="button" id="btn-use-in-task" class="btn-secondary" data-i18n="useInTask">Use in task</button>
+      <button type="button" id="btn-open-capsule" class="btn-ghost" data-i18n="openCapsule">Open capsule</button>
     </div>
-    <p id="reader-last-used" class="reader-last-used">Last used 2d ago</p>
+    <p id="reader-last-used" class="reader-last-used" data-i18n="lastUsed">Last used 2d ago</p>
   </aside>
 
   <!-- Preview package viewer popover -->
   <aside id="preview-package-viewer" class="popover preview-package-viewer hidden" role="dialog" aria-label="Preview package viewer" aria-modal="false">
     <div class="popover-head">
-      <h3 id="preview-viewer-title">Preview package</h3>
-      <button type="button" class="popover-close" id="preview-viewer-close" aria-label="Close">×</button>
+      <h3 id="preview-viewer-title" data-i18n="previewPackage">Preview package</h3>
+      <button type="button" class="popover-close" id="preview-viewer-close" aria-label="Close" data-i18n-aria-label="close">×</button>
     </div>
     <div id="preview-viewer-body" class="preview-viewer-body"></div>
     <div id="preview-viewer-actions" class="preview-viewer-actions hidden">
-      <button type="button" class="btn-ghost btn-export-zip" id="btn-export-zip">Export zip</button>
-      <button type="button" class="btn-ghost btn-export-copy" id="btn-export-copy">Export copy</button>
+      <button type="button" class="btn-ghost btn-export-zip" id="btn-export-zip" data-i18n="exportZip">Export zip</button>
+      <button type="button" class="btn-ghost btn-export-copy" id="btn-export-copy" data-i18n="exportCopy">Export copy</button>
     </div>
   </aside>
 
   <!-- Lumo Lite artifact viewer popover -->
   <aside id="lumo-artifacts-popover" class="popover lumo-artifacts-popover hidden" role="dialog" aria-label="Lumo Lite artifacts" aria-modal="false">
     <div class="popover-head">
-      <h3>Lumo Lite Artifacts</h3>
-      <button type="button" class="popover-close" data-close="lumo-artifacts" aria-label="Close">×</button>
+      <h3 data-i18n="artifacts">Build notes</h3>
+      <button type="button" class="popover-close" data-close="lumo-artifacts" aria-label="Close" data-i18n-aria-label="close">×</button>
     </div>
     <div id="lumo-artifacts-body" class="lumo-artifacts-body"></div>
   </aside>
@@ -227,8 +227,8 @@ preview: pending</div>
   <!-- History popover -->
   <aside id="history-popover" class="popover history-popover hidden" role="dialog" aria-label="History">
     <div class="popover-head">
-      <h3>History</h3>
-      <button type="button" class="popover-close" data-close="history" aria-label="Close">×</button>
+      <h3 data-i18n="history">History</h3>
+      <button type="button" class="popover-close" data-close="history" aria-label="Close" data-i18n-aria-label="close">×</button>
     </div>
     <ul id="history-list" class="history-list"></ul>
   </aside>
@@ -236,11 +236,11 @@ preview: pending</div>
   <!-- Sources popover -->
   <aside id="sources-popover" class="popover sources-popover hidden" role="dialog" aria-label="Sources">
     <div class="popover-head">
-      <h3>Sources</h3>
-      <button type="button" class="popover-close" data-close="sources" aria-label="Close">×</button>
+      <h3 data-i18n="sources">Sources</h3>
+      <button type="button" class="popover-close" data-close="sources" aria-label="Close" data-i18n-aria-label="close">×</button>
     </div>
     <ul id="sources-list" class="sources-list"></ul>
-    <button type="button" class="btn-ghost btn-add-source hidden" disabled>+ Add source</button>
+    <button type="button" class="btn-ghost btn-add-source hidden" disabled>+ <span data-i18n="addSource">Add source</span></button>
   </aside>
 
   <div id="backdrop" class="backdrop hidden" aria-hidden="true"></div>

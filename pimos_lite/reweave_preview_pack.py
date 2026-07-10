@@ -13,6 +13,7 @@ from pimos_lite.reweave_quality_gate import build_quality_gate as _quality_gate
 from pimos_lite.reweave_project_renderer import build_app_js as _build_app_js
 from pimos_lite.reweave_project_renderer import build_index_html as _build_index_html
 from pimos_lite.reweave_project_renderer import build_preview_readme as _build_preview_readme
+from pimos_lite.reweave_project_renderer import build_review_html as _build_review_html
 from pimos_lite.reweave_project_renderer import build_styles_css as _build_styles_css
 from pimos_lite.reweave_snippet_context import (
     CONTEXT_LIMITS,
@@ -176,18 +177,23 @@ def _sanitize_source_boxes(rows: Any, *, include_local_paths: bool = False) -> l
     return boxes
 
 
-def _build_task_pack(task: str, capsules: list[dict[str, Any]], *, selection_mode: str = "selected_capsules") -> dict[str, Any]:
-    task_intent = _task_intent(task, capsules)
-    task_plan = _task_plan(task_intent)
-    profile = _task_profile(task, capsules)
+def _build_task_pack(
+    task: str,
+    capsules: list[dict[str, Any]],
+    *,
+    task_intent: dict[str, Any],
+    task_plan: dict[str, Any],
+    task_profile: dict[str, object],
+    selection_mode: str = "selected_capsules",
+) -> dict[str, Any]:
     capsule_ids = [str(c.get("id") or "") for c in capsules if c.get("id")]
-    output_kinds = list(profile["output_kinds"])
+    output_kinds = list(task_profile["output_kinds"])
     capsules_used = list(task_intent["retrieved_capsules"])
     return {
         "schema_version": "reweave_task_pack.v1",
         "mode": "task_pack_preview",
         "package_kind": "small_project_pack",
-        "task_profile": profile["id"],
+        "task_profile": task_profile["id"],
         "task": task,
         "task_intent_path": "task_intent.json",
         "task_intent": task_intent,
@@ -327,16 +333,42 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
         provenance["content_aware_generate"] = {"enabled": False}
 
     selection_mode = str(payload.get("selectionMode") or payload.get("selection_mode") or "selected_capsules")
-    task_pack = _build_task_pack(task, capsules, selection_mode=selection_mode)
-    task_intent = task_pack["task_intent"]
-    task_plan = task_pack["task_plan"]
-    files = ["index.html", "styles.css", "app.js", "task_intent.json", "task_plan.json", "task_pack.json", "capsules_used.json", "provenance.json", "summary.md"]
-    _write_text(root / "index.html", _build_index_html(task, capsules, content_aware=content_aware_enabled, snippet_context=snippet_context))
+    task_intent = _task_intent(task, capsules)
+    task_plan = _task_plan(task_intent)
+    task_profile = _task_profile(task, capsules, task_intent=task_intent)
+    task_pack = _build_task_pack(
+        task,
+        capsules,
+        task_intent=task_intent,
+        task_plan=task_plan,
+        task_profile=task_profile,
+        selection_mode=selection_mode,
+    )
+    files = ["index.html", "review.html", "styles.css", "app.js", "task_intent.json", "task_plan.json", "task_pack.json", "capsules_used.json", "provenance.json", "summary.md"]
+    _write_text(
+        root / "index.html",
+        _build_index_html(
+            task,
+            capsules,
+            content_aware=content_aware_enabled,
+            snippet_context=snippet_context,
+            task_profile=task_profile,
+        ),
+    )
+    _write_text(
+        root / "review.html",
+        _build_review_html(
+            task,
+            capsules,
+            content_aware=content_aware_enabled,
+            snippet_context=snippet_context,
+            task_plan=task_plan,
+        ),
+    )
     _write_text(root / "styles.css", _build_styles_css(snippet_context if content_aware_enabled else None))
     _write_text(root / "app.js", _build_app_js())
     _write_text(root / "task_intent.json", json.dumps(task_intent, indent=2, ensure_ascii=False) + "\n")
     _write_text(root / "task_plan.json", json.dumps(task_plan, indent=2, ensure_ascii=False) + "\n")
-    _write_text(root / "task_pack.json", json.dumps(task_pack, indent=2, ensure_ascii=False) + "\n")
     _write_text(root / "capsules_used.json", json.dumps(capsules_used, indent=2, ensure_ascii=False) + "\n")
     _write_text(root / "provenance.json", json.dumps(provenance, indent=2, ensure_ascii=False) + "\n")
     _write_text(root / "summary.md", _build_summary_md(task, capsules))

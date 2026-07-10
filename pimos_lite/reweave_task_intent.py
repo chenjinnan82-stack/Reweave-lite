@@ -106,8 +106,13 @@ def build_task_intent(task: str, capsules: list[dict[str, Any]]) -> dict[str, An
     }
 
 
-def build_task_profile(task: str, capsules: list[dict[str, Any]] | None = None) -> dict[str, object]:
-    intent = build_task_intent(task, capsules or [])
+def build_task_profile(
+    task: str,
+    capsules: list[dict[str, Any]] | None = None,
+    *,
+    task_intent: dict[str, Any] | None = None,
+) -> dict[str, object]:
+    intent = task_intent or build_task_intent(task, capsules or [])
     output_type = str(intent["output_type"])
     capabilities = [str(item) for item in intent["capabilities"]]
     return {
@@ -118,10 +123,10 @@ def build_task_profile(task: str, capsules: list[dict[str, Any]] | None = None) 
         "summary": "A runnable small project pack assembled from the task, selected capsules, and source excerpts.",
         "steps": [
             "Check task goal",
-            "Review " + ", ".join(capabilities[:3]) + " signals",
-            "Check source excerpts",
-            "Check provenance",
-            "Confirm source writes stay 0",
+            "Review " + ", ".join(capabilities[:3]) + " output",
+            "Try the main action",
+            "Check page copy and layout",
+            "Confirm original project stays unchanged",
         ],
         "output_kinds": (f"{output_type}_html", "task_style", "task_runtime"),
     }

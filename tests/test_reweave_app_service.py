@@ -69,7 +69,7 @@ class ReweaveAppServiceTest(unittest.TestCase):
         )
         self.assertTrue(all(item["ok"] is False for item in results))
         self.assertTrue(all(item["engine"] == "lumo_lite" for item in results))
-        self.assertTrue(all(item["mode"] == "read_only" for item in results))
+        self.assertTrue(all(item["mode"] == "source_read_only_preview_write" for item in results))
         self.assertTrue(all(item["error"] == "lumo_lite_read_only" for item in results))
         self.assertTrue(all(item["release_boundary"] == "legacy_workbench" for item in results))
 

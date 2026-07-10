@@ -33,9 +33,9 @@ TEMPLATE_CASES: dict[str, dict[str, str]] = {
     },
     "landing-page": {
         "kind": "landing_page",
-        "source": "examples/source_boxes/launch-checklist",
-        "task": "Build a launch landing page",
-        "purpose": "launch sections, checklist copy, and progress state",
+        "source": "examples/source_boxes/artist-landing",
+        "task": "Build an artist landing page",
+        "purpose": "artist hero, selected works, and studio call to action",
     },
     "form-tool": {
         "kind": "form_tool",

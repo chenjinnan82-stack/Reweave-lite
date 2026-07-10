@@ -93,9 +93,12 @@ class ReweaveContentAwareGenerateTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertTrue(result["contentAwareGenerate"]["enabled"])
         self.assertIn("snippets_used.json", result["generatedPackage"]["files"])
-        html = (Path(result["previewPath"]) / "index.html").read_text(encoding="utf-8")
-        self.assertIn("Source excerpts used", html)
-        self.assertIn("&lt;!doctype html&gt;", html)
+        root = Path(result["previewPath"])
+        html = (root / "index.html").read_text(encoding="utf-8")
+        review_html = (root / "review.html").read_text(encoding="utf-8")
+        self.assertNotIn("Source excerpts used", html)
+        self.assertIn("Source excerpts used", review_html)
+        self.assertIn("&lt;!doctype html&gt;", review_html)
         snippets_used = json.loads(
             (Path(result["previewPath"]) / "snippets_used.json").read_text(encoding="utf-8")
         )
@@ -200,7 +203,7 @@ class ReweaveContentAwareGenerateTest(unittest.TestCase):
         files = result["generatedPackage"]["files"]
         self.assertNotIn("snippets_used.json", files)
         index_html = (Path(result["previewPath"]) / "index.html").read_text(encoding="utf-8")
-        self.assertIn("metadata snippets", index_html)
+        self.assertNotIn("capsule metadata only", index_html)
 
     def test_no_llm_dispatch_or_source_read(self) -> None:
         with patch("pimos_lite.reweave_source_registry.get_source_box") as mock_box, patch(

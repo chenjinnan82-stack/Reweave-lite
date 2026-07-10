@@ -12,7 +12,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 TEMPLATE_CASES = {
     "dashboard": "ops-status-card",
-    "landing-page": "launch-checklist",
+    "landing-page": "artist-landing",
     "form-tool": "customer-quote-widget",
     "admin-panel": "support-ticket-triage",
     "data-viewer": "content-calendar",
@@ -127,18 +127,30 @@ def test_public_reweave_demo_outputs_task_pack(tmp_path: Path) -> None:
     assert snippets_used["safety"]["source_folder_read_at_generate_time"] is False
     assert snippets_used["safety"]["used_app_state_content_only"] is True
     html = (out / "index.html").read_text(encoding="utf-8")
+    review_html = (out / "review.html").read_text(encoding="utf-8")
     styles = (out / "styles.css").read_text(encoding="utf-8")
     app_js = (out / "app.js").read_text(encoding="utf-8")
-    assert "Task Intent" in html
-    assert "Check task goal" in html
+    assert "Task Intent" not in html
+    assert "Task Intent" in review_html
     assert "reweaveDemoButton" in html
-    assert "project-checklist" in html
-    assert "reweave-step" in html
-    assert "Plan files" in html
-    assert "Source-backed cues" in html
+    assert "Client name" in html
+    assert "Project size" in html
+    assert "data-reweave-field" in html
+    assert "Select a package to preview pricing." in html
+    assert "project-app\" aria-label" in html
+    assert "project-cards" not in html
+    assert "Plan files" not in html
+    assert "Planned outputs" in review_html
+    assert "Source-backed cues" not in html
+    assert "Reused signals" not in html
+    assert "Source Boxes" not in html
+    assert "provenance" not in html.lower()
+    assert "Reused signals" in review_html
+    assert "Source Boxes" in review_html
+    assert "provenance" in review_html.lower()
     assert "capsule metadata only" not in html
     assert "--accent: #172033;" in styles
-    assert "local checks complete" in app_js
+    assert "data-reweave-field" in app_js
     _assert_local_assets_exist(out)
 
 
@@ -179,7 +191,7 @@ def test_public_reweave_demo_runs_five_source_boxes(tmp_path: Path) -> None:
         assert payload["ok"] is True
         assert payload["source_project_write"] is False
         assert not (source / ".reweave").exists()
-        for required in ("index.html", "styles.css", "app.js", "task_intent.json", "task_plan.json", "quality_gate.json", "task_pack.json", "capsules_used.json", "provenance.json", "snippets_used.json"):
+        for required in ("index.html", "review.html", "styles.css", "app.js", "task_intent.json", "task_plan.json", "quality_gate.json", "task_pack.json", "capsules_used.json", "provenance.json", "snippets_used.json"):
             assert (out / required).is_file()
         task_pack = json.loads((out / "task_pack.json").read_text(encoding="utf-8"))
         task_intent = json.loads((out / "task_intent.json").read_text(encoding="utf-8"))
@@ -187,6 +199,7 @@ def test_public_reweave_demo_runs_five_source_boxes(tmp_path: Path) -> None:
         quality_gate = json.loads((out / "quality_gate.json").read_text(encoding="utf-8"))
         snippets_used = json.loads((out / "snippets_used.json").read_text(encoding="utf-8"))
         html = (out / "index.html").read_text(encoding="utf-8")
+        review_html = (out / "review.html").read_text(encoding="utf-8")
         app_js = (out / "app.js").read_text(encoding="utf-8")
         assert task_pack["source_project_write"] is False
         assert task_pack["project_type"] == "small_project_pack"
@@ -203,11 +216,15 @@ def test_public_reweave_demo_runs_five_source_boxes(tmp_path: Path) -> None:
         assert task_pack["warnings"] == ["legacy demo shortcut; prefer --source + --task for the product path"]
         assert payload["source"]["label"] == source_name
         assert snippets_used["snippets"]
-        assert "Task Intent" in html
-        assert "project-checklist" in html
-        assert "reweave-step" in html
-        assert "local checks complete" in app_js
-        assert "Source excerpts used" in html
+        assert "Task Intent" not in html
+        assert "Task Intent" in review_html
+        assert "project-checklist" not in html
+        assert "reweave-step" not in html
+        assert "local follow-up" in app_js
+        assert "provenance" not in html.lower()
+        assert "Source excerpts used" not in html
+        assert "Source excerpts used" in review_html
+        assert "provenance" in review_html.lower()
         _assert_local_assets_exist(out)
 
 
@@ -265,8 +282,10 @@ def test_public_reweave_demo_keeps_task_templates_as_demo_shortcuts(tmp_path: Pa
     assert task_plan["output_type"] == "data_panel"
     assert task_pack["task"] == "Build an operations panel"
     html = (out / "index.html").read_text(encoding="utf-8")
-    assert "Task Intent" in html
-    assert "Review output" in html
+    review_html = (out / "review.html").read_text(encoding="utf-8")
+    assert "Task Intent" not in html
+    assert "Task Intent" in review_html
+    assert "reweaveDemoButton" in html
     assert (out / "index.html").is_file()
     assert (out / "provenance.json").is_file()
     _assert_local_assets_exist(out)
@@ -293,8 +312,41 @@ def test_public_reweave_demo_keeps_task_templates_as_demo_shortcuts(tmp_path: Pa
     portfolio_html = (portfolio_out / "index.html").read_text(encoding="utf-8")
     assert "task_profile" not in portfolio_pack
     assert portfolio_intent["output_type"] == "data_panel"
-    assert "Task Intent" in portfolio_html
-    assert "Review output" in portfolio_html
+    portfolio_review_html = (portfolio_out / "review.html").read_text(encoding="utf-8")
+    assert "Task Intent" not in portfolio_html
+    assert "Task Intent" in portfolio_review_html
+    assert "reweaveDemoButton" in portfolio_html
+
+
+def test_artist_source_content_drives_generated_page(tmp_path: Path) -> None:
+    source = ROOT / "examples" / "source_boxes" / "artist-landing"
+    out = tmp_path / "reweave_artist"
+    subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "run_public_reweave_demo.py"),
+            "--source",
+            str(source),
+            "--task",
+            "Build an artist landing page",
+            "--out",
+            str(out),
+        ],
+        check=True,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+    html = (out / "index.html").read_text(encoding="utf-8")
+    review_html = (out / "review.html").read_text(encoding="utf-8")
+    styles = (out / "styles.css").read_text(encoding="utf-8")
+    assert "Mira Vale Studio" in html
+    assert "Mira builds layered ink studies" in html
+    assert "Request a studio preview" in html
+    assert "Glasshouse Notes" in html
+    assert "Task Intent" not in html
+    assert "Source excerpts used" in review_html
+    assert "--accent: #1d241f;" in styles
 
 
 def test_default_capsule_selection_prefers_enrichable_capsules() -> None:

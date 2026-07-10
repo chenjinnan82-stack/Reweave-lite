@@ -49,6 +49,8 @@ python3 scripts/run_public_reweave_demo.py \
 
 公开产品主线是 task-driven：描述你要做什么，Reweave 从 Source Box 检索胶囊，再生成可检查来源的 Small Project Pack。
 
+打开 `index.html` 看生成的小项目成品。打开 `review.html` 看这次构建用到的胶囊、来源摘录和 trace。
+
 ## 本地小模型
 
 不使用 Ollama 时，Reweave 会跑 deterministic demo：
@@ -162,6 +164,8 @@ py -3 scripts\run_public_reweave_demo.py `
 
 脚本默认写入系统临时目录，例如 macOS/Linux 上的 `/tmp/reweave_public_demo`，或 Windows 上的 `%TEMP%\reweave_public_demo`。
 
+产物目录里，`index.html` 面向普通使用者；`review.html` 是构建说明页，放胶囊、来源摘录和 trace 文件。
+
 在桌面程序里试用公开 Source Box：
 
 ```text
@@ -221,7 +225,7 @@ REWEAVE_RUNTIME_STATE_PATH=/path/to/frontend_runtime_state.json \
 
 它当前不承诺任意项目自动生成、不自动多文件写入、不覆盖文件、不删除文件，也不在前端开放真实写入按钮。
 
-这个仓库公开的是旧项目复用链条里的 Reweave-lite 安全 release surface，不是全自动 IDE。
+这个仓库公开的是一条安全的 Reweave-lite 路线：从旧项目上下文生成可检查的 Small Project Pack，而不是替你自动编辑原项目的 IDE。
 
 未来真实写入只保留一条安全路线：人工确认、单文件、新建、不覆盖、可回滚。
 

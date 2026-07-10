@@ -19,11 +19,72 @@ def build_index_html(
     *,
     content_aware: bool = False,
     snippet_context: dict[str, Any] | None = None,
+    task_profile: dict[str, object] | None = None,
 ) -> str:
-    profile = _task_profile(task, capsules)
-    task_plan = _task_plan(_task_intent(task, capsules))
+    profile = task_profile or _task_profile(task, capsules)
+    task_text = (task or "New Task Pack")[:MAX_TASK_LEN]
+    source_page = _source_page_content(snippet_context) if content_aware else {}
+    page_title = str(source_page.get("title") or task_text)
+    headline = str(source_page.get("headline") or "A runnable local project pack.")
+    description = str(source_page.get("description") or "Built locally from the selected project material.")
+    action = str(source_page.get("action") or profile["action"])
+    status = str(source_page.get("status") or "Ready for local review.")
+    fields = source_page.get("fields") if isinstance(source_page.get("fields"), list) else []
+    source_cues = source_page.get("cards") or ([] if fields else _source_highlights(snippet_context) if content_aware else [])
+    fallback_cues = [] if fields else [str(profile["output_label"])]
+    cue_cards = "".join(
+        f"<article><h3>{html.escape(str(cue.get('title') or 'Project detail'))}</h3><p>{html.escape(str(cue.get('body') or ''))}</p></article>"
+        if isinstance(cue, dict)
+        else f"<article><h3>{html.escape(str(cue))}</h3></article>"
+        for cue in (source_cues[:4] or fallback_cues)
+    )
+    form_fields = _source_form_html(fields)
+    cards_section = f'<div class="project-cards">{cue_cards}</div>' if cue_cards else ""
+    project_class = "project-app with-cards" if cue_cards else "project-app"
+    document_title = page_title if page_title == task_text else f"{page_title} | {task_text}"
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>{html.escape(document_title)}</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <main class="surface">
+    <header>
+      <p class="eyebrow">{html.escape(str(profile["output_label"]))}</p>
+      <h1>{html.escape(page_title)}</h1>
+      <p class="note">{html.escape(headline)}</p>
+    </header>
+    <section class="{project_class}" aria-label="Generated project">
+      <div>
+        <h2>{html.escape(headline)}</h2>
+        <p>{html.escape(description)}</p>
+        {form_fields}
+        <button id="reweaveDemoButton" type="button" data-ready-message="{html.escape(action)} is ready for local follow-up.">{html.escape(action)}</button>
+        <p id="reweaveDemoStatus">{html.escape(status)}</p>
+      </div>
+      {cards_section}
+    </section>
+    <p class="review-link"><a href="review.html">View build notes</a></p>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>
+"""
+
+
+def build_review_html(
+    task: str,
+    capsules: list[dict[str, Any]],
+    *,
+    content_aware: bool = False,
+    snippet_context: dict[str, Any] | None = None,
+    task_plan: dict[str, Any] | None = None,
+) -> str:
     task_title = html.escape((task or "New Task Pack")[:MAX_TASK_LEN])
-    capsule_names = [str(cap.get("name") or "Capsule") for cap in capsules[:4]]
+    plan = task_plan or _task_plan(_task_intent(task, capsules))
     capsule_tags = sorted(
         {
             str(tag)
@@ -40,38 +101,18 @@ def build_index_html(
         if name and name not in source_names:
             source_names.append(name)
     source_names = sorted(source_names)[:4]
-
-    summary = str(profile["summary"])
-    signal_items = "".join(
-        f"<li>{html.escape(tag)}</li>" for tag in (capsule_tags or ["layout", "copy", "logic"])
-    )
-    source_items = "".join(
-        f"<li>{html.escape(name)}</li>" for name in (source_names or ["local Source Box"])
-    )
     plan_items = "".join(
         f"<li>{html.escape(str(item.get('path')))} — {html.escape(str(item.get('purpose')))}</li>"
-        for item in task_plan["outputs"]
+        for item in plan["outputs"]
         if isinstance(item, dict)
     )
-    source_cues = _source_highlights(snippet_context) if content_aware else []
-    cue_items = "".join(f"<li>{html.escape(cue)}</li>" for cue in source_cues)
-    capsule_badges = "".join(
-        f"<span>{html.escape(name)}</span>" for name in (capsule_names or ["Selected capsule"])
+    reason_items = "".join(
+        f"<li><strong>{html.escape(str(item.get('name') or 'Capsule'))}</strong> — {html.escape(str(item.get('reason') or 'Selected capsule'))}</li>"
+        for item in plan["capsules"]
+        if isinstance(item, dict)
     )
-    project_cards = "".join(
-        "<article>"
-        f"<strong>{html.escape(str(cap.get('name') or 'Capsule'))}</strong>"
-        f"<p>{html.escape(str(cap.get('reason') or 'Selected project pattern'))}</p>"
-        "</article>"
-        for cap in (task_plan["capsules"][:4] or [{"name": "Project shell", "reason": "Generated local output"}])
-    )
-    checklist = "".join(
-        "<label>"
-        "<input class='reweave-step' type='checkbox' />"
-        f"<span>{html.escape(step)}</span>"
-        "</label>"
-        for step in _project_steps(capsules, profile)
-    )
+    tag_items = "".join(f"<li>{html.escape(tag)}</li>" for tag in (capsule_tags or ["layout", "copy", "logic"]))
+    source_items = "".join(f"<li>{html.escape(name)}</li>" for name in (source_names or ["local Source Box"]))
     excerpt_cards = ""
     if content_aware and isinstance(snippet_context, dict):
         cards: list[str] = []
@@ -98,7 +139,6 @@ def build_index_html(
                 + "".join(cards[:4])
                 + "</section>"
             )
-
     items = []
     for cap in capsules:
         preview = cap.get("preview") or []
@@ -114,61 +154,48 @@ def build_index_html(
             f"</article>"
         )
     body = "\n".join(items) if items else "<p class='empty'>No capsules selected.</p>"
-    note = (
-        "Content-aware preview — excerpt manifests in snippets_used.json; not copied source files."
-        if content_aware
-        else "Preview only — capsules are metadata snippets, not copied source files."
-    )
     return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>{task_title}</title>
+  <title>{task_title} · Review</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
 <body>
-  <main class="surface">
+  <main class="surface review-surface">
     <header>
-      <p class="eyebrow">Reweave · local preview</p>
+      <p class="eyebrow">Reweave · provenance review</p>
       <h1>{task_title}</h1>
-      <p class="note">{note}</p>
+      <p class="note">Task Intent, capsule notes, and source excerpts live here so the generated page stays clean.</p>
+      <p><a href="index.html">Back to generated page</a></p>
     </header>
-    <section class="task-output" aria-label="Generated task output">
+    <section class="task-output" aria-label="Task Intent">
       <div>
-        <p class="eyebrow">{html.escape(str(profile["label"]))}</p>
-        <h2>{task_title}</h2>
-        <p>{html.escape(summary)}</p>
-        <div class="capsule-badges">{capsule_badges}</div>
+        <p class="eyebrow">Task Intent</p>
+        <h2>Planned outputs</h2>
+        <ul>{plan_items}</ul>
+        <h2>Capsule reasons</h2>
+        <ul>{reason_items}</ul>
+        <h2>Reused signals</h2>
+        <ul>{tag_items}</ul>
+        <h2>Source Boxes</h2>
+        <ul>{source_items}</ul>
       </div>
       <aside>
-        <strong>Plan files</strong>
-        <ul>{plan_items}</ul>
-        <strong>Reused signals</strong>
-        <ul>{signal_items}</ul>
-        <strong>Source-backed cues</strong>
-        <ul>{cue_items or "<li>capsule metadata only</li>"}</ul>
-        <strong>Source Boxes</strong>
-        <ul>{source_items}</ul>
+        <strong>Trace files</strong>
+        <ul>
+          <li>task_intent.json</li>
+          <li>task_plan.json</li>
+          <li>capsules_used.json</li>
+          <li>provenance.json</li>
+          <li>snippets_used.json</li>
+        </ul>
       </aside>
-    </section>
-    <section class="project-app" aria-label="Runnable small project output">
-      <div>
-        <p class="eyebrow">{html.escape(str(profile["output_label"]))}</p>
-        <h2>{task_title}</h2>
-        <p>This package is self-contained: no external scripts, no source-folder writes, and every reused capsule is recorded.</p>
-        <button id="reweaveDemoButton" type="button">{html.escape(str(profile["action"]))}</button>
-        <p id="reweaveDemoStatus">Ready for local review.</p>
-      </div>
-      <div>
-        <div class="project-cards">{project_cards}</div>
-        <div class="project-checklist" aria-label="Local review checklist">{checklist}</div>
-      </div>
     </section>
     {excerpt_cards}
     <section class="capsules">{body}</section>
   </main>
-  <script src="app.js"></script>
 </body>
 </html>
 """
@@ -187,12 +214,140 @@ def _source_highlights(snippet_context: dict[str, Any] | None) -> list[str]:
             excerpt = str(snip.get("preview_excerpt") or "")
             candidates = re.findall(r">([^<>]{3,80})<", excerpt) or excerpt.splitlines()
             for raw in candidates:
-                text = re.sub(r"\s+", " ", raw).strip(" -_•\t")
+                text = _clean_source_cue(raw)
+                if not text:
+                    continue
                 if 3 <= len(text) <= 80 and text not in highlights:
                     highlights.append(text)
                 if len(highlights) >= 6:
                     return highlights
     return highlights
+
+
+def _source_page_content(snippet_context: dict[str, Any] | None) -> dict[str, Any]:
+    if not isinstance(snippet_context, dict):
+        return {}
+    html_snippets: list[str] = []
+    for cap in snippet_context.get("capsules") if isinstance(snippet_context.get("capsules"), list) else []:
+        if not isinstance(cap, dict):
+            continue
+        for snip in cap.get("snippets") if isinstance(cap.get("snippets"), list) else []:
+            if not isinstance(snip, dict):
+                continue
+            path = str(snip.get("relative_path") or "")
+            if path.endswith((".html", ".htm")) or str(snip.get("language_hint") or "") == "html":
+                html_snippets.append(str(snip.get("preview_excerpt") or ""))
+
+    result: dict[str, Any] = {"cards": []}
+    for excerpt in html_snippets:
+        source = html.unescape(excerpt)
+        title = _first_tag_text(source, "title")
+        headline = _first_tag_text(source, "h1")
+        paragraphs = _tag_texts(source, "p")
+        actions = _tag_texts(source, "a") + _tag_texts(source, "button")
+        if title and not result.get("title"):
+            result["title"] = title
+        if headline and not result.get("headline"):
+            result["headline"] = headline
+        description = next((text for text in paragraphs if text != title and text != headline), "")
+        if description and not result.get("description"):
+            result["description"] = description
+        if actions and not result.get("action"):
+            result["action"] = actions[0]
+        status = _source_status(source)
+        if not status:
+            status = _first_tag_text(source, "aside")
+        if status and not result.get("status"):
+            result["status"] = status
+        for heading, body in re.findall(r"<h[23][^>]*>(.*?)</h[23]>\s*<p[^>]*>(.*?)</p>", source, flags=re.IGNORECASE | re.DOTALL):
+            card = {"title": _clean_source_cue(_strip_tags(heading)), "body": _clean_source_cue(_strip_tags(body))}
+            if card["title"] and card["body"] and card not in result["cards"]:
+                result["cards"].append(card)
+        for article in re.findall(r"<article[^>]*>(.*?)</article>", source, flags=re.IGNORECASE | re.DOTALL):
+            title = _first_tag_text(article, "h2") or _first_tag_text(article, "h3") or _first_tag_text(article, "strong")
+            body = _first_tag_text(article, "p")
+            card = {"title": title, "body": body}
+            if title and body and card not in result["cards"]:
+                result["cards"].append(card)
+        fields = _source_form_fields(source)
+        if fields and not result.get("fields"):
+            result["fields"] = fields
+        if result.get("title") and result.get("headline") and result["cards"]:
+            break
+    return result
+
+
+def _tag_texts(source: str, tag: str) -> list[str]:
+    return [text for raw in re.findall(rf"<{tag}[^>]*>(.*?)</{tag}>", source, flags=re.IGNORECASE | re.DOTALL) if (text := _clean_source_cue(_strip_tags(raw)))]
+
+
+def _first_tag_text(source: str, tag: str) -> str:
+    texts = _tag_texts(source, tag)
+    return texts[0] if texts else ""
+
+
+def _source_status(source: str) -> str:
+    match = re.search(
+        r"<(?:p|div)[^>]*(?:class|id)=[\"'][^\"']*status[^\"']*[\"'][^>]*>(.*?)</(?:p|div)>",
+        source,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    return _clean_source_cue(_strip_tags(match.group(1))) if match else ""
+
+
+def _source_form_fields(source: str) -> list[dict[str, Any]]:
+    fields: list[dict[str, Any]] = []
+    for block in re.findall(r"<label[^>]*>(.*?)</label>", source, flags=re.IGNORECASE | re.DOTALL):
+        label = _clean_source_cue(block.split("<", 1)[0])
+        control = re.search(r"<(input|select)([^>]*)>(.*?)</select>|<(input)([^>]*)/?>", block, flags=re.IGNORECASE | re.DOTALL)
+        if not label or not control:
+            continue
+        tag = (control.group(1) or control.group(4) or "").lower()
+        attrs = control.group(2) or control.group(5) or ""
+        placeholder_match = re.search(r"placeholder=[\"']([^\"']+)[\"']", attrs, flags=re.IGNORECASE)
+        options = _tag_texts(control.group(3) or "", "option") if tag == "select" else []
+        fields.append(
+            {
+                "label": label,
+                "kind": "select" if tag == "select" else "input",
+                "placeholder": placeholder_match.group(1) if placeholder_match else "",
+                "options": options[:6],
+            }
+        )
+    return fields[:4]
+
+
+def _source_form_html(fields: list[dict[str, Any]]) -> str:
+    controls: list[str] = []
+    for field in fields:
+        label = html.escape(str(field.get("label") or "Details"))
+        if field.get("kind") == "select":
+            options = "".join(f"<option>{html.escape(str(option))}</option>" for option in field.get("options") or [])
+            controls.append(f"<label>{label}<select data-reweave-field>{options}</select></label>")
+        else:
+            placeholder = html.escape(str(field.get("placeholder") or ""))
+            controls.append(f"<label>{label}<input data-reweave-field type=\"text\" placeholder=\"{placeholder}\" /></label>")
+    return f"<div class=\"project-form\">{''.join(controls)}</div>" if controls else ""
+
+
+def _strip_tags(raw: str) -> str:
+    return re.sub(r"<[^>]+>", " ", raw)
+
+
+def _clean_source_cue(raw: str) -> str:
+    text = re.sub(r"\s+", " ", str(raw)).strip(" -_•\t")
+    text = text.lstrip("#").strip()
+    if not text:
+        return ""
+    if text.startswith("//"):
+        return ""
+    if any(token in text for token in ("{", "}", ";", "<", ">", "=>")):
+        return ""
+    if any(token in text for token in ("document.", "window.", "querySelector", "getElementById", "addEventListener")):
+        return ""
+    if re.search(r"\b(margin|padding|font-family|display|grid-template|background|color)\s*:", text):
+        return ""
+    return text
 
 
 def build_preview_readme(task: str, snippet_context: dict[str, Any]) -> str:
@@ -238,17 +393,18 @@ def _style_tokens(snippet_context: dict[str, Any] | None) -> dict[str, str]:
                     continue
                 colors.extend(re.findall(r"#[0-9a-fA-F]{3,6}\b", str(snip.get("preview_excerpt") or "")))
     skip = {"#000", "#000000", "#fff", "#ffffff"}
-    accent = next((c for c in colors if c.lower() not in skip), "#21352a")
+    accent = next((c for c in colors if c.lower() not in skip and _hex_luminance(c) < 0.55), "#21352a")
     return {"accent": accent, "soft": "#f8fbf8"}
 
 
-def _project_steps(capsules: list[dict[str, Any]], profile: dict[str, object] | None = None) -> list[str]:
-    if profile and isinstance(profile.get("steps"), list):
-        return [str(step) for step in profile["steps"]][:5]
-    names = [str(cap.get("name") or "Capsule") for cap in capsules[:3]]
-    steps = [f"Review {name}" for name in names]
-    steps.extend(["Check provenance", "Confirm source writes stay 0"])
-    return steps[:5]
+def _hex_luminance(color: str) -> float:
+    raw = color.lstrip("#")
+    if len(raw) == 3:
+        raw = "".join(char * 2 for char in raw)
+    if len(raw) != 6:
+        return 1.0
+    red, green, blue = (int(raw[index : index + 2], 16) / 255 for index in range(0, 6, 2))
+    return 0.2126 * red + 0.7152 * green + 0.0722 * blue
 
 
 def build_styles_css(snippet_context: dict[str, Any] | None = None) -> str:
@@ -273,16 +429,17 @@ body {
 .task-output ul { margin: 0.35rem 0 0.85rem; padding-left: 1.1rem; }
 .capsule-badges { display: flex; flex-wrap: wrap; gap: 0.4rem; margin-top: 0.75rem; }
 .capsule-badges span { border: 1px solid #e8dfd0; border-radius: 999px; padding: 0.25rem 0.55rem; color: #6b5d4a; background: #faf7f0; font-size: 0.8rem; }
-.project-app { display: grid; grid-template-columns: minmax(0, 0.9fr) minmax(260px, 1.1fr); gap: 1rem; margin-top: 1rem; padding: 1rem; border: 1px solid #d8e3dc; border-radius: 10px; background: var(--soft); }
+.project-app { display: grid; grid-template-columns: minmax(0, 1fr); gap: 1rem; margin-top: 1rem; padding: 1rem; border: 1px solid #d8e3dc; border-radius: 10px; background: var(--soft); }
+.project-app.with-cards { grid-template-columns: minmax(0, 0.9fr) minmax(260px, 1.1fr); }
 .project-app h2 { margin: 0 0 0.5rem; }
 .project-app button { min-height: 40px; border: 0; border-radius: 6px; padding: 0 0.85rem; background: var(--accent); color: #fff; font: inherit; cursor: pointer; }
 #reweaveDemoStatus { margin: 0.75rem 0 0; color: #5f6f62; font-size: 0.9rem; }
+.project-form { display: grid; gap: 0.7rem; margin: 1rem 0; }
+.project-form label { display: grid; gap: 0.35rem; color: #5f6f62; font-size: 0.9rem; }
+.project-form input, .project-form select { box-sizing: border-box; min-height: 40px; width: 100%; border: 1px solid #d8e3dc; border-radius: 6px; padding: 0 0.7rem; background: #fff; color: inherit; font: inherit; }
 .project-cards { display: grid; gap: 0.65rem; }
 .project-cards article { border: 1px solid #d8e3dc; border-radius: 8px; background: #fff; padding: 0.85rem; }
 .project-cards p { margin: 0.35rem 0 0; color: #5f6f62; font-size: 0.9rem; }
-.project-checklist { display: grid; gap: 0.55rem; margin-top: 1rem; }
-.project-checklist label { display: flex; align-items: center; gap: 0.5rem; padding: 0.6rem 0.7rem; border: 1px solid #d8e3dc; border-radius: 8px; background: #fff; }
-.project-checklist input { accent-color: var(--accent); }
 .source-excerpts { margin-top: 1rem; }
 .excerpt-card { border: 1px solid #e8dfd0; border-radius: 10px; background: #fff; padding: 0.85rem; margin: 0.75rem 0; }
 .excerpt-card h3 { margin: 0; font-size: 0.95rem; }
@@ -292,7 +449,7 @@ body {
 .capsule-card .type { font-size: 0.75rem; color: #a67c3d; }
 .capsule-card pre { background: #faf7f0; padding: 0.75rem; border-radius: 6px; overflow: auto; }
 .empty { color: #6b5d4a; }
-@media (max-width: 680px) { .task-output, .project-app { grid-template-columns: 1fr; } .task-output aside { border-left: 0; border-top: 1px solid #e8dfd0; padding-left: 0; padding-top: 1rem; } }
+@media (max-width: 680px) { .task-output, .project-app.with-cards { grid-template-columns: 1fr; } .task-output aside { border-left: 0; border-top: 1px solid #e8dfd0; padding-left: 0; padding-top: 1rem; } }
 """
     return css.replace("__ACCENT__", tokens["accent"]).replace("__SOFT__", tokens["soft"])
 
@@ -301,23 +458,15 @@ def build_app_js() -> str:
     return """document.addEventListener('DOMContentLoaded', function () {
   const button = document.getElementById('reweaveDemoButton');
   const status = document.getElementById('reweaveDemoStatus');
-  const steps = Array.from(document.querySelectorAll('.reweave-step'));
-  function renderProgress() {
-    if (!status || !steps.length) return;
-    const done = steps.filter(function (item) { return item.checked; }).length;
-    status.textContent = done + ' of ' + steps.length + ' local checks complete.';
-  }
-  steps.forEach(function (item) {
-    item.addEventListener('change', renderProgress);
-  });
   if (button && status) {
     button.addEventListener('click', function () {
-      const next = steps.find(function (item) { return !item.checked; });
-      if (next) next.checked = true;
-      renderProgress();
+      const details = Array.from(document.querySelectorAll('[data-reweave-field]'))
+        .map(function (field) { return field.value.trim(); })
+        .filter(Boolean);
+      status.textContent = details.length
+        ? button.textContent + ' ready for ' + details.join(' · ') + '.'
+        : (button.dataset.readyMessage || 'Action is ready for local follow-up.');
     });
   }
-  renderProgress();
-  console.log('[Reweave] small project pack ready');
 });
 """

@@ -2,10 +2,31 @@
 
 from __future__ import annotations
 
+import re
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_frontend_locale_copy_is_strictly_partitioned() -> None:
+    app = (ROOT / "reweave_frontend" / "app.js").read_text(encoding="utf-8")
+    zh_start = app.index("    zh: {")
+    en_start = app.index("    en: {")
+    end = app.index("  };", en_start)
+    zh_block = app[zh_start:en_start]
+    en_block = app[en_start:end]
+    key_pattern = re.compile(r"^\s{6}([A-Za-z][A-Za-z0-9]*):", re.MULTILINE)
+
+    zh_keys = key_pattern.findall(zh_block)
+    en_keys = key_pattern.findall(en_block)
+    assert len(zh_keys) == len(set(zh_keys))
+    assert len(en_keys) == len(set(en_keys))
+    assert set(zh_keys) == set(en_keys)
+    assert re.search(r"[\u4e00-\u9fff]", zh_block)
+    assert not re.search(r"[\u4e00-\u9fff]", en_block)
+    for key in ("welcomeTagline", "bindSourceBox", "generationInput", "readerLabel", "sources"):
+        assert f'data-i18n="{key}"' in (ROOT / "reweave_frontend" / "index.html").read_text(encoding="utf-8")
 
 
 def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
@@ -42,25 +63,27 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert "src_output" not in mock
     assert "cap_form_shell" not in mock
     assert "Current Runtime" in index
-    assert "Current Runtime · artifacts" in index
+    assert 'data-i18n="welcomeKicker"' in index
     assert "Bind Source Box" in index
-    assert "Choose a source folder to clean into capsules." in index
+    assert 'data-i18n="sourceBoxNote"' in index
     assert 'id="source-box-mode-note"' in index
     assert 'id="btn-view-runtime"' in index
-    assert 'placeholder="Current Runtime / read-only"' in index
+    assert 'placeholder="Source project read-only; local preview enabled"' in index
     assert "GENERATION INPUT" in index
     assert 'id="generation-input-note"' in index
     assert 'id="workflow-status"' in index
-    assert "Workflow: Bind Source Box" in index
-    assert '<h3 class="generated-title">Current Runtime</h3>' in index
+    assert 'id="workflow-status"' in index
+    assert 'class="generated-title" data-i18n="currentRuntime"' in index
     assert 'class="btn-secondary btn-open-folder hidden"' in index
-    assert '<span id="sources-count">0</span> bound' in index
+    assert '<span id="sources-count">0</span> <span data-i18n="bound">bound</span>' in index
     assert "Select old project folder" not in index
     assert "Local · Lumo engine" not in index
     assert "Digesting old project into capsules" not in index
     assert '"cleaningSteps":["Current Runtime / artifacts"]' in index
     assert "function normalizeMockFallback()" in app
-    assert 'data.lumoLiteMode = "read_only_runtime_artifact_viewer";' in app
+    assert 'data.lumoLiteMode = "source_read_only_preview_write";' in app
+    assert 'sourceReadOnly: "源项目只读"' in app
+    assert 'sourceReadOnly: "Source project read-only"' in app
     assert "function isLumoLiteReadOnly(state, fallbackData)" in bridge
     assert "fallbackData && fallbackData.lumoLiteMode" in bridge
     assert "var bridgeHelpers = window.ReweaveBridgeHelpers || {};" in app
@@ -90,7 +113,7 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert "function syncSourceControls()" in app
     assert "function syncWelcomeSourceBoxMode()" in app
     assert "function handleStoreSource(sourceId)" in app
-    assert 'storeBtn.textContent = "Store";' in app
+    assert 'storeBtn.textContent = t("store");' in app
     assert "Bind locally, scan read-only, no source writes." in app
     assert 'desktopCapability("canChooseSourceFolder")' in app
     assert 'desktopCapability("canScanSourceBox")' in app
@@ -103,7 +126,7 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert "function currentWorkflowStep(hasTaskPackPreview)" in app
     assert "function taskPackStatusFromFiles(files)" in app
     assert "Intent ready · Plan ready · Quality gate passed · Source writes 0" in renderers
-    assert "View provenance" in app
+    assert 't("workflowViewProvenance")' in app
     assert "function canBuildTaskPackPreview()" in app
     assert 'els.taskInput.disabled = !taskPackPreview;' in app
     assert 'els.btnGenerate.classList.toggle("hidden", !taskPackPreview);' in app
@@ -113,8 +136,8 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert "Generate will use exactly these capsules." in app
     assert ".generation-input-note" in styles
     assert 'openFolder.classList.add("hidden");' in app
-    assert "Product capability: unavailable" in app
-    assert "summary.product_capability_line || summary.line" in app
+    assert 'productSummary: "产品能力：{capability} · 源项目写入：{writes} · 追溯：{trace}"' in app
+    assert 'productSummary: "Product capability: {capability} · Source writes: {writes} · Trace: {trace}"' in app
     assert 'responseBits.push("Product base ready");' not in app
     assert 'responseBits.push("Task pack ready");' not in app
     assert "btn-artifact-view" in artifacts
@@ -130,11 +153,34 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert 'name === "task_plan.json"' in renderers
     assert 'name === "quality_gate.json"' in renderers
     assert "capsules linked to this runtime" in app
-    assert "No local generation history in read-only mode" in app
+    assert "No local preview history yet" in app
     assert "show && hasDesktopBridge() && (!isLumoLiteReadOnly() || canBuildTaskPackPreview())" in app
-    assert 'els.reweaveResponse.textContent = "Current Runtime is read-only.";' in app
+    assert 'els.reweaveResponse.textContent = t("runtimeReadOnlyMessage");' in app
     assert "function blockReadyRender(message)" in app
     assert "if ((isLumoLiteReadOnly() && !canBuildTaskPackPreview()) || !result || result.ok === false)" in app
+    assert "openFirstLumoLiteCapsule" not in app
+    assert ":focus-visible" in styles
+    assert ":focus-within" in styles
+    assert 'artifact.kind === "preview_artifact"' in app
+    assert 'return !BUILD_NOTE_FILES[name];' in app
+    assert "var visibleFiles = userFacingFiles(files);" in app
+    assert 'renderers.renderFileTree(t("smallProjectPack") + "/", productFiles, escapeHtml)' in app
+    assert 'sidecar.classList.toggle("runtime-sidecar-unavailable", !available);' in app
+    assert ".machine-core.sidecar-collapsed" in styles
+    assert "width: fit-content;" in styles
+    assert "animation: reuse-thread 0.3s ease-out both;" in styles
+    assert "animation: result-reveal 0.3s ease-out both;" in styles
+    assert "reader-thread-in" not in styles
+    assert "reuse-token-path" not in styles
+    assert 'window.matchMedia("(prefers-reduced-motion: reduce)").matches' in app
+    assert "if (els.usedCount && els.usedCapsuleDock) renderUsedChips();" in app
+    assert 'if (e.key !== "Escape") return;' in app
+    assert 'if (els.reader && !els.reader.classList.contains("hidden")) hideCapsuleReader();' in app
+    assert "@media (min-width: 721px) and (max-height: 760px)" in styles
+    assert "grid-template-columns: minmax(0, 1fr) 200px;" in styles
+    assert "grid-template-columns: minmax(0, 1fr) 132px;" in styles
+    assert ".file-tree .folder," in styles
+    assert "overflow-wrap: anywhere;" in styles
     assert ".generated-package.runtime-read-only .generated-files" in styles
     assert ".sources-list li > span:first-child" in styles
     assert "text-overflow: ellipsis;" in styles

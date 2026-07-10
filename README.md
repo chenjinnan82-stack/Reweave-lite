@@ -49,6 +49,8 @@ python3 scripts/run_public_reweave_demo.py \
 
 The public product path is task-driven: describe what you want, let Reweave retrieve capsules from the Source Box, then inspect the generated pack and provenance.
 
+Open `index.html` to see the generated small project. Open `review.html` to inspect the capsules, source excerpts, and trace behind that output.
+
 ## Local Small Model
 
 Without Ollama, Reweave runs the deterministic demo:
@@ -161,6 +163,8 @@ py -3 scripts\run_public_reweave_demo.py `
 
 The script writes to your system temp folder by default, for example `/tmp/reweave_public_demo` on macOS/Linux or `%TEMP%\reweave_public_demo` on Windows.
 
+In the output folder, `index.html` is the user-facing result. `review.html` is the build notes page for capsules, source excerpts, and trace files.
+
 Try a public Source Box in the desktop app:
 
 ```text
@@ -220,7 +224,7 @@ Reweave is not a full autopilot IDE.
 
 It does **not** currently promise arbitrary production-grade project generation, automatic multi-file writes, overwrites, deletes, or frontend write buttons.
 
-This repo publishes the safe Reweave-lite release surface for old-project reuse, not a full autopilot IDE.
+This repo publishes a safe Reweave-lite path for building inspectable Small Project Packs from old project context, not an automatic IDE that edits your project for you.
 
 The safe write direction remains manual, single-file, create-only, and rollback-aware.
 

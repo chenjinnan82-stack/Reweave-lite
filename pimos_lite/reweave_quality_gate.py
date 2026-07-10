@@ -11,6 +11,7 @@ from pimos_lite.reweave_task_intent import MAX_TASK_LEN
 
 def build_quality_gate(root: Path, task: str, task_plan: dict[str, Any], *, content_aware: bool) -> dict[str, Any]:
     html_text = (root / "index.html").read_text(encoding="utf-8") if (root / "index.html").is_file() else ""
+    review_text = (root / "review.html").read_text(encoding="utf-8") if (root / "review.html").is_file() else ""
     planned = [
         str(item.get("path"))
         for item in task_plan.get("outputs", [])
@@ -21,6 +22,16 @@ def build_quality_gate(root: Path, task: str, task_plan: dict[str, Any], *, cont
         for item in task_plan.get("capsules", [])
         if isinstance(item, dict) and item.get("reason")
     ]
+    internal_terms = (
+        "Task Intent",
+        "Plan files",
+        "Source excerpts used",
+        "Reused signals",
+        "Source-backed cues",
+        "Source Boxes",
+        "capsule metadata only",
+    )
+    source_code_terms = ("document.", "window.", "querySelector", "getElementById", "addEventListener")
     checks = [
         {
             "name": "planned_outputs_exist",
@@ -35,14 +46,26 @@ def build_quality_gate(root: Path, task: str, task_plan: dict[str, Any], *, cont
             "passed": html.escape((task or "")[:MAX_TASK_LEN]) in html_text,
         },
         {
-            "name": "capsule_reason_visible_in_html",
-            "passed": bool(reasons) and any(html.escape(reason) in html_text for reason in reasons),
+            "name": "index_page_hides_internal_review_terms",
+            "passed": all(term not in html_text for term in internal_terms),
         },
         {
-            "name": "source_cues_visible_in_html",
+            "name": "index_page_hides_source_code_fragments",
+            "passed": all(term not in html_text for term in source_code_terms),
+        },
+        {
+            "name": "review_artifact_exists",
+            "passed": (root / "review.html").is_file(),
+        },
+        {
+            "name": "capsule_reason_visible_in_review",
+            "passed": bool(reasons) and any(html.escape(reason) in review_text for reason in reasons),
+        },
+        {
+            "name": "source_cues_visible_in_review",
             "passed": (not content_aware)
-            or ("Source excerpts used" in html_text)
-            or ("Source-backed cues" in html_text and "capsule metadata only" not in html_text),
+            or ("Source excerpts used" in review_text)
+            or ("Source-backed cues" in review_text and "capsule metadata only" not in review_text),
         },
     ]
     return {
