@@ -53,6 +53,51 @@ def _write_text(path: Path, content: str) -> None:
         handle.write(content)
 
 
+def _adapt_static_heading(
+    files: dict[str, str],
+    task: str,
+    project_targets: list[dict[str, Any]],
+) -> tuple[dict[str, str], dict[str, Any]]:
+    component_paths = [
+        str(item.get("path") or "")
+        for item in project_targets
+        if isinstance(item, dict) and item.get("kind") == "component"
+    ]
+    replacement = html.escape((task or "Reweave task")[:160], quote=False)
+    replacement = replacement.replace("{", "&#123;").replace("}", "&#125;")
+    updated = dict(files)
+    for relative in component_paths:
+        source = files.get(relative)
+        if source is None:
+            continue
+        for tag in ("h1", "h2"):
+            pattern = re.compile(
+                rf"(<{tag}\b[^>]*>)([^<>{{}}\r\n]{{1,160}})(</{tag}>)",
+                flags=re.IGNORECASE,
+            )
+            if not pattern.search(source):
+                continue
+            updated[relative] = pattern.sub(
+                lambda match: f"{match.group(1)}{replacement}{match.group(3)}",
+                source,
+                count=1,
+            )
+            return updated, {
+                "status": "applied",
+                "mode": "static_jsx_heading",
+                "file": relative,
+                "tag": tag,
+                "task_heading": replacement,
+                "source_project_write": False,
+            }
+    return updated, {
+        "status": "needs_review",
+        "mode": "static_jsx_heading",
+        "reason": "safe_static_heading_not_found",
+        "source_project_write": False,
+    }
+
+
 def _compile(project_root: Path, entrypoint: str, external_dependencies: list[str]) -> dict[str, Any]:
     repo_root = Path(__file__).resolve().parents[1]
     esbuild = repo_root / "node_modules" / "esbuild" / "lib" / "main.js"
@@ -133,6 +178,7 @@ def build_react_preview(
     files, missing = _complete_snippets(capsule_ids, target_paths)
     if missing:
         return _receipt("needs_review", "complete_project_files_unavailable", missing_files=missing)
+    files, adaptation = _adapt_static_heading(files, task, project_targets)
 
     project_root = root / "react_project"
     project_root.mkdir(parents=True, exist_ok=False)
@@ -164,6 +210,14 @@ def build_react_preview(
         "</body></html>\n",
     )
     result = _compile(project_root, entrypoints[0], list(project_graph.get("external_dependencies") or []))
+    compile_status = result.get("status")
+    compile_reason = result.get("reason")
+    result["adaptation"] = adaptation
+    result["compile_status"] = compile_status
+    result["compile_reason"] = compile_reason
+    if compile_status == "passed" and adaptation.get("status") != "applied":
+        result["status"] = "needs_review"
+        result["reason"] = "safe_task_adaptation_unavailable"
     result["project_path"] = "react_project"
     result["materialized_files"] = ["index.html", "package.json", *sorted(files)]
     return result

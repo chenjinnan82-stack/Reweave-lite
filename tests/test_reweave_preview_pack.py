@@ -59,6 +59,16 @@ class ReweavePreviewPackTest(unittest.TestCase):
         self.assertEqual(files, {})
         self.assertEqual(missing, ["src/App.tsx"])
 
+    def test_react_preview_does_not_replace_dynamic_heading(self) -> None:
+        files = {"src/App.tsx": "export default () => <h1>{title}</h1>;"}
+        targets = [{"path": "src/App.tsx", "kind": "component"}]
+
+        updated, receipt = react_preview._adapt_static_heading(files, "Build a quote tool", targets)
+
+        self.assertEqual(updated, files)
+        self.assertEqual(receipt["status"], "needs_review")
+        self.assertEqual(receipt["reason"], "safe_static_heading_not_found")
+
     def test_runtime_validation_without_behavior_contract_does_not_start_qt(self) -> None:
         result = validate_preview_behavior(self._state_dir)
 
@@ -164,7 +174,7 @@ class ReweavePreviewPackTest(unittest.TestCase):
         )
         (source / "App.tsx").write_text(
             "import React from 'react';\n"
-            "export default function App() { return <button>Quote</button>; }\n",
+            "export default function App() { return <main><h1>Old quote</h1><button>Quote</button></main>; }\n",
             encoding="utf-8",
         )
         (source / "styles.css").write_text("button { color: teal; }\n", encoding="utf-8")
@@ -192,6 +202,7 @@ class ReweavePreviewPackTest(unittest.TestCase):
         plan = json.loads((preview_path / "task_plan.json").read_text(encoding="utf-8"))
         provenance = json.loads((preview_path / "provenance.json").read_text(encoding="utf-8"))
         compile_receipt = json.loads((preview_path / "react_compile.json").read_text(encoding="utf-8"))
+        adaptation_receipt = json.loads((preview_path / "react_adaptation.json").read_text(encoding="utf-8"))
         self.assertEqual(graph["project_kind"], "react_vite")
         self.assertEqual(intent["project_context"]["graph_status"], "analyzed")
         self.assertEqual(
@@ -203,7 +214,13 @@ class ReweavePreviewPackTest(unittest.TestCase):
         self.assertFalse(provenance["project_graph"]["source_project_write"])
         self.assertEqual(compile_receipt["status"], "passed")
         self.assertEqual(compile_receipt["compile_scope"], "local_modules_external_dependencies_not_bundled")
+        self.assertEqual(adaptation_receipt["status"], "applied")
+        self.assertEqual(adaptation_receipt["mode"], "static_jsx_heading")
         self.assertTrue((preview_path / "react_project" / "src" / "App.tsx").is_file())
+        self.assertIn(
+            "Build a React quote component",
+            (preview_path / "react_project" / "src" / "App.tsx").read_text(encoding="utf-8"),
+        )
         self.assertTrue((preview_path / "react_project" / "dist" / "app.js").is_file())
         self.assertFalse(compile_receipt["source_project_write"])
         self.assertEqual(before, {path.name: path.read_bytes() for path in source.iterdir()})

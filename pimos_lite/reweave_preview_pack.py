@@ -432,8 +432,10 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
             list(task_plan.get("project_targets") or []),
         )
         task_pack["react_preview"] = react_preview
+        task_pack["react_adaptation_path"] = "react_adaptation.json"
         provenance["react_preview"] = {
             "receipt_path": "react_compile.json",
+            "adaptation_path": "react_adaptation.json",
             "status": react_preview.get("status"),
             "source_project_write": False,
         }
@@ -508,7 +510,11 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
         files.append("project_graph.json")
     if react_preview is not None:
         _write_text(root / "react_compile.json", json.dumps(react_preview, indent=2, ensure_ascii=False) + "\n")
-        files.extend(["react_compile.json", "react_project/"])
+        _write_text(
+            root / "react_adaptation.json",
+            json.dumps(react_preview.get("adaptation") or {}, indent=2, ensure_ascii=False) + "\n",
+        )
+        files.extend(["react_compile.json", "react_adaptation.json", "react_project/"])
     if behavior_contract is not None:
         _write_text(root / "behavior_contract.json", json.dumps(behavior_contract, indent=2, ensure_ascii=False) + "\n")
         _write_text(root / "behavior_adaptation.json", json.dumps(behavior_adaptation, indent=2, ensure_ascii=False) + "\n")
