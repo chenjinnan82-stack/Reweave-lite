@@ -176,6 +176,24 @@ class ReweaveSourceScannerTest(unittest.TestCase):
         self.assertEqual(light["project_graph_status"], "analyzed")
         self.assertEqual(light["project_graph_counts"], {"nodes": 3, "edges": 2, "unresolved": 0})
 
+    def test_react_project_graph_follows_static_dynamic_import(self) -> None:
+        root = self._state_dir / "react-dynamic-project"
+        source = root / "src"
+        feature = source / "feature"
+        feature.mkdir(parents=True)
+        (root / "package.json").write_text(
+            json.dumps({"dependencies": {"react": "19.0.0"}, "devDependencies": {"vite": "7.0.0"}}),
+            encoding="utf-8",
+        )
+        (source / "main.tsx").write_text("import('./feature')\n", encoding="utf-8")
+        (feature / "index.tsx").write_text("export default function Feature() { return null }\n", encoding="utf-8")
+
+        box = registry.add_source_box(root)
+        graph = scanner.scan_source_box(box["id"])["project_graph"]
+
+        self.assertEqual(graph["runtime_files"], ["src/main.tsx", "src/feature/index.tsx"])
+        self.assertIn({"from": "src/main.tsx", "to": "src/feature/index.tsx"}, graph["edges"])
+
     def test_registry_updated_after_scan(self) -> None:
         root = self._make_project()
         box = registry.add_source_box(root)

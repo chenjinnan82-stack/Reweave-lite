@@ -97,6 +97,21 @@ def build_draft_candidates(summary: dict[str, Any]) -> list[dict[str, Any]]:
         seen.add(key)
         candidates.append(candidate)
 
+    project_graph = summary.get("project_graph") if isinstance(summary.get("project_graph"), dict) else {}
+    if project_graph.get("project_kind") == "react_vite" and project_graph.get("runtime_files"):
+        add(
+            _candidate_from_rule(
+                source_id,
+                source_label,
+                "react_vite_project",
+                "React/Vite Project",
+                "UI",
+                "bounded complete React/Vite project",
+                ["react", "vite", "project"],
+                list(project_graph.get("entrypoints") or ["src/main.tsx"]),
+            )
+        )
+
     for entry in entry_candidates:
         base = Path(str(entry)).name
         rule = _ENTRY_RULES.get(base)

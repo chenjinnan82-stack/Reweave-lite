@@ -9,6 +9,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from pimos_lite import reweave_capsule_content as content
 from pimos_lite.reweave_app_service import ReweaveAppService
 from pimos_lite.reweave_capsule_content import (
     build_frontend_behavior_contract,
@@ -85,6 +86,34 @@ class ReweaveCapsuleContentTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertGreaterEqual(result["snippet_count"], 1)
         self.assertTrue(content_file_path(self.capsule_id).is_file())
+
+    def test_complete_react_project_allows_bounded_large_stylesheet(self) -> None:
+        root = self._state_dir / "react-project"
+        (root / "src").mkdir(parents=True)
+        (root / "src" / "main.tsx").write_text("export default function App() {}\n", encoding="utf-8")
+        (root / "src" / "styles.css").write_text(".surface { color: teal; }\n" * 5000, encoding="utf-8")
+
+        files, warnings, complete = content._complete_react_project_files(
+            root,
+            {"tags": ["react", "project"]},
+            {
+                "project_graph": {
+                    "project_kind": "react_vite",
+                    "runtime_files": ["src/main.tsx", "src/styles.css"],
+                }
+            },
+        )
+
+        self.assertTrue(complete)
+        self.assertEqual(warnings, [])
+        self.assertEqual([item["relative_path"] for item in files], ["src/main.tsx", "src/styles.css"])
+        duplicate, _, duplicate_complete = content._complete_react_project_files(
+            root,
+            {"tags": ["react", "tsx"]},
+            {"project_graph": {"project_kind": "react_vite", "runtime_files": ["src/main.tsx"]}},
+        )
+        self.assertEqual(duplicate, [])
+        self.assertFalse(duplicate_complete)
 
     def test_closed_frontend_module_contract_keeps_complete_files_and_events(self) -> None:
         (self._source_dir / "alternate.html").write_text("<html><body>Alternate</body></html>", encoding="utf-8")

@@ -77,6 +77,10 @@ def validate_react_preview_behavior(
 
 
 def _run_react_child(root: Path, expected_text: str) -> int:
+    from functools import partial
+    from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+
     try:
         from PySide6.QtCore import Qt, QTimer, QUrl
         from PySide6.QtWebEngineCore import (
@@ -96,6 +100,17 @@ def _run_react_child(root: Path, expected_text: str) -> int:
     blocked_requests: list[str] = []
     allowed_root = root.resolve()
 
+    class QuietHandler(SimpleHTTPRequestHandler):
+        def log_message(self, _format: str, *_args: Any) -> None:
+            pass
+
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0),
+        partial(QuietHandler, directory=str(allowed_root)),
+    )
+    Thread(target=server.serve_forever, daemon=True).start()
+    preview_port = int(server.server_port)
+
     class ValidationPage(QWebEnginePage):
         def javaScriptConsoleMessage(self, _level: Any, message: str, _line: int, _source: str) -> None:
             console_messages.append(message[:240])
@@ -113,6 +128,8 @@ def _run_react_child(root: Path, expected_text: str) -> int:
                     allowed = True
                 except (OSError, ValueError):
                     pass
+            elif scheme == "http" and url.host() == "127.0.0.1" and url.port() == preview_port:
+                allowed = True
             if not allowed:
                 blocked_requests.append(scheme or "unknown")
                 info.block(True)
@@ -130,30 +147,50 @@ def _run_react_child(root: Path, expected_text: str) -> int:
     settings.setAttribute(QWebEngineSettings.LocalContentCanAccessFileUrls, True)
     settings.setAttribute(QWebEngineSettings.LocalContentCanAccessRemoteUrls, False)
     output: dict[str, Any] = {}
+    initial_pixmap: Any = None
+    expected_json = json.dumps(expected_text)
     snapshot_js = (
         "JSON.stringify({text:(document.body.innerText||'').trim(),"
         "root:(document.getElementById('root')||{}).innerText||'',"
+        "taskVisible:(function(expected){if(!expected)return true;"
+        "var walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);var node;"
+        "while((node=walker.nextNode())){if(!(node.nodeValue||'').includes(expected))continue;"
+        "var el=node.parentElement;if(!el)continue;var rect=el.getBoundingClientRect();var style=getComputedStyle(el);"
+        "if(style.visibility!=='hidden'&&style.display!=='none'&&rect.width>0&&rect.height>0&&"
+        "rect.bottom>0&&rect.right>0&&rect.top<innerHeight&&rect.left<innerWidth)return true;}return false;})("
+        + expected_json
+        + "),"
         "state:(document.body.innerText||'').trim()+'|'+"
         "Array.from(document.querySelectorAll('input,textarea,select')).map(function(el){"
-        "return String(el.value||el.checked||'');}).join('|'),"
+        "return String(el.value||el.checked||'');}).join('|')+'|'+location.hash+'|'+"
+        "Array.from(document.querySelectorAll('button,[role=tab],[aria-selected],[aria-pressed],[aria-expanded]')).map(function(el){"
+        "return [el.id,el.className,el.getAttribute('aria-selected'),el.getAttribute('aria-pressed'),"
+        "el.getAttribute('aria-expanded'),el.disabled].join(':');}).join('|'),"
         "buttons:document.querySelectorAll('button').length})"
     )
 
     def finish(result: dict[str, Any]) -> None:
-        result.setdefault("request_scope", "preview_root_only")
+        if output:
+            return
+        result.setdefault("request_scope", "preview_origin_only")
         result.setdefault("blocked_request_count", len(blocked_requests))
+        result.setdefault("local_http_call", True)
+        result.setdefault("external_network_call", False)
         if result.get("status") == "passed":
             preview_image = root / "preview.png"
-            pixmap = view.grab()
+            pixmap = initial_pixmap if initial_pixmap is not None else view.grab()
             if not pixmap.isNull() and pixmap.save(str(preview_image), "PNG"):
                 result["preview_image"] = "react_project/dist/preview.png"
                 result["preview_output_write"] = True
         if console_messages:
             result.setdefault("console_messages", console_messages[-5:])
         output.update(result)
+        server.shutdown()
+        server.server_close()
         app.quit()
 
     def inspect_before(raw: Any) -> None:
+        nonlocal initial_pixmap
         try:
             before = json.loads(raw) if isinstance(raw, str) else {}
         except json.JSONDecodeError:
@@ -161,6 +198,7 @@ def _run_react_child(root: Path, expected_text: str) -> int:
         if not str(before.get("root") or "").strip():
             finish(_receipt("failed", "react_root_not_rendered"))
             return
+        initial_pixmap = view.grab()
         button_count = min(int(before.get("buttons") or 0), 12)
         if not button_count:
             finish(_receipt("needs_review", "react_button_not_found", rendered=True))
@@ -186,11 +224,7 @@ def _run_react_child(root: Path, expected_text: str) -> int:
                 except json.JSONDecodeError:
                     after = {}
                 changed = str(current.get("state") or "") != str(after.get("state") or "")
-                task_rendered = (
-                    not expected_text
-                    or expected_text in str(before.get("text") or "")
-                    or expected_text in str(after.get("text") or "")
-                )
+                task_rendered = bool(before.get("taskVisible") or after.get("taskVisible"))
                 if changed:
                     finish(
                         _receipt(
@@ -230,7 +264,7 @@ def _run_react_child(root: Path, expected_text: str) -> int:
         QTimer.singleShot(700, lambda: page.runJavaScript(snapshot_js, inspect_before))
 
     page.loadFinished.connect(loaded)
-    page.load(QUrl.fromLocalFile(str((root / "index.html").resolve())))
+    page.load(QUrl(f"http://127.0.0.1:{preview_port}/index.html"))
     QTimer.singleShot(8000, lambda: finish(_receipt("unavailable", "validation_timeout")))
     app.exec()
     print(json.dumps(output or _receipt("unavailable", "empty_validation_result"), ensure_ascii=False))

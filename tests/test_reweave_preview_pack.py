@@ -106,7 +106,16 @@ class ReweavePreviewPackTest(unittest.TestCase):
         self.assertIn("Capture", updated["src/pages/CapturePage.tsx"])
         self.assertEqual(receipt["changes"][0]["slot_id"], "src/pages/HomePage.tsx:h1:0")
 
-    def test_react_preview_marks_extra_runtime_dependency_for_review(self) -> None:
+    def test_react_preview_adapts_heading_in_entry_file(self) -> None:
+        files = {"src/main.tsx": "export default () => <main><h1>Studio</h1></main>;"}
+        targets = [{"path": "src/main.tsx", "kind": "entry"}]
+
+        updated, receipt = react_preview._adapt_static_slots(files, "Build a studio", targets)
+
+        self.assertIn("Build a studio", updated["src/main.tsx"])
+        self.assertEqual(receipt["status"], "applied")
+
+    def test_react_preview_marks_unknown_runtime_dependency_for_review(self) -> None:
         project = self._state_dir / "react-extra-dependency"
         (project / "src").mkdir(parents=True)
         (project / "src" / "main.jsx").write_text(
@@ -114,12 +123,27 @@ class ReweavePreviewPackTest(unittest.TestCase):
             encoding="utf-8",
         )
 
-        receipt = react_preview._compile(project, "src/main.jsx", ["react", "lucide-react"])
+        receipt = react_preview._compile(project, "src/main.jsx", ["react", "axios"])
 
         self.assertEqual(receipt["status"], "needs_review")
         self.assertEqual(receipt["compiler_status"], "passed")
-        self.assertEqual(receipt["unsupported_dependencies"], ["lucide-react"])
+        self.assertEqual(receipt["unsupported_dependencies"], ["axios"])
         self.assertTrue(receipt["preview_output_write"])
+
+    def test_react_preview_bundles_allowlisted_lucide_dependency(self) -> None:
+        project = self._state_dir / "react-lucide-dependency"
+        (project / "src").mkdir(parents=True)
+        (project / "src" / "main.jsx").write_text(
+            "import React from 'react';\n"
+            "import { Camera } from 'lucide-react';\n"
+            "console.log(React.version, Camera);\n",
+            encoding="utf-8",
+        )
+
+        receipt = react_preview._compile(project, "src/main.jsx", ["react", "lucide-react"])
+
+        self.assertEqual(receipt["status"], "passed")
+        self.assertEqual(receipt["compiler_status"], "passed")
 
     def test_runtime_validation_without_behavior_contract_does_not_start_qt(self) -> None:
         result = validate_preview_behavior(self._state_dir)

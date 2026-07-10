@@ -11,11 +11,12 @@ from typing import Any
 
 SOURCE_EXTENSIONS = (".js", ".jsx", ".ts", ".tsx", ".css")
 MAX_GRAPH_FILES = 200
-MAX_RUNTIME_FILES = 32
+MAX_RUNTIME_FILES = 64
 MAX_SOURCE_BYTES = 262144
 _IMPORT_RE = re.compile(
     r"(?:import|export)\s+(?:[^'\"]*?\s+from\s+)?['\"]([^'\"]+)['\"]"
-    r"|require\(\s*['\"]([^'\"]+)['\"]\s*\)",
+    r"|require\(\s*['\"]([^'\"]+)['\"]\s*\)"
+    r"|import\(\s*['\"]([^'\"]+)['\"]\s*\)",
     flags=re.MULTILINE,
 )
 
@@ -150,7 +151,7 @@ def inspect_react_vite_project(root: Path) -> dict[str, Any]:
         if text is None:
             nodes.append({"path": relative, "kind": "unreadable", "imports": []})
             continue
-        specifiers = [match.group(1) or match.group(2) for match in _IMPORT_RE.finditer(text)]
+        specifiers = [match.group(1) or match.group(2) or match.group(3) for match in _IMPORT_RE.finditer(text)]
         imports: list[str] = []
         for specifier in specifiers:
             if specifier.startswith("."):

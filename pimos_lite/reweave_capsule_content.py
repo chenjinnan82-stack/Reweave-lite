@@ -31,6 +31,8 @@ MAX_BYTES_PER_FILE = 4096
 MAX_TOTAL_BYTES = 16000
 MAX_BEHAVIOR_FILE_BYTES = 65536
 MAX_BEHAVIOR_TOTAL_BYTES = 131072
+MAX_PROJECT_FILE_BYTES = 262144
+MAX_PROJECT_TOTAL_BYTES = 524288
 RUNTIME_DEPENDENCY_PATTERNS = (
     ("fetch", r"\bfetch\s*\("),
     ("xml_http_request", r"\bXMLHttpRequest\b"),
@@ -280,7 +282,12 @@ def _frontend_reference(entry_path: str, raw: str) -> tuple[str, str]:
     return ("local", relative) if is_allowed_relative_path(relative) else ("blocked", relative)
 
 
-def _complete_text_file(source_root: Path, relative: str) -> tuple[dict[str, Any] | None, str]:
+def _complete_text_file(
+    source_root: Path,
+    relative: str,
+    *,
+    max_bytes: int = MAX_BEHAVIOR_FILE_BYTES,
+) -> tuple[dict[str, Any] | None, str]:
     path = resolve_safe_path(source_root, relative)
     if path is None:
         return None, f"unsafe_or_missing:{relative}"
@@ -288,7 +295,7 @@ def _complete_text_file(source_root: Path, relative: str) -> tuple[dict[str, Any
         raw = path.read_bytes()
     except OSError:
         return None, f"read_failed:{relative}"
-    if len(raw) > MAX_BEHAVIOR_FILE_BYTES:
+    if len(raw) > max_bytes:
         return None, f"file_too_large:{relative}"
     if b"\x00" in raw:
         return None, f"binary_content:{relative}"
@@ -686,17 +693,17 @@ def _complete_react_project_files(
     tags = {str(tag).lower() for tag in capsule.get("tags", []) if tag}
     graph = summary.get("project_graph") if isinstance(summary.get("project_graph"), dict) else {}
     paths = [str(path) for path in graph.get("runtime_files", []) if path]
-    if "react" not in tags or graph.get("project_kind") != "react_vite" or not paths:
+    if not {"project", "react"}.issubset(tags) or graph.get("project_kind") != "react_vite" or not paths:
         return [], [], False
     files: list[dict[str, Any]] = []
     warnings: list[str] = []
     total_bytes = 0
     for relative in paths[:MAX_RUNTIME_FILES]:
-        item, warning = _complete_text_file(source_root, relative)
+        item, warning = _complete_text_file(source_root, relative, max_bytes=MAX_PROJECT_FILE_BYTES)
         if item is None:
             warnings.append(warning)
             continue
-        if total_bytes + int(item["bytes"]) > MAX_BEHAVIOR_TOTAL_BYTES:
+        if total_bytes + int(item["bytes"]) > MAX_PROJECT_TOTAL_BYTES:
             warnings.append("project_total_bytes_exceeded")
             break
         files.append(item)

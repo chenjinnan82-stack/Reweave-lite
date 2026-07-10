@@ -55,6 +55,24 @@ class ReweaveCapsuleDraftTest(unittest.TestCase):
         self.assertEqual(updated["draft_status"], "drafted")
         self.assertTrue(updated.get("draft_path", "").startswith("capsule_drafts/"))
 
+    def test_react_project_candidate_comes_from_project_graph(self) -> None:
+        candidates = draft.build_draft_candidates(
+            {
+                "source_id": "source_react",
+                "label": "React source",
+                "extensions": {},
+                "entry_candidates": [],
+                "project_graph": {
+                    "project_kind": "react_vite",
+                    "entrypoints": ["src/main.tsx"],
+                    "runtime_files": ["src/main.tsx", "src/App.tsx"],
+                },
+            }
+        )
+
+        self.assertEqual(candidates[0]["name"], "React/Vite Project")
+        self.assertEqual(candidates[0]["tags"], ["react", "vite", "project"])
+
 
 if __name__ == "__main__":
     unittest.main()

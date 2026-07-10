@@ -14,7 +14,7 @@ from pimos_lite.reweave_capsule_content import is_allowed_relative_path, load_ca
 
 
 SCHEMA_VERSION = "reweave_react_preview.v1"
-RUNTIME_DEPENDENCY_ALLOWLIST = frozenset({"react", "react-dom"})
+RUNTIME_DEPENDENCY_ALLOWLIST = frozenset({"lucide-react", "react", "react-dom"})
 
 
 def _receipt(status: str, reason: str, **extra: Any) -> dict[str, Any]:
@@ -75,7 +75,7 @@ def _static_text_slots(
     component_paths = [
         str(item.get("path") or "")
         for item in project_targets
-        if isinstance(item, dict) and item.get("kind") == "component"
+        if isinstance(item, dict) and item.get("kind") in {"component", "entry"}
     ]
     slots: list[dict[str, Any]] = []
     for relative in component_paths:
