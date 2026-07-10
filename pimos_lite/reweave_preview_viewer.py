@@ -9,6 +9,7 @@ from typing import Any
 from pimos_lite.reweave_preview_pack import (
     load_latest_preview,
     load_preview_history,
+    preview_acceptance,
     preview_packages_dir,
 )
 from pimos_lite.reweave_source_registry import state_dir
@@ -84,6 +85,8 @@ def _provenance_summary(provenance: dict[str, Any]) -> dict[str, Any]:
         summary["content_aware_generate"] = dict(provenance["content_aware_generate"])
     if isinstance(provenance.get("luna"), dict):
         summary["luna"] = dict(provenance["luna"])
+    if isinstance(provenance.get("behavior_validation"), dict):
+        summary["behavior_validation"] = dict(provenance["behavior_validation"])
     return summary
 
 
@@ -152,6 +155,8 @@ def build_viewer_payload(root: Path, package_id: str) -> dict[str, Any]:
 
     capsules_used = _normalize_capsules_used(_read_json(root / "capsules_used.json"))
     snippets_used = _snippets_used_summary(root)
+    task_pack_raw = _read_json(root / "task_pack.json")
+    task_pack = task_pack_raw if isinstance(task_pack_raw, dict) else {}
 
     from pimos_lite.reweave_preview_export import load_exports_for_package
 
@@ -166,6 +171,7 @@ def build_viewer_payload(root: Path, package_id: str) -> dict[str, Any]:
         },
         "capsulesUsed": capsules_used,
         "snippetsUsed": snippets_used,
+        "previewAcceptance": preview_acceptance(task_pack),
         "provenance": _provenance_summary(provenance),
         "exports": load_exports_for_package(package_id),
         "safety": dict(VIEWER_SAFETY),

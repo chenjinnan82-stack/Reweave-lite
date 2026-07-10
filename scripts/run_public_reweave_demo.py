@@ -333,6 +333,7 @@ def run(
                 base_url=ollama_url,
                 timeout=llm_timeout,
                 require=require_llm,
+                bounded_only=True,
             )
         elif llm != "none":
             raise SystemExit(f"unsupported llm: {llm}")

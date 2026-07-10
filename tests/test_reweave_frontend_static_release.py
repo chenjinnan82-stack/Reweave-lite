@@ -173,6 +173,7 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert 'els.reweaveResponse.textContent = t("runtimeReadOnlyMessage");' in app
     assert "function blockReadyRender(message)" in app
     assert "function previewAcceptanceText(acceptance)" in app
+    assert "previewAcceptanceText(payload.previewAcceptance)" in app
     assert "lastPreviewAcceptance = result.previewAcceptance || null;" in app
     assert 'acceptanceUsable: "可用 · 交互行为已验证"' in app
     assert 'acceptanceUsable: "Usable · Interaction verified"' in app

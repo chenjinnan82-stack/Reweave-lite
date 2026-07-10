@@ -528,91 +528,54 @@ def test_public_reweave_demo_supports_manual_capsule_selection(tmp_path: Path) -
     _assert_local_assets_exist(out)
 
 
-def test_public_reweave_demo_supports_optional_local_ollama(tmp_path: Path) -> None:
-    class Handler(BaseHTTPRequestHandler):
-        def do_POST(self) -> None:  # noqa: N802
-            body = """--- index.html ---
-<!doctype html>
-<html lang="en">
-  <head>
-    <meta charset="utf-8">
-    <title>LLM quote pack</title>
-    <link rel="stylesheet" href="/missing.css">
-  </head>
-  <body>
-    <main><h1>LLM quote pack</h1><p id="quoteSummary">Ready</p></main>
-    <script src="/missing.js"></script>
-  </body>
-</html>
---- styles.css ---
-body { font-family: system-ui, sans-serif; }
-main { max-width: 640px; margin: 2rem auto; }
-"""
-            payload = json.dumps({"response": body}).encode("utf-8")
-            self.send_response(200)
-            self.send_header("Content-Type", "application/json")
-            self.send_header("Content-Length", str(len(payload)))
-            self.end_headers()
-            self.wfile.write(payload)
-
-        def log_message(self, format: str, *args: object) -> None:
-            return
-
-    server = HTTPServer(("127.0.0.1", 0), Handler)
-    thread = threading.Thread(target=server.serve_forever, daemon=True)
-    thread.start()
-    try:
-        source = ROOT / "examples" / "source_boxes" / "customer-quote-widget"
-        out = tmp_path / "reweave_llm_selection"
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(ROOT / "scripts" / "run_public_reweave_demo.py"),
-                "--source",
-                str(source),
-                "--task",
-                "Build a styled quote interaction",
-                "--select-capsule",
-                "Style Sheet",
-                "--select-capsule",
-                "Script Module",
-                "--llm",
-                "ollama",
-                "--model",
-                "tiny-test",
-                "--ollama-url",
-                f"http://127.0.0.1:{server.server_port}",
-                "--out",
-                str(out),
-            ],
-            check=True,
-            cwd=ROOT,
-            capture_output=True,
-            text=True,
-        )
-    finally:
-        server.shutdown()
-        thread.join(timeout=5)
+def test_public_reweave_demo_keeps_optional_ollama_bounded(tmp_path: Path) -> None:
+    source = ROOT / "examples" / "source_boxes" / "customer-quote-widget"
+    out = tmp_path / "reweave_llm_selection"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "run_public_reweave_demo.py"),
+            "--source",
+            str(source),
+            "--task",
+            "Build a styled quote interaction",
+            "--select-capsule",
+            "Style Sheet",
+            "--select-capsule",
+            "Script Module",
+            "--llm",
+            "ollama",
+            "--model",
+            "tiny-test",
+            "--ollama-url",
+            "http://127.0.0.1:9",
+            "--out",
+            str(out),
+        ],
+        check=True,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
 
     payload = json.loads(result.stdout)
     provenance = json.loads((out / "provenance.json").read_text(encoding="utf-8"))
     task_pack = json.loads((out / "task_pack.json").read_text(encoding="utf-8"))
-    assert payload["llm"]["applied"] is True
+    assert payload["llm"]["applied"] is False
+    assert payload["llm"]["error"] == "no_closed_behavior_module"
     html = (out / "index.html").read_text(encoding="utf-8")
-    assert "LLM quote pack" in html
+    assert "LLM quote pack" not in html
     assert "/missing.css" not in html
     assert "/missing.js" not in html
     assert "styles.css" in html
     assert "app.js" in html
     assert (out / "app.js").is_file()
     assert provenance["llm_generation"]["model"] == "tiny-test"
-    assert "normalized_html_assets" in provenance["llm_generation"]["normalizations"]
-    assert "filled_missing_app_js" in provenance["llm_generation"]["normalizations"]
-    assert provenance["llm_generation"]["local_http_call"] is True
+    assert provenance["llm_generation"]["local_http_call"] is False
     assert provenance["llm_generation"]["external_network_call"] is False
     assert provenance["llm_generation"]["source_project_write"] is False
-    assert provenance["content_aware_generate"]["llm_called"] is True
-    assert task_pack["llm_generation"]["applied"] is True
+    assert provenance["content_aware_generate"]["llm_called"] is False
+    assert task_pack["llm_generation"]["applied"] is False
     _assert_local_assets_exist(out)
 
 

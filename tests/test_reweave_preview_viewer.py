@@ -13,7 +13,12 @@ from unittest.mock import patch
 from pimos_lite.reweave_app_service import ReweaveAppService
 from pimos_lite.reweave_capsule_content import enrich_capsule_content
 from pimos_lite.reweave_governance_preview import save_governance_preview
-from pimos_lite.reweave_preview_pack import attach_luna_provenance, build_luna_provenance_record, build_preview_package
+from pimos_lite.reweave_preview_pack import (
+    attach_behavior_validation,
+    attach_luna_provenance,
+    build_luna_provenance_record,
+    build_preview_package,
+)
 from pimos_lite.reweave_preview_viewer import (
     compare_preview_packages,
     get_latest_preview_package,
@@ -111,6 +116,20 @@ class ReweavePreviewViewerTest(unittest.TestCase):
         viewer = get_preview_package(Path(result["previewPath"]).name)
         self.assertTrue(viewer["ok"])
         self.assertTrue(viewer["provenance"]["content_aware_generate"]["enabled"])
+
+    def test_viewer_reports_persisted_runtime_acceptance(self) -> None:
+        result = self._generate(enriched=False)
+        root = Path(result["previewPath"])
+        task_pack = json.loads((root / "task_pack.json").read_text(encoding="utf-8"))
+        task_pack["behavior_reuse"] = {"status": "enabled"}
+        (root / "task_pack.json").write_text(json.dumps(task_pack), encoding="utf-8")
+        receipt = {"status": "passed", "reason": "observable_state_changed"}
+        attach_behavior_validation(root, receipt)
+
+        viewer = get_preview_package(root.name)
+
+        self.assertEqual(viewer["previewAcceptance"]["verdict"], "usable")
+        self.assertEqual(viewer["provenance"]["behavior_validation"], receipt)
 
     def test_viewer_without_source_folder(self) -> None:
         result = self._generate(enriched=True)

@@ -51,7 +51,7 @@ def validate_preview_behavior(root: str | Path, *, timeout: float = 8.0) -> dict
 def _run_child(root: Path) -> int:
     try:
         from PySide6.QtCore import QTimer, QUrl
-        from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineSettings
+        from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineSettings
         from PySide6.QtWidgets import QApplication
     except ImportError:
         print(json.dumps(_receipt("unavailable", "pyside6_unavailable")))
@@ -84,7 +84,8 @@ def _run_child(root: Path) -> int:
         return 0
 
     app = QApplication.instance() or QApplication(["reweave-behavior-validation"])
-    page = QWebEnginePage()
+    profile = QWebEngineProfile()
+    page = QWebEnginePage(profile)
     settings = page.settings()
     settings.setAttribute(QWebEngineSettings.LocalContentCanAccessFileUrls, True)
     settings.setAttribute(QWebEngineSettings.LocalContentCanAccessRemoteUrls, False)

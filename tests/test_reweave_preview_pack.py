@@ -307,6 +307,16 @@ class ReweavePreviewPackTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             preview.build_preview_package({"taskText": "x", "capsuleIds": ["cap_missing"]})
 
+    def test_failed_quality_gate_removes_new_preview_directory(self) -> None:
+        cap_ids = self._promote_capsules()
+        with (
+            patch.object(preview, "_quality_gate", return_value={"status": "failed"}),
+            self.assertRaisesRegex(ValueError, "preview quality gate failed"),
+        ):
+            preview.build_preview_package({"taskText": "broken preview", "capsuleIds": cap_ids[:1]})
+
+        self.assertEqual(list(preview.preview_packages_dir().iterdir()), [])
+
     def test_quality_gate_rejects_invalid_javascript(self) -> None:
         root = self._state_dir / "invalid-js"
         root.mkdir()

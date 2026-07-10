@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -29,6 +30,25 @@ from pimos_lite.reweave_task_intent import build_task_profile as _task_profile
 from pimos_lite.reweave_task_plan import build_task_plan as _task_plan
 
 PREVIEW_SCHEMA_VERSION = 1
+
+
+def preview_acceptance(task_pack: dict[str, Any]) -> dict[str, str]:
+    quality_gate = task_pack.get("quality_gate") if isinstance(task_pack.get("quality_gate"), dict) else {}
+    quality_status = str(quality_gate.get("status") or "")
+    if quality_status == "failed":
+        return {"verdict": "rejected", "reason": "quality_gate_failed"}
+    if quality_status != "passed":
+        return {"verdict": "needs_review", "reason": "quality_gate_not_reported"}
+    behavior = task_pack.get("behavior_reuse") if isinstance(task_pack.get("behavior_reuse"), dict) else {}
+    if behavior.get("status") != "enabled":
+        return {"verdict": "needs_review", "reason": "closed_behavior_unavailable"}
+    validation = task_pack.get("behavior_validation") if isinstance(task_pack.get("behavior_validation"), dict) else {}
+    if validation.get("status") == "passed":
+        return {"verdict": "usable", "reason": "runtime_behavior_verified"}
+    if validation.get("status") == "failed":
+        return {"verdict": "rejected", "reason": "runtime_behavior_failed"}
+    return {"verdict": "needs_review", "reason": "runtime_validation_required"}
+
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
@@ -473,6 +493,7 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
     _write_text(root / "quality_gate.json", json.dumps(quality_gate, indent=2, ensure_ascii=False) + "\n")
     files.append("quality_gate.json")
     if quality_gate["status"] != "passed":
+        shutil.rmtree(root, ignore_errors=True)
         raise ValueError("preview quality gate failed")
 
     manifest = {

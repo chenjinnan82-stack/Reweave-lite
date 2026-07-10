@@ -16,6 +16,7 @@ from pimos_lite.reweave_capsule_warehouse import promote_source_drafts as promot
 from pimos_lite.reweave_capsule_warehouse import is_generate_eligible
 from pimos_lite.reweave_preview_pack import build_preview_package
 from pimos_lite.reweave_preview_pack import attach_behavior_validation
+from pimos_lite.reweave_preview_pack import preview_acceptance
 from pimos_lite.reweave_behavior_runtime import validate_preview_behavior
 from pimos_lite.reweave_lumo_lite_artifacts import (
     collect_lumo_lite_artifacts,
@@ -37,24 +38,6 @@ from pimos_lite.reweave_task_intent import behavior_contract_search_text, select
 
 APP_VERSION = "0.3.0"
 LUMO_LITE_MODE = "source_read_only_preview_write"
-
-
-def _preview_acceptance(task_pack: dict[str, Any]) -> dict[str, str]:
-    quality_gate = task_pack.get("quality_gate") if isinstance(task_pack.get("quality_gate"), dict) else {}
-    quality_status = str(quality_gate.get("status") or "")
-    if quality_status == "failed":
-        return {"verdict": "rejected", "reason": "quality_gate_failed"}
-    if quality_status != "passed":
-        return {"verdict": "needs_review", "reason": "quality_gate_not_reported"}
-    behavior = task_pack.get("behavior_reuse") if isinstance(task_pack.get("behavior_reuse"), dict) else {}
-    if behavior.get("status") != "enabled":
-        return {"verdict": "needs_review", "reason": "closed_behavior_unavailable"}
-    validation = task_pack.get("behavior_validation") if isinstance(task_pack.get("behavior_validation"), dict) else {}
-    if validation.get("status") == "passed":
-        return {"verdict": "usable", "reason": "runtime_behavior_verified"}
-    if validation.get("status") == "failed":
-        return {"verdict": "rejected", "reason": "runtime_behavior_failed"}
-    return {"verdict": "needs_review", "reason": "runtime_validation_required"}
 
 
 def lumo_lite_engine_status(load_result: dict[str, Any]) -> dict[str, Any]:
@@ -377,7 +360,7 @@ class LumoLiteReweaveEngine:
         result["localModel"] = model_meta
         result["model_call"] = bool(model_meta.get("local_http_call"))
         result["network_call"] = bool(model_meta.get("local_http_call"))
-        result["previewAcceptance"] = _preview_acceptance(result["taskPack"])
+        result["previewAcceptance"] = preview_acceptance(result["taskPack"])
         return result
 
     def list_lumo_lite_artifacts(self) -> dict[str, Any]:

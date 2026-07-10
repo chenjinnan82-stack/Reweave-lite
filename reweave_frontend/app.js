@@ -2190,6 +2190,9 @@
     var exports = payload.exports || [];
     var html = "";
     html += '<p class="preview-viewer-mode"><strong>Mode:</strong> ' + escapeHtml(pkg.mode || "metadata_only") + "</p>";
+    if (payload.previewAcceptance) {
+      html += '<p class="preview-viewer-meta">' + escapeHtml(previewAcceptanceText(payload.previewAcceptance)) + "</p>";
+    }
     if (pkg.created_at) {
       html += '<p class="preview-viewer-meta">' + escapeHtml(pkg.created_at) + "</p>";
     }
