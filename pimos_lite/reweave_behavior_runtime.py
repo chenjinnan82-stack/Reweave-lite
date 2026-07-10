@@ -78,13 +78,14 @@ def validate_react_preview_behavior(
 
 def _run_react_child(root: Path, expected_text: str) -> int:
     try:
-        from PySide6.QtCore import QTimer, QUrl
+        from PySide6.QtCore import Qt, QTimer, QUrl
         from PySide6.QtWebEngineCore import (
             QWebEnginePage,
             QWebEngineProfile,
             QWebEngineSettings,
             QWebEngineUrlRequestInterceptor,
         )
+        from PySide6.QtWebEngineWidgets import QWebEngineView
         from PySide6.QtWidgets import QApplication
     except ImportError:
         print(json.dumps(_receipt("unavailable", "pyside6_unavailable")))
@@ -120,6 +121,11 @@ def _run_react_child(root: Path, expected_text: str) -> int:
     request_interceptor = PreviewRequestInterceptor()
     profile.setUrlRequestInterceptor(request_interceptor)
     page = ValidationPage(profile)
+    view = QWebEngineView()
+    view.resize(960, 600)
+    view.setAttribute(Qt.WA_DontShowOnScreen, True)
+    view.setPage(page)
+    view.show()
     settings = page.settings()
     settings.setAttribute(QWebEngineSettings.LocalContentCanAccessFileUrls, True)
     settings.setAttribute(QWebEngineSettings.LocalContentCanAccessRemoteUrls, False)
@@ -136,6 +142,12 @@ def _run_react_child(root: Path, expected_text: str) -> int:
     def finish(result: dict[str, Any]) -> None:
         result.setdefault("request_scope", "preview_root_only")
         result.setdefault("blocked_request_count", len(blocked_requests))
+        if result.get("status") == "passed":
+            preview_image = root / "preview.png"
+            pixmap = view.grab()
+            if not pixmap.isNull() and pixmap.save(str(preview_image), "PNG"):
+                result["preview_image"] = "react_project/dist/preview.png"
+                result["preview_output_write"] = True
         if console_messages:
             result.setdefault("console_messages", console_messages[-5:])
         output.update(result)

@@ -173,6 +173,9 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert 'els.reweaveResponse.textContent = t("runtimeReadOnlyMessage");' in app
     assert "function blockReadyRender(message)" in app
     assert "function previewAcceptanceText(acceptance)" in app
+    assert 'acceptance.reason === "react_runtime_verified"' in app
+    assert 'acceptance.reason === "react_runtime_failed"' in app
+    assert 'lastReactPreview ? t("reactRuntimeVerified") : previewText' in app
     assert "previewAcceptanceText(payload.previewAcceptance)" in app
     assert "lastPreviewAcceptance = result.previewAcceptance || null;" in app
     assert 'acceptanceUsable: "可用 · 交互行为已验证"' in app
@@ -189,7 +192,14 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert '"behavior_contract.json": true' in app
     assert '"behavior_adaptation.json": true' in app
     assert '"behavior_validation.json": true' in app
+    assert '"project_graph.json": true' in app
+    assert '"react_compile.json": true' in app
+    assert '"react_runtime_validation.json": true' in app
     assert "validateRuntime: true" in app
+    assert "function renderGeneratedPreview()" in app
+    assert 'runtimeValidation.preview_image === "react_project/dist/preview.png"' in app
+    assert "React app · Runtime verified" in app
+    assert ".react-preview-image" in styles
     assert 'return !BUILD_NOTE_FILES[name];' in app
     assert "var visibleFiles = userFacingFiles(files);" in app
     assert "var generatedTraceAvailable =" in app

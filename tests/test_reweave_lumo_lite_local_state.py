@@ -471,6 +471,27 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
         self.assertTrue(all("_behavior_text" in cap for cap in selected))
         self.assertEqual(result["taskPack"]["selection_mode"], "auto_match")
 
+    def test_lumo_lite_auto_selection_keeps_complete_react_project_capsule(self) -> None:
+        capsules = [
+            {"id": "box-react", "source_id": "box", "status": "active"},
+            {"id": "box-copy", "source_id": "box", "status": "active"},
+            {"id": "box-style", "source_id": "box", "status": "active"},
+            {"id": "box-data", "source_id": "box", "status": "active"},
+        ]
+        ranked = capsules[1:]
+
+        with (
+            patch("pimos_lite.reweave_engine.lumo_lite.list_local_capsules", return_value=capsules),
+            patch(
+                "pimos_lite.reweave_engine.lumo_lite.load_capsule_content",
+                side_effect=lambda capsule_id: {"project_files_complete": capsule_id == "box-react"},
+            ),
+            patch("pimos_lite.reweave_engine.lumo_lite.select_capsules_for_task", return_value=ranked),
+        ):
+            selected = LumoLiteReweaveEngine().select_capsules("Build a React dashboard")
+
+        self.assertEqual([item["id"] for item in selected], ["box-react", "box-copy", "box-style"])
+
     def test_lumo_lite_engine_owns_preview_acceptance(self) -> None:
         engine = LumoLiteReweaveEngine(runtime_state_path=str(self._runtime_state))
         cases = (

@@ -1153,6 +1153,24 @@ input:focus-visible {
   transform-origin: top center;
 }
 
+.generated-preview.react-preview-ready {
+  width: clamp(160px, 22vw, 240px);
+  max-width: 38%;
+  opacity: 1;
+  transform: none;
+}
+
+.react-preview-image {
+  display: block;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  object-fit: cover;
+  object-position: top;
+  border: 1px solid var(--border-soft);
+  border-radius: 6px;
+  background: #fff;
+}
+
 .generated-package.runtime-read-only .generated-files {
   gap: 0;
 }

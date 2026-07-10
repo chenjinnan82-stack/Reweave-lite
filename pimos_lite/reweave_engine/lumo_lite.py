@@ -252,6 +252,7 @@ class LumoLiteReweaveEngine:
     def select_capsules(self, task: str) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
         behavior_by_source: dict[str, str] = {}
+        react_project_by_source: dict[str, dict[str, Any]] = {}
         for capsule in list_local_capsules():
             if not is_generate_eligible(capsule):
                 continue
@@ -260,6 +261,8 @@ class LumoLiteReweaveEngine:
             contract = content.get("behavior_contract") if isinstance(content.get("behavior_contract"), dict) else {}
             candidate["_closed_behavior"] = contract.get("status") == "closed"
             source_id = str(candidate.get("source_id") or candidate.get("source") or "")
+            if content.get("project_files_complete") is True:
+                react_project_by_source[source_id] = candidate
             behavior_text = behavior_contract_search_text(contract)
             if behavior_text:
                 behavior_by_source[source_id] = behavior_text
@@ -267,7 +270,14 @@ class LumoLiteReweaveEngine:
         for candidate in candidates:
             source_id = str(candidate.get("source_id") or candidate.get("source") or "")
             candidate["_behavior_text"] = behavior_by_source.get(source_id, "")
-        return select_capsules_for_task(task, candidates)
+        selected = select_capsules_for_task(task, candidates)
+        if not selected:
+            return selected
+        source_id = str(selected[0].get("source_id") or selected[0].get("source") or "")
+        required = react_project_by_source.get(source_id)
+        if not required or any(item.get("id") == required.get("id") for item in selected):
+            return selected
+        return [required, *[item for item in selected if item.get("id") != required.get("id")]][: len(selected)]
 
     def generate_preview(self, payload: dict[str, Any]) -> dict[str, Any]:
         task = str(payload.get("taskText") or payload.get("task") or "New tool")
