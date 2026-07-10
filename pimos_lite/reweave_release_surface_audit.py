@@ -42,6 +42,7 @@ RELEASE_EXCLUDED_SUPPORT_FILES = (
     "pimos_lite/reweave_luna_client.py",
     "pimos_lite/reweave_preview_export.py",
     "pimos_lite/reweave_preview_pack.py",
+    "pimos_lite/reweave_project_graph.py",
     "pimos_lite/reweave_project_renderer.py",
     "pimos_lite/reweave_promote.py",
     "pimos_lite/reweave_quality_gate.py",

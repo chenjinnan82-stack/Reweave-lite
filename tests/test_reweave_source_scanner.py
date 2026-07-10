@@ -130,6 +130,50 @@ class ReweaveSourceScannerTest(unittest.TestCase):
         self.assertEqual(on_disk["source_id"], box["id"])
         self.assertEqual(summary["source_id"], box["id"])
 
+    def test_scan_builds_read_only_react_vite_project_graph(self) -> None:
+        root = self._state_dir / "react-vite-project"
+        source = root / "src"
+        source.mkdir(parents=True)
+        (root / "package.json").write_text(
+            json.dumps(
+                {
+                    "name": "quote-app",
+                    "dependencies": {"react": "^19.0.0", "react-dom": "^19.0.0"},
+                    "devDependencies": {"vite": "^7.0.0"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        (source / "main.tsx").write_text(
+            "import React from 'react';\nimport App from './App';\nimport './app.css';\n",
+            encoding="utf-8",
+        )
+        (source / "App.tsx").write_text(
+            "export default function App() { return <button>Quote</button>; }\n",
+            encoding="utf-8",
+        )
+        (source / "app.css").write_text("button { color: teal; }\n", encoding="utf-8")
+        before = {path.name: path.read_bytes() for path in source.iterdir()}
+
+        box = registry.add_source_box(root)
+        summary = scanner.scan_source_box(box["id"])
+
+        graph = summary["project_graph"]
+        self.assertEqual(graph["status"], "analyzed")
+        self.assertEqual(graph["project_kind"], "react_vite")
+        self.assertEqual(graph["entrypoints"], ["src/main.tsx"])
+        self.assertEqual(graph["counts"], {"nodes": 3, "edges": 2, "unresolved": 0})
+        self.assertIn({"from": "src/main.tsx", "to": "src/App.tsx"}, graph["edges"])
+        self.assertIn({"from": "src/main.tsx", "to": "src/app.css"}, graph["edges"])
+        self.assertIn("react", graph["external_dependencies"])
+        self.assertFalse(graph["source_project_write"])
+        self.assertEqual(before, {path.name: path.read_bytes() for path in source.iterdir()})
+        light = scanner.load_summary_light(box["id"])
+        assert light is not None
+        self.assertEqual(light["project_kind"], "react_vite")
+        self.assertEqual(light["project_graph_status"], "analyzed")
+        self.assertEqual(light["project_graph_counts"], {"nodes": 3, "edges": 2, "unresolved": 0})
+
     def test_registry_updated_after_scan(self) -> None:
         root = self._make_project()
         box = registry.add_source_box(root)
