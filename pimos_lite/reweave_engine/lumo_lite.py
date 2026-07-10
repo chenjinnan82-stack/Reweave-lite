@@ -8,11 +8,15 @@ from typing import Any
 
 from pimos_lite.reweave_capsule_content import enrich_capsule_content as enrich_local_capsule_content
 from pimos_lite.reweave_capsule_content import get_capsule_content as get_local_capsule_content
+from pimos_lite.reweave_capsule_content import load_capsule_content
 from pimos_lite.reweave_capsule_draft import draft_capsules, list_draft_lights
 from pimos_lite.reweave_capsule_warehouse import get_capsule as get_local_capsule
 from pimos_lite.reweave_capsule_warehouse import list_capsules as list_local_capsules
 from pimos_lite.reweave_capsule_warehouse import promote_source_drafts as promote_local_drafts
+from pimos_lite.reweave_capsule_warehouse import is_generate_eligible
 from pimos_lite.reweave_preview_pack import build_preview_package
+from pimos_lite.reweave_preview_pack import attach_behavior_validation
+from pimos_lite.reweave_behavior_runtime import validate_preview_behavior
 from pimos_lite.reweave_lumo_lite_artifacts import (
     collect_lumo_lite_artifacts,
     get_lumo_lite_artifact,
@@ -29,9 +33,28 @@ from pimos_lite.reweave_llm_pack import apply_ollama_pack
 from pimos_lite.reweave_source_registry import add_source_box, get_source_box, list_source_boxes
 from pimos_lite.reweave_source_scanner import list_summary_lights
 from pimos_lite.reweave_source_scanner import scan_source_box as execute_source_scan
+from pimos_lite.reweave_task_intent import behavior_contract_search_text, select_capsules_for_task
 
 APP_VERSION = "0.3.0"
 LUMO_LITE_MODE = "source_read_only_preview_write"
+
+
+def _preview_acceptance(task_pack: dict[str, Any]) -> dict[str, str]:
+    quality_gate = task_pack.get("quality_gate") if isinstance(task_pack.get("quality_gate"), dict) else {}
+    quality_status = str(quality_gate.get("status") or "")
+    if quality_status == "failed":
+        return {"verdict": "rejected", "reason": "quality_gate_failed"}
+    if quality_status != "passed":
+        return {"verdict": "needs_review", "reason": "quality_gate_not_reported"}
+    behavior = task_pack.get("behavior_reuse") if isinstance(task_pack.get("behavior_reuse"), dict) else {}
+    if behavior.get("status") != "enabled":
+        return {"verdict": "needs_review", "reason": "closed_behavior_unavailable"}
+    validation = task_pack.get("behavior_validation") if isinstance(task_pack.get("behavior_validation"), dict) else {}
+    if validation.get("status") == "passed":
+        return {"verdict": "usable", "reason": "runtime_behavior_verified"}
+    if validation.get("status") == "failed":
+        return {"verdict": "rejected", "reason": "runtime_behavior_failed"}
+    return {"verdict": "needs_review", "reason": "runtime_validation_required"}
 
 
 def lumo_lite_engine_status(load_result: dict[str, Any]) -> dict[str, Any]:
@@ -242,8 +265,34 @@ class LumoLiteReweaveEngine:
     def get_capsule_content(self, capsule_id: str) -> dict[str, Any]:
         return get_local_capsule_content(capsule_id)
 
+    def select_capsules(self, task: str) -> list[dict[str, Any]]:
+        candidates: list[dict[str, Any]] = []
+        behavior_by_source: dict[str, str] = {}
+        for capsule in list_local_capsules():
+            if not is_generate_eligible(capsule):
+                continue
+            candidate = dict(capsule)
+            content = load_capsule_content(str(candidate.get("id") or "")) or {}
+            contract = content.get("behavior_contract") if isinstance(content.get("behavior_contract"), dict) else {}
+            candidate["_closed_behavior"] = contract.get("status") == "closed"
+            source_id = str(candidate.get("source_id") or candidate.get("source") or "")
+            behavior_text = behavior_contract_search_text(contract)
+            if behavior_text:
+                behavior_by_source[source_id] = behavior_text
+            candidates.append(candidate)
+        for candidate in candidates:
+            source_id = str(candidate.get("source_id") or candidate.get("source") or "")
+            candidate["_behavior_text"] = behavior_by_source.get(source_id, "")
+        return select_capsules_for_task(task, candidates)
+
     def generate_preview(self, payload: dict[str, Any]) -> dict[str, Any]:
-        capsule_ids = payload.get("capsuleIds") if isinstance(payload.get("capsuleIds"), list) else []
+        task = str(payload.get("taskText") or payload.get("task") or "New tool")
+        effective_payload = dict(payload)
+        if str(payload.get("selectionMode") or payload.get("selection_mode") or "") == "auto_match":
+            selected = self.select_capsules(task)
+            effective_payload["capsuleIds"] = [str(cap.get("id")) for cap in selected if cap.get("id")]
+            effective_payload["capsules"] = selected
+        capsule_ids = effective_payload.get("capsuleIds") if isinstance(effective_payload.get("capsuleIds"), list) else []
         use_enriched = bool(payload.get("useEnrichedContent"))
         if not use_enriched:
             for cap_id in capsule_ids:
@@ -252,21 +301,35 @@ class LumoLiteReweaveEngine:
                 if str(enrichment.get("status") or "") == "enriched":
                     use_enriched = True
                     break
-        result = build_preview_package(
-            {
-                **payload,
-                "backend": "lumo_lite_task_pack",
-                "taskPack": True,
-                "useEnrichedContent": use_enriched,
-                "reuseBehavior": True,
+        try:
+            result = build_preview_package(
+                {
+                    **effective_payload,
+                    "backend": "lumo_lite_task_pack",
+                    "taskPack": True,
+                    "useEnrichedContent": use_enriched,
+                    "reuseBehavior": True,
+                }
+            )
+        except ValueError as exc:
+            if not str(exc).startswith("preview quality gate failed"):
+                raise
+            return {
+                "ok": False,
+                "mode": "task_pack_preview",
+                "source_project_write": False,
+                "dispatch": False,
+                "network_call": False,
+                "model_call": False,
+                "previewAcceptance": {"verdict": "rejected", "reason": "quality_gate_failed"},
+                "error": str(exc),
             }
-        )
         if not isinstance(result.get("taskPack"), dict):
             raise ValueError("preview core did not return taskPack")
-        local_model = payload.get("localModel") if isinstance(payload.get("localModel"), dict) else {}
+        local_model = effective_payload.get("localModel") if isinstance(effective_payload.get("localModel"), dict) else {}
         model_meta: dict[str, Any] = {"enabled": False, "local_http_call": False, "applied": False}
         if local_model.get("enabled") is True:
-            selected_capsules = payload.get("capsules") if isinstance(payload.get("capsules"), list) else []
+            selected_capsules = effective_payload.get("capsules") if isinstance(effective_payload.get("capsules"), list) else []
             provider = str(local_model.get("provider") or "ollama").strip().lower()
             model = str(local_model.get("model") or "qwen2.5-coder:1.5b").strip()
             base_url = str(local_model.get("baseUrl") or "http://127.0.0.1:11434").strip()
@@ -289,7 +352,7 @@ class LumoLiteReweaveEngine:
             else:
                 model_meta = apply_ollama_pack(
                     Path(result["previewPath"]),
-                    task=str(payload.get("taskText") or payload.get("task") or "New tool"),
+                    task=task,
                     selected_capsules=[cap for cap in selected_capsules if isinstance(cap, dict)],
                     snippet_context=result.get("snippetContext"),
                     model=model,
@@ -300,12 +363,21 @@ class LumoLiteReweaveEngine:
                 root = Path(result["previewPath"])
                 result["taskPack"] = json.loads((root / "task_pack.json").read_text(encoding="utf-8"))
                 result["provenance"] = json.loads((root / "provenance.json").read_text(encoding="utf-8"))
+        if effective_payload.get("validateRuntime") is True:
+            validation = validate_preview_behavior(result["previewPath"])
+            attached = attach_behavior_validation(result["previewPath"], validation)
+            result.update(attached)
+            result["runtimeValidation"] = validation
+            files = result.get("generatedPackage", {}).get("files")
+            if isinstance(files, list) and "behavior_validation.json" not in files:
+                files.append("behavior_validation.json")
         result["mode"] = "task_pack_preview"
         result["source_project_write"] = False
         result["dispatch"] = False
         result["localModel"] = model_meta
         result["model_call"] = bool(model_meta.get("local_http_call"))
         result["network_call"] = bool(model_meta.get("local_http_call"))
+        result["previewAcceptance"] = _preview_acceptance(result["taskPack"])
         return result
 
     def list_lumo_lite_artifacts(self) -> dict[str, Any]:

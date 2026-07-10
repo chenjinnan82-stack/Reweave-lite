@@ -34,6 +34,7 @@ def test_reweave_release_surface_audit_checks_release_boundary() -> None:
     assert audit["launcher_bootstrap_policy"] == "allowed_dependency_bootstrap_exception_not_source_write"
     assert audit["browser_demo_status"] in {"passed", "partial_mock_fallback_present"}
     paths = {row["path"] for row in audit["entrypoints"]}
+    assert "pimos_lite/reweave_behavior_runtime.py" in paths
     assert "pimos_lite/reweave_engine/lumo_lite.py" in paths
     assert "pimos_lite/reweave_lumo_lite_state.py" in paths
     assert "pimos_lite/reweave_engine/factory.py" in paths
@@ -42,6 +43,7 @@ def test_reweave_release_surface_audit_checks_release_boundary() -> None:
     assert "pimos_lite/reweave_engine/local.py" in audit["release_excluded_support_files"]
     assert "pimos_lite/reweave_preview_export.py" in audit["release_excluded_support_files"]
     dispositions = {row["path"]: row["release_disposition"] for row in audit["entrypoints"]}
+    assert dispositions["pimos_lite/reweave_behavior_runtime.py"] == "included"
     assert dispositions["pimos_lite/reweave_engine/lumo_lite.py"] == "included"
     assert dispositions["pimos_lite/reweave_lumo_lite_state.py"] == "included"
     assert dispositions["pimos_lite/reweave_engine/local.py"] == "excluded_support_only"

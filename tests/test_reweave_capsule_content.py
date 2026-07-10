@@ -87,6 +87,7 @@ class ReweaveCapsuleContentTest(unittest.TestCase):
         self.assertTrue(content_file_path(self.capsule_id).is_file())
 
     def test_closed_frontend_module_contract_keeps_complete_files_and_events(self) -> None:
+        (self._source_dir / "alternate.html").write_text("<html><body>Alternate</body></html>", encoding="utf-8")
         (self._source_dir / "index.html").write_text(
             '<!doctype html><html><head><link rel="stylesheet" href="styles.css"></head>'
             '<body><input id="amount"><button id="runBtn">Run</button><p id="status"></p>'
@@ -107,6 +108,7 @@ class ReweaveCapsuleContentTest(unittest.TestCase):
 
         assert contract
         self.assertEqual(contract["status"], "closed")
+        self.assertEqual(contract["entry_path"], "index.html")
         self.assertEqual(contract["mode"], "whole_frontend_module")
         self.assertIn("textContent = 'done'", contract["files"]["script"]["content"])
         self.assertIn({"target_id": "runBtn", "event": "click"}, contract["interactions"]["events"])
@@ -124,6 +126,102 @@ class ReweaveCapsuleContentTest(unittest.TestCase):
         assert contract
         self.assertEqual(contract["status"], "blocked")
         self.assertIn("multiple_scripts_not_supported", contract["blockers"])
+
+    def test_closed_frontend_module_contract_accepts_named_html_entry(self) -> None:
+        (self._source_dir / "index.html").unlink()
+        (self._source_dir / "calendar.html").write_text(
+            '<html><body><button id="publishNext">Publish</button><p id="status"></p>'
+            '<script src="calendar.js"></script></body></html>',
+            encoding="utf-8",
+        )
+        (self._source_dir / "calendar.js").write_text(
+            "document.getElementById('publishNext').addEventListener('click', () => { "
+            "document.getElementById('status').textContent = 'published'; });",
+            encoding="utf-8",
+        )
+        summary = scanner.scan_source_box(self.source_id)
+        contract = build_frontend_behavior_contract(self._source_dir, summary, {"name": "HTML Surface"})
+
+        assert contract
+        self.assertEqual(contract["status"], "closed")
+        self.assertEqual(contract["entry_path"], "calendar.html")
+
+    def test_frontend_module_contract_accepts_query_selector_all_events(self) -> None:
+        (self._source_dir / "index.html").write_text(
+            '<html><body><input type="checkbox" class="step"><p id="progress"></p>'
+            '<script src="app.js"></script></body></html>',
+            encoding="utf-8",
+        )
+        (self._source_dir / "app.js").write_text(
+            'const steps = Array.from(document.querySelectorAll(".step")); '
+            'const progress = document.getElementById("progress"); '
+            'steps.forEach((item) => item.addEventListener("change", () => { '
+            'progress.textContent = "1 complete"; }));',
+            encoding="utf-8",
+        )
+        summary = scanner.scan_source_box(self.source_id)
+        contract = build_frontend_behavior_contract(self._source_dir, summary, {"name": "Page Shell"})
+
+        assert contract
+        self.assertEqual(contract["status"], "closed")
+        self.assertIn({"target_selector": ".step", "event": "change"}, contract["interactions"]["events"])
+        self.assertIn("progress", contract["interactions"]["state_target_ids"])
+
+    def test_frontend_module_contract_accepts_object_query_selectors(self) -> None:
+        (self._source_dir / "index.html").write_text(
+            '<html><body><button id="run">Run</button><p id="status">Waiting</p>'
+            '<script src="app.js"></script></body></html>',
+            encoding="utf-8",
+        )
+        (self._source_dir / "app.js").write_text(
+            'const el = { run: document.querySelector("#run"), status: document.querySelector("#status") }; '
+            'el.run.addEventListener("click", () => { el.status.textContent = "Done"; });',
+            encoding="utf-8",
+        )
+        summary = scanner.scan_source_box(self.source_id)
+        contract = build_frontend_behavior_contract(self._source_dir, summary, {"name": "Page Shell"})
+
+        assert contract
+        self.assertEqual(contract["status"], "closed")
+        self.assertIn({"target_selector": "#run", "event": "click"}, contract["interactions"]["events"])
+        self.assertIn("#status", contract["interactions"]["state_target_selectors"])
+
+    def test_frontend_module_contract_accepts_observable_passive_timer(self) -> None:
+        (self._source_dir / "index.html").write_text(
+            '<html><body><p id="status">Waiting</p><script src="app.js"></script></body></html>',
+            encoding="utf-8",
+        )
+        (self._source_dir / "app.js").write_text(
+            'const status = document.getElementById("status"); '
+            'setInterval(() => { status.textContent = "Updated"; }, 3000);',
+            encoding="utf-8",
+        )
+        summary = scanner.scan_source_box(self.source_id)
+        contract = build_frontend_behavior_contract(self._source_dir, summary, {"name": "Page Shell"})
+
+        assert contract
+        self.assertEqual(contract["status"], "closed")
+        self.assertEqual(contract["interaction_mode"], "passive_timer")
+        self.assertEqual(contract["interactions"]["events"], [])
+        self.assertEqual(contract["interactions"]["passive_updates"], [{"kind": "timer", "api": "setInterval"}])
+        self.assertIn("status", contract["interactions"]["state_target_ids"])
+
+    def test_frontend_module_contract_extracts_one_inline_script(self) -> None:
+        (self._source_dir / "index.html").write_text(
+            '<html><body><button id="run">Run</button><p id="status"></p><script>'
+            'const status = document.getElementById("status"); '
+            'document.getElementById("run").addEventListener("click", () => { status.textContent = "done"; });'
+            '</script></body></html>',
+            encoding="utf-8",
+        )
+        summary = scanner.scan_source_box(self.source_id)
+        contract = build_frontend_behavior_contract(self._source_dir, summary, {"name": "Page Shell"})
+
+        assert contract
+        self.assertEqual(contract["status"], "closed")
+        self.assertEqual(contract["files"]["script"]["source_kind"], "inline")
+        self.assertEqual(contract["dependencies"]["inline_script_count"], 1)
+        self.assertIn("status.textContent", contract["files"]["script"]["content"])
 
     def test_frontend_module_contract_blocks_static_html(self) -> None:
         (self._source_dir / "index.html").write_text("<html><body>Static page</body></html>", encoding="utf-8")
@@ -150,6 +248,25 @@ class ReweaveCapsuleContentTest(unittest.TestCase):
         assert contract
         self.assertEqual(contract["status"], "blocked")
         self.assertIn("runtime_dependency:fetch", contract["blockers"])
+
+    def test_frontend_module_contract_blocks_required_python_service(self) -> None:
+        (self._source_dir / "index.html").write_text(
+            '<html><body><button id="runBtn">Run</button><p id="status"></p>'
+            '<script src="app.js"></script></body></html>',
+            encoding="utf-8",
+        )
+        (self._source_dir / "app.js").write_text(
+            'const status = document.getElementById("status"); '
+            'document.getElementById("runBtn").addEventListener("click", () => { '
+            'status.textContent = "Run python scraper.py first"; });',
+            encoding="utf-8",
+        )
+        summary = scanner.scan_source_box(self.source_id)
+        contract = build_frontend_behavior_contract(self._source_dir, summary, {"name": "Page Shell"})
+
+        assert contract
+        self.assertEqual(contract["status"], "blocked")
+        self.assertIn("runtime_dependency:python_service", contract["blockers"])
 
     def test_frontend_module_contract_blocks_unobservable_click_state(self) -> None:
         (self._source_dir / "index.html").write_text(

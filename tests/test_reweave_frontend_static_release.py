@@ -134,16 +134,25 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert 'els.btnGenerate.classList.toggle("hidden", !taskPackPreview);' in app
     assert "Build Small Project Pack" in app
     assert "Small Project Pack ready" in app
-    assert 'selectionMode: usedCapsuleIds.length > 0 ? "manual" : "auto_match"' in app
+    assert "selectionMode: usedCapsuleSelectionMode" in app
     assert 'desktopCapability("canUseBoundedLocalModel")' in app
     assert 'model: "qwen2.5-coder:1.5b"' in app
+    assert "resolveGenerateIds" not in app
+    assert "Array.isArray(result.capsulesUsed)" in app
+    assert 'result.taskPack.selection_mode === "auto_match"' in app
     assert 'setLocalModelStatus("localModelRunning")' in app
     assert 'if (useBoundedLocalModel) setLocalModelStatus("localModelFallback");' in app
     assert "Generate will use exactly these capsules." in app
+    assert "Capsule drafts are ready. Review the Source Box and store them." in app
+    assert 'var ids = usedCapsuleSelectionMode === "manual" ? usedCapsuleIds.slice() : [];' in app
+    assert 'usedCapsuleSelectionMode === "manual" && usedCapsuleIds.length > 0' in app
     assert ".generation-input-note" in styles
     assert 'openFolder.classList.add("hidden");' in app
     assert 'productSummary: "产品能力：{capability} · 源项目写入：{writes} · 追溯：{trace}"' in app
     assert 'productSummary: "Product capability: {capability} · Source writes: {writes} · Trace: {trace}"' in app
+    assert "可生成小项目包预览 · 尚无历史验收 · 源项目写入：0" in app
+    assert "Task Pack preview available · No acceptance history yet · Source writes: 0" in app
+    assert "previewReadyWithoutHistory" in app
     assert 'responseBits.push("Product base ready");' not in app
     assert 'responseBits.push("Task pack ready");' not in app
     assert "btn-artifact-view" in artifacts
@@ -163,13 +172,27 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert "show && hasDesktopBridge() && (!isLumoLiteReadOnly() || canBuildTaskPackPreview())" in app
     assert 'els.reweaveResponse.textContent = t("runtimeReadOnlyMessage");' in app
     assert "function blockReadyRender(message)" in app
-    assert "if ((isLumoLiteReadOnly() && !canBuildTaskPackPreview()) || !result || result.ok === false)" in app
+    assert "function previewAcceptanceText(acceptance)" in app
+    assert "lastPreviewAcceptance = result.previewAcceptance || null;" in app
+    assert 'acceptanceUsable: "可用 · 交互行为已验证"' in app
+    assert 'acceptanceUsable: "Usable · Interaction verified"' in app
+    acceptance_formatter = app[app.index("  function previewAcceptanceText("):app.index("\n  function showScreen(")]
+    assert "taskPack" not in acceptance_formatter
+    assert ".quality_gate" not in acceptance_formatter
+    assert ".behavior_reuse" not in acceptance_formatter
+    assert "result && result.previewAcceptance" in app
     assert "openFirstLumoLiteCapsule" not in app
     assert ":focus-visible" in styles
     assert ":focus-within" in styles
     assert 'artifact.kind === "preview_artifact"' in app
+    assert '"behavior_contract.json": true' in app
+    assert '"behavior_adaptation.json": true' in app
+    assert '"behavior_validation.json": true' in app
+    assert "validateRuntime: true" in app
     assert 'return !BUILD_NOTE_FILES[name];' in app
     assert "var visibleFiles = userFacingFiles(files);" in app
+    assert "var generatedTraceAvailable =" in app
+    assert "hasTaskPackPreview || summary.preview_ready" in app
     assert 'renderers.renderFileTree(t("smallProjectPack") + "/", productFiles, escapeHtml)' in app
     assert 'sidecar.classList.toggle("runtime-sidecar-unavailable", !available);' in app
     assert ".machine-core.sidecar-collapsed" in styles

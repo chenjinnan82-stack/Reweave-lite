@@ -14,6 +14,7 @@ from pimos_lite import reweave_capsule_warehouse as warehouse
 from pimos_lite import reweave_preview_pack as preview
 from pimos_lite import reweave_project_renderer as renderer
 from pimos_lite.reweave_quality_gate import build_quality_gate
+from pimos_lite.reweave_behavior_runtime import validate_preview_behavior
 from pimos_lite.reweave_project_renderer import build_app_js
 from pimos_lite.reweave_project_renderer import build_index_html
 from pimos_lite.reweave_project_renderer import build_preview_readme
@@ -21,7 +22,7 @@ from pimos_lite.reweave_project_renderer import build_review_html
 from pimos_lite.reweave_project_renderer import build_styles_css
 from pimos_lite import reweave_source_registry as registry
 from pimos_lite import reweave_source_scanner as scanner
-from pimos_lite.reweave_task_intent import build_task_intent
+from pimos_lite.reweave_task_intent import behavior_contract_search_text, build_task_intent, select_capsules_for_task
 from pimos_lite.reweave_task_plan import build_task_plan
 
 
@@ -35,6 +36,16 @@ class ReweavePreviewPackTest(unittest.TestCase):
     def tearDown(self) -> None:
         self._env.stop()
         self._tmpdir.cleanup()
+
+    def test_empty_behavior_contract_has_no_search_text(self) -> None:
+        self.assertEqual(behavior_contract_search_text({}), "")
+
+    def test_runtime_validation_without_behavior_contract_does_not_start_qt(self) -> None:
+        result = validate_preview_behavior(self._state_dir)
+
+        self.assertEqual(result["status"], "not_run")
+        self.assertEqual(result["reason"], "no_closed_behavior_module")
+        self.assertFalse(result["source_project_write"])
 
     def _promote_capsules(self) -> list[str]:
         root = self._state_dir / "preview-source"
@@ -135,6 +146,108 @@ class ReweavePreviewPackTest(unittest.TestCase):
             ["data_panel_html", "task_style", "task_runtime"],
         )
 
+    def test_task_selection_uses_source_labels_for_english_and_chinese(self) -> None:
+        capsules = []
+        for source in ("customer-quote-widget", "content-calendar", "support-ticket-triage"):
+            for name, kind in (("HTML Surface", "UI"), ("Style Sheet", "Style"), ("Script Module", "Logic"), ("Markdown Doc", "Text")):
+                capsules.append(
+                    {
+                        "id": f"{source}-{kind}",
+                        "name": name,
+                        "type": kind,
+                        "source": source,
+                        "source_id": source,
+                        "role": "reusable project capability",
+                        "tags": [],
+                        "content_enrichment": {"status": "enriched"},
+                        "_closed_behavior": name == "HTML Surface",
+                    }
+                )
+
+        quote = select_capsules_for_task("Build a renovation budget estimator for homeowners", capsules)
+        calendar = select_capsules_for_task("Build an editorial calendar data viewer", capsules)
+        support = select_capsules_for_task("构建客服工单分流面板", capsules)
+
+        self.assertEqual({cap["source_id"] for cap in quote}, {"customer-quote-widget"})
+        self.assertEqual({cap["source_id"] for cap in calendar}, {"content-calendar"})
+        self.assertEqual({cap["source_id"] for cap in support}, {"support-ticket-triage"})
+        self.assertTrue(any(cap["_closed_behavior"] for cap in quote))
+        self.assertTrue(any(cap["_closed_behavior"] for cap in calendar))
+        self.assertTrue(any(cap["_closed_behavior"] for cap in support))
+
+    def test_task_selection_uses_behavior_text_when_source_labels_are_opaque(self) -> None:
+        capsules = [
+            {
+                "id": "archive-a-ui",
+                "name": "HTML Surface",
+                "source": "archive-a",
+                "source_id": "archive-a",
+                "content_enrichment": {"status": "enriched"},
+                "_closed_behavior": True,
+                "_behavior_text": "Inventory restock approval queue with approve request button",
+            },
+            {
+                "id": "archive-b-ui",
+                "name": "HTML Surface",
+                "source": "archive-b",
+                "source_id": "archive-b",
+                "content_enrichment": {"status": "enriched"},
+                "_closed_behavior": True,
+                "_behavior_text": "Artist portfolio studio visit and selected works",
+            },
+        ]
+
+        selected = select_capsules_for_task("Build an inventory restock approval tool", capsules)
+
+        self.assertEqual([cap["source_id"] for cap in selected], ["archive-a"])
+
+    def test_task_selection_prefers_specific_source_name_over_generic_page_words(self) -> None:
+        capsules = [
+            {
+                "id": "system",
+                "name": "HTML Surface",
+                "source": "sys_monitor",
+                "source_id": "system",
+                "_behavior_text": "Status display",
+            },
+            {
+                "id": "water",
+                "name": "HTML Surface",
+                "source": "water-tracker",
+                "source_id": "water",
+                "_behavior_text": "System dashboard monitor status",
+            },
+        ]
+
+        selected = select_capsules_for_task("Build a system monitor status dashboard", capsules)
+
+        self.assertEqual([cap["source_id"] for cap in selected], ["system"])
+
+    def test_task_selection_does_not_reward_sources_for_having_more_capsules(self) -> None:
+        capsules = [
+            {
+                "id": "timer",
+                "name": "Page Shell",
+                "source": "pomodoro-timer",
+                "source_id": "timer",
+                "_behavior_text": "Pomodoro task timer",
+            },
+            *[
+                {
+                    "id": f"generic-{index}",
+                    "name": "HTML Surface",
+                    "source": "generic-tools",
+                    "source_id": "generic",
+                    "_behavior_text": "Task tool with timer status",
+                }
+                for index in range(4)
+            ],
+        ]
+
+        selected = select_capsules_for_task("Build a Pomodoro task timer", capsules)
+
+        self.assertEqual([cap["source_id"] for cap in selected], ["timer"])
+
     def test_task_contract_is_shared_across_pack_renderer_gate_and_provenance(self) -> None:
         cap_ids = self._promote_capsules()
         with (
@@ -194,6 +307,24 @@ class ReweavePreviewPackTest(unittest.TestCase):
         with self.assertRaises(ValueError):
             preview.build_preview_package({"taskText": "x", "capsuleIds": ["cap_missing"]})
 
+    def test_quality_gate_rejects_invalid_javascript(self) -> None:
+        root = self._state_dir / "invalid-js"
+        root.mkdir()
+        (root / "index.html").write_text("<html><body>Invalid JS task</body></html>", encoding="utf-8")
+        (root / "review.html").write_text("reason", encoding="utf-8")
+        (root / "styles.css").write_text("body {}", encoding="utf-8")
+        (root / "app.js").write_text("try {} catch (error) alert(error)", encoding="utf-8")
+        task_plan = {
+            "outputs": [{"path": name} for name in ("index.html", "styles.css", "app.js")],
+            "capsules": [{"reason": "reason"}],
+        }
+
+        gate = build_quality_gate(root, "Invalid JS task", task_plan, content_aware=False)
+
+        syntax_check = next(check for check in gate["checks"] if check["name"] == "javascript_syntax_valid")
+        self.assertFalse(syntax_check["passed"])
+        self.assertEqual(gate["status"], "failed")
+
     def test_preview_index_escapes_task_and_capsule_fields(self) -> None:
         html = preview._build_index_html(
             "<script>alert(1)</script>",
@@ -248,6 +379,27 @@ class ReweavePreviewPackTest(unittest.TestCase):
         self.assertIn("&lt;script&gt;alert(1)&lt;/script&gt;", html)
         self.assertNotIn("<script>alert(1)</script>", html)
         self.assertIn('id="runBtn"', html)
+
+    def test_behavior_renderer_moves_inline_script_to_app_file(self) -> None:
+        contract = {
+            "status": "closed",
+            "files": {
+                "entry": {
+                    "content": '<html><body><button id="runBtn">Run</button><script>window.inlineRan = true;</script></body></html>'
+                },
+                "script": {"content": "window.inlineRan = true;", "sha256": "demo", "source_kind": "inline"},
+            },
+            "interactions": {
+                "controls": [{"id": "runBtn"}],
+                "events": [{"target_id": "runBtn", "event": "click"}],
+                "state_target_ids": [],
+            },
+        }
+
+        html = preview._build_index_html("Run inline tool", [], behavior_contract=contract)
+
+        self.assertNotIn("window.inlineRan", html)
+        self.assertEqual(html.count('<script src="app.js"></script>'), 1)
 
     def test_preview_package_redacts_source_box_paths_by_default(self) -> None:
         result = preview.build_preview_package(

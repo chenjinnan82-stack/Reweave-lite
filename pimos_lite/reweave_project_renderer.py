@@ -78,11 +78,12 @@ def build_behavior_adaptation(task: str, contract: dict[str, Any]) -> dict[str, 
         for item in interactions.get("events", [])
         if isinstance(item, dict) and item.get("target_id")
     )
-    protected_selectors = sorted(
+    protected_selectors = {
         str(item.get("target_selector") or "")
         for item in interactions.get("events", [])
         if isinstance(item, dict) and item.get("target_selector")
-    )
+    }
+    protected_selectors.update(str(item) for item in interactions.get("state_target_selectors", []) if item)
     return {
         "schema_version": 1,
         "mode": "safe_text_adaptation",
@@ -92,7 +93,7 @@ def build_behavior_adaptation(task: str, contract: dict[str, Any]) -> dict[str, 
         "allowed_style_variables": _safe_style_variables(contract),
         "protected": {
             "dom_ids": sorted(protected_ids),
-            "selectors": protected_selectors,
+            "selectors": sorted(protected_selectors),
             "events": list(interactions.get("events") or []),
             "script_sha256": str((_behavior_file(contract, "script") or {}).get("sha256") or ""),
         },
@@ -130,6 +131,15 @@ def _build_behavior_index_html(task: str, contract: dict[str, Any], adaptation: 
         source,
         flags=re.IGNORECASE,
     )
+    script_file = _behavior_file(contract, "script") or {}
+    if script_file.get("source_kind") == "inline":
+        source = re.sub(
+            r"<script\b(?![^>]*\bsrc=)[^>]*>.*?</script>",
+            "",
+            source,
+            count=1,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
     task_meta = f'<meta name="reweave-task" content="{html.escape((task or "")[:MAX_TASK_LEN], quote=True)}">'
     stylesheet = '<link rel="stylesheet" href="styles.css">'
     if re.search(r"</head>", source, flags=re.IGNORECASE):

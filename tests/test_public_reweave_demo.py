@@ -281,7 +281,7 @@ def test_public_reweave_demo_runs_five_source_boxes(tmp_path: Path) -> None:
         assert task_pack["quality_gate_path"] == "quality_gate.json"
         assert task_intent["needed_files"] == ["index.html", "styles.css", "app.js"]
         assert task_plan["source_project_write"] is False
-        behavior_expected = case_id in {"landing-page", "form-tool"}
+        behavior_expected = case_id in TEMPLATE_CASES
         assert task_plan["composer"]["mode"] == (
             "closed_frontend_module" if behavior_expected else "task_plan_and_snippets"
         )
@@ -298,6 +298,9 @@ def test_public_reweave_demo_runs_five_source_boxes(tmp_path: Path) -> None:
         assert "reweave-step" not in html
         if behavior_expected:
             assert task_pack["behavior_reuse"]["status"] == "enabled"
+            assert task_pack["behavior_reuse"]["interaction_mode"] == (
+                "passive_timer" if case_id == "dashboard" else "user_event"
+            )
             assert (out / "behavior_contract.json").is_file()
             assert 'data-reweave-behavior="closed"' in html
         else:

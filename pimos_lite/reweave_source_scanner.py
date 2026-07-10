@@ -176,7 +176,7 @@ def scan_directory_readonly(
         if rel not in samples and len(samples) < 5:
             samples.append(rel)
 
-        if entry.name in ENTRY_CANDIDATE_NAMES:
+        if entry.name in ENTRY_CANDIDATE_NAMES or ext == ".html":
             if rel not in entry_candidates:
                 entry_candidates.append(rel)
 

@@ -5,16 +5,13 @@ from __future__ import annotations
 import html
 import json
 import re
-import tempfile
 import urllib.error
 import urllib.parse
 import urllib.request
-import subprocess
-import shutil
 from pathlib import Path
 from typing import Any
 
-from pimos_lite.reweave_quality_gate import build_quality_gate
+from pimos_lite.reweave_quality_gate import build_quality_gate, js_syntax_ok
 
 PACK_FILES = ("index.html", "styles.css", "app.js")
 
@@ -145,16 +142,6 @@ def normalize_files(files: dict[str, str]) -> tuple[dict[str, str], list[str]]:
     return files, warnings
 
 
-def _js_syntax_ok(js: str) -> bool:
-    node = shutil.which("node")
-    if not node:
-        return bool(js.strip()) and not js.rstrip().endswith((".", ",", "=>"))
-    with tempfile.TemporaryDirectory(prefix="reweave-js-check-") as tmp:
-        path = Path(tmp) / "app.js"
-        path.write_text(js, encoding="utf-8")
-        return subprocess.run([node, "--check", str(path)], capture_output=True, text=True).returncode == 0
-
-
 def validate_files(files: dict[str, str]) -> list[str]:
     errors: list[str] = []
     for name in PACK_FILES:
@@ -169,7 +156,7 @@ def validate_files(files: dict[str, str]) -> list[str]:
         errors.append("index_has_missing_or_external_assets")
     if css and (css.count("{") != css.count("}") or not re.search(r"[^{}]+\{[^{}]+\}", css, re.S)):
         errors.append("css_invalid")
-    if js and not _js_syntax_ok(js):
+    if js and not js_syntax_ok(js):
         errors.append("js_invalid")
     return errors
 

@@ -39,6 +39,7 @@ RUNTIME_DEPENDENCY_PATTERNS = (
     ("dynamic_import", r"\bimport\s*\("),
     ("module_import", r"(?m)^\s*import\s+"),
     ("commonjs_require", r"\brequire\s*\("),
+    ("python_service", r"(?i)\bpython(?:3)?\s+[\w./-]+\.py\b"),
 )
 
 ALLOWED_EXTENSIONS = frozenset(
@@ -218,17 +219,22 @@ class _FrontendEntryParser(HTMLParser):
         super().__init__()
         self.styles: list[str] = []
         self.scripts: list[str] = []
+        self.inline_scripts: list[str] = []
         self.assets: list[str] = []
         self.controls: list[dict[str, str]] = []
         self._button: dict[str, str] | None = None
+        self._inline_script: list[str] | None = None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         values = {key.lower(): str(value or "") for key, value in attrs}
         tag = tag.lower()
         if tag == "link" and "stylesheet" in values.get("rel", "").lower() and values.get("href"):
             self.styles.append(values["href"])
-        elif tag == "script" and values.get("src"):
-            self.scripts.append(values["src"])
+        elif tag == "script":
+            if values.get("src"):
+                self.scripts.append(values["src"])
+            else:
+                self._inline_script = []
         elif tag in {"img", "source", "video", "audio"} and values.get("src"):
             self.assets.append(values["src"])
         elif tag in {"input", "select", "textarea"}:
@@ -244,10 +250,15 @@ class _FrontendEntryParser(HTMLParser):
             self._button = {"kind": "button", "id": values.get("id", ""), "name": values.get("name", ""), "text": ""}
 
     def handle_data(self, data: str) -> None:
+        if self._inline_script is not None:
+            self._inline_script.append(data)
         if self._button is not None:
             self._button["text"] = (self._button.get("text", "") + " " + data).strip()
 
     def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "script" and self._inline_script is not None:
+            self.inline_scripts.append("".join(self._inline_script).strip())
+            self._inline_script = None
         if tag.lower() == "button" and self._button is not None:
             self.controls.append(self._button)
             self._button = None
@@ -295,6 +306,7 @@ def _complete_text_file(source_root: Path, relative: str) -> tuple[dict[str, Any
 
 def _behavior_interactions(parser: _FrontendEntryParser, script: str) -> dict[str, Any]:
     names: dict[str, dict[str, str]] = {}
+    collections: dict[str, str] = {}
     for pattern in (
         r"(?:const|let|var)\s+(\w+)\s*=\s*document\.getElementById\(['\"]([^'\"]+)['\"]\)",
         r"(\w+)\s*:\s*document\.getElementById\(['\"]([^'\"]+)['\"]\)",
@@ -302,11 +314,17 @@ def _behavior_interactions(parser: _FrontendEntryParser, script: str) -> dict[st
         names.update(
             {match.group(1): {"target_id": match.group(2)} for match in re.finditer(pattern, script)}
         )
-    for match in re.finditer(
+    for pattern in (
         r"(?:const|let|var)\s+(\w+)\s*=\s*document\.querySelector\(['\"]([^'\"]+)['\"]\)",
+        r"(\w+)\s*:\s*document\.querySelector\(['\"]([^'\"]+)['\"]\)",
+    ):
+        for match in re.finditer(pattern, script):
+            names[match.group(1)] = {"target_selector": match.group(2)}
+    for match in re.finditer(
+        r"(?:const|let|var)\s+(\w+)\s*=\s*(?:Array\.from\(\s*)?document\.querySelectorAll\(['\"]([^'\"]+)['\"]\)",
         script,
     ):
-        names[match.group(1)] = {"target_selector": match.group(2)}
+        collections[match.group(1)] = match.group(2)
 
     events: list[dict[str, str]] = []
     for match in re.finditer(
@@ -315,20 +333,37 @@ def _behavior_interactions(parser: _FrontendEntryParser, script: str) -> dict[st
     ):
         events.append({"target_id": match.group(1), "event": match.group(2)})
     for match in re.finditer(
-        r"(?:(?:this\.)?elements\.)?(\w+)\.addEventListener\(['\"]([^'\"]+)['\"]",
+        r"(?:(?:this\.)?(?:elements|el)\.)?(\w+)\.addEventListener\(['\"]([^'\"]+)['\"]",
         script,
     ):
         target = names.get(match.group(1))
         event = {**target, "event": match.group(2)} if target else None
         if event and event not in events:
             events.append(event)
+    for match in re.finditer(
+        r"(\w+)\.forEach\(\s*\(?\s*(\w+)\s*\)?\s*=>\s*\2\.addEventListener\(['\"]([^'\"]+)['\"]",
+        script,
+    ):
+        selector = collections.get(match.group(1))
+        event = {"target_selector": selector, "event": match.group(3)} if selector else None
+        if event and event not in events:
+            events.append(event)
 
     referenced_ids = sorted(set(re.findall(r"getElementById\(['\"]([^'\"]+)['\"]\)", script)))
     action_ids = {item["target_id"] for item in events if item.get("target_id")}
+    referenced_selectors = sorted(
+        {str(item.get("target_selector")) for item in names.values() if item.get("target_selector")}
+    )
+    action_selectors = {item["target_selector"] for item in events if item.get("target_selector")}
+    passive_updates = []
+    if re.search(r"\bsetInterval\s*\(", script):
+        passive_updates.append({"kind": "timer", "api": "setInterval"})
     return {
         "controls": parser.controls,
         "events": events,
+        "passive_updates": passive_updates,
         "state_target_ids": [target for target in referenced_ids if target not in action_ids],
+        "state_target_selectors": [target for target in referenced_selectors if target not in action_selectors],
     }
 
 
@@ -338,12 +373,12 @@ def build_frontend_behavior_contract(
     capsule: dict[str, Any],
 ) -> dict[str, Any] | None:
     """Capture one complete standalone frontend module during explicit enrichment."""
-    if str(capsule.get("name") or "") != "Page Shell":
+    if str(capsule.get("name") or "") not in {"Page Shell", "HTML Surface"}:
         return None
-    entries = [str(item) for item in summary.get("entry_candidates", []) if Path(str(item)).name == "index.html"]
+    entries = [str(item) for item in summary.get("entry_candidates", []) if Path(str(item)).suffix.lower() == ".html"]
     if not entries:
-        return {"schema_version": 1, "status": "blocked", "blockers": ["missing_index_html"]}
-    entry_path = sorted(entries, key=lambda item: (len(Path(item).parts), item))[0]
+        return {"schema_version": 1, "status": "blocked", "blockers": ["missing_html_entry"]}
+    entry_path = sorted(entries, key=lambda item: (Path(item).name != "index.html", len(Path(item).parts), item))[0]
     entry, error = _complete_text_file(source_root, entry_path)
     if entry is None:
         return {"schema_version": 1, "status": "blocked", "entry_path": entry_path, "blockers": [error]}
@@ -380,9 +415,9 @@ def build_frontend_behavior_contract(
             blockers.append(f"asset_dependency:{raw}")
     if len(local_styles) > 1:
         blockers.append("multiple_stylesheets_not_supported")
-    if len(local_scripts) > 1:
+    if len(local_scripts) + len(parser.inline_scripts) > 1:
         blockers.append("multiple_scripts_not_supported")
-    if not local_scripts:
+    if not local_scripts and not parser.inline_scripts:
         blockers.append("missing_local_script")
 
     style = script = None
@@ -397,14 +432,32 @@ def build_frontend_behavior_contract(
         else:
             script = file_record
 
-    total_bytes = int(entry["bytes"]) + int((style or {}).get("bytes", 0)) + int((script or {}).get("bytes", 0))
+    if parser.inline_scripts:
+        inline = parser.inline_scripts[0]
+        raw = inline.encode("utf-8")
+        cleaned, redacted = redact_secrets(inline)
+        if len(raw) > MAX_BEHAVIOR_FILE_BYTES:
+            blockers.append("inline_script_too_large")
+        elif redacted:
+            blockers.append("secret_detected:inline_script")
+        else:
+            script = {
+                "relative_path": "<inline-script>",
+                "sha256": hashlib.sha256(raw).hexdigest(),
+                "bytes": len(raw),
+                "content": cleaned,
+                "source_kind": "inline",
+            }
+
+    script_bytes = 0 if (script or {}).get("source_kind") == "inline" else int((script or {}).get("bytes", 0))
+    total_bytes = int(entry["bytes"]) + int((style or {}).get("bytes", 0)) + script_bytes
     if total_bytes > MAX_BEHAVIOR_TOTAL_BYTES:
         blockers.append("module_too_large")
     script_text = str((script or {}).get("content") or "")
     interactions = _behavior_interactions(parser, script_text)
-    if not interactions["events"]:
+    if not interactions["events"] and not interactions["passive_updates"]:
         blockers.append("missing_behavior_events")
-    if not interactions["state_target_ids"]:
+    if not interactions["state_target_ids"] and not interactions["state_target_selectors"]:
         blockers.append("missing_observable_state_target")
     blockers.extend(
         f"runtime_dependency:{name}"
@@ -416,7 +469,7 @@ def build_frontend_behavior_contract(
             "schema_version": 1,
             "status": "blocked",
             "entry_path": entry_path,
-            "dependencies": {"styles": local_styles, "scripts": local_scripts},
+            "dependencies": {"styles": local_styles, "scripts": local_scripts, "inline_script_count": len(parser.inline_scripts)},
             "blockers": sorted(set(blockers)),
             "warnings": warnings,
         }
@@ -425,9 +478,15 @@ def build_frontend_behavior_contract(
         "schema_version": 1,
         "status": "closed",
         "mode": "whole_frontend_module",
+        "interaction_mode": "user_event" if interactions["events"] else "passive_timer",
         "entry_path": entry_path,
         "files": {"entry": entry, "style": style, "script": script},
-        "dependencies": {"styles": local_styles, "scripts": local_scripts, "external_styles_omitted": warnings},
+        "dependencies": {
+            "styles": local_styles,
+            "scripts": local_scripts,
+            "inline_script_count": len(parser.inline_scripts),
+            "external_styles_omitted": warnings,
+        },
         "interactions": interactions,
         "materialized_files": ["index.html", "styles.css", "app.js"],
         "safety": {

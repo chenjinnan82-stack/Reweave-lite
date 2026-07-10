@@ -352,6 +352,7 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
         task_intent["behavior_reuse"] = {
             "status": "selected",
             "mode": behavior_contract.get("mode"),
+            "interaction_mode": behavior_contract.get("interaction_mode", "user_event"),
             "entry_path": behavior_contract.get("entry_path"),
             "capsule_id": selection.get("capsule_id"),
             "reason": selection.get("reason"),
@@ -363,7 +364,11 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
         }
         task_plan["behavior_contract_path"] = "behavior_contract.json"
         task_plan["behavior_adaptation_path"] = "behavior_adaptation.json"
-        task_plan["acceptance"].append("run declared behavior interactions")
+        task_plan["acceptance"].append(
+            "observe declared passive state change"
+            if behavior_contract.get("interaction_mode") == "passive_timer"
+            else "run declared behavior interactions"
+        )
     task_profile = _task_profile(task, capsules, task_intent=task_intent)
     task_pack = _build_task_pack(
         task,
@@ -379,13 +384,20 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
         task_pack["behavior_reuse"] = {
             "status": "enabled",
             "mode": behavior_contract.get("mode"),
+            "interaction_mode": behavior_contract.get("interaction_mode", "user_event"),
             "entry_path": behavior_contract.get("entry_path"),
             "runtime_validation": "required",
+            "validation_kind": (
+                "observe_state_change"
+                if behavior_contract.get("interaction_mode") == "passive_timer"
+                else "execute_user_event"
+            ),
             "adaptation_mode": behavior_adaptation.get("mode") if behavior_adaptation else None,
         }
         provenance["behavior_reuse"] = {
             "status": "enabled",
             "mode": behavior_contract.get("mode"),
+            "interaction_mode": behavior_contract.get("interaction_mode", "user_event"),
             "contract_path": "behavior_contract.json",
             "adaptation_path": "behavior_adaptation.json",
             "source_read_at_generate_time": False,
@@ -533,6 +545,23 @@ def attach_luna_provenance(preview_path: str | Path, luna_record: dict[str, Any]
     provenance["luna"] = luna_record
     _write_text(prov_path, json.dumps(provenance, indent=2, ensure_ascii=False) + "\n")
     return provenance
+
+
+def attach_behavior_validation(preview_path: str | Path, receipt: dict[str, Any]) -> dict[str, Any]:
+    """Persist one runtime validation receipt beside its preview package."""
+    root = Path(preview_path).resolve()
+    task_pack_path = root / "task_pack.json"
+    provenance_path = root / "provenance.json"
+    task_pack = json.loads(task_pack_path.read_text(encoding="utf-8"))
+    provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+    task_pack["behavior_validation_path"] = "behavior_validation.json"
+    task_pack["behavior_validation"] = receipt
+    provenance["behavior_validation_path"] = "behavior_validation.json"
+    provenance["behavior_validation"] = receipt
+    _write_text(root / "behavior_validation.json", json.dumps(receipt, indent=2, ensure_ascii=False) + "\n")
+    _write_text(task_pack_path, json.dumps(task_pack, indent=2, ensure_ascii=False) + "\n")
+    _write_text(provenance_path, json.dumps(provenance, indent=2, ensure_ascii=False) + "\n")
+    return {"taskPack": task_pack, "provenance": provenance}
 
 
 def build_luna_provenance_record(pack_result: dict[str, Any], *, success: bool) -> dict[str, Any]:

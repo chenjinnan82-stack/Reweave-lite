@@ -417,6 +417,10 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
         self.assertFalse(result["network_call"])
         self.assertFalse(result["model_call"])
         self.assertFalse(result["localModel"]["enabled"])
+        self.assertEqual(
+            result["previewAcceptance"],
+            {"verdict": "needs_review", "reason": "closed_behavior_unavailable"},
+        )
         self.assertIn("task_pack.json", result["generatedPackage"]["files"])
         self.assertTrue((root / "task_pack.json").is_file())
         pack = json.loads((root / "task_pack.json").read_text(encoding="utf-8"))
@@ -425,6 +429,131 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
         self.assertEqual(pack["mode"], "task_pack_preview")
         self.assertEqual(pack["capsules_used"][0]["id"], "capsule_alpha")
         self.assertIn("task_pack.json", viewer["package"]["files"])
+
+    def test_lumo_lite_engine_owns_auto_capsule_selection(self) -> None:
+        capsules = [
+            {
+                "id": f"{source}-{kind}",
+                "name": name,
+                "type": kind,
+                "source": source,
+                "source_id": source,
+                "role": "reusable project capability",
+                "tags": [],
+                "status": "active",
+                "content_enrichment": {"status": "enriched"},
+            }
+            for source in ("content-calendar", "support-ticket-triage")
+            for name, kind in (("HTML Surface", "UI"), ("Style Sheet", "Style"), ("Script Module", "Logic"), ("Markdown Doc", "Text"))
+        ]
+        captured: dict[str, object] = {}
+
+        def build_stub(payload: dict[str, object]) -> dict[str, object]:
+            captured.update(payload)
+            return {"ok": True, "previewPath": str(self._root), "taskPack": {"selection_mode": "auto_match"}, "provenance": {}}
+
+        with (
+            patch("pimos_lite.reweave_engine.lumo_lite.list_local_capsules", return_value=capsules),
+            patch(
+                "pimos_lite.reweave_engine.lumo_lite.load_capsule_content",
+                side_effect=lambda capsule_id: {"behavior_contract": {"status": "closed"}} if capsule_id.endswith("-UI") else {},
+            ),
+            patch("pimos_lite.reweave_engine.lumo_lite.build_preview_package", side_effect=build_stub),
+        ):
+            result = LumoLiteReweaveEngine().generate_preview(
+                {"taskText": "构建客服工单分流面板", "selectionMode": "auto_match", "useEnrichedContent": True}
+            )
+
+        selected = captured["capsules"]
+        assert isinstance(selected, list)
+        self.assertEqual({cap["source_id"] for cap in selected}, {"support-ticket-triage"})
+        self.assertIn("support-ticket-triage-UI", captured["capsuleIds"])
+        self.assertTrue(all("_behavior_text" in cap for cap in selected))
+        self.assertEqual(result["taskPack"]["selection_mode"], "auto_match")
+
+    def test_lumo_lite_engine_owns_preview_acceptance(self) -> None:
+        engine = LumoLiteReweaveEngine(runtime_state_path=str(self._runtime_state))
+        cases = (
+            ("enabled", None, "needs_review", "runtime_validation_required"),
+            ("enabled", "passed", "usable", "runtime_behavior_verified"),
+            ("enabled", "failed", "rejected", "runtime_behavior_failed"),
+            ("unavailable", None, "needs_review", "closed_behavior_unavailable"),
+        )
+        for behavior_status, validation_status, verdict, reason in cases:
+            task_pack = {
+                "quality_gate": {"status": "passed"},
+                "behavior_reuse": {"status": behavior_status},
+            }
+            if validation_status:
+                task_pack["behavior_validation"] = {"status": validation_status}
+            with (
+                self.subTest(behavior_status=behavior_status, validation_status=validation_status),
+                patch(
+                    "pimos_lite.reweave_engine.lumo_lite.build_preview_package",
+                    return_value={"ok": True, "previewPath": str(self._root), "taskPack": task_pack},
+                ),
+            ):
+                result = engine.generate_preview({"taskText": "Build a small tool"})
+
+            self.assertEqual(result["previewAcceptance"], {"verdict": verdict, "reason": reason})
+
+    def test_lumo_lite_engine_records_successful_runtime_validation(self) -> None:
+        preview_root = self._root / "validated-preview"
+        preview_root.mkdir()
+        task_pack = {
+            "quality_gate": {"status": "passed"},
+            "behavior_reuse": {"status": "enabled"},
+        }
+        provenance = {"source_project_write": False}
+        (preview_root / "task_pack.json").write_text(json.dumps(task_pack), encoding="utf-8")
+        (preview_root / "provenance.json").write_text(json.dumps(provenance), encoding="utf-8")
+        base_result = {
+            "ok": True,
+            "previewPath": str(preview_root),
+            "generatedPackage": {"files": ["task_pack.json", "provenance.json"]},
+            "taskPack": task_pack,
+            "provenance": provenance,
+        }
+        receipt = {
+            "schema_version": "reweave_behavior_validation.v1",
+            "status": "passed",
+            "reason": "observable_state_changed",
+            "source_project_write": False,
+            "network_call": False,
+        }
+        with (
+            patch("pimos_lite.reweave_engine.lumo_lite.build_preview_package", return_value=base_result),
+            patch("pimos_lite.reweave_engine.lumo_lite.validate_preview_behavior", return_value=receipt),
+        ):
+            result = LumoLiteReweaveEngine().generate_preview(
+                {"taskText": "Build a working tool", "validateRuntime": True}
+            )
+
+        self.assertEqual(
+            result["previewAcceptance"],
+            {"verdict": "usable", "reason": "runtime_behavior_verified"},
+        )
+        self.assertEqual(result["runtimeValidation"], receipt)
+        self.assertIn("behavior_validation.json", result["generatedPackage"]["files"])
+        self.assertEqual(
+            json.loads((preview_root / "task_pack.json").read_text(encoding="utf-8"))["behavior_validation"],
+            receipt,
+        )
+
+    def test_lumo_lite_engine_returns_rejected_quality_gate_result(self) -> None:
+        engine = LumoLiteReweaveEngine(runtime_state_path=str(self._runtime_state))
+        with patch(
+            "pimos_lite.reweave_engine.lumo_lite.build_preview_package",
+            side_effect=ValueError("preview quality gate failed"),
+        ):
+            result = engine.generate_preview({"taskText": "Build a broken tool"})
+
+        self.assertFalse(result["ok"])
+        self.assertFalse(result["source_project_write"])
+        self.assertEqual(
+            result["previewAcceptance"],
+            {"verdict": "rejected", "reason": "quality_gate_failed"},
+        )
 
     def test_lumo_lite_engine_applies_opt_in_bounded_local_model(self) -> None:
         preview_root = self._root / "preview"
@@ -764,6 +893,7 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
         self.assertTrue(result["ok"])
         self.assertEqual(result["mode"], "task_pack_preview")
         self.assertFalse(result["source_project_write"])
+        self.assertEqual(result["previewAcceptance"]["verdict"], "needs_review")
 
 
 if __name__ == "__main__":

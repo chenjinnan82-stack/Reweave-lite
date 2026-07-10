@@ -6,10 +6,10 @@
   var usedCapsuleIds = [];
   var appState = "idle";
   var CAPSULES_VISIBLE = 5;
-  var AUTO_SELECT_COUNT = 3;
   var isGenerating = false;
   var mainEventsBound = false;
   var locale = localStorage.getItem("reweave_locale") || "zh";
+  var lastPreviewAcceptance = null;
 
   var STR = {
     zh: {
@@ -35,8 +35,16 @@
       usedPlaceholder: "选中的胶囊会出现在这里",
       generationAuto: "未手动选择时，系统会自动匹配胶囊。",
       generationManual: "已选择 {count} 个胶囊；本次生成只使用这些胶囊。",
+      generationResolved: "系统已匹配 {count} 个胶囊。",
+      draftsReadyStore: "胶囊草稿已就绪，请在来源箱中确认入仓。",
       selecting: "正在选择胶囊…",
       readyResponse: "已使用 {count} 个胶囊生成本地项目预览。",
+      acceptanceUsable: "可用 · 交互行为已验证",
+      acceptanceNeedsBehavior: "需复核 · 未找到完整行为模块",
+      acceptanceNeedsQuality: "需复核 · 质量检查结果缺失",
+      acceptanceNeedsRuntime: "需复核 · 等待运行验证",
+      acceptanceRejected: "已拒绝 · 质量检查未通过",
+      acceptanceRejectedRuntime: "已拒绝 · 交互行为验证失败",
       generationFailed: "生成失败，请检查任务和胶囊状态。",
       taskPackUnavailable: "小项目包预览当前不可用。",
       localPreview: "本地预览",
@@ -73,6 +81,7 @@
       capabilityReady: "就绪",
       capabilityReview: "需复核",
       capabilityUnavailable: "不可用",
+      previewReadyNoAcceptance: "可生成小项目包预览 · 尚无历史验收 · 源项目写入：0",
       sourceWrites: "源项目写入",
       trace: "追溯",
       ready: "就绪",
@@ -168,8 +177,16 @@
       usedPlaceholder: "Selected capsules dock here",
       generationAuto: "Generate will auto-pick capsules if none are selected.",
       generationManual: "Generation input: {count} selected. Generate will use exactly these capsules.",
+      generationResolved: "Reweave matched {count} capsules.",
+      draftsReadyStore: "Capsule drafts are ready. Review the Source Box and store them.",
       selecting: "Reweave is selecting capsules…",
       readyResponse: "Reweave used {count} capsules and prepared a local preview package.",
+      acceptanceUsable: "Usable · Interaction verified",
+      acceptanceNeedsBehavior: "Needs review · No closed behavior module",
+      acceptanceNeedsQuality: "Needs review · Quality result missing",
+      acceptanceNeedsRuntime: "Needs review · Runtime validation required",
+      acceptanceRejected: "Rejected · Quality check failed",
+      acceptanceRejectedRuntime: "Rejected · Interaction validation failed",
       generationFailed: "Generation failed. Check the task and capsule state.",
       taskPackUnavailable: "Task Pack preview is unavailable.",
       localPreview: "local preview",
@@ -206,6 +223,7 @@
       capabilityReady: "ready",
       capabilityReview: "review",
       capabilityUnavailable: "unavailable",
+      previewReadyNoAcceptance: "Task Pack preview available · No acceptance history yet · Source writes: 0",
       sourceWrites: "source writes",
       trace: "trace",
       ready: "ready",
@@ -293,11 +311,15 @@
   var pendingGeneratePromise = null;
   var useEnrichedContentPreview = false;
   var useBoundedLocalModel = false;
+  var usedCapsuleSelectionMode = "manual";
   var currentPreviewPackageId = "";
   var previewViewerMode = "view";
   var lumoLiteArtifacts = [];
   var BUILD_NOTE_FILES = {
     "PREVIEW_README.md": true,
+    "behavior_adaptation.json": true,
+    "behavior_contract.json": true,
+    "behavior_validation.json": true,
     "capsules_used.json": true,
     "frontend_runtime_state.json": true,
     "provenance.json": true,
@@ -450,36 +472,54 @@
     }
     var artifactFiles = lumoPreviewFiles();
     var productFiles = userFacingFiles(artifactFiles);
+    var generatedFiles = data.generatedPackage && Array.isArray(data.generatedPackage.files)
+      ? data.generatedPackage.files
+      : [];
     var hasTaskPackPreview =
       taskPackPreview &&
       (productFiles.length > 0 ||
         (!!lastPreviewPath &&
-          data.generatedPackage &&
-          Array.isArray(data.generatedPackage.files) &&
-          data.generatedPackage.files.indexOf("task_pack.json") >= 0));
-    var capsulesUsed = Number(summary.capsules_used || 0);
-    var traceText = summary.trace_available ? t("traceAvailable") : t("traceUnavailable");
+          generatedFiles.indexOf("task_pack.json") >= 0));
+    var generatedTraceAvailable =
+      hasTaskPackPreview &&
+      generatedFiles.indexOf("capsules_used.json") >= 0 &&
+      generatedFiles.indexOf("provenance.json") >= 0;
+    var traceAvailable = !!summary.trace_available || generatedTraceAvailable;
+    var capsulesUsed = hasTaskPackPreview ? usedCapsuleIds.length : Number(summary.capsules_used || 0);
+    var traceText = traceAvailable ? t("traceAvailable") : t("traceUnavailable");
     var previewText = hasTaskPackPreview
       ? t("smallProjectPackReady")
       : summary.preview_ready
         ? t("previewReady")
         : t("previewNotReady");
     var sourceWrites = summary.source_project_write_count;
+    var previewReadyWithoutHistory = taskPackPreview && !summary.status && !summary.trace_available;
+    if (previewReadyWithoutHistory || hasTaskPackPreview) sourceWrites = 0;
     if (sourceWrites === undefined || sourceWrites === null || sourceWrites === "") sourceWrites = t("unknown");
     setRuntimeSidecarAvailable(
-      !!(summary.status || summary.preview_ready || summary.trace_available || sourceWrites === 0)
+      !!(summary.status || summary.preview_ready || traceAvailable || sourceWrites === 0)
     );
     var capability =
-      sourceWrites === 0 && summary.trace_available
-        ? t("capabilityReady")
+      lastPreviewAcceptance && hasTaskPackPreview
+        ? lastPreviewAcceptance.verdict === "usable"
+          ? t("capabilityReady")
+          : lastPreviewAcceptance.verdict === "needs_review"
+            ? t("capabilityReview")
+            : t("capabilityUnavailable")
+        : sourceWrites === 0 && traceAvailable
+          ? t("capabilityReady")
         : summary.status
           ? t("capabilityReview")
           : t("capabilityUnavailable");
-    var responseText = formatText("productSummary", {
-      capability: capability,
-      writes: sourceWrites,
-      trace: summary.trace_available ? t("ready") : t("unavailable"),
-    });
+    var responseText = lastPreviewAcceptance && hasTaskPackPreview
+      ? previewAcceptanceText(lastPreviewAcceptance)
+      : previewReadyWithoutHistory
+      ? t("previewReadyNoAcceptance")
+      : formatText("productSummary", {
+          capability: capability,
+          writes: sourceWrites,
+          trace: traceAvailable ? t("ready") : t("unavailable"),
+        });
 
     if (!taskPackPreview) els.taskInput.value = "";
     els.taskInput.placeholder = taskPackPreview ? t("taskPackPlaceholder") : t("runtimePlaceholder");
@@ -553,11 +593,11 @@
         "\n" +
         t("trace") +
         ": " +
-        (summary.trace_available ? t("ready") : t("unavailable")) +
+        (traceAvailable ? t("ready") : t("unavailable")) +
         "\n" +
         t("preview") +
         ": " +
-        (summary.preview_ready ? t("ready") : t("notReady")) +
+        (hasTaskPackPreview || summary.preview_ready ? t("ready") : t("notReady")) +
         "\n" +
         t("capsules") +
         ": " +
@@ -1303,6 +1343,12 @@
         });
         setTimeout(function () {
           initMain();
+          var needsStore = (data.sourceBoxes || []).some(function (source) {
+            return source.draft_status === "drafted" && source.warehouse_status !== "promoted";
+          });
+          if (ok && needsStore && els.reweaveResponse) {
+            els.reweaveResponse.textContent = t("draftsReadyStore");
+          }
         }, ok ? 320 : 480);
       });
     });
@@ -1347,9 +1393,10 @@
   }
 
   function getGenerateCandidateIds() {
-    if (usedCapsuleIds.length > 0) return usedCapsuleIds.slice();
-    var text = els.taskInput ? els.taskInput.value.trim() : "";
-    return resolveGenerateIds(text || (data && data.sampleTask) || t("newTask"));
+    if (usedCapsuleSelectionMode === "manual" && usedCapsuleIds.length > 0) return usedCapsuleIds.slice();
+    return (data.capsules || []).filter(isCapsuleGenerateEligible).map(function (cap) {
+      return cap.id;
+    });
   }
 
   function anyEnrichedInIds(ids) {
@@ -1396,12 +1443,14 @@
       pendingGeneratePromise = null;
       return Promise.resolve(null);
     }
+    var candidates = ids.length ? ids : getGenerateCandidateIds();
     var payload = {
       taskText: text,
       capsuleIds: ids,
       capsules: ids.map(findCapsule).filter(Boolean),
-      selectionMode: usedCapsuleIds.length > 0 ? "manual" : "auto_match",
-      useEnrichedContent: !!(useEnrichedContentPreview && anyEnrichedInIds(ids)),
+      selectionMode: usedCapsuleSelectionMode,
+      useEnrichedContent: !!(useEnrichedContentPreview && anyEnrichedInIds(candidates)),
+      validateRuntime: true,
       localModel: useBoundedLocalModel
         ? { enabled: true, provider: "ollama", model: "qwen2.5-coder:1.5b" }
         : { enabled: false },
@@ -1415,6 +1464,7 @@
 
   function applyGenerateResult(result) {
     if (!result || !result.ok) return;
+    lastPreviewAcceptance = result.previewAcceptance || null;
     if (result.generatedPackage) {
       data.generatedPackage = result.generatedPackage;
     }
@@ -1431,11 +1481,28 @@
     if (result.contentAwareGenerate) {
       data.contentAwareGenerate = result.contentAwareGenerate;
     }
+    if (Array.isArray(result.capsulesUsed)) {
+      usedCapsuleIds = result.capsulesUsed.map(function (cap) { return cap.id; }).filter(Boolean);
+      usedCapsuleSelectionMode = result.taskPack && result.taskPack.selection_mode === "auto_match" ? "auto_match" : "manual";
+      renderUsedChips();
+    }
     if (result.localModel && result.localModel.enabled) {
       setLocalModelStatus(result.localModel.applied ? "localModelApplied" : "localModelFallback");
     } else if (useBoundedLocalModel) {
       setLocalModelStatus("localModelFallback");
     }
+  }
+
+  function previewAcceptanceText(acceptance) {
+    if (!acceptance) return "";
+    if (acceptance.verdict === "usable" && acceptance.reason === "runtime_behavior_verified") {
+      return t("acceptanceUsable");
+    }
+    if (acceptance.reason === "runtime_behavior_failed") return t("acceptanceRejectedRuntime");
+    if (acceptance.verdict === "rejected") return t("acceptanceRejected");
+    if (acceptance.reason === "quality_gate_not_reported") return t("acceptanceNeedsQuality");
+    if (acceptance.reason === "runtime_validation_required") return t("acceptanceNeedsRuntime");
+    return t("acceptanceNeedsBehavior");
   }
 
   function showScreen(id) {
@@ -1961,7 +2028,7 @@
       els.usedCapsuleDock.appendChild(chip);
     });
     if (els.generationInputNote) {
-      els.generationInputNote.textContent = formatText("generationManual", {
+      els.generationInputNote.textContent = formatText(usedCapsuleSelectionMode === "auto_match" ? "generationResolved" : "generationManual", {
         count: usedCapsuleIds.length,
       });
     }
@@ -2638,46 +2705,6 @@
     return els.capsuleStrip.querySelector('[data-capsule-id="' + id + '"]');
   }
 
-  function resolveGenerateIds(taskText) {
-    var pool = Array.isArray(data.generateCapsuleIds) ? data.generateCapsuleIds.slice() : [];
-    if (!pool.length && Array.isArray(data.capsules) && data.capsules.length) {
-      pool = data.capsules.filter(isCapsuleGenerateEligible).map(function (c) {
-        return c.id;
-      });
-    }
-    if (!pool.length) return [];
-
-    var task = (taskText || "").toLowerCase();
-    var scored = pool.map(function (id) {
-      var cap = findCapsule(id);
-      if (!cap || !isCapsuleGenerateEligible(cap)) return { id: id, score: -1 };
-      var hay = (cap.name + " " + cap.type + " " + (cap.tags || []).join(" ") + " " + cap.role).toLowerCase();
-      var score = 0;
-      if (task.indexOf("报价") >= 0 && (hay.indexOf("quote") >= 0 || hay.indexOf("client") >= 0)) score += 3;
-      if (task.indexOf("客户") >= 0 && hay.indexOf("client") >= 0) score += 2;
-      if (task.indexOf("表单") >= 0 && hay.indexOf("form") >= 0) score += 2;
-      if (task.indexOf("表格") >= 0 && hay.indexOf("table") >= 0) score += 2;
-      if (task.indexOf("导出") >= 0 && hay.indexOf("export") >= 0) score += 2;
-      if (task.indexOf("保存") >= 0 && hay.indexOf("save") >= 0) score += 2;
-      if (task.indexOf("工具") >= 0 && (hay.indexOf("form") >= 0 || hay.indexOf("logic") >= 0)) score += 1;
-      return { id: id, score: score };
-    });
-
-    scored.sort(function (a, b) {
-      return b.score - a.score;
-    });
-
-    var matched = scored.filter(function (s) {
-      return s.score > 0;
-    });
-    if (matched.length > 0) {
-      return matched.slice(0, AUTO_SELECT_COUNT).map(function (s) {
-        return s.id;
-      });
-    }
-    return pool.slice(0, AUTO_SELECT_COUNT);
-  }
-
   function runGenerate() {
     if (isGenerating) return;
     if (!desktopCapability("canGeneratePreview")) {
@@ -2685,8 +2712,8 @@
       return;
     }
     var text = els.taskInput.value.trim() || data.sampleTask || t("newTask");
-    var ids =
-      usedCapsuleIds.length > 0 ? usedCapsuleIds.slice() : resolveGenerateIds(text);
+    usedCapsuleSelectionMode = usedCapsuleSelectionMode === "manual" && usedCapsuleIds.length > 0 ? "manual" : "auto_match";
+    var ids = usedCapsuleSelectionMode === "manual" ? usedCapsuleIds.slice() : [];
     if (!ids.length && !canBuildTaskPackPreview()) {
       els.reweaveResponse.textContent = t("selecting");
       return;
@@ -2793,6 +2820,7 @@
     if (usedCapsuleIds.indexOf(id) === -1) {
       usedCapsuleIds.push(id);
     }
+    usedCapsuleSelectionMode = "manual";
     renderUsedChips();
     if (single) {
       var cap = findCapsule(id);
@@ -2831,7 +2859,7 @@
           els.generatedPackage.classList.remove("result-reveal");
         }, 300);
       }
-      els.reweaveResponse.textContent = formatText("readyResponse", { count: count });
+      els.reweaveResponse.textContent = previewAcceptanceText(lastPreviewAcceptance) || formatText("readyResponse", { count: count });
       if (!localeOnly) {
         renderHistory({
           title: taskText.length > 28 ? taskText.slice(0, 28) + "…" : taskText,
@@ -2849,10 +2877,15 @@
       pendingGeneratePromise.then(function (raw) {
         var result = parseBridgeJson(raw);
         if ((isLumoLiteReadOnly() && !canBuildTaskPackPreview()) || !result || result.ok === false) {
-          blockReadyRender(isLumoLiteReadOnly() ? t("taskPackUnavailable") : t("generationFailed"));
+          blockReadyRender(
+            result && result.previewAcceptance
+              ? previewAcceptanceText(result.previewAcceptance)
+              : (isLumoLiteReadOnly() ? t("taskPackUnavailable") : t("generationFailed"))
+          );
           return;
         }
         applyGenerateResult(result);
+        count = usedCapsuleIds.length;
         finalize();
       }).catch(function () {
         blockReadyRender(t("generationFailed"));

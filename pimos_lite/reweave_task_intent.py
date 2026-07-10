@@ -8,12 +8,17 @@ from typing import Any
 MAX_TASK_LEN = 240
 
 CAPABILITY_KEYWORDS = {
-    "form": ("form", "quote", "input", "submit", "customer", "field"),
-    "table": ("table", "list", "queue", "record", "calendar", "row"),
-    "copy": ("copy", "landing", "content", "message", "hero", "story"),
-    "style": ("style", "css", "brand", "visual", "layout", "design"),
-    "logic": ("logic", "workflow", "action", "filter", "calculate", "triage", "interaction"),
-    "data": ("data", "dashboard", "metric", "status", "chart", "viewer", "panel"),
+    "form": ("form", "quote", "input", "submit", "customer", "field", "表单", "报价", "输入", "提交", "客户"),
+    "table": ("table", "list", "queue", "record", "calendar", "row", "表格", "列表", "队列", "记录", "日历"),
+    "copy": ("copy", "landing", "content", "message", "hero", "story", "文案", "落地页", "内容", "消息"),
+    "style": ("style", "css", "brand", "visual", "layout", "design", "样式", "品牌", "视觉", "布局", "设计"),
+    "logic": ("logic", "workflow", "action", "filter", "calculate", "triage", "interaction", "逻辑", "流程", "操作", "筛选", "计算", "分流", "交互"),
+    "data": ("data", "dashboard", "metric", "status", "chart", "viewer", "panel", "数据", "仪表盘", "指标", "状态", "图表", "查看器", "面板"),
+}
+SOURCE_DOMAIN_KEYWORDS = {
+    "quote": ("quote", "estimate", "estimator", "budget", "price", "cost", "customer", "client", "homeowner", "报价", "估价", "预算", "价格", "成本", "客户", "业主"),
+    "calendar": ("calendar", "schedule", "editorial", "publish", "content", "日历", "排期", "编辑", "发布", "内容"),
+    "support": ("support", "ticket", "triage", "queue", "resolve", "service", "客服", "工单", "分流", "队列", "处理"),
 }
 STOP_WORDS = {"a", "an", "and", "as", "build", "from", "for", "into", "old", "project", "the", "this", "to", "with"}
 
@@ -24,9 +29,26 @@ def capsule_match_text(cap: dict[str, Any]) -> str:
         cap.get("name"),
         cap.get("type"),
         cap.get("role"),
+        cap.get("source"),
+        cap.get("source_label"),
+        cap.get("_behavior_text"),
         " ".join(str(tag) for tag in (cap.get("tags") or []) if tag),
     ]
     return " ".join(str(part or "") for part in parts).lower()
+
+
+def behavior_contract_search_text(contract: dict[str, Any]) -> str:
+    files = contract.get("files") if isinstance(contract.get("files"), dict) else {}
+    entry = files.get("entry") if isinstance(files.get("entry"), dict) else {}
+    interactions = contract.get("interactions") if isinstance(contract.get("interactions"), dict) else {}
+    controls = interactions.get("controls") if isinstance(interactions.get("controls"), list) else []
+    parts = [contract.get("entry_path"), entry.get("content")]
+    parts.extend(
+        " ".join(str(control.get(key) or "") for key in ("id", "name", "text"))
+        for control in controls
+        if isinstance(control, dict)
+    )
+    return " ".join(str(part or "") for part in parts).strip()[:12000]
 
 
 def task_terms(task: str) -> set[str]:
@@ -53,6 +75,61 @@ def score_capsule_for_task(task: str, cap: dict[str, Any], *, enrichable: bool =
             score += 6
         score += sum(2 for word in words if word in text)
     return score
+
+
+def source_domain_score(task: str, cap: dict[str, Any]) -> int:
+    task_text = task.lower()
+    source_text = " ".join(str(cap.get(key) or "").lower() for key in ("source", "source_label"))
+    return 30 if any(
+        any(word in task_text for word in words) and any(word in source_text for word in words)
+        for words in SOURCE_DOMAIN_KEYWORDS.values()
+    ) else 0
+
+
+def source_label_score(task: str, cap: dict[str, Any]) -> int:
+    source_terms = re.findall(r"[a-z0-9]+", str(cap.get("source") or cap.get("source_label") or "").lower())
+    return 12 * sum(
+        1
+        for task_term in task_terms(task)
+        for source_term in source_terms
+        if len(source_term) >= 3
+        and (task_term == source_term or task_term.startswith(source_term) or source_term.startswith(task_term))
+    )
+
+
+def select_capsules_for_task(
+    task: str,
+    capsules: list[dict[str, Any]],
+    *,
+    limit: int = 3,
+) -> list[dict[str, Any]]:
+    ranked: list[tuple[int, int, str, dict[str, Any]]] = []
+    for position, cap in enumerate(capsules):
+        if not isinstance(cap, dict):
+            continue
+        enrichment = cap.get("content_enrichment")
+        score = score_capsule_for_task(
+            task,
+            cap,
+            enrichable=isinstance(enrichment, dict) and enrichment.get("status") == "enriched",
+        )
+        score += source_domain_score(task, cap)
+        score += source_label_score(task, cap)
+        if cap.get("_closed_behavior") is True:
+            score += 1
+        source_id = str(cap.get("source_id") or cap.get("source") or "")
+        ranked.append((score, -position, source_id, cap))
+    if not ranked:
+        return []
+    source_scores: dict[str, float] = {}
+    for source_id in {item[2] for item in ranked}:
+        scores = sorted((item[0] for item in ranked if item[2] == source_id), reverse=True)
+        top_scores = scores[: max(1, limit)]
+        source_scores[source_id] = sum(top_scores) / len(top_scores)
+    primary_source = max(source_scores, key=source_scores.get)
+    primary = [item for item in ranked if item[2] == primary_source]
+    primary.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    return [dict(item[3]) for item in primary[: max(1, limit)]]
 
 
 def capsule_reason(cap: dict[str, Any], capabilities: list[str]) -> str:

@@ -12,6 +12,7 @@ PUBLIC_ALPHA_SUMMARY_VERSION = "reweave_public_alpha_release_summary.v1"
 REQUIRED_SURFACE_FILES = (
     "pimos_lite/desktop_reweave_static.py",
     "pimos_lite/reweave_app_service.py",
+    "pimos_lite/reweave_behavior_runtime.py",
     "pimos_lite/reweave_engine/factory.py",
     "pimos_lite/reweave_engine/lumo_lite.py",
     "pimos_lite/reweave_llm_pack.py",
@@ -175,6 +176,8 @@ def _role(relative: str) -> str:
         return "desktop_bridge"
     if relative.endswith("reweave_app_service.py"):
         return "service_facade"
+    if relative.endswith("reweave_behavior_runtime.py"):
+        return "runtime_behavior_validator"
     if "lumo_lite" in relative:
         return "lumo_lite_bridge"
     if relative.endswith("reweave_llm_pack.py"):

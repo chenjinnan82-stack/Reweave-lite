@@ -5,10 +5,23 @@ from __future__ import annotations
 import hashlib
 import html
 import re
+import shutil
+import subprocess
+import tempfile
 from pathlib import Path
 from typing import Any
 
 from pimos_lite.reweave_task_intent import MAX_TASK_LEN
+
+
+def js_syntax_ok(js: str) -> bool:
+    node = shutil.which("node")
+    if not node:
+        return bool(js.strip()) and not js.rstrip().endswith((".", ",", "=>"))
+    with tempfile.TemporaryDirectory(prefix="reweave-js-check-") as tmp:
+        path = Path(tmp) / "app.js"
+        path.write_text(js, encoding="utf-8")
+        return subprocess.run([node, "--check", str(path)], capture_output=True, text=True).returncode == 0
 
 
 def build_quality_gate(
@@ -53,6 +66,10 @@ def build_quality_gate(
             "passed": set(planned) == {"index.html", "styles.css", "app.js"},
         },
         {
+            "name": "javascript_syntax_valid",
+            "passed": js_syntax_ok(app_text),
+        },
+        {
             "name": "task_visible_in_html",
             "passed": html.escape((task or "")[:MAX_TASK_LEN]) in html_text,
         },
@@ -82,6 +99,7 @@ def build_quality_gate(
     if behavior_contract is not None:
         interactions = behavior_contract.get("interactions") if isinstance(behavior_contract.get("interactions"), dict) else {}
         events = interactions.get("events") if isinstance(interactions.get("events"), list) else []
+        passive_updates = interactions.get("passive_updates") if isinstance(interactions.get("passive_updates"), list) else []
         protected = behavior_adaptation.get("protected") if isinstance(behavior_adaptation, dict) and isinstance(behavior_adaptation.get("protected"), dict) else {}
         expected_ids = [str(item) for item in protected.get("dom_ids", []) if item]
         expected_selectors = [str(item) for item in protected.get("selectors", []) if item]
@@ -124,15 +142,21 @@ def build_quality_gate(
                 },
                 {
                     "name": "behavior_event_bindings_preserved",
-                    "passed": bool(events)
-                    and all(
-                        (
-                            str(item.get("target_id") or "") in html_text
-                            or str(item.get("target_selector") or "").lstrip("#.") in html_text
+                    "passed": (
+                        bool(events)
+                        and all(
+                            (
+                                str(item.get("target_id") or "") in html_text
+                                or str(item.get("target_selector") or "").lstrip("#.") in html_text
+                            )
+                            and str(item.get("event") or "") in app_text
+                            for item in events
+                            if isinstance(item, dict)
                         )
-                        and str(item.get("event") or "") in app_text
-                        for item in events
-                        if isinstance(item, dict)
+                    )
+                    or (
+                        bool(passive_updates)
+                        and all(str(item.get("api") or "") in app_text for item in passive_updates if isinstance(item, dict))
                     ),
                 },
             ]
@@ -145,5 +169,6 @@ def build_quality_gate(
         "behavior_reuse": {
             "status": "static_verified" if behavior_contract is not None else "not_selected",
             "runtime_validation": "required" if behavior_contract is not None else "not_required",
+            "interaction_mode": behavior_contract.get("interaction_mode") if behavior_contract is not None else "none",
         },
     }
