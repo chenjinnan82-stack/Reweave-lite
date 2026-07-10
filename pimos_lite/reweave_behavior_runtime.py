@@ -48,6 +48,110 @@ def validate_preview_behavior(root: str | Path, *, timeout: float = 8.0) -> dict
     return result if isinstance(result, dict) else _receipt("unavailable", "invalid_qt_runner_result")
 
 
+def validate_react_preview_behavior(
+    root: str | Path,
+    expected_text: str,
+    *,
+    timeout: float = 10.0,
+) -> dict[str, Any]:
+    preview = Path(root).resolve() / "react_project" / "dist"
+    if not (preview / "index.html").is_file():
+        return _receipt("unavailable", "react_runtime_entry_missing")
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-m", __name__, "--react-child", str(preview), expected_text[:160]],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return _receipt("unavailable", type(exc).__name__.lower())
+    lines = [line for line in completed.stdout.splitlines() if line.strip().startswith("{")]
+    if not lines:
+        return _receipt("unavailable", "qt_runner_failed", detail=completed.stderr[-240:])
+    try:
+        result = json.loads(lines[-1])
+    except json.JSONDecodeError:
+        return _receipt("unavailable", "invalid_qt_runner_result")
+    return result if isinstance(result, dict) else _receipt("unavailable", "invalid_qt_runner_result")
+
+
+def _run_react_child(root: Path, expected_text: str) -> int:
+    try:
+        from PySide6.QtCore import QTimer, QUrl
+        from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineSettings
+        from PySide6.QtWidgets import QApplication
+    except ImportError:
+        print(json.dumps(_receipt("unavailable", "pyside6_unavailable")))
+        return 0
+
+    app = QApplication.instance() or QApplication(["reweave-react-validation"])
+    profile = QWebEngineProfile()
+    page = QWebEnginePage(profile)
+    settings = page.settings()
+    settings.setAttribute(QWebEngineSettings.LocalContentCanAccessFileUrls, True)
+    settings.setAttribute(QWebEngineSettings.LocalContentCanAccessRemoteUrls, False)
+    output: dict[str, Any] = {}
+    snapshot_js = (
+        "JSON.stringify({text:(document.body.innerText||'').trim(),"
+        "root:(document.getElementById('root')||{}).innerText||'',"
+        "button:!!document.querySelector('button')})"
+    )
+
+    def finish(result: dict[str, Any]) -> None:
+        output.update(result)
+        app.quit()
+
+    def inspect_before(raw: Any) -> None:
+        try:
+            before = json.loads(raw) if isinstance(raw, str) else {}
+        except json.JSONDecodeError:
+            before = {}
+        if not str(before.get("root") or "").strip():
+            finish(_receipt("failed", "react_root_not_rendered"))
+            return
+        if expected_text and expected_text not in str(before.get("text") or ""):
+            finish(_receipt("failed", "adapted_task_text_not_rendered"))
+            return
+        if not before.get("button"):
+            finish(_receipt("needs_review", "react_button_not_found", rendered=True))
+            return
+
+        def inspect_after(after_raw: Any) -> None:
+            try:
+                after = json.loads(after_raw) if isinstance(after_raw, str) else {}
+            except json.JSONDecodeError:
+                after = {}
+            changed = str(before.get("text") or "") != str(after.get("text") or "")
+            finish(
+                _receipt(
+                    "passed" if changed else "needs_review",
+                    "react_interaction_changed_dom" if changed else "react_interaction_unchanged",
+                    rendered=True,
+                    interaction_present=True,
+                    interaction_changed=changed,
+                )
+            )
+
+        page.runJavaScript(
+            "(function(){var button=document.querySelector('button');if(!button)return false;button.click();return true;})()",
+            lambda _clicked: QTimer.singleShot(500, lambda: page.runJavaScript(snapshot_js, inspect_after)),
+        )
+
+    def loaded(ok: bool) -> None:
+        if not ok:
+            finish(_receipt("failed", "react_preview_load_failed"))
+            return
+        QTimer.singleShot(700, lambda: page.runJavaScript(snapshot_js, inspect_before))
+
+    page.loadFinished.connect(loaded)
+    page.load(QUrl.fromLocalFile(str((root / "index.html").resolve())))
+    QTimer.singleShot(8000, lambda: finish(_receipt("unavailable", "validation_timeout")))
+    app.exec()
+    print(json.dumps(output or _receipt("unavailable", "empty_validation_result"), ensure_ascii=False))
+    return 0
+
+
 def _run_child(root: Path) -> int:
     try:
         from PySide6.QtCore import QTimer, QUrl
@@ -198,4 +302,6 @@ def _run_child(root: Path) -> int:
 if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--child":
         raise SystemExit(_run_child(Path(sys.argv[2]).resolve()))
+    if len(sys.argv) == 4 and sys.argv[1] == "--react-child":
+        raise SystemExit(_run_react_child(Path(sys.argv[2]).resolve(), sys.argv[3]))
     raise SystemExit("usage: python -m pimos_lite.reweave_behavior_runtime --child PREVIEW_ROOT")

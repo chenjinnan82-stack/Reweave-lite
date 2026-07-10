@@ -521,6 +521,30 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
 
             self.assertEqual(result["previewAcceptance"], {"verdict": verdict, "reason": reason})
 
+    def test_lumo_lite_engine_requires_react_runtime_validation(self) -> None:
+        engine = LumoLiteReweaveEngine(runtime_state_path=str(self._runtime_state))
+        for validation_status, verdict, reason in (
+            (None, "needs_review", "react_runtime_not_verified"),
+            ("passed", "usable", "react_runtime_verified"),
+            ("failed", "rejected", "react_runtime_failed"),
+        ):
+            task_pack = {
+                "quality_gate": {"status": "passed"},
+                "react_preview": {"status": "passed"},
+            }
+            if validation_status:
+                task_pack["react_runtime_validation"] = {"status": validation_status}
+            with (
+                self.subTest(validation_status=validation_status),
+                patch(
+                    "pimos_lite.reweave_engine.lumo_lite.build_preview_package",
+                    return_value={"ok": True, "previewPath": str(self._root), "taskPack": task_pack},
+                ),
+            ):
+                result = engine.generate_preview({"taskText": "Build a React tool"})
+
+            self.assertEqual(result["previewAcceptance"], {"verdict": verdict, "reason": reason})
+
     def test_lumo_lite_engine_records_successful_runtime_validation(self) -> None:
         preview_root = self._root / "validated-preview"
         preview_root.mkdir()
@@ -563,6 +587,50 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
             json.loads((preview_root / "task_pack.json").read_text(encoding="utf-8"))["behavior_validation"],
             receipt,
         )
+
+    def test_lumo_lite_engine_records_successful_react_runtime_validation(self) -> None:
+        preview_root = self._root / "validated-react-preview"
+        preview_root.mkdir()
+        task_pack = {
+            "quality_gate": {"status": "passed"},
+            "react_preview": {"status": "passed"},
+        }
+        provenance = {"source_project_write": False}
+        (preview_root / "task_pack.json").write_text(json.dumps(task_pack), encoding="utf-8")
+        (preview_root / "provenance.json").write_text(json.dumps(provenance), encoding="utf-8")
+        base_result = {
+            "ok": True,
+            "previewPath": str(preview_root),
+            "generatedPackage": {"files": ["task_pack.json", "provenance.json"]},
+            "taskPack": task_pack,
+            "provenance": provenance,
+        }
+        receipt = {
+            "schema_version": "reweave_behavior_validation.v1",
+            "status": "passed",
+            "reason": "react_interaction_changed_dom",
+            "source_project_write": False,
+            "network_call": False,
+        }
+        with (
+            patch("pimos_lite.reweave_engine.lumo_lite.build_preview_package", return_value=base_result),
+            patch(
+                "pimos_lite.reweave_engine.lumo_lite.validate_react_preview_behavior",
+                return_value=receipt,
+            ) as react_validator,
+            patch("pimos_lite.reweave_engine.lumo_lite.validate_preview_behavior") as static_validator,
+        ):
+            result = LumoLiteReweaveEngine().generate_preview(
+                {"taskText": "Build a working React tool", "validateRuntime": True}
+            )
+
+        react_validator.assert_called_once_with(str(preview_root), "Build a working React tool")
+        static_validator.assert_not_called()
+        self.assertEqual(result["previewAcceptance"], {"verdict": "usable", "reason": "react_runtime_verified"})
+        self.assertIn("react_runtime_validation.json", result["generatedPackage"]["files"])
+        stored = json.loads((preview_root / "task_pack.json").read_text(encoding="utf-8"))
+        self.assertEqual(stored["react_runtime_validation"], receipt)
+        self.assertEqual(stored["react_preview"]["runtime_validation"], receipt)
 
     def test_lumo_lite_engine_returns_rejected_quality_gate_result(self) -> None:
         engine = LumoLiteReweaveEngine(runtime_state_path=str(self._runtime_state))

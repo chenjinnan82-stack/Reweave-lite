@@ -14,6 +14,7 @@ from pimos_lite.reweave_capsule_content import is_allowed_relative_path, load_ca
 
 
 SCHEMA_VERSION = "reweave_react_preview.v1"
+RUNTIME_DEPENDENCY_ALLOWLIST = frozenset({"react", "react-dom"})
 
 
 def _receipt(status: str, reason: str, **extra: Any) -> dict[str, Any]:
@@ -147,10 +148,11 @@ def _compile(project_root: Path, entrypoint: str, external_dependencies: list[st
         return _receipt("unavailable", "esbuild_not_installed")
     outfile = project_root / "dist" / "app.js"
     outfile.parent.mkdir(parents=True, exist_ok=True)
+    unsupported = sorted(set(external_dependencies) - RUNTIME_DEPENDENCY_ALLOWLIST)
     external = sorted(
         {
             value
-            for name in external_dependencies
+            for name in unsupported
             for value in (str(name), f"{name}/*")
             if name
         }
@@ -159,7 +161,7 @@ def _compile(project_root: Path, entrypoint: str, external_dependencies: list[st
         "const esbuild=require(process.argv[1]);"
         "esbuild.buildSync({entryPoints:[process.argv[2]],outfile:process.argv[3],"
         "bundle:true,platform:'browser',format:'esm',logLevel:'silent',"
-        "external:JSON.parse(process.argv[4])});"
+        "external:JSON.parse(process.argv[4]),nodePaths:[process.argv[5]]});"
     )
     try:
         completed = subprocess.run(
@@ -171,6 +173,7 @@ def _compile(project_root: Path, entrypoint: str, external_dependencies: list[st
                 str(project_root / entrypoint),
                 str(outfile),
                 json.dumps(external),
+                str(repo_root / "node_modules"),
             ],
             cwd=repo_root,
             capture_output=True,
@@ -190,14 +193,27 @@ def _compile(project_root: Path, entrypoint: str, external_dependencies: list[st
             compiled_files=compiled,
             compiler="esbuild",
             external_dependencies=external,
+            compiler_status="failed",
+        )
+    if unsupported:
+        return _receipt(
+            "needs_review",
+            "unsupported_runtime_dependencies",
+            preview_output_write=True,
+            compiled_files=compiled,
+            compiler="esbuild",
+            compiler_status="passed",
+            compile_scope="local_modules_compiled_unsupported_dependencies_externalized",
+            unsupported_dependencies=unsupported,
         )
     return _receipt(
         "passed",
         "local_module_graph_compiled",
         compiled_files=compiled,
         compiler="esbuild",
-        compile_scope="local_modules_external_dependencies_not_bundled",
-        external_dependencies=external,
+        compiler_status="passed",
+        compile_scope="allowlisted_runtime_dependencies_bundled",
+        external_dependencies=[],
     )
 
 
@@ -251,7 +267,8 @@ def build_react_preview(
         "</body></html>\n",
     )
     result = _compile(project_root, entrypoints[0], list(project_graph.get("external_dependencies") or []))
-    compile_status = result.get("status")
+    result["preview_output_write"] = True
+    compile_status = result.get("compiler_status") or result.get("status")
     compile_reason = result.get("reason")
     result["adaptation"] = adaptation
     result["compile_status"] = compile_status
@@ -259,6 +276,16 @@ def build_react_preview(
     if compile_status == "passed" and adaptation.get("status") != "applied":
         result["status"] = "needs_review"
         result["reason"] = "safe_task_adaptation_unavailable"
+    if result.get("status") == "passed":
+        css = '<link rel="stylesheet" href="./app.css">' if (project_root / "dist" / "app.css").is_file() else ""
+        _write_text(
+            project_root / "dist" / "index.html",
+            "<!doctype html>\n"
+            '<html lang="en"><head><meta charset="UTF-8">'
+            f"<title>{html.escape(task)}</title>{css}</head>"
+            '<body><div id="root"></div><script type="module" src="./app.js"></script></body></html>\n',
+        )
+        result["runtime_entry"] = "react_project/dist/index.html"
     result["project_path"] = "react_project"
     result["materialized_files"] = ["index.html", "package.json", *sorted(files)]
     return result

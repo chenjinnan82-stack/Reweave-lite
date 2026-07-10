@@ -46,6 +46,17 @@ def preview_acceptance(task_pack: dict[str, Any]) -> dict[str, str]:
         return {"verdict": "rejected", "reason": "react_compile_failed"}
     if react_preview and react_preview.get("status") != "passed":
         return {"verdict": "needs_review", "reason": "react_compile_not_verified"}
+    if react_preview:
+        validation = (
+            task_pack.get("react_runtime_validation")
+            if isinstance(task_pack.get("react_runtime_validation"), dict)
+            else {}
+        )
+        if validation.get("status") == "passed":
+            return {"verdict": "usable", "reason": "react_runtime_verified"}
+        if validation.get("status") == "failed":
+            return {"verdict": "rejected", "reason": "react_runtime_failed"}
+        return {"verdict": "needs_review", "reason": "react_runtime_not_verified"}
     behavior = task_pack.get("behavior_reuse") if isinstance(task_pack.get("behavior_reuse"), dict) else {}
     if behavior.get("status") != "enabled":
         return {"verdict": "needs_review", "reason": "closed_behavior_unavailable"}
@@ -644,6 +655,25 @@ def attach_behavior_validation(preview_path: str | Path, receipt: dict[str, Any]
     provenance["behavior_validation_path"] = "behavior_validation.json"
     provenance["behavior_validation"] = receipt
     _write_text(root / "behavior_validation.json", json.dumps(receipt, indent=2, ensure_ascii=False) + "\n")
+    _write_text(task_pack_path, json.dumps(task_pack, indent=2, ensure_ascii=False) + "\n")
+    _write_text(provenance_path, json.dumps(provenance, indent=2, ensure_ascii=False) + "\n")
+    return {"taskPack": task_pack, "provenance": provenance}
+
+
+def attach_react_runtime_validation(preview_path: str | Path, receipt: dict[str, Any]) -> dict[str, Any]:
+    """Persist the bounded React runtime validation receipt."""
+    root = Path(preview_path).resolve()
+    task_pack_path = root / "task_pack.json"
+    provenance_path = root / "provenance.json"
+    task_pack = json.loads(task_pack_path.read_text(encoding="utf-8"))
+    provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+    task_pack["react_runtime_validation_path"] = "react_runtime_validation.json"
+    task_pack["react_runtime_validation"] = receipt
+    if isinstance(task_pack.get("react_preview"), dict):
+        task_pack["react_preview"]["runtime_validation"] = receipt
+    provenance["react_runtime_validation_path"] = "react_runtime_validation.json"
+    provenance["react_runtime_validation"] = receipt
+    _write_text(root / "react_runtime_validation.json", json.dumps(receipt, indent=2, ensure_ascii=False) + "\n")
     _write_text(task_pack_path, json.dumps(task_pack, indent=2, ensure_ascii=False) + "\n")
     _write_text(provenance_path, json.dumps(provenance, indent=2, ensure_ascii=False) + "\n")
     return {"taskPack": task_pack, "provenance": provenance}

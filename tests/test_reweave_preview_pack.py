@@ -69,6 +69,21 @@ class ReweavePreviewPackTest(unittest.TestCase):
         self.assertEqual(receipt["status"], "needs_review")
         self.assertEqual(receipt["reason"], "safe_static_heading_not_found")
 
+    def test_react_preview_marks_extra_runtime_dependency_for_review(self) -> None:
+        project = self._state_dir / "react-extra-dependency"
+        (project / "src").mkdir(parents=True)
+        (project / "src" / "main.jsx").write_text(
+            "import React from 'react';\nconsole.log(React.version);\n",
+            encoding="utf-8",
+        )
+
+        receipt = react_preview._compile(project, "src/main.jsx", ["react", "lucide-react"])
+
+        self.assertEqual(receipt["status"], "needs_review")
+        self.assertEqual(receipt["compiler_status"], "passed")
+        self.assertEqual(receipt["unsupported_dependencies"], ["lucide-react"])
+        self.assertTrue(receipt["preview_output_write"])
+
     def test_runtime_validation_without_behavior_contract_does_not_start_qt(self) -> None:
         result = validate_preview_behavior(self._state_dir)
 
@@ -173,8 +188,13 @@ class ReweavePreviewPackTest(unittest.TestCase):
             encoding="utf-8",
         )
         (source / "App.tsx").write_text(
-            "import React from 'react';\n"
-            "export default function App() { return <main><h1>Old quote</h1><p>Old summary</p><button>Quote</button></main>; }\n",
+            "import React, { useState } from 'react';\n"
+            "export default function App() {\n"
+            "  const [status, setStatus] = useState('Idle');\n"
+            "  const handleQuote = () => setStatus('Ready');\n"
+            "  return <main><h1>Old quote</h1><p>Old summary</p>"
+            "<button onClick={handleQuote}>Quote</button><span>{status}</span></main>;\n"
+            "}\n",
             encoding="utf-8",
         )
         (source / "styles.css").write_text("button { color: teal; }\n", encoding="utf-8")
@@ -213,7 +233,7 @@ class ReweavePreviewPackTest(unittest.TestCase):
         self.assertEqual(plan["project_graph_path"], "project_graph.json")
         self.assertFalse(provenance["project_graph"]["source_project_write"])
         self.assertEqual(compile_receipt["status"], "passed")
-        self.assertEqual(compile_receipt["compile_scope"], "local_modules_external_dependencies_not_bundled")
+        self.assertEqual(compile_receipt["compile_scope"], "allowlisted_runtime_dependencies_bundled")
         self.assertEqual(adaptation_receipt["status"], "applied")
         self.assertEqual(adaptation_receipt["mode"], "safe_static_text_slots")
         self.assertEqual(
@@ -232,6 +252,7 @@ class ReweavePreviewPackTest(unittest.TestCase):
             (preview_path / "react_project" / "src" / "App.tsx").read_text(encoding="utf-8"),
         )
         self.assertTrue((preview_path / "react_project" / "dist" / "app.js").is_file())
+        self.assertTrue((preview_path / "react_project" / "dist" / "index.html").is_file())
         self.assertFalse(compile_receipt["source_project_write"])
         self.assertEqual(before, {path.name: path.read_bytes() for path in source.iterdir()})
 
