@@ -125,7 +125,8 @@ def _folder_name(task: str, stamp: str) -> str:
 
 def _write_text(path: Path, content: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
+    with path.open("w", encoding="utf-8", newline="") as handle:
+        handle.write(content)
 
 
 def _resolve_capsules(capsule_ids: list[str]) -> list[dict[str, Any]]:
