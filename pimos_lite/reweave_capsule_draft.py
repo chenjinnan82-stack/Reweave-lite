@@ -18,7 +18,9 @@ _EXT_RULES: list[tuple[str, str, str, list[str], list[str]]] = [
     (".html", "HTML Surface", "UI", ["html", "layout"], ["<html>", "  …", "</html>"]),
     (".css", "Style Sheet", "Style", ["css", "layout"], [".surface {", "  …", "}"]),
     (".js", "Script Module", "Logic", ["javascript", "logic"], ["function …()", "export …"]),
+    (".jsx", "React JSX Components", "UI", ["react", "jsx", "component"], ["export function …()"]),
     (".ts", "Type Module", "Logic", ["typescript", "logic"], ["interface …", "export …"]),
+    (".tsx", "React TSX Components", "UI", ["react", "tsx", "component"], ["export function …()"]),
     (".py", "Python Module", "Logic", ["python", "logic"], ["def …():", "  …"]),
     (".json", "JSON Data", "Logic", ["json", "data"], ["{", "  …", "}"]),
     (".md", "Markdown Doc", "Text", ["docs", "copy"], ["# …", "…"]),
@@ -94,6 +96,21 @@ def build_draft_candidates(summary: dict[str, Any]) -> list[dict[str, Any]]:
             return
         seen.add(key)
         candidates.append(candidate)
+
+    project_graph = summary.get("project_graph") if isinstance(summary.get("project_graph"), dict) else {}
+    if project_graph.get("project_kind") == "react_vite" and project_graph.get("runtime_files"):
+        add(
+            _candidate_from_rule(
+                source_id,
+                source_label,
+                "react_vite_project",
+                "React/Vite Project",
+                "UI",
+                "bounded complete React/Vite project",
+                ["react", "vite", "project"],
+                list(project_graph.get("entrypoints") or ["src/main.tsx"]),
+            )
+        )
 
     for entry in entry_candidates:
         base = Path(str(entry)).name

@@ -75,6 +75,8 @@
       previewReady: "预览已就绪",
       previewNotReady: "预览未就绪",
       smallProjectPackReady: "小项目包已就绪",
+      reactRuntimeVerified: "React 应用 · 运行已验证",
+      reactPreviewAlt: "React 应用预览",
       capsulesLinked: "当前运行状态关联了 {count} 个胶囊",
       noCapsuleUsage: "当前运行状态未报告胶囊使用记录",
       productSummary: "产品能力：{capability} · 源项目写入：{writes} · 追溯：{trace}",
@@ -217,6 +219,8 @@
       previewReady: "Preview ready",
       previewNotReady: "Preview not ready",
       smallProjectPackReady: "Small Project Pack ready",
+      reactRuntimeVerified: "React app · Runtime verified",
+      reactPreviewAlt: "React app preview",
       capsulesLinked: "{count} capsules linked to this runtime",
       noCapsuleUsage: "No capsule usage reported by current runtime",
       productSummary: "Product capability: {capability} · Source writes: {writes} · Trace: {trace}",
@@ -308,6 +312,7 @@
   var previewingSourceIds = {};
   var reviewingSourceIds = {};
   var lastPreviewPath = "";
+  var lastReactPreview = null;
   var pendingGeneratePromise = null;
   var useEnrichedContentPreview = false;
   var useBoundedLocalModel = false;
@@ -324,6 +329,10 @@
     "frontend_runtime_state.json": true,
     "provenance.json": true,
     "quality_gate.json": true,
+    "project_graph.json": true,
+    "react_adaptation.json": true,
+    "react_compile.json": true,
+    "react_runtime_validation.json": true,
     "snippets_used.json": true,
     "summary.md": true,
     "task_intent.json": true,
@@ -549,7 +558,7 @@
       els.generatedPreview.classList.toggle("hidden", !hasTaskPackPreview);
     }
     var previewLabel = document.querySelector(".preview-label");
-    if (previewLabel) previewLabel.textContent = previewText;
+    if (previewLabel) previewLabel.textContent = lastReactPreview ? t("reactRuntimeVerified") : previewText;
     if (els.usedCount && !hasTaskPackPreview) {
       els.usedCount.textContent = String(capsulesUsed);
     }
@@ -1465,6 +1474,15 @@
   function applyGenerateResult(result) {
     if (!result || !result.ok) return;
     lastPreviewAcceptance = result.previewAcceptance || null;
+    var reactPreview = result.taskPack && result.taskPack.react_preview;
+    var runtimeValidation = result.runtimeValidation || {};
+    lastReactPreview =
+      reactPreview &&
+      reactPreview.status === "passed" &&
+      runtimeValidation.status === "passed" &&
+      runtimeValidation.preview_image === "react_project/dist/preview.png"
+        ? { image: runtimeValidation.preview_image }
+        : null;
     if (result.generatedPackage) {
       data.generatedPackage = result.generatedPackage;
     }
@@ -1495,13 +1513,23 @@
 
   function previewAcceptanceText(acceptance) {
     if (!acceptance) return "";
-    if (acceptance.verdict === "usable" && acceptance.reason === "runtime_behavior_verified") {
+    if (
+      acceptance.verdict === "usable" &&
+      (acceptance.reason === "runtime_behavior_verified" || acceptance.reason === "react_runtime_verified")
+    ) {
       return t("acceptanceUsable");
     }
-    if (acceptance.reason === "runtime_behavior_failed") return t("acceptanceRejectedRuntime");
+    if (
+      acceptance.reason === "runtime_behavior_failed" ||
+      acceptance.reason === "react_runtime_failed"
+    ) return t("acceptanceRejectedRuntime");
     if (acceptance.verdict === "rejected") return t("acceptanceRejected");
     if (acceptance.reason === "quality_gate_not_reported") return t("acceptanceNeedsQuality");
-    if (acceptance.reason === "runtime_validation_required") return t("acceptanceNeedsRuntime");
+    if (
+      acceptance.reason === "runtime_validation_required" ||
+      acceptance.reason === "react_runtime_not_verified" ||
+      acceptance.reason === "react_compile_not_verified"
+    ) return t("acceptanceNeedsRuntime");
     return t("acceptanceNeedsBehavior");
   }
 
@@ -2047,6 +2075,7 @@
       ? renderers.renderFileTree(folderLabel, visibleFiles, escapeHtml)
       : '<div class="folder">' + escapeHtml(folderLabel) + "</div>";
     els.generatedPreview.classList.remove("hidden");
+    renderGeneratedPreview();
     if (els.generatedPackage) {
       els.generatedPackage.classList.remove("runtime-read-only");
       els.generatedPackage.classList.toggle("is-ready", !!showPreview);
@@ -2079,6 +2108,30 @@
       openFolder.classList.toggle("hidden", isLumoLiteReadOnly() || !lastPreviewPath);
     }
     applyLumoLiteRuntimeView();
+  }
+
+  function localPreviewFileUrl(relativePath) {
+    if (!lastPreviewPath || relativePath !== "react_project/dist/preview.png") return "";
+    var root = String(lastPreviewPath).replace(/\\/g, "/").replace(/\/$/, "");
+    if (/^[A-Za-z]:\//.test(root)) root = "/" + root;
+    return "file://" + encodeURI(root + "/" + relativePath);
+  }
+
+  function renderGeneratedPreview() {
+    if (!els.generatedPreview) return;
+    var imageUrl = lastReactPreview ? localPreviewFileUrl(lastReactPreview.image) : "";
+    els.generatedPreview.classList.toggle("react-preview-ready", !!imageUrl);
+    if (imageUrl) {
+      els.generatedPreview.innerHTML =
+        '<p class="preview-label">' + escapeHtml(t("reactRuntimeVerified")) + "</p>" +
+        '<img class="react-preview-image" src="' + escapeHtml(imageUrl) + '" alt="' +
+        escapeHtml(t("reactPreviewAlt")) + '">';
+      return;
+    }
+    els.generatedPreview.innerHTML =
+      '<p class="preview-label">' + escapeHtml(t("previewStatus")) + "</p>" +
+      '<div class="preview-wire"><div class="wire-bar"></div><div class="wire-row"></div>' +
+      '<div class="wire-row short"></div><div class="wire-block"></div></div>';
   }
 
   function updatePreviewPackageActions(show) {

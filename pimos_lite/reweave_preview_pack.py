@@ -11,6 +11,7 @@ from typing import Any
 
 from pimos_lite.reweave_capsule_warehouse import get_capsule, is_generate_eligible, list_capsules
 from pimos_lite.reweave_quality_gate import build_quality_gate as _quality_gate
+from pimos_lite.reweave_react_preview import build_react_preview as _build_react_preview
 from pimos_lite.reweave_project_renderer import build_app_js as _build_app_js
 from pimos_lite.reweave_project_renderer import build_behavior_adaptation as _build_behavior_adaptation
 from pimos_lite.reweave_project_renderer import build_index_html as _build_index_html
@@ -24,6 +25,7 @@ from pimos_lite.reweave_snippet_context import (
     count_snippets,
 )
 from pimos_lite.reweave_source_registry import state_dir
+from pimos_lite.reweave_source_scanner import load_summary
 from pimos_lite.reweave_task_intent import MAX_TASK_LEN
 from pimos_lite.reweave_task_intent import build_task_intent as _task_intent
 from pimos_lite.reweave_task_intent import build_task_profile as _task_profile
@@ -39,6 +41,22 @@ def preview_acceptance(task_pack: dict[str, Any]) -> dict[str, str]:
         return {"verdict": "rejected", "reason": "quality_gate_failed"}
     if quality_status != "passed":
         return {"verdict": "needs_review", "reason": "quality_gate_not_reported"}
+    react_preview = task_pack.get("react_preview") if isinstance(task_pack.get("react_preview"), dict) else {}
+    if react_preview.get("status") == "failed":
+        return {"verdict": "rejected", "reason": "react_compile_failed"}
+    if react_preview and react_preview.get("status") != "passed":
+        return {"verdict": "needs_review", "reason": "react_compile_not_verified"}
+    if react_preview:
+        validation = (
+            task_pack.get("react_runtime_validation")
+            if isinstance(task_pack.get("react_runtime_validation"), dict)
+            else {}
+        )
+        if validation.get("status") == "passed":
+            return {"verdict": "usable", "reason": "react_runtime_verified"}
+        if validation.get("status") == "failed":
+            return {"verdict": "rejected", "reason": "react_runtime_failed"}
+        return {"verdict": "needs_review", "reason": "react_runtime_not_verified"}
     behavior = task_pack.get("behavior_reuse") if isinstance(task_pack.get("behavior_reuse"), dict) else {}
     if behavior.get("status") != "enabled":
         return {"verdict": "needs_review", "reason": "closed_behavior_unavailable"}
@@ -136,6 +154,16 @@ def _resolve_capsules(capsule_ids: list[str]) -> list[dict[str, Any]]:
         if cap and is_generate_eligible(cap):
             resolved.append(cap)
     return resolved
+
+
+def _project_graph_for_capsules(capsules: list[dict[str, Any]]) -> dict[str, Any] | None:
+    for capsule in capsules:
+        source_id = str(capsule.get("source_id") or "")
+        summary = load_summary(source_id) if source_id else None
+        graph = summary.get("project_graph") if isinstance(summary, dict) else None
+        if isinstance(graph, dict) and graph.get("project_kind") == "react_vite":
+            return {"source_id": source_id, **graph}
+    return None
 
 
 def _capsule_used_entry(cap: dict[str, Any]) -> dict[str, Any]:
@@ -355,7 +383,8 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
         provenance["content_aware_generate"] = {"enabled": False}
 
     selection_mode = str(payload.get("selectionMode") or payload.get("selection_mode") or "selected_capsules")
-    task_intent = _task_intent(task, capsules)
+    project_graph = _project_graph_for_capsules(capsules)
+    task_intent = _task_intent(task, capsules, project_graph=project_graph)
     task_plan = _task_plan(task_intent)
     candidate_contract = (
         snippet_context.get("behavior_contract")
@@ -399,6 +428,41 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
         task_profile=task_profile,
         selection_mode=selection_mode,
     )
+    if project_graph is not None:
+        task_pack["project_graph_path"] = "project_graph.json"
+        provenance["project_graph"] = {
+            "path": "project_graph.json",
+            "source_id": project_graph.get("source_id"),
+            "source_project_write": False,
+        }
+        react_preview = _build_react_preview(
+            root,
+            task,
+            project_graph,
+            capsule_ids,
+            list(task_plan.get("project_targets") or []),
+        )
+        react_adaptation = (
+            dict(react_preview.get("adaptation"))
+            if isinstance(react_preview.get("adaptation"), dict)
+            else {}
+        )
+        task_intent["react_adaptation"] = react_adaptation
+        task_plan["react_adaptation_path"] = "react_adaptation.json"
+        optional_inputs = task_plan["composer"].setdefault("optional_inputs", [])
+        if "react_adaptation.json" not in optional_inputs:
+            optional_inputs.append("react_adaptation.json")
+        task_plan["acceptance"].append("review safe React text-slot adaptation")
+        task_pack["react_preview"] = react_preview
+        task_pack["react_adaptation_path"] = "react_adaptation.json"
+        provenance["react_preview"] = {
+            "receipt_path": "react_compile.json",
+            "adaptation_path": "react_adaptation.json",
+            "status": react_preview.get("status"),
+            "source_project_write": False,
+        }
+    else:
+        react_preview = None
     if behavior_contract is not None:
         task_pack["behavior_contract_path"] = "behavior_contract.json"
         task_pack["behavior_adaptation_path"] = "behavior_adaptation.json"
@@ -463,6 +527,16 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
     _write_text(root / "capsules_used.json", json.dumps(capsules_used, indent=2, ensure_ascii=False) + "\n")
     _write_text(root / "provenance.json", json.dumps(provenance, indent=2, ensure_ascii=False) + "\n")
     _write_text(root / "summary.md", _build_summary_md(task, capsules))
+    if project_graph is not None:
+        _write_text(root / "project_graph.json", json.dumps(project_graph, indent=2, ensure_ascii=False) + "\n")
+        files.append("project_graph.json")
+    if react_preview is not None:
+        _write_text(root / "react_compile.json", json.dumps(react_preview, indent=2, ensure_ascii=False) + "\n")
+        _write_text(
+            root / "react_adaptation.json",
+            json.dumps(react_preview.get("adaptation") or {}, indent=2, ensure_ascii=False) + "\n",
+        )
+        files.extend(["react_compile.json", "react_adaptation.json", "react_project/"])
     if behavior_contract is not None:
         _write_text(root / "behavior_contract.json", json.dumps(behavior_contract, indent=2, ensure_ascii=False) + "\n")
         _write_text(root / "behavior_adaptation.json", json.dumps(behavior_adaptation, indent=2, ensure_ascii=False) + "\n")
@@ -581,6 +655,25 @@ def attach_behavior_validation(preview_path: str | Path, receipt: dict[str, Any]
     provenance["behavior_validation_path"] = "behavior_validation.json"
     provenance["behavior_validation"] = receipt
     _write_text(root / "behavior_validation.json", json.dumps(receipt, indent=2, ensure_ascii=False) + "\n")
+    _write_text(task_pack_path, json.dumps(task_pack, indent=2, ensure_ascii=False) + "\n")
+    _write_text(provenance_path, json.dumps(provenance, indent=2, ensure_ascii=False) + "\n")
+    return {"taskPack": task_pack, "provenance": provenance}
+
+
+def attach_react_runtime_validation(preview_path: str | Path, receipt: dict[str, Any]) -> dict[str, Any]:
+    """Persist the bounded React runtime validation receipt."""
+    root = Path(preview_path).resolve()
+    task_pack_path = root / "task_pack.json"
+    provenance_path = root / "provenance.json"
+    task_pack = json.loads(task_pack_path.read_text(encoding="utf-8"))
+    provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
+    task_pack["react_runtime_validation_path"] = "react_runtime_validation.json"
+    task_pack["react_runtime_validation"] = receipt
+    if isinstance(task_pack.get("react_preview"), dict):
+        task_pack["react_preview"]["runtime_validation"] = receipt
+    provenance["react_runtime_validation_path"] = "react_runtime_validation.json"
+    provenance["react_runtime_validation"] = receipt
+    _write_text(root / "react_runtime_validation.json", json.dumps(receipt, indent=2, ensure_ascii=False) + "\n")
     _write_text(task_pack_path, json.dumps(task_pack, indent=2, ensure_ascii=False) + "\n")
     _write_text(provenance_path, json.dumps(provenance, indent=2, ensure_ascii=False) + "\n")
     return {"taskPack": task_pack, "provenance": provenance}

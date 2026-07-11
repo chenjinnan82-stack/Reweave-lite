@@ -9,10 +9,12 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from pimos_lite import reweave_capsule_content as content
 from pimos_lite import reweave_capsule_draft as draft
 from pimos_lite import reweave_capsule_warehouse as warehouse
 from pimos_lite import reweave_preview_pack as preview
 from pimos_lite import reweave_project_renderer as renderer
+from pimos_lite import reweave_react_preview as react_preview
 from pimos_lite.reweave_quality_gate import build_quality_gate
 from pimos_lite.reweave_behavior_runtime import validate_preview_behavior
 from pimos_lite.reweave_project_renderer import build_app_js
@@ -39,6 +41,109 @@ class ReweavePreviewPackTest(unittest.TestCase):
 
     def test_empty_behavior_contract_has_no_search_text(self) -> None:
         self.assertEqual(behavior_contract_search_text({}), "")
+
+    def test_react_preview_rejects_truncated_capsule_files(self) -> None:
+        record = {
+            "snippets": [
+                {
+                    "relative_path": "src/App.tsx",
+                    "preview": "export default function App() {}",
+                    "truncated": True,
+                    "redacted": False,
+                }
+            ]
+        }
+        with patch.object(react_preview, "load_capsule_content", return_value=record):
+            files, missing = react_preview._complete_snippets(["cap_react"], ["src/App.tsx"])
+
+        self.assertEqual(files, {})
+        self.assertEqual(missing, ["src/App.tsx"])
+
+    def test_react_preview_does_not_mix_project_files_from_another_source(self) -> None:
+        records = {
+            "cap_other": {
+                "source_id": "box_other",
+                "project_files": [{"relative_path": "src/App.tsx", "content": "wrong"}],
+            },
+            "cap_primary": {
+                "source_id": "box_primary",
+                "project_files": [{"relative_path": "src/App.tsx", "content": "correct"}],
+            },
+        }
+        with patch.object(react_preview, "load_capsule_content", side_effect=records.get):
+            files, missing = react_preview._complete_snippets(
+                ["cap_other", "cap_primary"],
+                ["src/App.tsx"],
+                source_id="box_primary",
+            )
+
+        self.assertEqual(files, {"src/App.tsx": "correct"})
+        self.assertEqual(missing, [])
+
+    def test_react_preview_does_not_replace_dynamic_heading(self) -> None:
+        files = {"src/App.tsx": "export default () => <h1>{title}</h1>;"}
+        targets = [{"path": "src/App.tsx", "kind": "component"}]
+
+        updated, receipt = react_preview._adapt_static_slots(files, "Build a quote tool", targets)
+
+        self.assertEqual(updated, files)
+        self.assertEqual(receipt["status"], "needs_review")
+        self.assertEqual(receipt["reason"], "safe_static_heading_not_found")
+
+    def test_react_preview_prefers_home_heading_over_hidden_subpage(self) -> None:
+        files = {
+            "src/pages/CapturePage.tsx": "export default () => <h1>Capture</h1>;",
+            "src/pages/HomePage.tsx": "export default () => <h1>Home</h1>;",
+        }
+        targets = [
+            {"path": "src/pages/CapturePage.tsx", "kind": "component"},
+            {"path": "src/pages/HomePage.tsx", "kind": "component"},
+        ]
+
+        updated, receipt = react_preview._adapt_static_slots(files, "Build a review helper", targets)
+
+        self.assertIn("Build a review helper", updated["src/pages/HomePage.tsx"])
+        self.assertIn("Capture", updated["src/pages/CapturePage.tsx"])
+        self.assertEqual(receipt["changes"][0]["slot_id"], "src/pages/HomePage.tsx:h1:0")
+
+    def test_react_preview_adapts_heading_in_entry_file(self) -> None:
+        files = {"src/main.tsx": "export default () => <main><h1>Studio</h1></main>;"}
+        targets = [{"path": "src/main.tsx", "kind": "entry"}]
+
+        updated, receipt = react_preview._adapt_static_slots(files, "Build a studio", targets)
+
+        self.assertIn("Build a studio", updated["src/main.tsx"])
+        self.assertEqual(receipt["status"], "applied")
+
+    def test_react_preview_marks_unknown_runtime_dependency_for_review(self) -> None:
+        project = self._state_dir / "react-extra-dependency"
+        (project / "src").mkdir(parents=True)
+        (project / "src" / "main.jsx").write_text(
+            "import React from 'react';\nconsole.log(React.version);\n",
+            encoding="utf-8",
+        )
+
+        receipt = react_preview._compile(project, "src/main.jsx", ["react", "axios"])
+
+        self.assertEqual(receipt["status"], "needs_review")
+        self.assertEqual(receipt["compiler_status"], "passed")
+        self.assertEqual(receipt["unsupported_dependencies"], ["axios"])
+        self.assertTrue(receipt["preview_output_write"])
+
+    def test_react_preview_bundles_allowlisted_lucide_dependency(self) -> None:
+        project = self._state_dir / "react-lucide-dependency"
+        (project / "src").mkdir(parents=True)
+        (project / "src" / "main.jsx").write_text(
+            "import React from 'react';\n"
+            "import { Camera } from 'lucide-react';\n"
+            "console.log(React.version, Camera);\n",
+            encoding="utf-8",
+        )
+
+        receipt = react_preview._compile(project, "src/main.jsx", ["react", "lucide-react"])
+
+        self.assertEqual(receipt["status"], "passed")
+        self.assertEqual(receipt["compiler_status"], "passed")
 
     def test_runtime_validation_without_behavior_contract_does_not_start_qt(self) -> None:
         result = validate_preview_behavior(self._state_dir)
@@ -120,6 +225,107 @@ class ReweavePreviewPackTest(unittest.TestCase):
             {"index.html", "styles.css", "app.js"},
         )
         self.assertTrue(all(item["source_project_write"] is False for item in provenance["outputs"]))
+
+    def test_react_vite_graph_flows_into_preview_only_task_plan(self) -> None:
+        root = self._state_dir / "react-vite-preview-source"
+        source = root / "src"
+        source.mkdir(parents=True)
+        (root / "package.json").write_text(
+            json.dumps(
+                {
+                    "name": "react-quote",
+                    "dependencies": {"react": "^19.0.0", "react-dom": "^19.0.0"},
+                    "devDependencies": {"vite": "^7.0.0"},
+                }
+            ),
+            encoding="utf-8",
+        )
+        (source / "main.tsx").write_text(
+            "import React from 'react';\n"
+            "import { createRoot } from 'react-dom/client';\n"
+            "import App from './App';\n"
+            "import './styles.css';\n"
+            "createRoot(document.getElementById('root')!).render(<App />);\n",
+            encoding="utf-8",
+        )
+        (source / "App.tsx").write_text(
+            "import React, { useState } from 'react';\n"
+            "export default function App() {\n"
+            "  const [status, setStatus] = useState('Idle');\n"
+            "  const handleQuote = () => setStatus('Ready');\n"
+            "  return <main><h1>Old quote</h1><p>Old summary</p>"
+            "<button onClick={handleQuote}>Quote</button><span>{status}</span></main>;\n"
+            "}\n",
+            encoding="utf-8",
+        )
+        (source / "styles.css").write_text("button { color: teal; }\n", encoding="utf-8")
+        before = {path.name: path.read_bytes() for path in source.iterdir()}
+        box = registry.add_source_box(root)
+        scanner.scan_source_box(box["id"])
+        draft.draft_capsules(box["id"])
+        promoted = warehouse.promote_source_drafts(box["id"])
+        cap_ids = [cap["id"] for cap in promoted]
+        for cap_id in cap_ids:
+            content.enrich_capsule_content(cap_id)
+        project_content = next(
+            record
+            for record in (content.load_capsule_content(cap_id) for cap_id in cap_ids)
+            if isinstance(record, dict) and record.get("project_files")
+        )
+        self.assertTrue(project_content["project_files_complete"])
+        self.assertEqual(
+            [item["relative_path"] for item in project_content["project_files"]],
+            ["src/main.tsx", "src/App.tsx", "src/styles.css"],
+        )
+
+        result = preview.build_preview_package(
+            {
+                "taskText": "Build a React quote component",
+                "capsuleIds": cap_ids,
+                "backend": "local",
+                "useEnrichedContent": True,
+            }
+        )
+
+        preview_path = Path(result["previewPath"])
+        graph = json.loads((preview_path / "project_graph.json").read_text(encoding="utf-8"))
+        intent = json.loads((preview_path / "task_intent.json").read_text(encoding="utf-8"))
+        plan = json.loads((preview_path / "task_plan.json").read_text(encoding="utf-8"))
+        provenance = json.loads((preview_path / "provenance.json").read_text(encoding="utf-8"))
+        compile_receipt = json.loads((preview_path / "react_compile.json").read_text(encoding="utf-8"))
+        adaptation_receipt = json.loads((preview_path / "react_adaptation.json").read_text(encoding="utf-8"))
+        self.assertEqual(graph["project_kind"], "react_vite")
+        self.assertEqual(intent["project_context"]["graph_status"], "analyzed")
+        self.assertEqual(
+            [item["path"] for item in plan["project_targets"]],
+            ["src/main.tsx", "src/App.tsx", "src/styles.css"],
+        )
+        self.assertTrue(all(item["write_mode"] == "preview_only" for item in plan["project_targets"]))
+        self.assertEqual(plan["project_graph_path"], "project_graph.json")
+        self.assertFalse(provenance["project_graph"]["source_project_write"])
+        self.assertEqual(compile_receipt["status"], "passed")
+        self.assertEqual(compile_receipt["compile_scope"], "allowlisted_runtime_dependencies_bundled")
+        self.assertEqual(adaptation_receipt["status"], "applied")
+        self.assertEqual(adaptation_receipt["mode"], "safe_static_text_slots")
+        self.assertEqual(
+            [slot["slot_id"] for slot in adaptation_receipt["slots"]],
+            ["src/App.tsx:h1:0", "src/App.tsx:p:0", "src/App.tsx:button:0"],
+        )
+        self.assertEqual(
+            intent["react_adaptation"]["changes"][0]["slot_id"],
+            "src/App.tsx:h1:0",
+        )
+        self.assertEqual(plan["react_adaptation_path"], "react_adaptation.json")
+        self.assertIn("react_adaptation.json", plan["composer"]["optional_inputs"])
+        self.assertTrue((preview_path / "react_project" / "src" / "App.tsx").is_file())
+        self.assertIn(
+            "Build a React quote component",
+            (preview_path / "react_project" / "src" / "App.tsx").read_text(encoding="utf-8"),
+        )
+        self.assertTrue((preview_path / "react_project" / "dist" / "app.js").is_file())
+        self.assertTrue((preview_path / "react_project" / "dist" / "index.html").is_file())
+        self.assertFalse(compile_receipt["source_project_write"])
+        self.assertEqual(before, {path.name: path.read_bytes() for path in source.iterdir()})
 
     def test_operations_task_uses_task_intent_not_fixed_template_profile(self) -> None:
         cap_ids = self._promote_capsules()

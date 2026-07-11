@@ -23,6 +23,7 @@ from pimos_lite.reweave_reuse_suggestions import load_reuse_suggestions
 from pimos_lite.reweave_capsule_verifier import load_verification
 from pimos_lite.reweave_source_registry import get_source_box, state_dir
 from pimos_lite.reweave_source_scanner import load_summary
+from pimos_lite.reweave_project_graph import MAX_RUNTIME_FILES
 
 CONTENT_SCHEMA_VERSION = 1
 MAX_FILES = 5
@@ -30,6 +31,8 @@ MAX_BYTES_PER_FILE = 4096
 MAX_TOTAL_BYTES = 16000
 MAX_BEHAVIOR_FILE_BYTES = 65536
 MAX_BEHAVIOR_TOTAL_BYTES = 131072
+MAX_PROJECT_FILE_BYTES = 262144
+MAX_PROJECT_TOTAL_BYTES = 524288
 RUNTIME_DEPENDENCY_PATTERNS = (
     ("fetch", r"\bfetch\s*\("),
     ("xml_http_request", r"\bXMLHttpRequest\b"),
@@ -90,6 +93,8 @@ EXTENSION_HINTS: tuple[tuple[str, str], ...] = (
     ("page", ".html"),
     ("javascript", ".js"),
     ("script", ".js"),
+    ("jsx", ".jsx"),
+    ("tsx", ".tsx"),
     ("typescript", ".ts"),
     ("json", ".json"),
     ("markdown", ".md"),
@@ -277,7 +282,12 @@ def _frontend_reference(entry_path: str, raw: str) -> tuple[str, str]:
     return ("local", relative) if is_allowed_relative_path(relative) else ("blocked", relative)
 
 
-def _complete_text_file(source_root: Path, relative: str) -> tuple[dict[str, Any] | None, str]:
+def _complete_text_file(
+    source_root: Path,
+    relative: str,
+    *,
+    max_bytes: int = MAX_BEHAVIOR_FILE_BYTES,
+) -> tuple[dict[str, Any] | None, str]:
     path = resolve_safe_path(source_root, relative)
     if path is None:
         return None, f"unsafe_or_missing:{relative}"
@@ -285,7 +295,7 @@ def _complete_text_file(source_root: Path, relative: str) -> tuple[dict[str, Any
         raw = path.read_bytes()
     except OSError:
         return None, f"read_failed:{relative}"
-    if len(raw) > MAX_BEHAVIOR_FILE_BYTES:
+    if len(raw) > max_bytes:
         return None, f"file_too_large:{relative}"
     if b"\x00" in raw:
         return None, f"binary_content:{relative}"
@@ -627,6 +637,21 @@ def _paths_from_summary_extension_samples(capsule: dict[str, Any], summary: dict
     return paths
 
 
+def _paths_from_project_graph(capsule: dict[str, Any], summary: dict[str, Any]) -> list[str]:
+    tags = {str(tag).lower() for tag in capsule.get("tags", []) if tag}
+    graph = summary.get("project_graph") if isinstance(summary.get("project_graph"), dict) else {}
+    if "react" not in tags or graph.get("project_kind") != "react_vite":
+        return []
+    nodes = graph.get("nodes") if isinstance(graph.get("nodes"), list) else []
+    return [
+        str(node.get("path"))
+        for node in nodes
+        if isinstance(node, dict)
+        and node.get("path")
+        and node.get("kind") in {"entry", "component", "style", "module"}
+    ][:MAX_FILES]
+
+
 def collect_candidate_paths(capsule: dict[str, Any], summary: dict[str, Any]) -> list[str]:
     """Collect candidate relative paths without scanning the full source tree."""
     source_id = str(capsule.get("source_id") or "")
@@ -648,6 +673,9 @@ def collect_candidate_paths(capsule: dict[str, Any], summary: dict[str, Any]) ->
     paths = _dedupe_paths(paths)
 
     if not paths:
+        paths = _dedupe_paths(_paths_from_project_graph(capsule, summary))
+
+    if not paths:
         paths = _dedupe_paths(_paths_from_summary_extension_samples(capsule, summary))
 
     if not paths:
@@ -655,6 +683,33 @@ def collect_candidate_paths(capsule: dict[str, Any], summary: dict[str, Any]) ->
         paths = _dedupe_paths([str(e) for e in entry_candidates if e])
 
     return [p for p in paths if is_allowed_relative_path(p)][:MAX_FILES]
+
+
+def _complete_react_project_files(
+    source_root: Path,
+    capsule: dict[str, Any],
+    summary: dict[str, Any],
+) -> tuple[list[dict[str, Any]], list[str], bool]:
+    tags = {str(tag).lower() for tag in capsule.get("tags", []) if tag}
+    graph = summary.get("project_graph") if isinstance(summary.get("project_graph"), dict) else {}
+    paths = [str(path) for path in graph.get("runtime_files", []) if path]
+    if not {"project", "react"}.issubset(tags) or graph.get("project_kind") != "react_vite" or not paths:
+        return [], [], False
+    files: list[dict[str, Any]] = []
+    warnings: list[str] = []
+    total_bytes = 0
+    for relative in paths[:MAX_RUNTIME_FILES]:
+        item, warning = _complete_text_file(source_root, relative, max_bytes=MAX_PROJECT_FILE_BYTES)
+        if item is None:
+            warnings.append(warning)
+            continue
+        if total_bytes + int(item["bytes"]) > MAX_PROJECT_TOTAL_BYTES:
+            warnings.append("project_total_bytes_exceeded")
+            break
+        files.append(item)
+        total_bytes += int(item["bytes"])
+    complete = len(paths) <= MAX_RUNTIME_FILES and len(files) == len(paths)
+    return files, warnings, complete
 
 
 def _read_text_snippet(file_path: Path, max_bytes: int) -> tuple[str, int, bool]:
@@ -810,6 +865,15 @@ def enrich_capsule_content(capsule_id: str) -> dict[str, Any]:
         "snippets": snippets,
         "warnings": warnings,
     }
+    project_files, project_warnings, project_files_complete = _complete_react_project_files(
+        source_path,
+        capsule,
+        summary,
+    )
+    if project_files:
+        record["project_files"] = project_files
+        record["project_files_complete"] = project_files_complete
+        record["warnings"].extend(project_warnings)
     behavior_contract = build_frontend_behavior_contract(source_path, summary, capsule)
     if behavior_contract is not None:
         record["behavior_contract"] = behavior_contract

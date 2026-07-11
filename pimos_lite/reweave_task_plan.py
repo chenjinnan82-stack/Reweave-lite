@@ -12,7 +12,7 @@ def build_task_plan(task_intent: dict[str, Any]) -> dict[str, Any]:
         if isinstance(item, dict) and item.get("id")
     ]
     output_type = str(task_intent.get("output_type") or "page")
-    return {
+    plan = {
         "schema_version": "reweave_task_plan.v1",
         "task": task_intent.get("task"),
         "output_type": output_type,
@@ -48,3 +48,10 @@ def build_task_plan(task_intent: dict[str, Any]) -> dict[str, Any]:
             "confirm source writes stay 0",
         ],
     }
+    project_context = task_intent.get("project_context")
+    if isinstance(project_context, dict):
+        plan["project_graph_path"] = "project_graph.json"
+        plan["project_targets"] = list(project_context.get("candidate_files") or [])
+        plan["composer"]["optional_inputs"].append("project_graph.json")
+        plan["acceptance"].append("review React/Vite project targets without writing source files")
+    return plan

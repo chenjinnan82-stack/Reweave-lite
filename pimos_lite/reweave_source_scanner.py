@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from pimos_lite.reweave_project_graph import inspect_react_vite_project
 from pimos_lite.reweave_source_registry import (
     get_source_box,
     load_json_state,
@@ -97,12 +98,16 @@ def load_summary_light(source_id: str) -> dict[str, Any] | None:
     if not summary:
         return None
     counts = summary.get("counts") if isinstance(summary.get("counts"), dict) else {}
+    graph = summary.get("project_graph") if isinstance(summary.get("project_graph"), dict) else {}
     return {
         "source_id": source_id,
         "scan_status": summary.get("scan_status"),
         "scanned_at": summary.get("scanned_at"),
         "files_total": counts.get("files_total", 0),
         "files_scanned": counts.get("files_scanned", 0),
+        "project_kind": graph.get("project_kind", "unknown"),
+        "project_graph_status": graph.get("status", "not_available"),
+        "project_graph_counts": graph.get("counts", {}),
     }
 
 
@@ -258,6 +263,7 @@ def scan_source_box(source_id: str, *, limits: ScanLimits | None = None) -> dict
             label=str(box.get("label") or root.name),
             limits=limits,
         )
+        summary["project_graph"] = inspect_react_vite_project(root)
         rel = save_summary(summary)
         mark_source_scanned(source_id, rel, summary["scanned_at"])
         return summary

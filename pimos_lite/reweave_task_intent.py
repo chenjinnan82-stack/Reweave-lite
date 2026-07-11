@@ -5,6 +5,8 @@ from __future__ import annotations
 import re
 from typing import Any
 
+from pimos_lite.reweave_project_graph import MAX_RUNTIME_FILES
+
 MAX_TASK_LEN = 240
 
 CAPABILITY_KEYWORDS = {
@@ -140,7 +142,49 @@ def capsule_reason(cap: dict[str, Any], capabilities: list[str]) -> str:
     return str(cap.get("role") or "selected for source-backed task context")
 
 
-def build_task_intent(task: str, capsules: list[dict[str, Any]]) -> dict[str, Any]:
+def _project_context(project_graph: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not project_graph or project_graph.get("project_kind") != "react_vite":
+        return None
+    nodes = [item for item in project_graph.get("nodes", []) if isinstance(item, dict)]
+    nodes_by_path = {str(item.get("path") or ""): item for item in nodes}
+    runtime_files = [str(path) for path in project_graph.get("runtime_files", []) if path]
+    ordered = [nodes_by_path[path] for path in runtime_files if path in nodes_by_path]
+    if not ordered:
+        for kind in ("entry", "component", "style", "module"):
+            ordered.extend(item for item in nodes if item.get("kind") == kind)
+    candidate_files = []
+    seen: set[str] = set()
+    for node in ordered:
+        path = str(node.get("path") or "")
+        if not path or path in seen:
+            continue
+        seen.add(path)
+        candidate_files.append(
+            {
+                "path": path,
+                "kind": str(node.get("kind") or "module"),
+                "write_mode": "preview_only",
+            }
+        )
+        if len(candidate_files) == MAX_RUNTIME_FILES:
+            break
+    return {
+        "project_kind": "react_vite",
+        "graph_status": project_graph.get("status"),
+        "entrypoints": list(project_graph.get("entrypoints") or []),
+        "runtime_file_count": len(runtime_files),
+        "runtime_closure_bounded": len(runtime_files) <= MAX_RUNTIME_FILES,
+        "candidate_files": candidate_files,
+        "source_project_write": False,
+    }
+
+
+def build_task_intent(
+    task: str,
+    capsules: list[dict[str, Any]],
+    *,
+    project_graph: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     # ponytail: keyword intent is enough for v0; replace with parser only when real tasks beat it.
     task_text = (task or "").lower()
     text = " ".join(
@@ -162,7 +206,7 @@ def build_task_intent(task: str, capsules: list[dict[str, Any]]) -> dict[str, An
         output_type = "tool"
     else:
         output_type = "page"
-    return {
+    intent = {
         "schema_version": "reweave_task_intent.v1",
         "task": (task or "Build a small project pack")[:MAX_TASK_LEN],
         "goal": (task or "Build a small project pack")[:MAX_TASK_LEN],
@@ -181,6 +225,10 @@ def build_task_intent(task: str, capsules: list[dict[str, Any]]) -> dict[str, An
         ],
         "source_project_write": False,
     }
+    context = _project_context(project_graph)
+    if context:
+        intent["project_context"] = context
+    return intent
 
 
 def build_task_profile(

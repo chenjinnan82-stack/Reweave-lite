@@ -16,8 +16,9 @@ from pimos_lite.reweave_capsule_warehouse import promote_source_drafts as promot
 from pimos_lite.reweave_capsule_warehouse import is_generate_eligible
 from pimos_lite.reweave_preview_pack import build_preview_package
 from pimos_lite.reweave_preview_pack import attach_behavior_validation
+from pimos_lite.reweave_preview_pack import attach_react_runtime_validation
 from pimos_lite.reweave_preview_pack import preview_acceptance
-from pimos_lite.reweave_behavior_runtime import validate_preview_behavior
+from pimos_lite.reweave_behavior_runtime import validate_preview_behavior, validate_react_preview_behavior
 from pimos_lite.reweave_lumo_lite_artifacts import (
     collect_lumo_lite_artifacts,
     get_lumo_lite_artifact,
@@ -251,6 +252,7 @@ class LumoLiteReweaveEngine:
     def select_capsules(self, task: str) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
         behavior_by_source: dict[str, str] = {}
+        react_project_by_source: dict[str, dict[str, Any]] = {}
         for capsule in list_local_capsules():
             if not is_generate_eligible(capsule):
                 continue
@@ -259,6 +261,8 @@ class LumoLiteReweaveEngine:
             contract = content.get("behavior_contract") if isinstance(content.get("behavior_contract"), dict) else {}
             candidate["_closed_behavior"] = contract.get("status") == "closed"
             source_id = str(candidate.get("source_id") or candidate.get("source") or "")
+            if content.get("project_files_complete") is True:
+                react_project_by_source[source_id] = candidate
             behavior_text = behavior_contract_search_text(contract)
             if behavior_text:
                 behavior_by_source[source_id] = behavior_text
@@ -266,7 +270,14 @@ class LumoLiteReweaveEngine:
         for candidate in candidates:
             source_id = str(candidate.get("source_id") or candidate.get("source") or "")
             candidate["_behavior_text"] = behavior_by_source.get(source_id, "")
-        return select_capsules_for_task(task, candidates)
+        selected = select_capsules_for_task(task, candidates)
+        if not selected:
+            return selected
+        source_id = str(selected[0].get("source_id") or selected[0].get("source") or "")
+        required = react_project_by_source.get(source_id)
+        if not required or any(item.get("id") == required.get("id") for item in selected):
+            return selected
+        return [required, *[item for item in selected if item.get("id") != required.get("id")]][: len(selected)]
 
     def generate_preview(self, payload: dict[str, Any]) -> dict[str, Any]:
         task = str(payload.get("taskText") or payload.get("task") or "New tool")
@@ -347,13 +358,20 @@ class LumoLiteReweaveEngine:
                 result["taskPack"] = json.loads((root / "task_pack.json").read_text(encoding="utf-8"))
                 result["provenance"] = json.loads((root / "provenance.json").read_text(encoding="utf-8"))
         if effective_payload.get("validateRuntime") is True:
-            validation = validate_preview_behavior(result["previewPath"])
-            attached = attach_behavior_validation(result["previewPath"], validation)
+            react_preview = result["taskPack"].get("react_preview")
+            if isinstance(react_preview, dict) and react_preview.get("status") == "passed":
+                validation = validate_react_preview_behavior(result["previewPath"], task)
+                attached = attach_react_runtime_validation(result["previewPath"], validation)
+                receipt_name = "react_runtime_validation.json"
+            else:
+                validation = validate_preview_behavior(result["previewPath"])
+                attached = attach_behavior_validation(result["previewPath"], validation)
+                receipt_name = "behavior_validation.json"
             result.update(attached)
             result["runtimeValidation"] = validation
             files = result.get("generatedPackage", {}).get("files")
-            if isinstance(files, list) and "behavior_validation.json" not in files:
-                files.append("behavior_validation.json")
+            if isinstance(files, list) and receipt_name not in files:
+                files.append(receipt_name)
         result["mode"] = "task_pack_preview"
         result["source_project_write"] = False
         result["dispatch"] = False

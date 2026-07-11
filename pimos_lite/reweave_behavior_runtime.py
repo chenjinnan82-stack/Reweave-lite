@@ -48,6 +48,229 @@ def validate_preview_behavior(root: str | Path, *, timeout: float = 8.0) -> dict
     return result if isinstance(result, dict) else _receipt("unavailable", "invalid_qt_runner_result")
 
 
+def validate_react_preview_behavior(
+    root: str | Path,
+    expected_text: str,
+    *,
+    timeout: float = 10.0,
+) -> dict[str, Any]:
+    preview = Path(root).resolve() / "react_project" / "dist"
+    if not (preview / "index.html").is_file():
+        return _receipt("unavailable", "react_runtime_entry_missing")
+    try:
+        completed = subprocess.run(
+            [sys.executable, "-m", __name__, "--react-child", str(preview), expected_text[:160]],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        return _receipt("unavailable", type(exc).__name__.lower())
+    lines = [line for line in completed.stdout.splitlines() if line.strip().startswith("{")]
+    if not lines:
+        return _receipt("unavailable", "qt_runner_failed", detail=completed.stderr[-240:])
+    try:
+        result = json.loads(lines[-1])
+    except json.JSONDecodeError:
+        return _receipt("unavailable", "invalid_qt_runner_result")
+    return result if isinstance(result, dict) else _receipt("unavailable", "invalid_qt_runner_result")
+
+
+def _run_react_child(root: Path, expected_text: str) -> int:
+    from functools import partial
+    from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+    from threading import Thread
+
+    try:
+        from PySide6.QtCore import Qt, QTimer, QUrl
+        from PySide6.QtWebEngineCore import (
+            QWebEnginePage,
+            QWebEngineProfile,
+            QWebEngineSettings,
+            QWebEngineUrlRequestInterceptor,
+        )
+        from PySide6.QtWebEngineWidgets import QWebEngineView
+        from PySide6.QtWidgets import QApplication
+    except ImportError:
+        print(json.dumps(_receipt("unavailable", "pyside6_unavailable")))
+        return 0
+
+    app = QApplication.instance() or QApplication(["reweave-react-validation"])
+    console_messages: list[str] = []
+    blocked_requests: list[str] = []
+    allowed_root = root.resolve()
+
+    class QuietHandler(SimpleHTTPRequestHandler):
+        def log_message(self, _format: str, *_args: Any) -> None:
+            pass
+
+    server = ThreadingHTTPServer(
+        ("127.0.0.1", 0),
+        partial(QuietHandler, directory=str(allowed_root)),
+    )
+    Thread(target=server.serve_forever, daemon=True).start()
+    preview_port = int(server.server_port)
+
+    class ValidationPage(QWebEnginePage):
+        def javaScriptConsoleMessage(self, _level: Any, message: str, _line: int, _source: str) -> None:
+            console_messages.append(message[:240])
+
+    class PreviewRequestInterceptor(QWebEngineUrlRequestInterceptor):
+        def interceptRequest(self, info: Any) -> None:
+            url = info.requestUrl()
+            scheme = url.scheme().lower()
+            if scheme in {"data", "blob", "about"}:
+                return
+            allowed = False
+            if scheme == "file":
+                try:
+                    Path(url.toLocalFile()).resolve().relative_to(allowed_root)
+                    allowed = True
+                except (OSError, ValueError):
+                    pass
+            elif scheme == "http" and url.host() == "127.0.0.1" and url.port() == preview_port:
+                allowed = True
+            if not allowed:
+                blocked_requests.append(scheme or "unknown")
+                info.block(True)
+
+    profile = QWebEngineProfile()
+    request_interceptor = PreviewRequestInterceptor()
+    profile.setUrlRequestInterceptor(request_interceptor)
+    page = ValidationPage(profile)
+    view = QWebEngineView()
+    view.resize(960, 600)
+    view.setAttribute(Qt.WA_DontShowOnScreen, True)
+    view.setPage(page)
+    view.show()
+    settings = page.settings()
+    settings.setAttribute(QWebEngineSettings.LocalContentCanAccessFileUrls, True)
+    settings.setAttribute(QWebEngineSettings.LocalContentCanAccessRemoteUrls, False)
+    output: dict[str, Any] = {}
+    initial_pixmap: Any = None
+    expected_json = json.dumps(expected_text)
+    snapshot_js = (
+        "JSON.stringify({text:(document.body.innerText||'').trim(),"
+        "root:(document.getElementById('root')||{}).innerText||'',"
+        "taskVisible:(function(expected){if(!expected)return true;"
+        "var walker=document.createTreeWalker(document.body,NodeFilter.SHOW_TEXT);var node;"
+        "while((node=walker.nextNode())){if(!(node.nodeValue||'').includes(expected))continue;"
+        "var el=node.parentElement;if(!el)continue;var rect=el.getBoundingClientRect();var style=getComputedStyle(el);"
+        "if(style.visibility!=='hidden'&&style.display!=='none'&&rect.width>0&&rect.height>0&&"
+        "rect.bottom>0&&rect.right>0&&rect.top<innerHeight&&rect.left<innerWidth)return true;}return false;})("
+        + expected_json
+        + "),"
+        "state:(document.body.innerText||'').trim()+'|'+"
+        "Array.from(document.querySelectorAll('input,textarea,select')).map(function(el){"
+        "return String(el.value||el.checked||'');}).join('|')+'|'+location.hash+'|'+"
+        "Array.from(document.querySelectorAll('button,[role=tab],[aria-selected],[aria-pressed],[aria-expanded]')).map(function(el){"
+        "return [el.id,el.className,el.getAttribute('aria-selected'),el.getAttribute('aria-pressed'),"
+        "el.getAttribute('aria-expanded'),el.disabled].join(':');}).join('|'),"
+        "buttons:document.querySelectorAll('button').length})"
+    )
+
+    def finish(result: dict[str, Any]) -> None:
+        if output:
+            return
+        result.setdefault("request_scope", "preview_origin_only")
+        result.setdefault("blocked_request_count", len(blocked_requests))
+        result.setdefault("local_http_call", True)
+        result.setdefault("external_network_call", False)
+        if result.get("status") == "passed":
+            preview_image = root / "preview.png"
+            pixmap = initial_pixmap if initial_pixmap is not None else view.grab()
+            if not pixmap.isNull() and pixmap.save(str(preview_image), "PNG"):
+                result["preview_image"] = "react_project/dist/preview.png"
+                result["preview_output_write"] = True
+        if console_messages:
+            result.setdefault("console_messages", console_messages[-5:])
+        output.update(result)
+        server.shutdown()
+        server.server_close()
+        app.quit()
+
+    def inspect_before(raw: Any) -> None:
+        nonlocal initial_pixmap
+        try:
+            before = json.loads(raw) if isinstance(raw, str) else {}
+        except json.JSONDecodeError:
+            before = {}
+        if not str(before.get("root") or "").strip():
+            finish(_receipt("failed", "react_root_not_rendered"))
+            return
+        initial_pixmap = view.grab()
+        button_count = min(int(before.get("buttons") or 0), 12)
+        if not button_count:
+            finish(_receipt("needs_review", "react_button_not_found", rendered=True))
+            return
+
+        def try_button(index: int, current: dict[str, Any]) -> None:
+            if index >= button_count:
+                finish(
+                    _receipt(
+                        "needs_review",
+                        "react_interaction_unchanged",
+                        rendered=True,
+                        interaction_present=True,
+                        interaction_changed=False,
+                        buttons_checked=button_count,
+                    )
+                )
+                return
+
+            def inspect_after(after_raw: Any) -> None:
+                try:
+                    after = json.loads(after_raw) if isinstance(after_raw, str) else {}
+                except json.JSONDecodeError:
+                    after = {}
+                changed = str(current.get("state") or "") != str(after.get("state") or "")
+                task_rendered = bool(before.get("taskVisible") or after.get("taskVisible"))
+                if changed:
+                    finish(
+                        _receipt(
+                            "passed" if task_rendered else "needs_review",
+                            "react_interaction_changed_dom"
+                            if task_rendered
+                            else "adapted_task_text_not_rendered",
+                            rendered=True,
+                            task_text_rendered=task_rendered,
+                            interaction_present=True,
+                            interaction_changed=True,
+                            button_index=index,
+                        )
+                    )
+                    return
+                try_button(index + 1, after)
+
+            script = (
+                "(function(){var button=document.querySelectorAll('button')["
+                f"{index}];if(!button||button.disabled)return false;button.click();return true;}})()"
+            )
+            page.runJavaScript(
+                script,
+                lambda clicked: (
+                    QTimer.singleShot(500, lambda: page.runJavaScript(snapshot_js, inspect_after))
+                    if clicked
+                    else try_button(index + 1, current)
+                ),
+            )
+
+        try_button(0, before)
+
+    def loaded(ok: bool) -> None:
+        if not ok:
+            finish(_receipt("failed", "react_preview_load_failed"))
+            return
+        QTimer.singleShot(700, lambda: page.runJavaScript(snapshot_js, inspect_before))
+
+    page.loadFinished.connect(loaded)
+    page.load(QUrl(f"http://127.0.0.1:{preview_port}/index.html"))
+    QTimer.singleShot(8000, lambda: finish(_receipt("unavailable", "validation_timeout")))
+    app.exec()
+    print(json.dumps(output or _receipt("unavailable", "empty_validation_result"), ensure_ascii=False))
+    return 0
+
+
 def _run_child(root: Path) -> int:
     try:
         from PySide6.QtCore import QTimer, QUrl
@@ -198,4 +421,6 @@ def _run_child(root: Path) -> int:
 if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--child":
         raise SystemExit(_run_child(Path(sys.argv[2]).resolve()))
+    if len(sys.argv) == 4 and sys.argv[1] == "--react-child":
+        raise SystemExit(_run_react_child(Path(sys.argv[2]).resolve(), sys.argv[3]))
     raise SystemExit("usage: python -m pimos_lite.reweave_behavior_runtime --child PREVIEW_ROOT")
