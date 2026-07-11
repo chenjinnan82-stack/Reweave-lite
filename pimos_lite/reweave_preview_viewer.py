@@ -11,6 +11,7 @@ from pimos_lite.reweave_preview_pack import (
     load_preview_history,
     preview_acceptance,
     preview_packages_dir,
+    resolve_package_root,
 )
 from pimos_lite.reweave_source_registry import state_dir
 
@@ -88,49 +89,6 @@ def _provenance_summary(provenance: dict[str, Any]) -> dict[str, Any]:
     if isinstance(provenance.get("behavior_validation"), dict):
         summary["behavior_validation"] = dict(provenance["behavior_validation"])
     return summary
-
-
-def resolve_package_root(package_id_or_path: str) -> tuple[Path | None, str]:
-    """Resolve a preview package directory from id, relative path, or absolute path."""
-    raw = (package_id_or_path or "").strip()
-    if not raw:
-        return None, ""
-
-    state_root = state_dir()
-    candidate = Path(raw)
-    if candidate.is_dir():
-        resolved = candidate.resolve()
-        if _is_relative_to(resolved, state_root):
-            return resolved, candidate.name
-        return None, candidate.name
-
-    under_state = state_root / raw
-    if under_state.is_dir():
-        resolved = under_state.resolve()
-        if _is_relative_to(resolved, state_root):
-            return resolved, under_state.name
-        return None, under_state.name
-
-    folder_name = raw.rstrip("/").split("/")[-1]
-    by_name = preview_packages_dir() / folder_name
-    if by_name.is_dir():
-        resolved = by_name.resolve()
-        if _is_relative_to(resolved, state_root):
-            return resolved, folder_name
-        return None, folder_name
-
-    for entry in load_preview_history().get("packages") if isinstance(load_preview_history().get("packages"), list) else []:
-        if not isinstance(entry, dict):
-            continue
-        entry_id = str(entry.get("id") or "")
-        entry_path = str(entry.get("path") or "")
-        if raw not in {entry_id, entry_path, entry_path.rstrip("/")}:
-            continue
-        resolved = (state_root / entry_path).resolve()
-        if resolved.is_dir() and _is_relative_to(resolved, state_root):
-            return resolved, entry_id or resolved.name
-
-    return None, folder_name or raw
 
 
 def _is_relative_to(path: Path, root: Path) -> bool:
