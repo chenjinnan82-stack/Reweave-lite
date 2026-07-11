@@ -86,6 +86,27 @@ def test_public_demo_reuses_shared_task_intent_helpers() -> None:
     assert "reweave_task_intent" in text
 
 
+def test_public_demo_keeps_complete_react_project_capsule() -> None:
+    from scripts.run_public_reweave_demo import _select_enrichable_capsules
+
+    capsules = [
+        {"id": "project", "name": "React/Vite Project", "tags": ["react", "vite", "project"]},
+        *[
+            {"id": str(index), "name": f"Dashboard data {index}", "tags": ["data", "dashboard"]}
+            for index in range(5)
+        ],
+    ]
+    selected = _select_enrichable_capsules(
+        capsules,
+        [],
+        lambda _capsule_id: {"ok": True},
+        task="Build an operations dashboard",
+    )
+
+    assert selected[0]["id"] == "project"
+    assert len(selected) == 4
+
+
 def test_public_reweave_demo_outputs_task_pack(tmp_path: Path) -> None:
     source = ROOT / "examples" / "source_boxes" / "customer-quote-widget"
     out = tmp_path / "reweave_demo"

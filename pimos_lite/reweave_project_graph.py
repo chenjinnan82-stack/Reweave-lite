@@ -11,7 +11,7 @@ from typing import Any
 
 SOURCE_EXTENSIONS = (".js", ".jsx", ".ts", ".tsx", ".css")
 MAX_GRAPH_FILES = 200
-MAX_RUNTIME_FILES = 64
+MAX_RUNTIME_FILES = 128
 MAX_SOURCE_BYTES = 262144
 _IMPORT_RE = re.compile(
     r"(?:import|export)\s+(?:[^'\"]*?\s+from\s+)?['\"]([^'\"]+)['\"]"

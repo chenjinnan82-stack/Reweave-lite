@@ -127,7 +127,8 @@ def _adapt_static_slots(
 
     def heading_priority(slot: dict[str, Any]) -> tuple[int, str]:
         stem = Path(str(slot.get("file") or "")).stem.lower()
-        return (0 if stem == "app" else 1 if "home" in stem else 2, str(slot.get("file") or ""))
+        primary = any(word in stem for word in ("home", "opening", "landing", "hero"))
+        return (0 if stem == "app" else 1 if primary else 2, str(slot.get("file") or ""))
 
     selected = min(headings, key=heading_priority) if headings else None
     public_slots = [{key: value for key, value in slot.items() if key != "occurrence"} for slot in slots]

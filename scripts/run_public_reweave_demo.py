@@ -213,7 +213,19 @@ def _select_enrichable_capsules(
             item[0],
         ),
     )
-    return [cap for _, cap in selected[:4]]
+    chosen = [cap for _, cap in selected[:4]]
+    project = next(
+        (
+            cap
+            for cap in capsules
+            if {str(tag).lower() for tag in cap.get("tags", [])} >= {"project", "react"}
+        ),
+        None,
+    )
+    if project is None or project in chosen:
+        return chosen
+    enrich_capsule_content(str(project["id"]))
+    return [project, *chosen[:3]]
 
 
 def run(

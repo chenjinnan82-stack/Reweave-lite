@@ -178,7 +178,9 @@ def _run_react_child(root: Path, expected_text: str) -> int:
         result.setdefault("external_network_call", False)
         if result.get("status") == "passed":
             preview_image = root / "preview.png"
-            pixmap = initial_pixmap if initial_pixmap is not None else view.grab()
+            pixmap = view.grab()
+            if pixmap.isNull() and initial_pixmap is not None:
+                pixmap = initial_pixmap
             if not pixmap.isNull() and pixmap.save(str(preview_image), "PNG"):
                 result["preview_image"] = "react_project/dist/preview.png"
                 result["preview_output_write"] = True
@@ -264,7 +266,7 @@ def _run_react_child(root: Path, expected_text: str) -> int:
         QTimer.singleShot(700, lambda: page.runJavaScript(snapshot_js, inspect_before))
 
     page.loadFinished.connect(loaded)
-    page.load(QUrl(f"http://127.0.0.1:{preview_port}/index.html"))
+    page.load(QUrl(f"http://127.0.0.1:{preview_port}/"))
     QTimer.singleShot(8000, lambda: finish(_receipt("unavailable", "validation_timeout")))
     app.exec()
     print(json.dumps(output or _receipt("unavailable", "empty_validation_result"), ensure_ascii=False))

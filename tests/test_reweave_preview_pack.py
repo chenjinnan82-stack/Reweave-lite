@@ -106,6 +106,22 @@ class ReweavePreviewPackTest(unittest.TestCase):
         self.assertIn("Capture", updated["src/pages/CapturePage.tsx"])
         self.assertEqual(receipt["changes"][0]["slot_id"], "src/pages/HomePage.tsx:h1:0")
 
+    def test_react_preview_prefers_opening_heading_over_archive(self) -> None:
+        files = {
+            "src/CropArchive.tsx": "export default () => <h2>Archive</h2>;",
+            "src/OpeningScreen.tsx": "export default () => <h1>Welcome</h1>;",
+        }
+        targets = [
+            {"path": "src/CropArchive.tsx", "kind": "component"},
+            {"path": "src/OpeningScreen.tsx", "kind": "component"},
+        ]
+
+        updated, receipt = react_preview._adapt_static_slots(files, "Build a crop logbook", targets)
+
+        self.assertIn("Build a crop logbook", updated["src/OpeningScreen.tsx"])
+        self.assertIn("Archive", updated["src/CropArchive.tsx"])
+        self.assertEqual(receipt["changes"][0]["slot_id"], "src/OpeningScreen.tsx:h1:0")
+
     def test_react_preview_adapts_heading_in_entry_file(self) -> None:
         files = {"src/main.tsx": "export default () => <main><h1>Studio</h1></main>;"}
         targets = [{"path": "src/main.tsx", "kind": "entry"}]
