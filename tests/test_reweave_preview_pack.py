@@ -216,6 +216,21 @@ class ReweavePreviewPackTest(unittest.TestCase):
         self.assertIn("define_import_meta_env_default = {}", compiled)
         self.assertNotIn("console.log(import.meta.env", compiled)
 
+    def test_react_preview_flags_unprocessed_tailwind_css(self) -> None:
+        project = self._state_dir / "react-tailwind-css"
+        (project / "src").mkdir(parents=True)
+        (project / "src" / "main.jsx").write_text("import './style.css';\n", encoding="utf-8")
+        (project / "src" / "style.css").write_text(
+            "@tailwind utilities;\n.card { @apply p-4; }\n",
+            encoding="utf-8",
+        )
+
+        receipt = react_preview._compile(project, "src/main.jsx", [])
+
+        self.assertEqual(receipt["status"], "needs_review")
+        self.assertEqual(receipt["reason"], "unsupported_style_pipeline")
+        self.assertEqual(receipt["unsupported_style_directives"], ["@apply", "@tailwind"])
+
     def test_runtime_validation_without_behavior_contract_does_not_start_qt(self) -> None:
         result = validate_preview_behavior(self._state_dir)
 

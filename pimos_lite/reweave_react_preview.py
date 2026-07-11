@@ -266,6 +266,24 @@ def _compile(project_root: Path, entrypoint: str, external_dependencies: list[st
             external_dependencies=external,
             compiler_status="failed",
         )
+    unsupported_style_directives = sorted(
+        directive
+        for directive in ("@apply", "@tailwind")
+        if any(
+            directive in path.read_text(encoding="utf-8", errors="replace")
+            for path in outfile.parent.glob("*.css")
+        )
+    )
+    if unsupported_style_directives:
+        return _receipt(
+            "needs_review",
+            "unsupported_style_pipeline",
+            preview_output_write=True,
+            compiled_files=compiled,
+            compiler="esbuild",
+            compiler_status="passed",
+            unsupported_style_directives=unsupported_style_directives,
+        )
     if unsupported:
         return _receipt(
             "needs_review",
