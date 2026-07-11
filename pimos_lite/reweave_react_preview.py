@@ -82,39 +82,80 @@ def _static_text_slots(
         source = files.get(relative)
         if source is None:
             continue
+        file_slots: list[dict[str, Any]] = []
         for tag, kind in (("h1", "heading"), ("h2", "heading"), ("p", "description"), ("button", "action")):
             pattern = re.compile(
                 rf"(<{tag}\b[^>]*>)([^<>{{}}\r\n]{{1,160}})(</{tag}>)",
                 flags=re.IGNORECASE,
             )
-            slots.extend(
+            file_slots.extend(
                 {
                     "slot_id": f"{relative}:{tag}:{occurrence}",
                     "file": relative,
                     "tag": tag,
-                    "occurrence": occurrence,
                     "kind": kind,
+                    "mode": "static_text",
+                    "_start": match.start(2),
+                    "_end": match.end(2),
+                    "_slot_priority": 1,
                 }
-                for occurrence, _match in enumerate(pattern.finditer(source))
+                for occurrence, match in enumerate(pattern.finditer(source))
             )
+        dynamic_heading = re.compile(
+            r"(<(?P<tag>h1|h2)\b[^>]*>)(\{\s*localize\([^{}]{1,200}\)\s*\})(</(?P=tag)>)",
+            flags=re.IGNORECASE,
+        )
+        file_slots.extend(
+            {
+                "slot_id": f"{relative}:{match.group('tag').lower()}-localized:{occurrence}",
+                "file": relative,
+                "tag": match.group("tag").lower(),
+                "kind": "heading",
+                "mode": "localized_heading",
+                "_start": match.start(3),
+                "_end": match.end(3),
+                "_slot_priority": 1,
+            }
+            for occurrence, match in enumerate(dynamic_heading.finditer(source))
+        )
+        semantic_container = re.compile(
+            r"<(?P<container>header|button)\b[^>]*className\s*=\s*['\"][^'\"]*"
+            r"(?P<role>brand|title|caption|hero)[^'\"]*['\"][^>]*>"
+            r"(?P<body>.{0,800}?)</(?P=container)>",
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        semantic_text = re.compile(
+            r"(<(?P<tag>strong|span)\b[^>]*>)(?P<text>[^<>{}\r\n]{1,160})(</(?P=tag)>)",
+            flags=re.IGNORECASE,
+        )
+        semantic_occurrence = 0
+        for container in semantic_container.finditer(source):
+            for match in semantic_text.finditer(container.group("body")):
+                tag = match.group("tag").lower()
+                role = container.group("role").lower()
+                start = container.start("body") + match.start("text")
+                end = container.start("body") + match.end("text")
+                file_slots.append(
+                    {
+                        "slot_id": f"{relative}:semantic-{tag}:{semantic_occurrence}",
+                        "file": relative,
+                        "tag": tag,
+                        "kind": "heading",
+                        "mode": "semantic_container_text",
+                        "_start": start,
+                        "_end": end,
+                        "_slot_priority": (0 if tag == "strong" else 1) if role != "brand" else 3,
+                    }
+                )
+                semantic_occurrence += 1
+        slots.extend(sorted(file_slots, key=lambda slot: int(slot["_start"])))
     return slots
 
 
 def _replace_static_slot(source: str, slot: dict[str, Any], replacement: str) -> str:
-    tag = str(slot.get("tag") or "")
-    wanted = int(slot.get("occurrence") or 0)
-    pattern = re.compile(
-        rf"(<{tag}\b[^>]*>)([^<>{{}}\r\n]{{1,160}})(</{tag}>)",
-        flags=re.IGNORECASE,
-    )
-    occurrence = -1
-
-    def replace(match: re.Match[str]) -> str:
-        nonlocal occurrence
-        occurrence += 1
-        return f"{match.group(1)}{replacement}{match.group(3)}" if occurrence == wanted else match.group(0)
-
-    return pattern.sub(replace, source)
+    start = int(slot["_start"])
+    end = int(slot["_end"])
+    return source[:start] + replacement + source[end:]
 
 
 def _adapt_static_slots(
@@ -125,13 +166,21 @@ def _adapt_static_slots(
     slots = _static_text_slots(files, project_targets)
     headings = [slot for slot in slots if slot["kind"] == "heading"]
 
-    def heading_priority(slot: dict[str, Any]) -> tuple[int, str]:
+    def heading_priority(slot: dict[str, Any]) -> tuple[int, int, int, str]:
         stem = Path(str(slot.get("file") or "")).stem.lower()
         primary = any(word in stem for word in ("home", "opening", "landing", "hero"))
-        return (0 if stem == "app" else 1 if primary else 2, str(slot.get("file") or ""))
+        return (
+            0 if stem == "app" else 1 if primary else 2,
+            int(slot.get("_slot_priority") or 0),
+            int(slot.get("_start") or 0),
+            str(slot.get("file") or ""),
+        )
 
     selected = min(headings, key=heading_priority) if headings else None
-    public_slots = [{key: value for key, value in slot.items() if key != "occurrence"} for slot in slots]
+    public_slots = [
+        {key: value for key, value in slot.items() if not key.startswith("_")}
+        for slot in slots
+    ]
     if selected is None:
         return dict(files), {
             "status": "needs_review",
@@ -182,7 +231,8 @@ def _compile(project_root: Path, entrypoint: str, external_dependencies: list[st
         "const esbuild=require(process.argv[1]);"
         "esbuild.buildSync({entryPoints:[process.argv[2]],outfile:process.argv[3],"
         "bundle:true,platform:'browser',format:'esm',jsx:'automatic',logLevel:'silent',"
-        "external:JSON.parse(process.argv[4]),nodePaths:[process.argv[5]]});"
+        "external:JSON.parse(process.argv[4]),nodePaths:[process.argv[5]],"
+        "define:{'import.meta.env':'{}'}});"
     )
     try:
         completed = subprocess.run(

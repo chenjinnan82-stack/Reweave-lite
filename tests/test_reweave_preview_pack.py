@@ -90,6 +90,46 @@ class ReweavePreviewPackTest(unittest.TestCase):
         self.assertEqual(receipt["status"], "needs_review")
         self.assertEqual(receipt["reason"], "safe_static_heading_not_found")
 
+    def test_react_preview_replaces_bounded_localized_heading(self) -> None:
+        files = {"src/pages/Home.tsx": "<h1>{localize(homeHero.title, language)}</h1>"}
+        targets = [{"path": "src/pages/Home.tsx", "kind": "component"}]
+
+        updated, receipt = react_preview._adapt_static_slots(files, "Build a portfolio", targets)
+
+        self.assertEqual(updated["src/pages/Home.tsx"], "<h1>Build a portfolio</h1>")
+        self.assertEqual(receipt["changes"][0]["slot_id"], "src/pages/Home.tsx:h1-localized:0")
+
+    def test_react_preview_uses_semantic_title_container(self) -> None:
+        files = {
+            "src/main.tsx": (
+                '<header className="mini-title"><span>Brand</span>'
+                "<strong>Visible start</strong></header>"
+                "<section><h1>Hidden later stage</h1></section>"
+            )
+        }
+        targets = [{"path": "src/main.tsx", "kind": "entry"}]
+
+        updated, receipt = react_preview._adapt_static_slots(files, "Build a planning studio", targets)
+
+        self.assertIn("<strong>Build a planning studio</strong>", updated["src/main.tsx"])
+        self.assertIn("<h1>Hidden later stage</h1>", updated["src/main.tsx"])
+        self.assertEqual(receipt["changes"][0]["slot_id"], "src/main.tsx:semantic-strong:1")
+
+    def test_react_preview_uses_brand_text_when_no_heading_exists(self) -> None:
+        files = {
+            "src/DesktopStage.tsx": (
+                '<button className="brand-mark"><Logo /><span>Old brand</span></button>'
+                "<span>Online</span>"
+            )
+        }
+        targets = [{"path": "src/DesktopStage.tsx", "kind": "component"}]
+
+        updated, receipt = react_preview._adapt_static_slots(files, "Build a material viewer", targets)
+
+        self.assertIn("<span>Build a material viewer</span>", updated["src/DesktopStage.tsx"])
+        self.assertIn("<span>Online</span>", updated["src/DesktopStage.tsx"])
+        self.assertEqual(receipt["changes"][0]["slot_id"], "src/DesktopStage.tsx:semantic-span:0")
+
     def test_react_preview_prefers_home_heading_over_hidden_subpage(self) -> None:
         files = {
             "src/pages/CapturePage.tsx": "export default () => <h1>Capture</h1>;",
@@ -160,6 +200,21 @@ class ReweavePreviewPackTest(unittest.TestCase):
 
         self.assertEqual(receipt["status"], "passed")
         self.assertEqual(receipt["compiler_status"], "passed")
+
+    def test_react_preview_supplies_empty_vite_env(self) -> None:
+        project = self._state_dir / "react-vite-env"
+        (project / "src").mkdir(parents=True)
+        (project / "src" / "main.jsx").write_text(
+            "console.log(import.meta.env.VITE_API_BASE || 'local');\n",
+            encoding="utf-8",
+        )
+
+        receipt = react_preview._compile(project, "src/main.jsx", [])
+
+        self.assertEqual(receipt["status"], "passed")
+        compiled = (project / "dist" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("define_import_meta_env_default = {}", compiled)
+        self.assertNotIn("console.log(import.meta.env", compiled)
 
     def test_runtime_validation_without_behavior_contract_does_not_start_qt(self) -> None:
         result = validate_preview_behavior(self._state_dir)

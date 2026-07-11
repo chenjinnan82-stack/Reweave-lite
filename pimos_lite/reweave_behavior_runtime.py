@@ -228,6 +228,19 @@ def _run_react_child(root: Path, expected_text: str) -> int:
                 changed = str(current.get("state") or "") != str(after.get("state") or "")
                 task_rendered = bool(before.get("taskVisible") or after.get("taskVisible"))
                 if changed:
+                    if blocked_requests:
+                        finish(
+                            _receipt(
+                                "needs_review",
+                                "react_interaction_requires_blocked_request",
+                                rendered=True,
+                                task_text_rendered=task_rendered,
+                                interaction_present=True,
+                                interaction_changed=True,
+                                button_index=index,
+                            )
+                        )
+                        return
                     finish(
                         _receipt(
                             "passed" if task_rendered else "needs_review",
