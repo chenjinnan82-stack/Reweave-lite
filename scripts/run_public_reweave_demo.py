@@ -9,15 +9,15 @@ import os
 import shutil
 import sys
 import tempfile
+from contextlib import contextmanager
 from pathlib import Path
-from typing import Callable
+from typing import Iterator
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from pimos_lite.reweave_task_intent import capsule_match_text as shared_capsule_match_text
-from pimos_lite.reweave_task_intent import score_capsule_for_task
 
 MARKER = ".reweave_public_demo"
 DEFAULT_OUT = Path(tempfile.gettempdir()) / "reweave_public_demo"
@@ -75,18 +75,25 @@ TASK_TEMPLATES: dict[str, dict[str, str]] = {
 }
 
 
-def _import_reweave() -> tuple[object, object, object, object, object, object, object]:
+def _import_reweave() -> type[object]:
     if str(ROOT) not in sys.path:
         sys.path.insert(0, str(ROOT))
-    from pimos_lite.reweave_capsule_draft import draft_capsules
-    from pimos_lite.reweave_capsule_content import enrich_capsule_content
-    from pimos_lite.reweave_llm_pack import apply_ollama_pack
-    from pimos_lite.reweave_capsule_warehouse import promote_source_drafts
-    from pimos_lite.reweave_preview_pack import build_preview_package
-    from pimos_lite.reweave_source_registry import add_source_box
-    from pimos_lite.reweave_source_scanner import scan_source_box
+    from pimos_lite.reweave_engine.lumo_lite import LumoLiteReweaveEngine
 
-    return add_source_box, scan_source_box, draft_capsules, promote_source_drafts, build_preview_package, enrich_capsule_content, apply_ollama_pack
+    return LumoLiteReweaveEngine
+
+
+@contextmanager
+def _temporary_state_dir(path: str) -> Iterator[None]:
+    previous = os.environ.get("REWEAVE_STATE_DIR")
+    os.environ["REWEAVE_STATE_DIR"] = path
+    try:
+        yield
+    finally:
+        if previous is None:
+            os.environ.pop("REWEAVE_STATE_DIR", None)
+        else:
+            os.environ["REWEAVE_STATE_DIR"] = previous
 
 
 def _json(path: Path) -> object:
@@ -180,54 +187,6 @@ def _select_capsules(capsules: list[dict[str, object]], selectors: list[str]) ->
     return selected[:4]
 
 
-def _capsule_score(task: str, cap: dict[str, object], *, enrichable: bool = False) -> int:
-    return score_capsule_for_task(task, cap, enrichable=enrichable)
-
-
-def _select_enrichable_capsules(
-    capsules: list[dict[str, object]],
-    selectors: list[str],
-    enrich_capsule_content: Callable[[str], dict[str, object]],
-    *,
-    task: str = "",
-) -> list[dict[str, object]]:
-    selected = _select_capsules(capsules, selectors)
-    if selectors:
-        for cap in selected:
-            enrich_capsule_content(str(cap["id"]))
-        return selected
-
-    ranked = sorted(
-        enumerate(capsules),
-        key=lambda item: (-_capsule_score(task, item[1]), item[0]),
-    )
-    candidates = [cap for _, cap in ranked[:8]]
-    enriched: dict[str, bool] = {}
-    for cap in candidates:
-        result = enrich_capsule_content(str(cap["id"]))
-        enriched[str(cap.get("id") or "")] = bool(isinstance(result, dict) and result.get("ok"))
-    selected = sorted(
-        enumerate(candidates),
-        key=lambda item: (
-            -_capsule_score(task, item[1], enrichable=enriched.get(str(item[1].get("id") or ""), False)),
-            item[0],
-        ),
-    )
-    chosen = [cap for _, cap in selected[:4]]
-    project = next(
-        (
-            cap
-            for cap in capsules
-            if {str(tag).lower() for tag in cap.get("tags", [])} >= {"project", "react"}
-        ),
-        None,
-    )
-    if project is None or project in chosen:
-        return chosen
-    enrich_capsule_content(str(project["id"]))
-    return [project, *chosen[:3]]
-
-
 def run(
     source: Path,
     task: str,
@@ -241,6 +200,7 @@ def run(
     ollama_url: str = "http://127.0.0.1:11434",
     llm_timeout: float = 60,
     require_llm: bool = False,
+    validate_runtime: bool = False,
     template_case: str | None = None,
     task_template: str | None = None,
 ) -> dict[str, object]:
@@ -249,18 +209,22 @@ def run(
         raise SystemExit(f"source folder not found: {source}")
     out = _safe_out(out)
 
-    imported = _import_reweave()
-    add_source_box, scan_source_box, draft_capsules, promote_source_drafts, build_preview_package, enrich_capsule_content, apply_ollama_pack = imported
+    engine_type = _import_reweave()
 
-    with tempfile.TemporaryDirectory(prefix="reweave-public-demo-state-") as state:
-        os.environ["REWEAVE_STATE_DIR"] = state
-        box = add_source_box(source)
+    with tempfile.TemporaryDirectory(prefix="reweave-public-demo-state-") as state, _temporary_state_dir(state):
+        engine = engine_type()
+        box = engine.bind_source_folder(str(source))
         if box.get("status") == "blocked":
             raise SystemExit(str(box.get("last_error") or "source box blocked"))
-        scan = scan_source_box(box["id"])
-        draft = draft_capsules(box["id"])
-        capsules = promote_source_drafts(box["id"])
-        selected_capsules = _select_enrichable_capsules(capsules, select_capsules or [], enrich_capsule_content, task=task)
+        scan = engine.scan_source(str(box["id"]))
+        draft = engine.draft_source(str(box["id"]))
+        capsules = engine.promote_source(str(box["id"]))
+        if select_capsules:
+            selected_capsules = _select_capsules(capsules, select_capsules)
+            for capsule in selected_capsules:
+                engine.enrich_capsule_content(str(capsule["id"]))
+        else:
+            selected_capsules = engine.select_capsules(task)
         capsule_ids = [str(cap["id"]) for cap in selected_capsules]
         if list_capsules:
             return {
@@ -272,16 +236,29 @@ def run(
                 "source_project_write": False,
             }
         source_box = _source_box_public(box, source, include_local_paths=include_local_paths)
-        preview = build_preview_package(
+        if llm not in {"none", "ollama"}:
+            raise SystemExit(f"unsupported llm: {llm}")
+        preview = engine.generate_preview(
             {
-                "task": task,
+                "taskText": task,
                 "capsuleIds": capsule_ids,
-                "backend": "public_demo",
+                "capsules": selected_capsules,
                 "sourceBoxes": [source_box],
                 "useEnrichedContent": True,
-                "reuseBehavior": True,
+                "selectionMode": "manual" if select_capsules else "task_retrieval",
+                "validateRuntime": validate_runtime,
+                "localModel": {
+                    "enabled": llm == "ollama",
+                    "provider": "ollama",
+                    "model": model,
+                    "baseUrl": ollama_url,
+                    "timeout": llm_timeout,
+                    "require": require_llm,
+                },
             }
         )
+        if preview.get("ok") is False:
+            raise SystemExit(str(preview.get("error") or "preview generation failed"))
 
         preview_path = Path(str(preview["previewPath"]))
         _prepare_out(out)
@@ -304,27 +281,18 @@ def run(
             for cap in selected_capsules
         ]
 
-        task_pack = {
-            "schema_version": "reweave_public_task_pack.v1",
-            "project_type": "small_project_pack",
-            "task": task,
-            "task_intent_path": "task_intent.json",
-            "task_intent": task_intent,
-            "task_plan_path": "task_plan.json",
-            "task_plan": task_plan,
-            "quality_gate_path": "quality_gate.json",
-            "quality_gate": quality_gate,
-            "behavior_contract_path": preview.get("taskPack", {}).get("behavior_contract_path"),
-            "behavior_adaptation_path": preview.get("taskPack", {}).get("behavior_adaptation_path"),
-            "behavior_reuse": preview.get("taskPack", {}).get("behavior_reuse", {"status": "unavailable"}),
-            "source_box": source_box,
-            "selected_capsule_ids": capsule_ids,
-            "selected_capsules": public_capsules,
-            "retrieved_capsules": task_intent.get("retrieved_capsules", []) if isinstance(task_intent, dict) else [],
-            "selection_mode": "manual" if select_capsules else "task_retrieval",
-            "output_files": _public_files(out),
-            "source_project_write": False,
-        }
+        task_pack = _json(out / "task_pack.json")
+        if not isinstance(task_pack, dict):
+            raise SystemExit("preview task_pack.json must contain an object")
+        task_pack.update(
+            {
+                "project_type": task_pack.get("package_kind", "small_project_pack"),
+                "source_box": source_box,
+                "selected_capsules": public_capsules,
+                "selection_mode": "manual" if select_capsules else "task_retrieval",
+                "output_files": _public_files(out),
+            }
+        )
         if template_case:
             task_pack["template_case"] = {"id": template_case, **TEMPLATE_CASES[template_case]}
             task_pack["demo_shortcut"] = "template_case"
@@ -334,21 +302,7 @@ def run(
         if template_case or task_template:
             task_pack["warnings"] = [LEGACY_SHORTCUT_WARNING]
         _write_json(out / "task_pack.json", task_pack)
-        llm_result: dict[str, object] = {"enabled": False}
-        if llm == "ollama":
-            llm_result = apply_ollama_pack(
-                out,
-                task=task,
-                selected_capsules=[_public_capsule(cap) for cap in selected_capsules],
-                snippet_context=preview.get("snippetContext") if isinstance(preview, dict) else None,
-                model=model,
-                base_url=ollama_url,
-                timeout=llm_timeout,
-                require=require_llm,
-                bounded_only=True,
-            )
-        elif llm != "none":
-            raise SystemExit(f"unsupported llm: {llm}")
+        llm_result = preview.get("localModel") if isinstance(preview.get("localModel"), dict) else {"enabled": False}
 
         summary = [
             "# Reweave public demo",
@@ -377,6 +331,8 @@ def run(
             "task_plan": task_plan,
             "quality_gate": quality_gate,
             "behavior_reuse": task_pack.get("behavior_reuse"),
+            "runtime_validation": preview.get("runtimeValidation"),
+            "preview_acceptance": preview.get("previewAcceptance"),
             "llm": llm_result,
             "source_project_write": False,
             "template_case": task_pack.get("template_case"),
@@ -402,6 +358,7 @@ def main() -> None:
     parser.add_argument("--ollama-url", default=os.environ.get("OLLAMA_HOST", "http://127.0.0.1:11434"), help="Ollama base URL.")
     parser.add_argument("--llm-timeout", type=float, default=60.0, help="Ollama request timeout in seconds.")
     parser.add_argument("--require-llm", action="store_true", help="Fail instead of falling back when local model generation fails.")
+    parser.add_argument("--validate-runtime", action="store_true", help="Run the optional local desktop behavior check and write its receipt.")
     args = parser.parse_args()
     if args.list_template_cases:
         print(json.dumps({"ok": True, "template_cases": _public_template_cases(), "source_project_write": False, "warnings": [LEGACY_SHORTCUT_WARNING]}, indent=2, ensure_ascii=False))
@@ -427,6 +384,7 @@ def main() -> None:
         ollama_url=args.ollama_url,
         llm_timeout=args.llm_timeout,
         require_llm=args.require_llm,
+        validate_runtime=args.validate_runtime,
         template_case=args.template_case,
         task_template=args.task_template,
     )
