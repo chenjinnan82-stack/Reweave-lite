@@ -99,6 +99,32 @@ def load_preview_history() -> dict[str, Any]:
     return data
 
 
+def resolve_package_root(package_id_or_path: str) -> tuple[Path | None, str]:
+    """Resolve one preview package while keeping it inside app state."""
+    raw = (package_id_or_path or "").strip()
+    if not raw:
+        return None, ""
+    state_root = state_dir().resolve()
+    candidate = Path(raw)
+    if candidate.is_dir():
+        resolved = candidate.resolve()
+        return (resolved, candidate.name) if resolved.is_relative_to(state_root) else (None, candidate.name)
+    for path in (state_root / raw, preview_packages_dir() / candidate.name):
+        if path.is_dir() and path.resolve().is_relative_to(state_root):
+            return path.resolve(), path.name
+    for entry in load_preview_history().get("packages", []):
+        if not isinstance(entry, dict):
+            continue
+        entry_id = str(entry.get("id") or "")
+        entry_path = str(entry.get("path") or "")
+        if raw not in {entry_id, entry_path, entry_path.rstrip("/")}:
+            continue
+        resolved = (state_root / entry_path).resolve()
+        if resolved.is_dir() and resolved.is_relative_to(state_root):
+            return resolved, entry_id or resolved.name
+    return None, candidate.name or raw
+
+
 def append_preview_history_entry(
     *,
     folder_name: str,

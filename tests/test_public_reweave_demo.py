@@ -74,16 +74,56 @@ def test_public_reweave_demo_help_is_task_driven() -> None:
     )
     assert "--source SOURCE" in result.stdout
     assert "--task TASK" in result.stdout
+    assert "--validate-runtime" in result.stdout
     assert "--template-case" not in result.stdout
     assert "--task-template" not in result.stdout
 
 
-def test_public_demo_reuses_shared_task_intent_helpers() -> None:
+def test_public_demo_reuses_lumo_lite_engine() -> None:
     text = (ROOT / "scripts" / "run_public_reweave_demo.py").read_text(encoding="utf-8")
-    assert "CAPABILITY_KEYWORDS =" not in text
-    assert "STOP_WORDS =" not in text
-    assert "score_capsule_for_task" in text
-    assert "reweave_task_intent" in text
+    assert "LumoLiteReweaveEngine" in text
+    assert "build_preview_package" not in text
+    assert "score_capsule_for_task" not in text
+
+
+def test_public_demo_restores_state_directory() -> None:
+    from scripts.run_public_reweave_demo import _temporary_state_dir
+
+    with patch.dict("os.environ", {"REWEAVE_STATE_DIR": "before"}):
+        with _temporary_state_dir("during"):
+            import os
+
+            assert os.environ["REWEAVE_STATE_DIR"] == "during"
+        assert os.environ["REWEAVE_STATE_DIR"] == "before"
+
+
+def test_public_demo_can_write_runtime_validation_receipt(tmp_path: Path) -> None:
+    source = ROOT / "examples" / "source_boxes" / "customer-quote-widget"
+    out = tmp_path / "reweave_runtime_validation"
+    completed = subprocess.run(
+        [
+            sys.executable,
+            str(ROOT / "scripts" / "run_public_reweave_demo.py"),
+            "--source",
+            str(source),
+            "--task",
+            "Build a quote summary card",
+            "--validate-runtime",
+            "--out",
+            str(out),
+        ],
+        check=True,
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+    )
+
+    payload = json.loads(completed.stdout)
+    task_pack = json.loads((out / "task_pack.json").read_text(encoding="utf-8"))
+    receipt_path = task_pack.get("behavior_validation_path") or task_pack.get("react_runtime_validation_path")
+    assert isinstance(payload["runtime_validation"], dict)
+    assert payload["preview_acceptance"]["verdict"] in {"usable", "needs_review", "rejected"}
+    assert receipt_path and (out / receipt_path).is_file()
 
 
 def test_public_reweave_demo_outputs_task_pack(tmp_path: Path) -> None:
@@ -360,7 +400,7 @@ def test_public_reweave_demo_keeps_task_templates_as_demo_shortcuts(tmp_path: Pa
     assert payload["task_template"]["id"] == "operations-panel"
     assert task_pack["task_template"]["id"] == "operations-panel"
     assert task_pack["warnings"] == ["legacy demo shortcut; prefer --source + --task for the product path"]
-    assert "task_profile" not in task_pack
+    assert task_pack["task_profile"] == "task_driven"
     assert task_pack["task_intent_path"] == "task_intent.json"
     assert task_pack["task_plan_path"] == "task_plan.json"
     assert task_intent["output_type"] == "data_panel"
@@ -395,7 +435,7 @@ def test_public_reweave_demo_keeps_task_templates_as_demo_shortcuts(tmp_path: Pa
     portfolio_pack = json.loads((portfolio_out / "task_pack.json").read_text(encoding="utf-8"))
     portfolio_intent = json.loads((portfolio_out / "task_intent.json").read_text(encoding="utf-8"))
     portfolio_html = (portfolio_out / "index.html").read_text(encoding="utf-8")
-    assert "task_profile" not in portfolio_pack
+    assert portfolio_pack["task_profile"] == "task_driven"
     assert portfolio_intent["output_type"] == "data_panel"
     portfolio_review_html = (portfolio_out / "review.html").read_text(encoding="utf-8")
     assert "Task Intent" not in portfolio_html
@@ -437,38 +477,6 @@ def test_artist_source_content_drives_generated_page(tmp_path: Path) -> None:
     behavior = json.loads((out / "behavior_contract.json").read_text(encoding="utf-8"))
     assert "visitLink.addEventListener" in app_js
     assert {"target_selector": ".visit-link", "event": "click"} in behavior["interactions"]["events"]
-
-
-def test_default_capsule_selection_prefers_enrichable_capsules() -> None:
-    from scripts.run_public_reweave_demo import _select_enrichable_capsules
-
-    capsules = [{"id": "bad"}, {"id": "good1"}, {"id": "good2"}, {"id": "good3"}, {"id": "good4"}]
-
-    def enrich(capsule_id: str) -> dict[str, object]:
-        return {"ok": capsule_id.startswith("good")}
-
-    selected = _select_enrichable_capsules(capsules, [], enrich)
-    assert [cap["id"] for cap in selected] == ["good1", "good2", "good3", "good4"]
-
-
-def test_default_capsule_selection_uses_task_relevance() -> None:
-    from scripts.run_public_reweave_demo import _select_enrichable_capsules
-
-    capsules = [
-        {"id": "copy", "name": "Markdown Doc", "tags": ["docs", "copy"]},
-        {"id": "form", "name": "Quote Form", "tags": ["form", "input"]},
-        {"id": "style", "name": "Style Sheet", "tags": ["css", "layout"]},
-        {"id": "logic", "name": "Validation Script", "tags": ["javascript", "logic"]},
-        {"id": "misc", "name": "Misc Notes", "tags": ["notes"]},
-    ]
-
-    selected = _select_enrichable_capsules(
-        capsules,
-        [],
-        lambda capsule_id: {"ok": True},
-        task="Build a styled quote form with validation",
-    )
-    assert [cap["id"] for cap in selected[:3]] == ["form", "style", "logic"]
 
 
 def test_public_reweave_demo_supports_manual_capsule_selection(tmp_path: Path) -> None:

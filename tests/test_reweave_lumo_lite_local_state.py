@@ -629,7 +629,7 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
         receipt = {
             "schema_version": "reweave_behavior_validation.v1",
             "status": "passed",
-            "reason": "react_interaction_changed_dom",
+            "reason": "react_declared_state_changed",
             "source_project_write": False,
             "network_call": False,
         }
@@ -645,7 +645,7 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
                 {"taskText": "Build a working React tool", "validateRuntime": True}
             )
 
-        react_validator.assert_called_once_with(str(preview_root), "Build a working React tool")
+        react_validator.assert_called_once_with(str(preview_root), "Build a working React tool", None)
         static_validator.assert_not_called()
         self.assertEqual(result["previewAcceptance"], {"verdict": "usable", "reason": "react_runtime_verified"})
         self.assertIn("react_runtime_validation.json", result["generatedPackage"]["files"])

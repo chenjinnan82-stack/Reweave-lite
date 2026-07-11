@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from pimos_lite.reweave_preview_viewer import resolve_package_root
+from pimos_lite.reweave_preview_pack import resolve_package_root
 from pimos_lite.reweave_source_registry import list_source_boxes, state_dir
 
 README_FILENAME = "README_REWEAVE_PREVIEW.txt"

@@ -16,7 +16,11 @@ from pimos_lite import reweave_preview_pack as preview
 from pimos_lite import reweave_project_renderer as renderer
 from pimos_lite import reweave_react_preview as react_preview
 from pimos_lite.reweave_quality_gate import build_quality_gate
-from pimos_lite.reweave_behavior_runtime import validate_preview_behavior
+from pimos_lite.reweave_behavior_runtime import (
+    _is_console_error,
+    _is_preview_static_request,
+    validate_preview_behavior,
+)
 from pimos_lite.reweave_project_renderer import build_app_js
 from pimos_lite.reweave_project_renderer import build_index_html
 from pimos_lite.reweave_project_renderer import build_preview_readme
@@ -24,7 +28,12 @@ from pimos_lite.reweave_project_renderer import build_review_html
 from pimos_lite.reweave_project_renderer import build_styles_css
 from pimos_lite import reweave_source_registry as registry
 from pimos_lite import reweave_source_scanner as scanner
-from pimos_lite.reweave_task_intent import behavior_contract_search_text, build_task_intent, select_capsules_for_task
+from pimos_lite.reweave_task_intent import (
+    behavior_contract_search_text,
+    build_task_intent,
+    ensure_complete_project_capsule,
+    select_capsules_for_task,
+)
 from pimos_lite.reweave_task_plan import build_task_plan
 
 
@@ -90,6 +99,215 @@ class ReweavePreviewPackTest(unittest.TestCase):
         self.assertEqual(receipt["status"], "needs_review")
         self.assertEqual(receipt["reason"], "safe_static_heading_not_found")
 
+    def test_react_preview_replaces_bounded_localized_heading(self) -> None:
+        files = {"src/pages/Home.tsx": "<h1>{localize(homeHero.title, language)}</h1>"}
+        targets = [{"path": "src/pages/Home.tsx", "kind": "component"}]
+
+        updated, receipt = react_preview._adapt_static_slots(files, "Build a portfolio", targets)
+
+        self.assertEqual(updated["src/pages/Home.tsx"], "<h1>Build a portfolio</h1>")
+        self.assertEqual(receipt["changes"][0]["slot_id"], "src/pages/Home.tsx:h1-localized:0")
+
+    def test_react_preview_uses_semantic_title_container(self) -> None:
+        files = {
+            "src/main.tsx": (
+                '<header className="mini-title"><span>Brand</span>'
+                "<strong>Visible start</strong></header>"
+                "<section><h1>Hidden later stage</h1></section>"
+            )
+        }
+        targets = [{"path": "src/main.tsx", "kind": "entry"}]
+
+        updated, receipt = react_preview._adapt_static_slots(files, "Build a planning studio", targets)
+
+        self.assertIn("<strong>Build a planning studio</strong>", updated["src/main.tsx"])
+        self.assertIn("<h1>Hidden later stage</h1>", updated["src/main.tsx"])
+        self.assertEqual(receipt["changes"][0]["slot_id"], "src/main.tsx:semantic-strong:1")
+
+    def test_react_preview_does_not_replace_button_text_as_heading(self) -> None:
+        files = {
+            "src/DesktopStage.tsx": (
+                '<button className="brand-mark"><Logo /><span>Old brand</span></button>'
+                "<span>Online</span>"
+            )
+        }
+        targets = [{"path": "src/DesktopStage.tsx", "kind": "component"}]
+
+        updated, receipt = react_preview._adapt_static_slots(files, "Build a material viewer", targets)
+
+        self.assertEqual(updated, files)
+        self.assertIn("<span>Online</span>", updated["src/DesktopStage.tsx"])
+        self.assertEqual(receipt["status"], "needs_review")
+        self.assertEqual(receipt["reason"], "safe_static_heading_not_found")
+
+    def test_react_runtime_allows_only_existing_preview_static_files(self) -> None:
+        root = self._state_dir / "dist"
+        root.mkdir()
+        (root / "index.html").write_text("ok", encoding="utf-8")
+        (root / "app.js").write_text("ok", encoding="utf-8")
+
+        self.assertTrue(_is_preview_static_request(root, "/"))
+        self.assertTrue(_is_preview_static_request(root, "/app.js"))
+        self.assertFalse(_is_preview_static_request(root, "/api/missing"))
+        self.assertFalse(_is_preview_static_request(root, "/../outside.js"))
+
+        symlink = root / "linked.js"
+        try:
+            symlink.symlink_to(root / "app.js")
+        except OSError:
+            self.skipTest("symlinks are unavailable")
+        self.assertFalse(_is_preview_static_request(root, "/linked.js"))
+
+    def test_react_runtime_classifies_console_error_levels(self) -> None:
+        self.assertTrue(_is_console_error(2))
+        self.assertTrue(_is_console_error("ErrorMessageLevel"))
+        self.assertFalse(_is_console_error(0))
+
+    def test_react_runtime_contract_accepts_declared_navigation_state(self) -> None:
+        files = {
+            "src/App.tsx": (
+                "<nav>{tabs.map(tab => <button "
+                "className={activeTab === tab.id ? 'active' : ''} "
+                "onClick={() => setActiveTab(tab.id)}>{tab.label}</button>)}</nav>"
+            )
+        }
+
+        contract = react_preview._react_runtime_contract(
+            files,
+            [{"path": "src/App.tsx", "kind": "component"}],
+        )
+
+        self.assertEqual(contract["status"], "closed")
+        self.assertEqual(contract["mode"], "declared_navigation_state")
+        self.assertEqual(contract["control_selector"], "nav button")
+
+    def test_react_preview_selects_matching_source_declared_initial_route(self) -> None:
+        files = {
+            "src/App.tsx": (
+                "const ENGLISH_TOOL_PATH = '/tools/english-classroom';"
+                "const RENOVATION_TOOL_PATH = '/tools/renovation-sales-copilot';"
+                "const [path, setPath] = useState(window.location.pathname);"
+                "if (path === RENOVATION_TOOL_PATH) return <Renovation />;"
+                "if (path === ENGLISH_TOOL_PATH) return <English />;"
+            ),
+            "src/tools/renovation-sales-copilot/Header.tsx": (
+                '<header><h1><span className="cn">Old name</span>'
+                '<span className="en">Copilot</span></h1>'
+                '<p><strong>{productSubtitle}</strong></p></header>'
+            ),
+        }
+        targets = [{"path": path, "kind": "component"} for path in files]
+
+        updated, receipt = react_preview._adapt_source_declared_route(
+            files,
+            "Build a renovation sales copilot",
+            targets,
+        )
+        updated, text_receipt = react_preview._adapt_static_slots(
+            updated,
+            "Build a renovation sales copilot",
+            targets,
+            preferred_route=receipt["route"],
+        )
+
+        self.assertEqual(receipt["route"], "/tools/renovation-sales-copilot")
+        self.assertIn('useState("/tools/renovation-sales-copilot")', updated["src/App.tsx"])
+        self.assertEqual(text_receipt["changes"][0]["slot_id"], "src/tools/renovation-sales-copilot/Header.tsx:route-subtitle:0")
+        self.assertIn("Build a renovation sales copilot", updated["src/tools/renovation-sales-copilot/Header.tsx"])
+        self.assertIn("Old name", updated["src/tools/renovation-sales-copilot/Header.tsx"])
+
+    def test_react_preview_does_not_guess_weak_route_match(self) -> None:
+        files = {
+            "src/App.tsx": (
+                "const RENOVATION_TOOL_PATH = '/tools/renovation-sales-copilot';"
+                "const [path] = useState(window.location.pathname);"
+                "if (path === RENOVATION_TOOL_PATH) return <Renovation />;"
+            )
+        }
+
+        updated, receipt = react_preview._adapt_source_declared_route(
+            files,
+            "Build a sales page",
+            [{"path": "src/App.tsx", "kind": "component"}],
+        )
+
+        self.assertIsNone(receipt)
+        self.assertEqual(updated, files)
+
+    def test_react_runtime_contract_rejects_unscoped_button_guess(self) -> None:
+        contract = react_preview._react_runtime_contract(
+            {"src/App.tsx": "<button onClick={() => removeItem()}>Delete</button>"},
+            [{"path": "src/App.tsx", "kind": "component"}],
+        )
+
+        self.assertEqual(contract["status"], "unavailable")
+        self.assertEqual(contract["reason"], "declared_react_interaction_not_found")
+
+    def test_react_runtime_contract_does_not_relabel_navigation_links_as_buttons(self) -> None:
+        contract = react_preview._react_runtime_contract(
+            {
+                "src/App.tsx": (
+                    "<nav><a className={active ? 'active' : ''} "
+                    "onClick={() => setOpen(false)}>Home</a></nav>"
+                )
+            },
+            [{"path": "src/App.tsx", "kind": "component"}],
+        )
+
+        self.assertEqual(contract["status"], "unavailable")
+
+    def test_react_runtime_contract_accepts_declared_control_disappearance(self) -> None:
+        files = {
+            "src/App.tsx": (
+                "const [introVisible, setIntroVisible] = useState(true);"
+                "return <Opening onEnter={() => setIntroVisible(false)} />"
+            ),
+            "src/Opening.tsx": "<button onClick={onEnter}>Continue</button>",
+        }
+
+        contract = react_preview._react_runtime_contract(
+            files,
+            [{"path": path, "kind": "component"} for path in files],
+        )
+
+        self.assertEqual(contract["mode"], "declared_control_disappears")
+        self.assertEqual(contract["control_text"], "Continue")
+        self.assertEqual(contract["state_target"], "control.presence")
+
+    def test_react_runtime_contract_accepts_declared_group_to_textbox(self) -> None:
+        files = {
+            "src/Samples.tsx": (
+                '<div aria-label="Sample messages">{samples.map(sample => '
+                "<button onClick={() => onPick(sample)}>{sample}</button>)}</div>"
+            ),
+            "src/Chat.tsx": "<Samples onPick={setDraft} /><textarea value={draft} />",
+        }
+
+        contract = react_preview._react_runtime_contract(
+            files,
+            [{"path": path, "kind": "component"} for path in files],
+        )
+
+        self.assertEqual(contract["mode"], "declared_group_to_textbox")
+        self.assertEqual(contract["control_selector"], '[aria-label="Sample messages"] button')
+        self.assertEqual(contract["state_target"], "textarea.value")
+
+    def test_complete_project_capsule_is_kept_for_selected_source(self) -> None:
+        capsules = [
+            {"id": "project", "source_id": "box"},
+            {"id": "copy", "source_id": "box"},
+            {"id": "style", "source_id": "box"},
+            {"id": "other-project", "source_id": "other"},
+        ]
+
+        selected = ensure_complete_project_capsule(
+            capsules[1:3],
+            capsules,
+            {"project", "other-project"},
+        )
+
+        self.assertEqual([item["id"] for item in selected], ["project", "copy"])
+
     def test_react_preview_prefers_home_heading_over_hidden_subpage(self) -> None:
         files = {
             "src/pages/CapturePage.tsx": "export default () => <h1>Capture</h1>;",
@@ -105,6 +323,22 @@ class ReweavePreviewPackTest(unittest.TestCase):
         self.assertIn("Build a review helper", updated["src/pages/HomePage.tsx"])
         self.assertIn("Capture", updated["src/pages/CapturePage.tsx"])
         self.assertEqual(receipt["changes"][0]["slot_id"], "src/pages/HomePage.tsx:h1:0")
+
+    def test_react_preview_prefers_opening_heading_over_archive(self) -> None:
+        files = {
+            "src/CropArchive.tsx": "export default () => <h2>Archive</h2>;",
+            "src/OpeningScreen.tsx": "export default () => <h1>Welcome</h1>;",
+        }
+        targets = [
+            {"path": "src/CropArchive.tsx", "kind": "component"},
+            {"path": "src/OpeningScreen.tsx", "kind": "component"},
+        ]
+
+        updated, receipt = react_preview._adapt_static_slots(files, "Build a crop logbook", targets)
+
+        self.assertIn("Build a crop logbook", updated["src/OpeningScreen.tsx"])
+        self.assertIn("Archive", updated["src/CropArchive.tsx"])
+        self.assertEqual(receipt["changes"][0]["slot_id"], "src/OpeningScreen.tsx:h1:0")
 
     def test_react_preview_adapts_heading_in_entry_file(self) -> None:
         files = {"src/main.tsx": "export default () => <main><h1>Studio</h1></main>;"}
@@ -144,6 +378,36 @@ class ReweavePreviewPackTest(unittest.TestCase):
 
         self.assertEqual(receipt["status"], "passed")
         self.assertEqual(receipt["compiler_status"], "passed")
+
+    def test_react_preview_supplies_empty_vite_env(self) -> None:
+        project = self._state_dir / "react-vite-env"
+        (project / "src").mkdir(parents=True)
+        (project / "src" / "main.jsx").write_text(
+            "console.log(import.meta.env.VITE_API_BASE || 'local');\n",
+            encoding="utf-8",
+        )
+
+        receipt = react_preview._compile(project, "src/main.jsx", [])
+
+        self.assertEqual(receipt["status"], "passed")
+        compiled = (project / "dist" / "app.js").read_text(encoding="utf-8")
+        self.assertIn("define_import_meta_env_default = {}", compiled)
+        self.assertNotIn("console.log(import.meta.env", compiled)
+
+    def test_react_preview_flags_unprocessed_tailwind_css(self) -> None:
+        project = self._state_dir / "react-tailwind-css"
+        (project / "src").mkdir(parents=True)
+        (project / "src" / "main.jsx").write_text("import './style.css';\n", encoding="utf-8")
+        (project / "src" / "style.css").write_text(
+            "@tailwind utilities;\n.card { @apply p-4; }\n",
+            encoding="utf-8",
+        )
+
+        receipt = react_preview._compile(project, "src/main.jsx", [])
+
+        self.assertEqual(receipt["status"], "needs_review")
+        self.assertEqual(receipt["reason"], "unsupported_style_pipeline")
+        self.assertEqual(receipt["unsupported_style_directives"], ["@apply", "@tailwind"])
 
     def test_runtime_validation_without_behavior_contract_does_not_start_qt(self) -> None:
         result = validate_preview_behavior(self._state_dir)

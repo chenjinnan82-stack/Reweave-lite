@@ -35,7 +35,11 @@ from pimos_lite.reweave_llm_pack import apply_ollama_pack
 from pimos_lite.reweave_source_registry import add_source_box, get_source_box, list_source_boxes
 from pimos_lite.reweave_source_scanner import list_summary_lights
 from pimos_lite.reweave_source_scanner import scan_source_box as execute_source_scan
-from pimos_lite.reweave_task_intent import behavior_contract_search_text, select_capsules_for_task
+from pimos_lite.reweave_task_intent import (
+    behavior_contract_search_text,
+    ensure_complete_project_capsule,
+    select_capsules_for_task,
+)
 
 APP_VERSION = "0.3.0"
 LUMO_LITE_MODE = "source_read_only_preview_write"
@@ -252,7 +256,7 @@ class LumoLiteReweaveEngine:
     def select_capsules(self, task: str) -> list[dict[str, Any]]:
         candidates: list[dict[str, Any]] = []
         behavior_by_source: dict[str, str] = {}
-        react_project_by_source: dict[str, dict[str, Any]] = {}
+        complete_project_capsule_ids: set[str] = set()
         for capsule in list_local_capsules():
             if not is_generate_eligible(capsule):
                 continue
@@ -262,7 +266,7 @@ class LumoLiteReweaveEngine:
             candidate["_closed_behavior"] = contract.get("status") == "closed"
             source_id = str(candidate.get("source_id") or candidate.get("source") or "")
             if content.get("project_files_complete") is True:
-                react_project_by_source[source_id] = candidate
+                complete_project_capsule_ids.add(str(candidate.get("id") or ""))
             behavior_text = behavior_contract_search_text(contract)
             if behavior_text:
                 behavior_by_source[source_id] = behavior_text
@@ -271,13 +275,7 @@ class LumoLiteReweaveEngine:
             source_id = str(candidate.get("source_id") or candidate.get("source") or "")
             candidate["_behavior_text"] = behavior_by_source.get(source_id, "")
         selected = select_capsules_for_task(task, candidates)
-        if not selected:
-            return selected
-        source_id = str(selected[0].get("source_id") or selected[0].get("source") or "")
-        required = react_project_by_source.get(source_id)
-        if not required or any(item.get("id") == required.get("id") for item in selected):
-            return selected
-        return [required, *[item for item in selected if item.get("id") != required.get("id")]][: len(selected)]
+        return ensure_complete_project_capsule(selected, candidates, complete_project_capsule_ids)
 
     def generate_preview(self, payload: dict[str, Any]) -> dict[str, Any]:
         task = str(payload.get("taskText") or payload.get("task") or "New tool")
@@ -352,6 +350,7 @@ class LumoLiteReweaveEngine:
                     model=model,
                     base_url=base_url,
                     timeout=timeout,
+                    require=bool(local_model.get("require")),
                     bounded_only=True,
                 )
                 root = Path(result["previewPath"])
@@ -360,7 +359,12 @@ class LumoLiteReweaveEngine:
         if effective_payload.get("validateRuntime") is True:
             react_preview = result["taskPack"].get("react_preview")
             if isinstance(react_preview, dict) and react_preview.get("status") == "passed":
-                validation = validate_react_preview_behavior(result["previewPath"], task)
+                runtime_contract = (
+                    react_preview.get("runtime_contract")
+                    if isinstance(react_preview.get("runtime_contract"), dict)
+                    else None
+                )
+                validation = validate_react_preview_behavior(result["previewPath"], task, runtime_contract)
                 attached = attach_react_runtime_validation(result["previewPath"], validation)
                 receipt_name = "react_runtime_validation.json"
             else:
