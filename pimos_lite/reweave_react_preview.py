@@ -118,8 +118,56 @@ def _static_text_slots(
             }
             for occurrence, match in enumerate(dynamic_heading.finditer(source))
         )
+        nested_heading = re.compile(
+            r"<(?P<tag>h1|h2)\b[^>]*>(?P<body>.{1,600}?)</(?P=tag)>",
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        nested_text = re.compile(
+            r"<(?P<child>span|strong)\b[^>]*>(?P<text>[^<>{}\r\n]{1,160})</(?P=child)>",
+            flags=re.IGNORECASE,
+        )
+        nested_occurrence = 0
+        for heading in nested_heading.finditer(source):
+            for match in nested_text.finditer(heading.group("body")):
+                file_slots.append(
+                    {
+                        "slot_id": f"{relative}:{heading.group('tag').lower()}-nested:{nested_occurrence}",
+                        "file": relative,
+                        "tag": heading.group("tag").lower(),
+                        "kind": "heading",
+                        "mode": "route_nested_heading",
+                        "_start": heading.start("body") + match.start("text"),
+                        "_end": heading.start("body") + match.end("text"),
+                        "_slot_priority": 0,
+                    }
+                )
+                nested_occurrence += 1
+        route_header = re.compile(
+            r"<header\b[^>]*>(?P<body>.{1,6000}?)</header>",
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        route_subtitle = re.compile(
+            r"(<strong\b[^>]*>)(\{\s*[A-Za-z_$][\w$]*\s*\})(</strong>)",
+            flags=re.IGNORECASE,
+        )
+        route_occurrence = 0
+        for header in route_header.finditer(source):
+            for match in route_subtitle.finditer(header.group("body")):
+                file_slots.append(
+                    {
+                        "slot_id": f"{relative}:route-subtitle:{route_occurrence}",
+                        "file": relative,
+                        "tag": "strong",
+                        "kind": "heading",
+                        "mode": "route_semantic_subtitle",
+                        "_start": header.start("body") + match.start(2),
+                        "_end": header.start("body") + match.end(2),
+                        "_slot_priority": 0,
+                    }
+                )
+                route_occurrence += 1
         semantic_container = re.compile(
-            r"<(?P<container>header|button)\b[^>]*className\s*=\s*['\"][^'\"]*"
+            r"<(?P<container>header)\b[^>]*className\s*=\s*['\"][^'\"]*"
             r"(?P<role>brand|title|caption|hero)[^'\"]*['\"][^>]*>"
             r"(?P<body>.{0,800}?)</(?P=container)>",
             flags=re.IGNORECASE | re.DOTALL,
@@ -158,19 +206,205 @@ def _replace_static_slot(source: str, slot: dict[str, Any], replacement: str) ->
     return source[:start] + replacement + source[end:]
 
 
+def _adapt_source_declared_route(
+    files: dict[str, str],
+    task: str,
+    project_targets: list[dict[str, Any]],
+) -> tuple[dict[str, str], dict[str, Any] | None]:
+    # ponytail: source-declared pathname routes only; use a parser if routing syntax grows.
+    task_words = {
+        word
+        for word in re.findall(r"[a-z0-9]+", task.lower())
+        if len(word) > 2 and word not in {"build", "from", "project", "this", "tool", "tools", "with"}
+    }
+    candidates: list[tuple[int, str, str]] = []
+    component_paths = {
+        str(item.get("path") or "")
+        for item in project_targets
+        if isinstance(item, dict) and item.get("kind") in {"component", "entry"}
+    }
+    for relative in sorted(component_paths):
+        source = files.get(relative, "")
+        for match in re.finditer(r"const\s+(?P<name>[A-Z][A-Z0-9_]*_PATH)\s*=\s*['\"](?P<route>/[^'\"]+)['\"]", source):
+            name = match.group("name")
+            if not re.search(r"\bpath\s*===\s*" + re.escape(name) + r"\b", source):
+                continue
+            route = match.group("route")
+            score = len(task_words & set(re.findall(r"[a-z0-9]+", route.lower())))
+            if score >= 2:
+                candidates.append((score, relative, route))
+    if not candidates:
+        return dict(files), None
+    _, relative, route = max(candidates, key=lambda item: (item[0], item[2]))
+    state_pattern = re.compile(
+        r"(?P<prefix>useState(?:<[^>]+>)?\()\s*window\.location\.pathname\s*\)"
+    )
+    updated = dict(files)
+    updated[relative], count = state_pattern.subn(
+        lambda match: match.group("prefix") + json.dumps(route) + ")",
+        updated[relative],
+        count=1,
+    )
+    if count != 1:
+        return dict(files), None
+    return updated, {
+        "status": "applied",
+        "mode": "source_declared_initial_route",
+        "source_path": relative,
+        "route": route,
+        "source_project_write": False,
+    }
+
+
+def _react_runtime_contract(
+    files: dict[str, str],
+    project_targets: list[dict[str, Any]],
+) -> dict[str, Any]:
+    # ponytail: recognize only source-backed patterns proven by real projects; use an AST if this ceiling hurts.
+    component_paths = {
+        str(item.get("path") or "")
+        for item in project_targets
+        if isinstance(item, dict) and item.get("kind") in {"component", "entry"}
+    }
+    navigation_contract: dict[str, Any] | None = None
+    for relative in sorted(component_paths):
+        source = files.get(relative, "")
+        for match in re.finditer(r"<nav\b[^>]*>(.{1,6000}?)</nav>", source, flags=re.IGNORECASE | re.DOTALL):
+            body = match.group(1)
+            if (
+                "<button" not in body
+                or "onClick" not in body
+                or not re.search(r"className\s*=\s*\{.{0,240}?\bactive\b", body, re.DOTALL)
+            ):
+                continue
+            navigation_contract = {
+                "status": "closed",
+                "mode": "declared_navigation_state",
+                "source_path": relative,
+                "control_selector": "nav button",
+                "event": "click",
+                "state_target": "control.className",
+                "expected_change": True,
+                "source_project_write": False,
+            }
+            break
+        if navigation_contract is not None:
+            break
+    state_setters: set[str] = set()
+    for source in files.values():
+        state_setters.update(
+            match.group(1)
+            for match in re.finditer(
+                r"const\s*\[\s*\w+\s*,\s*(set\w+)\s*\]\s*=\s*useState(?:<[^>]+>)?\(true\)",
+                source,
+            )
+        )
+    callback_props: list[tuple[str, str]] = []
+    for parent_path, parent_source in sorted(files.items()):
+        for callback in re.finditer(
+            r"(?P<prop>on[A-Z]\w*)\s*=\s*\{\s*\(\)\s*=>\s*(?P<setter>set\w+)\(false\)\s*\}",
+            parent_source,
+        ):
+            if callback.group("setter") in state_setters:
+                callback_props.append((parent_path, callback.group("prop")))
+        for handler in re.finditer(r"const\s+(?P<name>\w+)\s*=\s*\(\)\s*=>\s*\{", parent_source):
+            body = parent_source[handler.end() : handler.end() + 600]
+            if not any(f"{setter}(false)" in body for setter in state_setters):
+                continue
+            for wiring in re.finditer(
+                r"(?P<prop>on[A-Z]\w*)\s*=\s*\{\s*" + re.escape(handler.group("name")) + r"\s*\}",
+                parent_source,
+            ):
+                callback_props.append((parent_path, wiring.group("prop")))
+    for parent_path, prop in callback_props:
+        button_pattern = re.compile(
+            r"<button\b[^>]*onClick\s*=\s*\{\s*"
+            + re.escape(prop)
+            + r"\s*\}[^>]*>(?P<body>.{1,400}?)</button>",
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        for child_path, child_source in sorted(files.items()):
+            button = button_pattern.search(child_source)
+            if not button or "{" in button.group("body"):
+                continue
+            control_text = " ".join(re.sub(r"<[^>]+>", " ", button.group("body")).split())
+            if not control_text:
+                continue
+            return {
+                "status": "closed",
+                "mode": "declared_control_disappears",
+                "source_path": child_path,
+                "wiring_path": parent_path,
+                "control_text": html.unescape(control_text),
+                "event": "click",
+                "state_target": "control.presence",
+                "expected_change": True,
+                "source_project_write": False,
+            }
+    for child_path, child_source in sorted(files.items()):
+        component = Path(child_path).stem
+        group = re.search(
+            r"<(?P<tag>div|section)\b[^>]*aria-label\s*=\s*['\"](?P<label>[^'\"\[\]]{1,80})['\"][^>]*>"
+            r"(?P<body>.{1,2400}?)</(?P=tag)>",
+            child_source,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+        if not group or not re.search(r"onClick\s*=\s*\{\s*\(\)\s*=>\s*on\w+\(", group.group("body")):
+            continue
+        for parent_path, parent_source in sorted(files.items()):
+            if f"<{component}" not in parent_source or "<textarea" not in parent_source:
+                continue
+            control_selector = f'[aria-label="{group.group("label")}"] button'
+            return {
+                "status": "closed",
+                "mode": "declared_group_to_textbox",
+                "source_path": child_path,
+                "wiring_path": parent_path,
+                "control_selector": control_selector,
+                "event": "click",
+                "state_target": "textarea.value",
+                "state_selector": "textarea",
+                "expected_change": True,
+                "source_project_write": False,
+            }
+    if navigation_contract is not None:
+        return navigation_contract
+    return {
+        "status": "unavailable",
+        "reason": "declared_react_interaction_not_found",
+        "source_project_write": False,
+    }
+
+
 def _adapt_static_slots(
     files: dict[str, str],
     task: str,
     project_targets: list[dict[str, Any]],
+    *,
+    preferred_route: str = "",
 ) -> tuple[dict[str, str], dict[str, Any]]:
     slots = _static_text_slots(files, project_targets)
-    headings = [slot for slot in slots if slot["kind"] == "heading"]
+    headings = [
+        slot
+        for slot in slots
+        if slot["kind"] == "heading"
+        and (
+            preferred_route
+            or slot.get("mode") not in {"route_nested_heading", "route_semantic_subtitle"}
+        )
+    ]
+    route_words = set(re.findall(r"[a-z0-9]+", preferred_route.lower())) - {"tool", "tools"}
 
-    def heading_priority(slot: dict[str, Any]) -> tuple[int, int, int, str]:
+    def heading_priority(slot: dict[str, Any]) -> tuple[int, int, int, int, int, int, str]:
+        path = str(slot.get("file") or "").lower()
         stem = Path(str(slot.get("file") or "")).stem.lower()
         primary = any(word in stem for word in ("home", "opening", "landing", "hero"))
+        route_match = len(route_words & set(re.findall(r"[a-z0-9]+", path)))
         return (
+            0 if route_words and route_match >= 2 else 1,
             0 if stem == "app" else 1 if primary else 2,
+            0 if slot.get("mode") == "route_semantic_subtitle" else 1,
+            (0 if slot.get("tag") == "h1" else 1) if route_words else 0,
             int(slot.get("_slot_priority") or 0),
             int(slot.get("_start") or 0),
             str(slot.get("file") or ""),
@@ -336,7 +570,23 @@ def build_react_preview(
     )
     if missing:
         return _receipt("needs_review", "complete_project_files_unavailable", missing_files=missing)
-    files, adaptation = _adapt_static_slots(files, task, project_targets)
+    files, route_adaptation = _adapt_source_declared_route(files, task, project_targets)
+    files, adaptation = _adapt_static_slots(
+        files,
+        task,
+        project_targets,
+        preferred_route=str((route_adaptation or {}).get("route") or ""),
+    )
+    if route_adaptation is not None:
+        adaptation["route"] = route_adaptation
+        adaptation["changes"].insert(
+            0,
+            {
+                "slot_id": f"{route_adaptation['source_path']}:initial-route",
+                "reason": "task_route",
+                "value": route_adaptation["route"],
+            },
+        )
 
     project_root = root / "react_project"
     project_root.mkdir(parents=True, exist_ok=False)
@@ -372,6 +622,7 @@ def build_react_preview(
     compile_status = result.get("compiler_status") or result.get("status")
     compile_reason = result.get("reason")
     result["adaptation"] = adaptation
+    result["runtime_contract"] = _react_runtime_contract(files, project_targets)
     result["compile_status"] = compile_status
     result["compile_reason"] = compile_reason
     if compile_status == "passed" and adaptation.get("status") != "applied":

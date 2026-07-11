@@ -134,6 +134,29 @@ def select_capsules_for_task(
     return [dict(item[3]) for item in primary[: max(1, limit)]]
 
 
+def ensure_complete_project_capsule(
+    selected: list[dict[str, Any]],
+    capsules: list[dict[str, Any]],
+    complete_capsule_ids: set[str],
+) -> list[dict[str, Any]]:
+    """Keep the complete project capsule for the selected source in the bounded result."""
+    if not selected:
+        return []
+    source_id = str(selected[0].get("source_id") or selected[0].get("source") or "")
+    required = next(
+        (
+            cap
+            for cap in capsules
+            if str(cap.get("id") or "") in complete_capsule_ids
+            and str(cap.get("source_id") or cap.get("source") or "") == source_id
+        ),
+        None,
+    )
+    if required is None or any(item.get("id") == required.get("id") for item in selected):
+        return selected
+    return [dict(required), *[item for item in selected if item.get("id") != required.get("id")]][: len(selected)]
+
+
 def capsule_reason(cap: dict[str, Any], capabilities: list[str]) -> str:
     text = capsule_match_text(cap)
     matched = [capability for capability in capabilities if capability in text]

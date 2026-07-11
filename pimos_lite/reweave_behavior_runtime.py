@@ -7,9 +7,35 @@ import subprocess
 import sys
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote
 
 
 SCHEMA_VERSION = "reweave_behavior_validation.v1"
+
+
+def _is_preview_static_request(root: Path, url_path: str) -> bool:
+    relative = unquote(url_path or "/").lstrip("/") or "index.html"
+    cursor = root
+    for part in Path(relative).parts:
+        cursor /= part
+        if cursor.is_symlink():
+            return False
+    try:
+        candidate = cursor.resolve()
+        candidate.relative_to(root.resolve())
+    except (OSError, ValueError):
+        return False
+    return candidate.is_file() and not candidate.is_symlink()
+
+
+def _is_console_error(level: Any) -> bool:
+    name = str(getattr(level, "name", level)).lower()
+    if "error" in name:
+        return True
+    try:
+        return int(level) == 2
+    except (TypeError, ValueError):
+        return False
 
 
 def _receipt(status: str, reason: str, **extra: Any) -> dict[str, Any]:
@@ -51,6 +77,7 @@ def validate_preview_behavior(root: str | Path, *, timeout: float = 8.0) -> dict
 def validate_react_preview_behavior(
     root: str | Path,
     expected_text: str,
+    runtime_contract: dict[str, Any] | None = None,
     *,
     timeout: float = 10.0,
 ) -> dict[str, Any]:
@@ -59,7 +86,15 @@ def validate_react_preview_behavior(
         return _receipt("unavailable", "react_runtime_entry_missing")
     try:
         completed = subprocess.run(
-            [sys.executable, "-m", __name__, "--react-child", str(preview), expected_text[:160]],
+            [
+                sys.executable,
+                "-m",
+                __name__,
+                "--react-child",
+                str(preview),
+                expected_text[:160],
+                json.dumps(runtime_contract or {}, separators=(",", ":")),
+            ],
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -76,7 +111,7 @@ def validate_react_preview_behavior(
     return result if isinstance(result, dict) else _receipt("unavailable", "invalid_qt_runner_result")
 
 
-def _run_react_child(root: Path, expected_text: str) -> int:
+def _run_react_child(root: Path, expected_text: str, runtime_contract: dict[str, Any] | None = None) -> int:
     from functools import partial
     from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
     from threading import Thread
@@ -97,6 +132,7 @@ def _run_react_child(root: Path, expected_text: str) -> int:
 
     app = QApplication.instance() or QApplication(["reweave-react-validation"])
     console_messages: list[str] = []
+    console_errors: list[str] = []
     blocked_requests: list[str] = []
     allowed_root = root.resolve()
 
@@ -114,6 +150,8 @@ def _run_react_child(root: Path, expected_text: str) -> int:
     class ValidationPage(QWebEnginePage):
         def javaScriptConsoleMessage(self, _level: Any, message: str, _line: int, _source: str) -> None:
             console_messages.append(message[:240])
+            if _is_console_error(_level):
+                console_errors.append(message[:240])
 
     class PreviewRequestInterceptor(QWebEngineUrlRequestInterceptor):
         def interceptRequest(self, info: Any) -> None:
@@ -129,9 +167,12 @@ def _run_react_child(root: Path, expected_text: str) -> int:
                 except (OSError, ValueError):
                     pass
             elif scheme == "http" and url.host() == "127.0.0.1" and url.port() == preview_port:
-                allowed = True
+                allowed = _is_preview_static_request(allowed_root, url.path())
+                if not allowed and url.path() == "/favicon.ico":
+                    info.block(True)
+                    return
             if not allowed:
-                blocked_requests.append(scheme or "unknown")
+                blocked_requests.append(url.path() or scheme or "unknown")
                 info.block(True)
 
     profile = QWebEngineProfile()
@@ -149,6 +190,7 @@ def _run_react_child(root: Path, expected_text: str) -> int:
     output: dict[str, Any] = {}
     initial_pixmap: Any = None
     expected_json = json.dumps(expected_text)
+    runtime_contract_json = json.dumps(runtime_contract or {})
     snapshot_js = (
         "JSON.stringify({text:(document.body.innerText||'').trim(),"
         "root:(document.getElementById('root')||{}).innerText||'',"
@@ -160,23 +202,50 @@ def _run_react_child(root: Path, expected_text: str) -> int:
         "rect.bottom>0&&rect.right>0&&rect.top<innerHeight&&rect.left<innerWidth)return true;}return false;})("
         + expected_json
         + "),"
-        "state:(document.body.innerText||'').trim()+'|'+"
-        "Array.from(document.querySelectorAll('input,textarea,select')).map(function(el){"
-        "return String(el.value||el.checked||'');}).join('|')+'|'+location.hash+'|'+"
-        "Array.from(document.querySelectorAll('button,[role=tab],[aria-selected],[aria-pressed],[aria-expanded]')).map(function(el){"
-        "return [el.id,el.className,el.getAttribute('aria-selected'),el.getAttribute('aria-pressed'),"
-        "el.getAttribute('aria-expanded'),el.disabled].join(':');}).join('|'),"
-        "buttons:document.querySelectorAll('button').length})"
+        "interaction:(function(declared){var buttons=Array.from(document.querySelectorAll('button'));"
+        "if(declared.mode==='declared_navigation_state'){var navButtons=document.querySelectorAll(declared.control_selector||'nav button');"
+        "if(navButtons.length)return {selector:declared.control_selector||'nav button',buttonIndex:0,candidateCount:Math.min(navButtons.length,8),stateKind:'class'};}"
+        "if(declared.mode==='declared_control_disappears'){var textButtons=Array.from(document.querySelectorAll('button')).filter(function(button){return (button.innerText||'').trim()===declared.control_text;});"
+        "if(textButtons.length)return {controlText:declared.control_text,buttonIndex:0,candidateCount:1,stateKind:'control_presence'};}"
+        "if(declared.mode==='declared_group_to_textbox'){var groupButtons=document.querySelectorAll(declared.control_selector);"
+        "if(groupButtons.length&&document.querySelector(declared.state_selector))return {selector:declared.control_selector,buttonIndex:0,candidateCount:Math.min(groupButtons.length,8),stateKind:'selector_value',stateSelector:declared.state_selector};}"
+        "if(declared.status==='closed')return null;"
+        "for(var i=0;i<buttons.length;i++){var button=buttons[i];"
+        "for(var j=0;j<3;j++){var attr=['aria-expanded','aria-pressed','aria-selected'][j];"
+        "if(button.hasAttribute(attr))return {selector:'button',buttonIndex:i,candidateCount:1,stateKind:'attribute',stateAttribute:attr};}"
+        "var controlled=button.getAttribute('aria-controls');"
+        "if(controlled&&document.getElementById(controlled))return {selector:'button',buttonIndex:i,candidateCount:1,stateKind:'target',targetId:controlled};}"
+        "return null;})(" + runtime_contract_json + ")})"
     )
+
+    def state_script(interaction: dict[str, Any]) -> str:
+        return (
+            "(function(contract){var buttons=contract.controlText?Array.from(document.querySelectorAll('button')).filter(function(button){return (button.innerText||'').trim()===contract.controlText;}):Array.from(document.querySelectorAll(contract.selector||'button'));"
+            "var button=buttons[contract.buttonIndex];"
+            "if(contract.stateKind==='control_presence')return button?'present':'missing';"
+            "if(contract.stateKind==='selector_value'){var field=document.querySelector(contract.stateSelector);return field?String(field.value):null;}"
+            "if(!button)return null;"
+            "if(contract.stateKind==='attribute')return String(button.getAttribute(contract.stateAttribute));"
+            "if(contract.stateKind==='class')return String(button.className);"
+            "var target=document.getElementById(contract.targetId);if(!target)return null;"
+            "return [target.textContent,target.hidden,target.className,target.getAttribute('aria-hidden')].join('|');})("
+            + json.dumps(interaction)
+            + ")"
+        )
 
     def finish(result: dict[str, Any]) -> None:
         if output:
             return
+        if result.get("status") == "passed" and console_errors:
+            result["status"] = "needs_review"
+            result["reason"] = "react_script_error"
         result.setdefault("request_scope", "preview_origin_only")
         result.setdefault("blocked_request_count", len(blocked_requests))
+        if blocked_requests:
+            result.setdefault("blocked_requests", blocked_requests[-5:])
         result.setdefault("local_http_call", True)
         result.setdefault("external_network_call", False)
-        if result.get("status") == "passed":
+        if result.get("status") in {"passed", "needs_review"} and result.get("rendered"):
             preview_image = root / "preview.png"
             pixmap = view.grab()
             if pixmap.isNull() and initial_pixmap is not None:
@@ -186,6 +255,8 @@ def _run_react_child(root: Path, expected_text: str) -> int:
                 result["preview_output_write"] = True
         if console_messages:
             result.setdefault("console_messages", console_messages[-5:])
+        if console_errors:
+            result.setdefault("console_errors", console_errors[-5:])
         output.update(result)
         server.shutdown()
         server.server_close()
@@ -201,76 +272,67 @@ def _run_react_child(root: Path, expected_text: str) -> int:
             finish(_receipt("failed", "react_root_not_rendered"))
             return
         initial_pixmap = view.grab()
-        button_count = min(int(before.get("buttons") or 0), 12)
-        if not button_count:
-            finish(_receipt("needs_review", "react_button_not_found", rendered=True))
+        interaction = before.get("interaction") if isinstance(before.get("interaction"), dict) else None
+        if not interaction:
+            finish(
+                _receipt(
+                    "needs_review",
+                    "react_explicit_interaction_contract_missing",
+                    rendered=True,
+                    task_text_rendered=bool(before.get("taskVisible")),
+                )
+            )
             return
 
-        def try_button(index: int, current: dict[str, Any]) -> None:
-            if index >= button_count:
-                finish(
-                    _receipt(
-                        "needs_review",
-                        "react_interaction_unchanged",
-                        rendered=True,
-                        interaction_present=True,
-                        interaction_changed=False,
-                        buttons_checked=button_count,
-                    )
-                )
-                return
+        def try_candidate(candidate_index: int) -> None:
+            interaction["buttonIndex"] = candidate_index
 
-            def inspect_after(after_raw: Any) -> None:
-                try:
-                    after = json.loads(after_raw) if isinstance(after_raw, str) else {}
-                except json.JSONDecodeError:
-                    after = {}
-                changed = str(current.get("state") or "") != str(after.get("state") or "")
-                task_rendered = bool(before.get("taskVisible") or after.get("taskVisible"))
-                if changed:
+            def click_after_state(before_state: Any) -> None:
+                def inspect_after(after_state: Any) -> None:
+                    changed = before_state != after_state
                     if blocked_requests:
-                        finish(
-                            _receipt(
-                                "needs_review",
-                                "react_interaction_requires_blocked_request",
-                                rendered=True,
-                                task_text_rendered=task_rendered,
-                                interaction_present=True,
-                                interaction_changed=True,
-                                button_index=index,
-                            )
-                        )
+                        status = "needs_review"
+                        reason = "react_interaction_requires_blocked_request"
+                    elif changed:
+                        status = "passed" if before.get("taskVisible") else "needs_review"
+                        reason = "react_declared_state_changed" if before.get("taskVisible") else "adapted_task_text_not_rendered"
+                    elif candidate_index + 1 < int(interaction.get("candidateCount") or 1):
+                        try_candidate(candidate_index + 1)
                         return
+                    else:
+                        status = "needs_review"
+                        reason = "react_declared_state_unchanged"
                     finish(
                         _receipt(
-                            "passed" if task_rendered else "needs_review",
-                            "react_interaction_changed_dom"
-                            if task_rendered
-                            else "adapted_task_text_not_rendered",
+                            status,
+                            reason,
                             rendered=True,
-                            task_text_rendered=task_rendered,
+                            task_text_rendered=bool(before.get("taskVisible")),
                             interaction_present=True,
-                            interaction_changed=True,
-                            button_index=index,
+                            interaction_changed=changed,
+                            interaction_contract=interaction,
                         )
                     )
-                    return
-                try_button(index + 1, after)
 
-            script = (
-                "(function(){var button=document.querySelectorAll('button')["
-                f"{index}];if(!button||button.disabled)return false;button.click();return true;}})()"
-            )
-            page.runJavaScript(
-                script,
-                lambda clicked: (
-                    QTimer.singleShot(500, lambda: page.runJavaScript(snapshot_js, inspect_after))
-                    if clicked
-                    else try_button(index + 1, current)
-                ),
-            )
+                click_js = (
+                    "(function(contract){var buttons=contract.controlText?Array.from(document.querySelectorAll('button')).filter(function(button){return (button.innerText||'').trim()===contract.controlText;}):Array.from(document.querySelectorAll(contract.selector||'button'));var button=buttons["
+                    + str(candidate_index)
+                    + "];if(!button||button.disabled)return false;button.click();return true;})("
+                    + json.dumps(interaction)
+                    + ")"
+                )
 
-        try_button(0, before)
+                def clicked(ok: Any) -> None:
+                    if not ok:
+                        finish(_receipt("needs_review", "react_interaction_target_missing", rendered=True))
+                        return
+                    QTimer.singleShot(500, lambda: page.runJavaScript(state_script(interaction), inspect_after))
+
+                page.runJavaScript(click_js, clicked)
+
+            page.runJavaScript(state_script(interaction), click_after_state)
+
+        try_candidate(0)
 
     def loaded(ok: bool) -> None:
         if not ok:
@@ -436,6 +498,10 @@ def _run_child(root: Path) -> int:
 if __name__ == "__main__":
     if len(sys.argv) == 3 and sys.argv[1] == "--child":
         raise SystemExit(_run_child(Path(sys.argv[2]).resolve()))
-    if len(sys.argv) == 4 and sys.argv[1] == "--react-child":
-        raise SystemExit(_run_react_child(Path(sys.argv[2]).resolve(), sys.argv[3]))
+    if len(sys.argv) == 5 and sys.argv[1] == "--react-child":
+        try:
+            declared_contract = json.loads(sys.argv[4])
+        except json.JSONDecodeError:
+            declared_contract = {}
+        raise SystemExit(_run_react_child(Path(sys.argv[2]).resolve(), sys.argv[3], declared_contract))
     raise SystemExit("usage: python -m pimos_lite.reweave_behavior_runtime --child PREVIEW_ROOT")
