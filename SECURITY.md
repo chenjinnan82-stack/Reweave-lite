@@ -6,7 +6,7 @@ Reweave-lite is a public alpha. Please report security issues against the latest
 
 Please do not open public issues for path traversal, source-write, local file exposure, or provenance redaction vulnerabilities.
 
-Use GitHub Security Advisories if available, or contact the maintainer through the repository profile.
+Use **Report a vulnerability** on the repository Security Advisories page.
 
 ## Security Boundaries
 

@@ -42,6 +42,40 @@ def ensure_reweave_assets() -> Path:
     return index
 
 
+def _is_frontend_file(path: str) -> bool:
+    try:
+        root = REWEAVE_DIR.resolve(strict=True)
+        candidate = Path(path)
+        candidate.resolve(strict=True).relative_to(root)
+    except (OSError, ValueError):
+        return False
+    cursor = candidate
+    while cursor != root:
+        if cursor.is_symlink() or cursor.parent == cursor:
+            return False
+        cursor = cursor.parent
+    return True
+
+
+def _is_preview_image(path: str) -> bool:
+    from pimos_lite.reweave_preview_pack import preview_packages_dir
+
+    candidate = Path(path)
+    if candidate.suffix.lower() != ".png":
+        return False
+    try:
+        root = preview_packages_dir().resolve()
+        candidate.resolve(strict=True).relative_to(root)
+    except (OSError, ValueError):
+        return False
+    cursor = candidate
+    while cursor != root:
+        if cursor.is_symlink() or cursor.parent == cursor:
+            return False
+        cursor = cursor.parent
+    return True
+
+
 def import_qt_webengine():
     try:
         from PySide6.QtCore import QUrl
@@ -113,6 +147,7 @@ class ReweaveBridge:
                     "get_latest_preview_package",
                     "get_preview_package",
                     "compare_preview_packages",
+                    "open_generated_product",
                 }:
                     return None
                 state = self._engine.get_initial_state()
@@ -615,6 +650,20 @@ class ReweaveBridge:
                     logger.exception("generate_preview failed")
                     return json.dumps({"ok": False, "mock": False, "error": str(exc)[:200]})
 
+            @Slot(result=str)
+            def open_generated_product(self) -> str:
+                blocked = self._lumo_lite_block("open_generated_product")
+                if blocked:
+                    return json.dumps(blocked)
+                path = self._engine.get_latest_product_entry_path() if hasattr(self._engine, "get_latest_product_entry_path") else None
+                if not path:
+                    return json.dumps({"ok": False, "error": "product_entry_unavailable"})
+                from PySide6.QtCore import QUrl
+                from PySide6.QtGui import QDesktopServices
+
+                opened = QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+                return json.dumps({"ok": bool(opened), "source_project_write": False})
+
             @Slot(str, result=str)
             def open_preview_folder(self, path: str = "") -> str:
                 blocked = self._lumo_lite_block("open_preview_folder")
@@ -711,10 +760,35 @@ def create_reweave_window():
     window.setStyleSheet("background-color: #fdfcf8;")
 
     view = QWebEngineView(window)
+    from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineUrlRequestInterceptor
+
+    class LocalFrontendPage(QWebEnginePage):
+        def acceptNavigationRequest(self, url, navigation_type, is_main_frame):
+            if not is_main_frame:
+                return True
+            if url.scheme().lower() == "about":
+                return url.toString() == "about:blank"
+            return url.isLocalFile() and _is_frontend_file(url.toLocalFile())
+
+    class LocalFrontendRequestInterceptor(QWebEngineUrlRequestInterceptor):
+        def interceptRequest(self, info):
+            url = info.requestUrl()
+            if url.scheme().lower() in {"about", "blob", "data", "qrc"}:
+                return
+            if url.isLocalFile() and (_is_frontend_file(url.toLocalFile()) or _is_preview_image(url.toLocalFile())):
+                return
+            info.block(True)
+
+    view.setPage(LocalFrontendPage(view))
+    request_interceptor = LocalFrontendRequestInterceptor(view)
+    view.page().profile().setUrlRequestInterceptor(request_interceptor)
+    view._reweave_request_interceptor = request_interceptor
     settings = view.settings()
     settings.setAttribute(QWebEngineSettings.LocalContentCanAccessFileUrls, True)
     settings.setAttribute(QWebEngineSettings.LocalContentCanAccessRemoteUrls, False)
+    settings.setAttribute(QWebEngineSettings.DnsPrefetchEnabled, False)
     settings.setAttribute(QWebEngineSettings.JavascriptEnabled, True)
+    settings.setAttribute(QWebEngineSettings.JavascriptCanOpenWindows, False)
 
     window.setCentralWidget(view)
     _setup_web_channel(view, bridge)

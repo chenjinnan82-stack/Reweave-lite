@@ -75,12 +75,13 @@ class ReweaveCapsuleWarehouseTest(unittest.TestCase):
         self.assertEqual(path.read_text(encoding="utf-8"), "{broken")
         self.assertTrue(list(path.parent.glob("capsules.json.corrupt.*.bak")))
 
-    def test_promote_is_idempotent(self) -> None:
+    def test_promote_refreshes_stable_capsule_ids_without_duplicates(self) -> None:
         source_id = self._bind_scan_draft()
         first = warehouse.promote_source_drafts(source_id)
         second = warehouse.promote_source_drafts(source_id)
         self.assertGreater(len(first), 0)
-        self.assertEqual(second, [])
+        self.assertEqual([row["id"] for row in second], [row["id"] for row in first])
+        self.assertTrue(all(row.get("refreshed_at") for row in second))
         data = json.loads(warehouse.warehouse_path().read_text(encoding="utf-8"))
         self.assertEqual(len(data["capsules"]), len(first))
 

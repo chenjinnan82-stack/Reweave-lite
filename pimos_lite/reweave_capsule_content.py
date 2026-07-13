@@ -21,7 +21,7 @@ from pimos_lite.reweave_capsule_warehouse import (
 )
 from pimos_lite.reweave_reuse_suggestions import load_reuse_suggestions
 from pimos_lite.reweave_capsule_verifier import load_verification
-from pimos_lite.reweave_source_registry import get_source_box, state_dir
+from pimos_lite.reweave_source_registry import get_source_box, load_json_state, state_dir
 from pimos_lite.reweave_source_scanner import load_summary
 from pimos_lite.reweave_project_graph import MAX_RUNTIME_FILES
 
@@ -44,6 +44,317 @@ RUNTIME_DEPENDENCY_PATTERNS = (
     ("commonjs_require", r"\brequire\s*\("),
     ("python_service", r"(?i)\bpython(?:3)?\s+[\w./-]+\.py\b"),
 )
+
+SEMANTIC_CLAIM_TERMS = {
+    "numeric_aggregation": ("invoice total", "total cost", "发票总额", "总价", "合计"),
+    "refresh_log": ("incident log", "event log", "health check", "事件日志", "健康检查", "服务健康"),
+    "scoring_accuracy": ("accuracy", "score", "命中率", "准确率", "得分"),
+    "elapsed_time": ("reaction time", "elapsed time", "duration", "反应时间", "响应时间", "耗时"),
+    "selection_lookup": ("package selection", "estimated price", "quote summary", "套餐选择", "估算价格", "报价摘要"),
+    "counter_progress": (
+        "open ticket count", "resolve oldest ticket", "scheduled item count", "publish next item",
+        "待处理工单数", "处理最早工单", "排期数量", "发布下一项",
+    ),
+    "checklist_progress": ("checklist progress", "completed step count", "清单进度", "已完成步骤数"),
+    "passive_status": ("automatic status refresh", "passive incident status", "自动状态刷新", "被动事件状态"),
+}
+
+
+def build_behavior_semantics(contract: dict[str, Any]) -> dict[str, Any]:
+    """Summarize observable behavior without changing or executing it."""
+    files = contract.get("files") if isinstance(contract.get("files"), dict) else {}
+    script = str(files.get("script", {}).get("content") or "") if isinstance(files.get("script"), dict) else ""
+    interactions = contract.get("interactions") if isinstance(contract.get("interactions"), dict) else {}
+    controls = interactions.get("controls") if isinstance(interactions.get("controls"), list) else []
+    numeric_inputs = [
+        str(item.get("id") or item.get("name") or "")
+        for item in controls
+        if isinstance(item, dict) and item.get("kind") == "input" and item.get("type") == "number"
+    ]
+    capabilities: list[str] = []
+    evidence: dict[str, Any] = {}
+    if len(numeric_inputs) >= 2 and re.search(r"(?:parseFloat|Number)\s*\(", script) and "+" in script:
+        capabilities.append("numeric_aggregation")
+        evidence["numeric_aggregation"] = {"numeric_inputs": numeric_inputs}
+    if re.search(r"(?:appendChild|insertBefore|createElement)", script) and interactions.get("events"):
+        capabilities.append("refresh_log")
+        evidence["refresh_log"] = {"event_count": len(interactions.get("events") or [])}
+    if re.search(r"\bscore\b", script, re.IGNORECASE) and re.search(r"\baccuracy\b", script, re.IGNORECASE):
+        capabilities.append("scoring_accuracy")
+        evidence["scoring_accuracy"] = {"state_targets": [
+            item for item in interactions.get("state_target_ids") or [] if item in {"score", "accuracy"}
+        ]}
+    clock_reads = re.findall(r"(?:performance\.now|Date\.now)\s*\(", script)
+    if len(clock_reads) >= 2 and "-" in script:
+        capabilities.append("elapsed_time")
+        evidence["elapsed_time"] = {"clock_api": True}
+    if any(item.get("kind") == "select" for item in controls if isinstance(item, dict)) and re.search(
+        r"\[[^\]]*\.value\]", script
+    ) and interactions.get("state_target_ids"):
+        capabilities.append("selection_lookup")
+        evidence["selection_lookup"] = {"select_control": True}
+    if interactions.get("events") and interactions.get("state_target_ids") and re.search(
+        r"(?:\+\+|--|[+-]\s*1|Math\.max\s*\([^,]+,[^)]*[+-])", script
+    ):
+        capabilities.append("counter_progress")
+        evidence["counter_progress"] = {"event_count": len(interactions.get("events") or [])}
+    if any(
+        item.get("kind") == "input" and item.get("type") == "checkbox"
+        for item in controls
+        if isinstance(item, dict)
+    ) and re.search(r"\.checked\b", script) and interactions.get("events"):
+        capabilities.append("checklist_progress")
+        evidence["checklist_progress"] = {"event_count": len(interactions.get("events") or [])}
+    if interactions.get("passive_updates") and interactions.get("state_target_ids"):
+        capabilities.append("passive_status")
+        evidence["passive_status"] = {"timer_count": len(interactions.get("passive_updates") or [])}
+    events = [item for item in interactions.get("events") or [] if isinstance(item, dict)]
+    inputs: list[dict[str, Any]] = []
+    actions: list[dict[str, Any]] = []
+    for item in controls:
+        if not isinstance(item, dict):
+            continue
+        kind = str(item.get("kind") or "")
+        label = str(item.get("label") or item.get("text") or item.get("placeholder") or "")
+        source_key = str(item.get("id") or item.get("name") or label)
+        if kind in {"button", "a"}:
+            continue
+        if item.get("readonly"):
+            continue
+        value_kind = {
+            "checkbox": "boolean",
+            "radio": "choice",
+            "number": "number",
+            "range": "number",
+        }.get(str(item.get("type") or ""), "selection" if kind == "select" else "text")
+        inputs.append(
+            {
+                key: value
+                for key, value in {
+                    "source_key": source_key,
+                    "control_kind": kind,
+                    "value_kind": value_kind,
+                    "label": label,
+                    "readonly": bool(item.get("readonly")),
+                    "options": list(item.get("options") or []),
+                }.items()
+                if value not in ("", False, [])
+            }
+        )
+    for event in events:
+        target_id = str(event.get("target_id") or "")
+        target_selector = str(event.get("target_selector") or "")
+        matched_controls = [
+            item
+            for item in controls
+            if isinstance(item, dict)
+            and (
+                (target_id and item.get("id") == target_id)
+                or (target_selector == str(item.get("kind") or ""))
+                or (target_selector.startswith("#") and item.get("id") == target_selector[1:])
+                or (
+                    target_selector.startswith(".")
+                    and target_selector[1:] in str(item.get("class") or "").split()
+                )
+            )
+        ]
+        labels = list(
+            dict.fromkeys(
+                str(item.get("label") or item.get("text") or item.get("placeholder") or "")
+                for item in matched_controls
+                if item.get("label") or item.get("text") or item.get("placeholder")
+            )
+        )
+        source_key = target_id or (
+            str(matched_controls[0].get("id") or "") if len(matched_controls) == 1 else ""
+        ) or target_selector
+        action = {
+            "source_key": source_key,
+            "event": str(event.get("event") or ""),
+            "control_kind": str(matched_controls[0].get("kind") or "") if matched_controls else "",
+            "label": labels[0] if len(labels) == 1 else "",
+            "labels": labels if len(labels) > 1 else [],
+            "cardinality": len(matched_controls),
+        }
+        actions.append({key: value for key, value in action.items() if value not in ("", 0, [])})
+    writes = [item for item in interactions.get("writes") or [] if isinstance(item, dict)]
+    outputs = [
+        {
+            key: value
+            for key, value in {
+                "source_key": str(item.get("target_id") or item.get("target_selector") or ""),
+                "target_kind": "id" if item.get("target_id") else "selector",
+                "write_property": str(item.get("property") or ""),
+                "value_kind": str(item.get("value_kind") or ""),
+            }.items()
+            if value
+        }
+        for item in writes
+        if item.get("target_id") or item.get("target_selector")
+    ]
+    output_keys = [str(item.get("source_key") or "") for item in outputs if item.get("source_key")]
+    relations: list[dict[str, Any]] = []
+    if len(events) == 1 and output_keys:
+        event = events[0]
+        relations.append(
+            {
+                "trigger": {
+                    key: value
+                    for key, value in {
+                        "target_id": event.get("target_id"),
+                        "target_selector": event.get("target_selector"),
+                        "event": event.get("event"),
+                    }.items()
+                    if value
+                },
+                "outputs": output_keys,
+                "confidence": "single_declared_event",
+            }
+        )
+    elif not events and interactions.get("passive_updates") and output_keys:
+        relations.append(
+            {
+                "trigger": {"kind": "passive_timer"},
+                "outputs": output_keys,
+                "confidence": "declared_passive_update",
+            }
+        )
+    return {
+        "schema_version": "reweave_behavior_semantics.v1",
+        "status": "observed",
+        "capabilities": capabilities,
+        "evidence": evidence,
+        "controls": [
+            {
+                key: item.get(key)
+                for key in ("kind", "id", "name", "type", "class", "label", "placeholder", "readonly", "options", "text")
+                if item.get(key)
+            }
+            for item in controls
+            if isinstance(item, dict)
+        ],
+        "events": list(interactions.get("events") or []),
+        "state_target_ids": list(interactions.get("state_target_ids") or []),
+        "field_contract": {
+            "schema_version": "reweave_field_semantics.v1",
+            "status": "observed" if relations else "partial",
+            "inputs": inputs,
+            "actions": actions,
+            "outputs": outputs,
+            "events": events,
+            "relations": relations,
+            "limits": "source_labels_and_structural_roles_only",
+        },
+        "source_project_write": False,
+        "limits": "heuristic_read_only_review",
+    }
+
+
+def semantic_claims(values: list[str]) -> list[str]:
+    # ponytail: only proven claim classes; expand after a real false negative.
+    text = " ".join(values).casefold()
+    return [
+        name
+        for name, terms in SEMANTIC_CLAIM_TERMS.items()
+        if any(
+            bool(re.search(rf"(?<![a-z0-9]){re.escape(term)}(?![a-z0-9])", text))
+            if term.isascii()
+            else term in text
+            for term in terms
+        )
+    ]
+
+
+def build_semantic_compatibility(semantics: dict[str, Any], claims: list[str]) -> dict[str, Any]:
+    observed = [str(item) for item in semantics.get("capabilities") or []]
+    missing = [item for item in claims if item not in observed]
+    return {
+        "schema_version": "reweave_semantic_compatibility.v1",
+        "status": "not_evaluated" if not claims else "needs_review" if missing else "compatible",
+        "claimed_capabilities": claims,
+        "observed_capabilities": observed,
+        "missing_capabilities": missing,
+        "enforcement": "preview_acceptance_soft_gate",
+        "source_project_write": False,
+    }
+
+
+def build_field_mapping_preview(task: str, field_contract: dict[str, Any]) -> dict[str, Any]:
+    requested = {"inputs": [], "actions": [], "outputs": []}
+    role_names = {
+        "input": "inputs",
+        "inputs": "inputs",
+        "输入": "inputs",
+        "action": "actions",
+        "actions": "actions",
+        "动作": "actions",
+        "output": "outputs",
+        "outputs": "outputs",
+        "输出": "outputs",
+    }
+    for clause in re.split(r"[.;；。]", task):
+        match = re.match(r"\s*(inputs?|actions?|outputs?|输入|动作|输出)\s*[:：]\s*(.+?)\s*$", clause, re.IGNORECASE)
+        if not match:
+            continue
+        role = role_names[match.group(1).casefold()]
+        requested[role] = [
+            item.strip(" \t\"'`")
+            for item in re.split(r"\s+(?:and|与|和)\s+|[,，、]", match.group(2), flags=re.IGNORECASE)
+            if item.strip(" \t\"'`")
+        ]
+    if not any(requested.values()):
+        return {
+            "schema_version": "reweave_field_mapping_preview.v1",
+            "status": "not_requested",
+            "request": requested,
+            "mappings": [],
+            "blockers": [],
+            "execution": "preview_only",
+            "model_call": False,
+            "source_project_write": False,
+        }
+
+    blockers = []
+    mappings: list[dict[str, Any]] = []
+    if field_contract.get("status") != "observed":
+        blockers.append("field_contract_not_fully_observed")
+    for role in ("inputs", "actions", "outputs"):
+        targets = requested[role]
+        if not targets:
+            continue
+        sources = [item for item in field_contract.get(role) or [] if isinstance(item, dict)]
+        if len(sources) != len(targets):
+            blockers.append(f"{role}_count_mismatch")
+            continue
+        for source, target_label in zip(sources, targets):
+            mappings.append(
+                {
+                    key: value
+                    for key, value in {
+                        "role": role[:-1],
+                        "source_key": source.get("source_key"),
+                        "source_label": source.get("label") or source.get("source_key"),
+                        "target_label": target_label,
+                        "value_kind": source.get("value_kind"),
+                        "compatibility": (
+                            "source_value_kind_preserved"
+                            if source.get("value_kind")
+                            else "source_role_preserved"
+                        ),
+                    }.items()
+                    if value
+                }
+            )
+    return {
+        "schema_version": "reweave_field_mapping_preview.v1",
+        "status": "needs_review" if blockers else "ready",
+        "request": requested,
+        "mappings": mappings,
+        "blockers": blockers,
+        "execution": "preview_only",
+        "model_call": False,
+        "source_project_write": False,
+    }
 
 ALLOWED_EXTENSIONS = frozenset(
     {
@@ -133,8 +444,8 @@ def load_capsule_content(capsule_id: str) -> dict[str, Any] | None:
     path = content_file_path(capsule_id)
     if not path.is_file():
         return None
-    data = json.loads(path.read_text(encoding="utf-8"))
-    return data if isinstance(data, dict) else None
+    data = load_json_state(path, {})
+    return data or None
 
 
 def save_capsule_content(capsule_id: str, record: dict[str, Any]) -> str:
@@ -209,7 +520,13 @@ def resolve_safe_path(source_root: Path, relative: str) -> Path | None:
     if not rel or not is_allowed_relative_path(rel):
         return None
     root = source_root.resolve()
-    candidate = (root / rel).resolve()
+    raw_candidate = root / rel
+    current = raw_candidate
+    while current != root:
+        if current.is_symlink():
+            return None
+        current = current.parent
+    candidate = raw_candidate.resolve()
     try:
         candidate.relative_to(root)
     except ValueError:
@@ -226,47 +543,109 @@ class _FrontendEntryParser(HTMLParser):
         self.scripts: list[str] = []
         self.inline_scripts: list[str] = []
         self.assets: list[str] = []
-        self.controls: list[dict[str, str]] = []
+        self.remote_references: list[str] = []
+        self.controls: list[dict[str, Any]] = []
         self._button: dict[str, str] | None = None
+        self._label: dict[str, Any] | None = None
+        self._labels_by_for: dict[str, str] = {}
+        self._select_depth = 0
+        self._select_control_index: int | None = None
+        self._option: dict[str, str] | None = None
         self._inline_script: list[str] | None = None
 
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         values = {key.lower(): str(value or "") for key, value in attrs}
+        keys = {key.lower() for key, _value in attrs}
         tag = tag.lower()
-        if tag == "link" and "stylesheet" in values.get("rel", "").lower() and values.get("href"):
+        for key in ("src", "href", "action", "poster", "srcset", "data"):
+            value = values.get(key, "").strip()
+            parsed = urlsplit(value)
+            if value.startswith("//") or parsed.scheme.lower() in {"http", "https"}:
+                self.remote_references.append(value)
+        if tag == "meta" and values.get("http-equiv", "").lower() == "refresh":
+            content = values.get("content", "")
+            if re.search(r"(?i)url\s*=\s*(?:https?:)?//", content):
+                self.remote_references.append(content)
+        if tag == "label":
+            self._label = {"for": values.get("for", ""), "text": "", "control_indexes": []}
+        elif tag == "link" and "stylesheet" in values.get("rel", "").lower() and values.get("href"):
             self.styles.append(values["href"])
         elif tag == "script":
             if values.get("src"):
                 self.scripts.append(values["src"])
             else:
                 self._inline_script = []
-        elif tag in {"img", "source", "video", "audio"} and values.get("src"):
+        elif tag in {"img", "source", "video", "audio", "iframe", "embed"} and values.get("src"):
             self.assets.append(values["src"])
+        elif tag == "object" and values.get("data"):
+            self.assets.append(values["data"])
         elif tag in {"input", "select", "textarea"}:
-            self.controls.append(
-                {
-                    "kind": tag,
-                    "id": values.get("id", ""),
-                    "name": values.get("name", ""),
-                    "type": values.get("type", ""),
-                }
-            )
-        elif tag == "button":
-            self._button = {"kind": "button", "id": values.get("id", ""), "name": values.get("name", ""), "text": ""}
+            control = {
+                "kind": tag,
+                "id": values.get("id", ""),
+                "name": values.get("name", ""),
+                "type": values.get("type", ""),
+                "class": values.get("class", ""),
+                "placeholder": values.get("placeholder", ""),
+                "readonly": "readonly" in keys,
+            }
+            if control["id"] in self._labels_by_for:
+                control["label"] = self._labels_by_for[control["id"]]
+            self.controls.append(control)
+            if self._label is not None:
+                self._label["control_indexes"].append(len(self.controls) - 1)
+            if tag == "select":
+                self._select_depth += 1
+                self._select_control_index = len(self.controls) - 1
+                control["options"] = []
+        elif tag in {"button", "a"}:
+            self._button = {
+                "kind": tag,
+                "id": values.get("id", ""),
+                "name": values.get("name", ""),
+                "class": values.get("class", ""),
+                "text": "",
+            }
+        elif tag == "option" and self._select_control_index is not None:
+            self._option = {"value": values.get("value", ""), "label": ""}
 
     def handle_data(self, data: str) -> None:
         if self._inline_script is not None:
             self._inline_script.append(data)
+        if self._label is not None and self._select_depth == 0:
+            self._label["text"] = (str(self._label.get("text") or "") + " " + data).strip()
+        if self._option is not None:
+            self._option["label"] = (self._option.get("label", "") + " " + data).strip()
         if self._button is not None:
             self._button["text"] = (self._button.get("text", "") + " " + data).strip()
 
     def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "option" and self._option is not None and self._select_control_index is not None:
+            option = dict(self._option)
+            option["value"] = option.get("value") or option.get("label", "")
+            self.controls[self._select_control_index]["options"].append(option)
+            self._option = None
+        if tag.lower() == "select" and self._select_depth:
+            self._select_depth -= 1
+            self._select_control_index = None
         if tag.lower() == "script" and self._inline_script is not None:
             self.inline_scripts.append("".join(self._inline_script).strip())
             self._inline_script = None
-        if tag.lower() == "button" and self._button is not None:
+        if tag.lower() in {"button", "a"} and self._button is not None:
             self.controls.append(self._button)
             self._button = None
+        if tag.lower() == "label" and self._label is not None:
+            label = " ".join(str(self._label.get("text") or "").split())
+            target_id = str(self._label.get("for") or "")
+            if label and target_id:
+                self._labels_by_for[target_id] = label
+                for control in self.controls:
+                    if control.get("id") == target_id:
+                        control["label"] = label
+            if label:
+                for index in self._label.get("control_indexes") or []:
+                    self.controls[index]["label"] = label
+            self._label = None
 
 
 def _frontend_reference(entry_path: str, raw: str) -> tuple[str, str]:
@@ -365,6 +744,80 @@ def _behavior_interactions(parser: _FrontendEntryParser, script: str) -> dict[st
         {str(item.get("target_selector")) for item in names.values() if item.get("target_selector")}
     )
     action_selectors = {item["target_selector"] for item in events if item.get("target_selector")}
+    writes: list[dict[str, str]] = []
+    seen_writes: set[tuple[str, str, str]] = set()
+    controls_by_id = {
+        str(item.get("id")): item
+        for item in parser.controls
+        if isinstance(item, dict) and item.get("id")
+    }
+
+    def add_write(*, target_id: str = "", target_selector: str = "", prop: str, operator: str) -> None:
+        identity = (target_id, target_selector, prop)
+        if identity in seen_writes:
+            return
+        seen_writes.add(identity)
+        control = controls_by_id.get(target_id, {})
+        input_type = str(control.get("type") or "") if isinstance(control, dict) else ""
+        value_kind = (
+            "boolean"
+            if prop == "checked"
+            else "text"
+            if prop in {"textContent", "innerText", "innerHTML"}
+            else "number"
+            if input_type in {"number", "range"} or operator in {"++", "--", "-=", "*=", "/="}
+            else "selection"
+            if str(control.get("kind") or "") == "select"
+            else "text"
+        )
+        writes.append(
+            {
+                key: value
+                for key, value in {
+                    "target_id": target_id,
+                    "target_selector": target_selector,
+                    "property": prop,
+                    "operator": operator,
+                    "value_kind": value_kind,
+                }.items()
+                if value
+            }
+        )
+
+    assignment = r"(?P<operator>\+\+|--|[+\-*/]?=(?!=|>))"
+    for match in re.finditer(
+        rf"document\.getElementById\(['\"](?P<target>[^'\"]+)['\"]\)\."
+        rf"(?P<property>value|textContent|innerText|innerHTML|checked)\s*{assignment}",
+        script,
+    ):
+        add_write(
+            target_id=match.group("target"),
+            prop=match.group("property"),
+            operator=match.group("operator"),
+        )
+    for match in re.finditer(
+        rf"document\.querySelector\(['\"](?P<target>[^'\"]+)['\"]\)\."
+        rf"(?P<property>value|textContent|innerText|innerHTML|checked)\s*{assignment}",
+        script,
+    ):
+        add_write(
+            target_selector=match.group("target"),
+            prop=match.group("property"),
+            operator=match.group("operator"),
+        )
+    for name, target in names.items():
+        match = re.search(
+            rf"\b{re.escape(name)}\.(?P<property>value|textContent|innerText|innerHTML|checked)\s*{assignment}",
+            script,
+        )
+        if match:
+            add_write(
+                target_id=str(target.get("target_id") or ""),
+                target_selector=str(target.get("target_selector") or ""),
+                prop=match.group("property"),
+                operator=match.group("operator"),
+            )
+    writes.sort(key=lambda item: (item.get("target_id", ""), item.get("target_selector", ""), item.get("property", "")))
     passive_updates = []
     if re.search(r"\bsetInterval\s*\(", script):
         passive_updates.append({"kind": "timer", "api": "setInterval"})
@@ -374,6 +827,11 @@ def _behavior_interactions(parser: _FrontendEntryParser, script: str) -> dict[st
         "passive_updates": passive_updates,
         "state_target_ids": [target for target in referenced_ids if target not in action_ids],
         "state_target_selectors": [target for target in referenced_selectors if target not in action_selectors],
+        "written_target_ids": sorted({str(item["target_id"]) for item in writes if item.get("target_id")}),
+        "written_target_selectors": sorted(
+            {str(item["target_selector"]) for item in writes if item.get("target_selector")}
+        ),
+        "writes": writes,
     }
 
 
@@ -408,7 +866,7 @@ def build_frontend_behavior_contract(
         if kind == "local" and value not in local_styles:
             local_styles.append(value)
         elif kind == "external":
-            warnings.append(f"external_style_omitted:{raw}")
+            blockers.append(f"external_style:{raw}")
         elif kind == "blocked":
             blockers.append(f"blocked_style:{raw}")
     for raw in parser.scripts:
@@ -464,6 +922,13 @@ def build_frontend_behavior_contract(
     if total_bytes > MAX_BEHAVIOR_TOTAL_BYTES:
         blockers.append("module_too_large")
     script_text = str((script or {}).get("content") or "")
+    style_text = str((style or {}).get("content") or "")
+    blockers.extend(f"runtime_network_reference:{raw}" for raw in parser.remote_references)
+    if re.search(
+        r"(?is)(?:url\s*\(\s*['\"]?\s*(?:https?:)?//|@import\s+(?:url\s*\()?\s*['\"]?\s*(?:https?:)?//)",
+        style_text,
+    ):
+        blockers.append("runtime_network_reference:stylesheet")
     interactions = _behavior_interactions(parser, script_text)
     if not interactions["events"] and not interactions["passive_updates"]:
         blockers.append("missing_behavior_events")

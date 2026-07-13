@@ -7,10 +7,5 @@ const prices = {
 document.getElementById("quoteButton").addEventListener("click", () => {
   const client = document.getElementById("clientName").value || "New client";
   const selected = prices[document.getElementById("projectSize").value];
-  document.getElementById("quoteSummary").innerHTML = `
-    <strong>${client}</strong>
-    <p>${selected.label}</p>
-    <p>Estimated budget: $${selected.amount.toLocaleString()}</p>
-    <small>Includes kickoff, design pass, and delivery checklist.</small>
-  `;
+  document.getElementById("quoteSummary").textContent = `${client} — ${selected.label} — Estimated budget: $${selected.amount.toLocaleString()} — Includes kickoff, design pass, and delivery checklist.`;
 });

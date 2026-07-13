@@ -50,14 +50,14 @@ def _receipt(status: str, reason: str, **extra: Any) -> dict[str, Any]:
     }
 
 
-def validate_preview_behavior(root: str | Path, *, timeout: float = 8.0) -> dict[str, Any]:
+def validate_preview_behavior(root: str | Path, expected_text: str = "", *, timeout: float = 8.0) -> dict[str, Any]:
     preview = Path(root).resolve()
     contract_path = preview / "behavior_contract.json"
     if not contract_path.is_file():
         return _receipt("not_run", "no_closed_behavior_module")
     try:
         completed = subprocess.run(
-            [sys.executable, "-m", __name__, "--child", str(preview)],
+            [sys.executable, "-m", __name__, "--child", str(preview), expected_text[:160]],
             capture_output=True,
             text=True,
             timeout=timeout,
@@ -187,6 +187,7 @@ def _run_react_child(root: Path, expected_text: str, runtime_contract: dict[str,
     settings = page.settings()
     settings.setAttribute(QWebEngineSettings.LocalContentCanAccessFileUrls, True)
     settings.setAttribute(QWebEngineSettings.LocalContentCanAccessRemoteUrls, False)
+    settings.setAttribute(QWebEngineSettings.DnsPrefetchEnabled, False)
     output: dict[str, Any] = {}
     initial_pixmap: Any = None
     expected_json = json.dumps(expected_text)
@@ -209,6 +210,8 @@ def _run_react_child(root: Path, expected_text: str, runtime_contract: dict[str,
         "if(textButtons.length)return {controlText:declared.control_text,buttonIndex:0,candidateCount:1,stateKind:'control_presence'};}"
         "if(declared.mode==='declared_group_to_textbox'){var groupButtons=document.querySelectorAll(declared.control_selector);"
         "if(groupButtons.length&&document.querySelector(declared.state_selector))return {selector:declared.control_selector,buttonIndex:0,candidateCount:Math.min(groupButtons.length,8),stateKind:'selector_value',stateSelector:declared.state_selector};}"
+        "if(declared.mode==='declared_pressed_state'){var pressedButtons=document.querySelectorAll(declared.control_selector);"
+        "if(pressedButtons.length)return {selector:declared.control_selector,buttonIndex:pressedButtons.length>1?1:0,candidateCount:Math.min(pressedButtons.length,8),stateKind:'attribute',stateAttribute:'aria-pressed'};}"
         "if(declared.status==='closed')return null;"
         "for(var i=0;i<buttons.length;i++){var button=buttons[i];"
         "for(var j=0;j<3;j++){var attr=['aria-expanded','aria-pressed','aria-selected'][j];"
@@ -348,10 +351,15 @@ def _run_react_child(root: Path, expected_text: str, runtime_contract: dict[str,
     return 0
 
 
-def _run_child(root: Path) -> int:
+def _run_child(root: Path, expected_text: str = "") -> int:
     try:
         from PySide6.QtCore import QTimer, QUrl
-        from PySide6.QtWebEngineCore import QWebEnginePage, QWebEngineProfile, QWebEngineSettings
+        from PySide6.QtWebEngineCore import (
+            QWebEnginePage,
+            QWebEngineProfile,
+            QWebEngineSettings,
+            QWebEngineUrlRequestInterceptor,
+        )
         from PySide6.QtWidgets import QApplication
     except ImportError:
         print(json.dumps(_receipt("unavailable", "pyside6_unavailable")))
@@ -384,12 +392,39 @@ def _run_child(root: Path) -> int:
         return 0
 
     app = QApplication.instance() or QApplication(["reweave-behavior-validation"])
+    allowed_root = root.resolve()
+
+    class PreviewRequestInterceptor(QWebEngineUrlRequestInterceptor):
+        def interceptRequest(self, info: Any) -> None:
+            url = info.requestUrl()
+            if url.scheme().lower() in {"data", "blob", "about"}:
+                return
+            if url.isLocalFile():
+                try:
+                    raw = Path(url.toLocalFile())
+                    cursor = raw
+                    while cursor != allowed_root:
+                        if cursor.is_symlink() or cursor.parent == cursor:
+                            raise ValueError("unsafe_preview_path")
+                        cursor = cursor.parent
+                    path = raw.resolve(strict=True)
+                    path.relative_to(allowed_root)
+                    if path.is_file():
+                        return
+                except (OSError, ValueError):
+                    pass
+            info.block(True)
+
     profile = QWebEngineProfile()
+    request_interceptor = PreviewRequestInterceptor()
+    profile.setUrlRequestInterceptor(request_interceptor)
     page = QWebEnginePage(profile)
     settings = page.settings()
     settings.setAttribute(QWebEngineSettings.LocalContentCanAccessFileUrls, True)
     settings.setAttribute(QWebEngineSettings.LocalContentCanAccessRemoteUrls, False)
+    settings.setAttribute(QWebEngineSettings.DnsPrefetchEnabled, False)
     output: dict[str, Any] = {}
+    page_state = {"rendered": False, "task_text_rendered": not expected_text}
     state_targets = [{"kind": "id", "value": item} for item in state_ids]
     state_targets.extend({"kind": "selector", "value": item} for item in state_selectors)
     state_json = json.dumps(state_targets)
@@ -431,6 +466,10 @@ def _run_child(root: Path) -> int:
                     "observable_state_changed" if changed else "observable_state_unchanged",
                     interaction_mode=mode,
                     observations=observations,
+                    rendered=page_state["rendered"],
+                    task_text_rendered=page_state["task_text_rendered"],
+                    interaction_present=True,
+                    interaction_changed=changed,
                 )
             )
 
@@ -438,7 +477,7 @@ def _run_child(root: Path) -> int:
 
     def trigger(before: Any) -> None:
         if mode == "passive_timer":
-            QTimer.singleShot(3500, lambda: compare(before))
+            QTimer.singleShot(5000, lambda: compare(before))
             return
         event = events[0] if isinstance(events[0], dict) else {}
         target_id = str(event.get("target_id") or "")
@@ -454,7 +493,17 @@ def _run_child(root: Path) -> int:
 
         def triggered(ok: Any) -> None:
             if not ok:
-                finish(_receipt("failed", "interaction_target_missing", interaction_mode=mode))
+                finish(
+                    _receipt(
+                        "failed",
+                        "interaction_target_missing",
+                        interaction_mode=mode,
+                        rendered=page_state["rendered"],
+                        task_text_rendered=page_state["task_text_rendered"],
+                        interaction_present=False,
+                        interaction_changed=False,
+                    )
+                )
                 return
             QTimer.singleShot(1500, lambda: compare(before))
 
@@ -462,30 +511,49 @@ def _run_child(root: Path) -> int:
 
     def loaded(ok: bool) -> None:
         if not ok:
-            finish(_receipt("failed", "preview_load_failed", interaction_mode=mode))
+            finish(_receipt("failed", "preview_load_failed", interaction_mode=mode, rendered=False))
             return
-        if mode == "passive_timer":
-            prepare_passive_js = f"""(function(){{
-              {state_json}.forEach(function(target){{
-                var el=target.kind==='id' ? document.getElementById(target.value) : document.querySelector(target.value);
-                if(!el) return;
-                if('value' in el) el.value='__reweave_probe__';
-                else el.textContent='__reweave_probe__';
-              }});
+        page_meta_js = (
+            "(function(expected){var text=(document.body.innerText||'').trim();"
+            "return JSON.stringify({bodyText:text,taskVisible:!expected||text.includes(expected)});})("
+            + json.dumps(expected_text)
+            + ")"
+        )
+
+        def inspect_page(raw: Any) -> None:
+            try:
+                meta = json.loads(raw) if isinstance(raw, str) else {}
+            except json.JSONDecodeError:
+                meta = {}
+            page_state["rendered"] = bool(str(meta.get("bodyText") or "").strip())
+            page_state["task_text_rendered"] = bool(meta.get("taskVisible"))
+            if not page_state["rendered"]:
+                finish(_receipt("failed", "product_entry_blank", interaction_mode=mode, rendered=False))
+                return
+            if mode == "passive_timer":
+                prepare_passive_js = f"""(function(){{
+                  {state_json}.forEach(function(target){{
+                    var el=target.kind==='id' ? document.getElementById(target.value) : document.querySelector(target.value);
+                    if(!el) return;
+                    if('value' in el) el.value='__reweave_probe__';
+                    else el.textContent='__reweave_probe__';
+                  }});
+                  return true;
+                }})()"""
+                page.runJavaScript(prepare_passive_js, lambda _ok: page.runJavaScript(snapshot_js, trigger))
+                return
+            prepare_js = """(function(){
+              document.querySelectorAll('input').forEach(function(el,i){
+                if(el.type==='checkbox'||el.type==='radio') el.checked=true;
+                else if(el.type==='number'||el.type==='range') el.value=String(i+2);
+                else if(!el.value) el.value='Reweave test';
+              });
+              document.querySelectorAll('select').forEach(function(el){if(el.options.length) el.selectedIndex=Math.min(1,el.options.length-1);});
               return true;
-            }})()"""
-            page.runJavaScript(prepare_passive_js, lambda _ok: page.runJavaScript(snapshot_js, trigger))
-            return
-        prepare_js = """(function(){
-          document.querySelectorAll('input').forEach(function(el,i){
-            if(el.type==='checkbox'||el.type==='radio') el.checked=true;
-            else if(el.type==='number'||el.type==='range') el.value=String(i+2);
-            else if(!el.value) el.value='Reweave test';
-          });
-          document.querySelectorAll('select').forEach(function(el){if(el.options.length) el.selectedIndex=Math.min(1,el.options.length-1);});
-          return true;
-        })()"""
-        page.runJavaScript(prepare_js, lambda _ok: page.runJavaScript(snapshot_js, trigger))
+            })()"""
+            page.runJavaScript(prepare_js, lambda _ok: page.runJavaScript(snapshot_js, trigger))
+
+        page.runJavaScript(page_meta_js, inspect_page)
 
     page.loadFinished.connect(loaded)
     page.load(QUrl.fromLocalFile(str((root / "index.html").resolve())))
@@ -496,8 +564,8 @@ def _run_child(root: Path) -> int:
 
 
 if __name__ == "__main__":
-    if len(sys.argv) == 3 and sys.argv[1] == "--child":
-        raise SystemExit(_run_child(Path(sys.argv[2]).resolve()))
+    if len(sys.argv) == 4 and sys.argv[1] == "--child":
+        raise SystemExit(_run_child(Path(sys.argv[2]).resolve(), sys.argv[3]))
     if len(sys.argv) == 5 and sys.argv[1] == "--react-child":
         try:
             declared_contract = json.loads(sys.argv[4])

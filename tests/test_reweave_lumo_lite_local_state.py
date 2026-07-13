@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 from pimos_lite.reweave_app_service import APP_SERVICE_VERSION, ReweaveAppService
 from pimos_lite.reweave_engine.factory import create_reweave_engine
-from pimos_lite.reweave_engine.lumo_lite import LumoLiteReweaveEngine
+from pimos_lite.reweave_engine.lumo_lite import LumoLiteReweaveEngine, _discard_unpublished_preview
 from pimos_lite.reweave_lumo_lite_state import (
     load_lumo_lite_runtime_state,
     lumo_lite_capsule_warehouse,
@@ -518,6 +518,20 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
 
             self.assertEqual(result["previewAcceptance"], {"verdict": verdict, "reason": reason})
 
+    def test_preview_acceptance_soft_blocks_semantic_mismatch_after_runtime_passes(self) -> None:
+        from pimos_lite.reweave_preview_pack import preview_acceptance
+
+        result = preview_acceptance(
+            {
+                "quality_gate": {"status": "passed"},
+                "behavior_reuse": {"status": "enabled"},
+                "behavior_validation": {"status": "passed"},
+                "semantic_compatibility": {"status": "needs_review", "missing_capabilities": ["elapsed_time"]},
+            }
+        )
+
+        self.assertEqual(result, {"verdict": "needs_review", "reason": "semantic_compatibility_needs_review"})
+
     def test_lumo_lite_engine_rejects_unverified_react_preview(self) -> None:
         engine = LumoLiteReweaveEngine(runtime_state_path=str(self._runtime_state))
         for status, verdict, reason in (
@@ -570,12 +584,14 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
         preview_root = self._root / "validated-preview"
         preview_root.mkdir()
         task_pack = {
-            "quality_gate": {"status": "passed"},
+            "quality_gate": {"status": "passed", "checks": []},
             "behavior_reuse": {"status": "enabled"},
+            "runtime_expected_text": "Working tool",
         }
         provenance = {"source_project_write": False}
         (preview_root / "task_pack.json").write_text(json.dumps(task_pack), encoding="utf-8")
         (preview_root / "provenance.json").write_text(json.dumps(provenance), encoding="utf-8")
+        (preview_root / "quality_gate.json").write_text(json.dumps(task_pack["quality_gate"]), encoding="utf-8")
         base_result = {
             "ok": True,
             "previewPath": str(preview_root),
@@ -589,10 +605,14 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
             "reason": "observable_state_changed",
             "source_project_write": False,
             "network_call": False,
+            "rendered": True,
+            "task_text_rendered": True,
+            "interaction_present": True,
+            "interaction_changed": True,
         }
         with (
             patch("pimos_lite.reweave_engine.lumo_lite.build_preview_package", return_value=base_result),
-            patch("pimos_lite.reweave_engine.lumo_lite.validate_preview_behavior", return_value=receipt),
+            patch("pimos_lite.reweave_engine.lumo_lite.validate_preview_behavior", return_value=receipt) as validator,
         ):
             result = LumoLiteReweaveEngine().generate_preview(
                 {"taskText": "Build a working tool", "validateRuntime": True}
@@ -602,6 +622,8 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
             result["previewAcceptance"],
             {"verdict": "usable", "reason": "runtime_behavior_verified"},
         )
+        validator.assert_called_once_with(str(preview_root), "Working tool")
+        self.assertEqual(result["taskPack"]["quality_gate"]["status"], "passed")
         self.assertEqual(result["runtimeValidation"], receipt)
         self.assertIn("behavior_validation.json", result["generatedPackage"]["files"])
         self.assertEqual(
@@ -613,12 +635,14 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
         preview_root = self._root / "validated-react-preview"
         preview_root.mkdir()
         task_pack = {
-            "quality_gate": {"status": "passed"},
+            "quality_gate": {"status": "passed", "checks": []},
             "react_preview": {"status": "passed"},
+            "product_entry": {"path": "react_project/dist/index.html", "kind": "react_build"},
         }
         provenance = {"source_project_write": False}
         (preview_root / "task_pack.json").write_text(json.dumps(task_pack), encoding="utf-8")
         (preview_root / "provenance.json").write_text(json.dumps(provenance), encoding="utf-8")
+        (preview_root / "quality_gate.json").write_text(json.dumps(task_pack["quality_gate"]), encoding="utf-8")
         base_result = {
             "ok": True,
             "previewPath": str(preview_root),
@@ -632,6 +656,10 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
             "reason": "react_declared_state_changed",
             "source_project_write": False,
             "network_call": False,
+            "rendered": True,
+            "task_text_rendered": True,
+            "interaction_present": True,
+            "interaction_changed": True,
         }
         with (
             patch("pimos_lite.reweave_engine.lumo_lite.build_preview_package", return_value=base_result),
@@ -652,6 +680,7 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
         stored = json.loads((preview_root / "task_pack.json").read_text(encoding="utf-8"))
         self.assertEqual(stored["react_runtime_validation"], receipt)
         self.assertEqual(stored["react_preview"]["runtime_validation"], receipt)
+        self.assertEqual(stored["quality_gate"]["status"], "passed")
 
     def test_lumo_lite_engine_returns_rejected_quality_gate_result(self) -> None:
         engine = LumoLiteReweaveEngine(runtime_state_path=str(self._runtime_state))
@@ -667,6 +696,101 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
             result["previewAcceptance"],
             {"verdict": "rejected", "reason": "quality_gate_failed"},
         )
+
+    def test_strict_llm_failure_does_not_publish_latest_or_history(self) -> None:
+        state = self._reweave_state
+        pending = state / "preview_packages" / "pending"
+
+        def build(payload: dict) -> dict:
+            self.assertTrue(payload["deferPublish"])
+            pending.mkdir(parents=True)
+            task_pack = {"task": "Strict model task", "quality_gate": {"status": "passed"}}
+            provenance = {"generated_at": "2026-07-13T00:00:00Z", "source_project_write": False}
+            (pending / "task_pack.json").write_text(json.dumps(task_pack), encoding="utf-8")
+            (pending / "provenance.json").write_text(json.dumps(provenance), encoding="utf-8")
+            return {
+                "ok": True,
+                "previewPath": str(pending),
+                "previewPublished": False,
+                "generatedPackage": {"files": ["task_pack.json", "provenance.json"]},
+                "taskPack": task_pack,
+                "provenance": provenance,
+                "capsulesUsed": [],
+            }
+
+        with (
+            patch.dict(os.environ, {"REWEAVE_STATE_DIR": str(state)}),
+            patch("pimos_lite.reweave_engine.lumo_lite.build_preview_package", side_effect=build),
+            patch(
+                "pimos_lite.reweave_engine.lumo_lite.apply_ollama_pack",
+                return_value={
+                    "enabled": True,
+                    "status": "failed",
+                    "applied": False,
+                    "local_http_call": True,
+                    "error": "model_unavailable",
+                },
+            ),
+            patch("pimos_lite.reweave_engine.lumo_lite.publish_preview_package") as publish,
+        ):
+            result = LumoLiteReweaveEngine().generate_preview(
+                {
+                    "taskText": "Strict model task",
+                    "localModel": {"enabled": True, "provider": "ollama", "require": True},
+                }
+            )
+
+        self.assertFalse(result["ok"])
+        self.assertTrue(result["previewDiscarded"])
+        self.assertFalse(pending.exists())
+        self.assertFalse((state / "preview_packages" / "latest.json").exists())
+        self.assertFalse((state / "preview_packages" / "index.json").exists())
+        publish.assert_not_called()
+
+    def test_unpublished_preview_cleanup_cannot_delete_outside_state(self) -> None:
+        outside = self._root / "outside-preview"
+        outside.mkdir()
+        inside = self._reweave_state / "preview_packages" / "pending"
+        inside.mkdir(parents=True)
+
+        with patch.dict(os.environ, {"REWEAVE_STATE_DIR": str(self._reweave_state)}):
+            self.assertFalse(_discard_unpublished_preview(str(outside)))
+            self.assertTrue(outside.is_dir())
+            self.assertTrue(_discard_unpublished_preview(str(inside)))
+            self.assertFalse(inside.exists())
+
+    def test_rescan_refreshes_capsule_content_with_stable_id(self) -> None:
+        state = self._reweave_state
+        source = self._root / "refresh-source"
+        source.mkdir()
+        html = source / "index.html"
+        html.write_text("<!doctype html><h1>Version One</h1>", encoding="utf-8")
+        (source / "styles.css").write_text("body {}", encoding="utf-8")
+        (source / "app.js").write_text("console.log('ready');", encoding="utf-8")
+        engine = LumoLiteReweaveEngine()
+
+        with patch.dict(os.environ, {"REWEAVE_STATE_DIR": str(state)}):
+            box = engine.bind_source_folder(str(source))
+            engine.scan_source(box["id"])
+            engine.draft_source(box["id"])
+            first = engine.promote_source(box["id"])
+            page = next(row for row in first if row["name"] == "Page Shell")
+            first_id = page["id"]
+            first_content = engine.get_capsule_content(first_id)
+            self.assertIn("Version One", json.dumps(first_content))
+
+            html.write_text("<!doctype html><h1>Version Two</h1>", encoding="utf-8")
+            engine.scan_source(box["id"])
+            refreshed_source = engine.get_source(box["id"])
+            self.assertEqual(refreshed_source["warehouse_status"], "stale")
+            engine.draft_source(box["id"])
+            second = engine.promote_source(box["id"])
+            refreshed_page = next(row for row in second if row["name"] == "Page Shell")
+            second_content = engine.get_capsule_content(refreshed_page["id"])
+
+        self.assertEqual(refreshed_page["id"], first_id)
+        self.assertIn("Version Two", json.dumps(second_content))
+        self.assertNotIn("Version One", json.dumps(second_content))
 
     def test_lumo_lite_engine_applies_opt_in_bounded_local_model(self) -> None:
         preview_root = self._root / "preview"
@@ -696,7 +820,6 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
 
         def apply_stub(out: Path, **kwargs: object) -> dict[str, object]:
             self.assertEqual(out, preview_root)
-            self.assertTrue(kwargs["bounded_only"])
             updated_pack = {**task_pack, "llm_generation": applied_meta}
             updated_provenance = {**provenance, "llm_generation": applied_meta}
             (out / "task_pack.json").write_text(json.dumps(updated_pack), encoding="utf-8")
@@ -730,6 +853,73 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
         self.assertEqual(result["taskPack"]["llm_generation"]["mode"], "bounded_behavior_adaptation")
         self.assertEqual(result["provenance"]["llm_generation"]["provider"], "ollama")
         self.assertFalse(result["source_project_write"])
+
+    def test_lumo_lite_engine_applies_explicit_planning_patch_without_copy_pass(self) -> None:
+        preview_root = self._root / "planning-preview"
+        preview_root.mkdir()
+        planning_meta = {
+            "enabled": True,
+            "provider": "ollama",
+            "model": "tiny-test",
+            "mode": "bounded_planning",
+            "requested_slots": ["intent_patch"],
+            "applied_slots": ["intent_patch"],
+            "requested_slots_applied": True,
+            "local_http_call": True,
+            "applied": True,
+            "fallback_used": False,
+            "status": "applied",
+        }
+        planning_result = {
+            "intent_patch": {"output_type": "page", "capabilities": ["copy", "style"]},
+            "ordered_capsule_ids": [],
+            "slots": {"intent_patch": {"enabled": True, "applied": True, "status": "applied"}},
+            "meta": planning_meta,
+        }
+        captured: dict[str, object] = {}
+
+        def build_stub(payload: dict[str, object]) -> dict[str, object]:
+            captured.update(payload)
+            task_pack = {
+                "quality_gate": {"status": "passed"},
+                "product_entry": {"path": "index.html", "kind": "static_html"},
+                "llm_generation": payload["planningModelMeta"],
+            }
+            return {
+                "ok": True,
+                "previewPath": str(preview_root),
+                "generatedPackage": {"files": []},
+                "taskPack": task_pack,
+                "provenance": {"llm_generation": payload["planningModelMeta"]},
+            }
+
+        with (
+            patch("pimos_lite.reweave_engine.lumo_lite.apply_ollama_planning", return_value=planning_result) as plan_model,
+            patch("pimos_lite.reweave_engine.lumo_lite.apply_ollama_pack") as copy_model,
+            patch("pimos_lite.reweave_engine.lumo_lite.build_preview_package", side_effect=build_stub),
+            patch("pimos_lite.reweave_engine.lumo_lite.publish_preview_package") as publish,
+        ):
+            result = LumoLiteReweaveEngine().generate_preview(
+                {
+                    "taskText": "Build a portfolio viewer",
+                    "capsuleIds": ["cap_a", "cap_b"],
+                    "capsules": [{"id": "cap_a"}, {"id": "cap_b"}],
+                    "localModel": {
+                        "enabled": True,
+                        "provider": "ollama",
+                        "model": "tiny-test",
+                        "intentPatch": True,
+                        "require": True,
+                    },
+                }
+            )
+
+        plan_model.assert_called_once()
+        copy_model.assert_not_called()
+        publish.assert_called_once()
+        self.assertEqual(captured["intentPatch"], planning_result["intent_patch"])
+        self.assertEqual(result["localModel"]["applied_slots"], ["intent_patch"])
+        self.assertTrue(result["model_call"])
 
     def test_factory_selects_lumo_lite_without_touching_legacy_lumo(self) -> None:
         with patch.dict(os.environ, {"REWEAVE_ENGINE": "lumo_lite"}):

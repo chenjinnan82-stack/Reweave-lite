@@ -8,7 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from pimos_lite.reweave_source_registry import get_source_box, mark_source_draft_failed, mark_source_drafted
+from pimos_lite.reweave_source_registry import get_source_box, load_json_state, mark_source_draft_failed, mark_source_drafted
 from pimos_lite.reweave_source_registry import state_dir
 from pimos_lite.reweave_source_scanner import load_summary
 
@@ -148,8 +148,8 @@ def load_draft(source_id: str) -> dict[str, Any] | None:
     path = draft_file_path(source_id)
     if not path.is_file():
         return None
-    data = json.loads(path.read_text(encoding="utf-8"))
-    return data if isinstance(data, dict) else None
+    data = load_json_state(path, {})
+    return data or None
 
 
 def load_draft_light(source_id: str) -> dict[str, Any] | None:

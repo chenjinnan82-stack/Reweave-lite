@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; connect-src 'none'; img-src 'self' data: file:; script-src 'self' qrc:; style-src 'self' 'unsafe-inline'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'">
   <title>Reweave</title>
   <link rel="stylesheet" href="styles.css">
 </head>
@@ -146,7 +147,6 @@
               <button type="button" class="btn-ghost btn-preview-view" id="btn-view-package" data-i18n="viewPackage">View package</button>
               <button type="button" class="btn-ghost btn-preview-compare" id="btn-compare-last" data-i18n="compareLast">Compare last</button>
             </div>
-            <button type="button" class="btn-secondary btn-open-folder hidden" id="btn-open-folder"><span class="meta-icon" aria-hidden="true">⌁</span> <span data-i18n="openFolderButton">Open in folder</span></button>
           </div>
         </div>
       </section>
@@ -205,7 +205,6 @@ preview: pending</div>
     <pre id="reader-preview" class="reader-preview"></pre>
     <div class="reader-actions">
       <button type="button" id="btn-use-in-task" class="btn-secondary" data-i18n="useInTask">Use in task</button>
-      <button type="button" id="btn-open-capsule" class="btn-ghost" data-i18n="openCapsule">Open capsule</button>
     </div>
     <p id="reader-last-used" class="reader-last-used" data-i18n="lastUsed">Last used 2d ago</p>
   </aside>
@@ -217,10 +216,6 @@ preview: pending</div>
       <button type="button" class="popover-close" id="preview-viewer-close" aria-label="Close" data-i18n-aria-label="close">×</button>
     </div>
     <div id="preview-viewer-body" class="preview-viewer-body"></div>
-    <div id="preview-viewer-actions" class="preview-viewer-actions hidden">
-      <button type="button" class="btn-ghost btn-export-zip" id="btn-export-zip" data-i18n="exportZip">Export zip</button>
-      <button type="button" class="btn-ghost btn-export-copy" id="btn-export-copy" data-i18n="exportCopy">Export copy</button>
-    </div>
   </aside>
 
   <!-- Lumo Lite artifact viewer popover -->

@@ -108,6 +108,10 @@ def mark_source_scanned(source_id: str, summary_path: str, scanned_at: str) -> d
         box["last_scanned_at"] = scanned_at
         box["summary_path"] = summary_path
         box["updated_at"] = scanned_at
+        if box.get("draft_status"):
+            box["draft_status"] = "stale"
+        if box.get("warehouse_status") == "promoted":
+            box["warehouse_status"] = "stale"
         box.pop("last_error", None)
         save_registry(data)
         return dict(box)

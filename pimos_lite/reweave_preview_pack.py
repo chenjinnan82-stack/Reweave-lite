@@ -5,19 +5,29 @@ from __future__ import annotations
 import json
 import re
 import shutil
+import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from pimos_lite.reweave_capsule_content import (
+    build_behavior_semantics,
+    build_field_mapping_preview,
+    build_semantic_compatibility,
+    load_capsule_content,
+    semantic_claims,
+)
 from pimos_lite.reweave_capsule_warehouse import get_capsule, is_generate_eligible, list_capsules
 from pimos_lite.reweave_quality_gate import build_quality_gate as _quality_gate
 from pimos_lite.reweave_react_preview import build_react_preview as _build_react_preview
 from pimos_lite.reweave_project_renderer import build_app_js as _build_app_js
+from pimos_lite.reweave_project_renderer import add_field_mapping_adaptation as _add_field_mapping_adaptation
 from pimos_lite.reweave_project_renderer import build_behavior_adaptation as _build_behavior_adaptation
 from pimos_lite.reweave_project_renderer import build_index_html as _build_index_html
 from pimos_lite.reweave_project_renderer import build_preview_readme as _build_preview_readme
 from pimos_lite.reweave_project_renderer import build_review_html as _build_review_html
 from pimos_lite.reweave_project_renderer import build_styles_css as _build_styles_css
+from pimos_lite.reweave_project_renderer import source_highlights as _source_highlights
 from pimos_lite.reweave_snippet_context import (
     CONTEXT_LIMITS,
     build_snippet_context,
@@ -39,8 +49,12 @@ def preview_acceptance(task_pack: dict[str, Any]) -> dict[str, str]:
     quality_status = str(quality_gate.get("status") or "")
     if quality_status == "failed":
         return {"verdict": "rejected", "reason": "quality_gate_failed"}
+    if quality_status == "needs_review":
+        return {"verdict": "needs_review", "reason": "runtime_quality_not_verified"}
     if quality_status != "passed":
         return {"verdict": "needs_review", "reason": "quality_gate_not_reported"}
+    semantic = task_pack.get("semantic_compatibility") if isinstance(task_pack.get("semantic_compatibility"), dict) else {}
+    semantic_review = semantic.get("status") == "needs_review"
     react_preview = task_pack.get("react_preview") if isinstance(task_pack.get("react_preview"), dict) else {}
     if react_preview.get("status") == "failed":
         return {"verdict": "rejected", "reason": "react_compile_failed"}
@@ -53,6 +67,8 @@ def preview_acceptance(task_pack: dict[str, Any]) -> dict[str, str]:
             else {}
         )
         if validation.get("status") == "passed":
+            if semantic_review:
+                return {"verdict": "needs_review", "reason": "semantic_compatibility_needs_review"}
             return {"verdict": "usable", "reason": "react_runtime_verified"}
         if validation.get("status") == "failed":
             return {"verdict": "rejected", "reason": "react_runtime_failed"}
@@ -62,6 +78,8 @@ def preview_acceptance(task_pack: dict[str, Any]) -> dict[str, str]:
         return {"verdict": "needs_review", "reason": "closed_behavior_unavailable"}
     validation = task_pack.get("behavior_validation") if isinstance(task_pack.get("behavior_validation"), dict) else {}
     if validation.get("status") == "passed":
+        if semantic_review:
+            return {"verdict": "needs_review", "reason": "semantic_compatibility_needs_review"}
         return {"verdict": "usable", "reason": "runtime_behavior_verified"}
     if validation.get("status") == "failed":
         return {"verdict": "rejected", "reason": "runtime_behavior_failed"}
@@ -133,6 +151,8 @@ def append_preview_history_entry(
     mode: str,
     content_aware: bool,
     snippets_used: int,
+    task: str = "",
+    capsule_count: int = 0,
 ) -> None:
     """Append a preview package record to preview_packages/index.json."""
     data = load_preview_history()
@@ -146,6 +166,8 @@ def append_preview_history_entry(
         "mode": mode,
         "content_aware": content_aware,
         "snippets_used": snippets_used,
+        "task": task,
+        "capsule_count": capsule_count,
     }
     packages = [item for item in packages if item.get("id") != folder_name]
     packages.insert(0, entry)
@@ -154,6 +176,49 @@ def append_preview_history_entry(
     tmp = preview_history_index_path().with_suffix(".json.tmp")
     tmp.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     tmp.replace(preview_history_index_path())
+
+
+def publish_preview_package(result: dict[str, Any]) -> None:
+    """Publish one completed preview to latest/history after all required checks."""
+    raw_root = Path(str(result.get("previewPath") or ""))
+    if raw_root.is_symlink():
+        raise ValueError("preview_path_missing_or_unsafe")
+    root = raw_root.resolve()
+    packages_root = preview_packages_dir().resolve()
+    try:
+        root.relative_to(packages_root)
+    except ValueError:
+        raise ValueError("preview_path_outside_state") from None
+    if not root.is_dir():
+        raise ValueError("preview_path_missing_or_unsafe")
+    task_pack = result.get("taskPack") if isinstance(result.get("taskPack"), dict) else {}
+    provenance = result.get("provenance") if isinstance(result.get("provenance"), dict) else {}
+    content = result.get("contentAwareGenerate") if isinstance(result.get("contentAwareGenerate"), dict) else {}
+    created_at = str(provenance.get("generated_at") or _utc_now_iso())
+    manifest = {
+        "schema_version": PREVIEW_SCHEMA_VERSION,
+        "generated_at": created_at,
+        "folder_name": root.name,
+        "preview_path": str(root),
+        "task": str(task_pack.get("task") or ""),
+        "capsule_count": len(result.get("capsulesUsed") or []),
+        "product_entry": task_pack.get("product_entry") or {"path": "index.html", "kind": "static_html"},
+    }
+    latest_manifest_path().parent.mkdir(parents=True, exist_ok=True)
+    tmp = latest_manifest_path().with_suffix(".json.tmp")
+    tmp.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+    tmp.replace(latest_manifest_path())
+    append_preview_history_entry(
+        folder_name=root.name,
+        rel_folder=f"preview_packages/{root.name}",
+        created_at=created_at,
+        mode=str(content.get("mode") or "metadata_only"),
+        content_aware=bool(content.get("mode") == "content_aware_preview"),
+        snippets_used=int(content.get("snippetsUsed") or 0),
+        task=str(task_pack.get("task") or ""),
+        capsule_count=len(result.get("capsulesUsed") or []),
+    )
+    result["previewPublished"] = True
 
 
 def _slug_from_task(task: str) -> str:
@@ -183,12 +248,22 @@ def _resolve_capsules(capsule_ids: list[str]) -> list[dict[str, Any]]:
 
 
 def _project_graph_for_capsules(capsules: list[dict[str, Any]]) -> dict[str, Any] | None:
-    for capsule in capsules:
+    for position, capsule in enumerate(capsules):
+        capsule_id = str(capsule.get("id") or "")
+        content = load_capsule_content(capsule_id) if capsule_id else None
+        if not isinstance(content, dict) or content.get("project_files_complete") is not True:
+            continue
         source_id = str(capsule.get("source_id") or "")
         summary = load_summary(source_id) if source_id else None
         graph = summary.get("project_graph") if isinstance(summary, dict) else None
         if isinstance(graph, dict) and graph.get("project_kind") == "react_vite":
-            return {"source_id": source_id, **graph}
+            return {
+                "source_id": source_id,
+                "capsule_id": capsule_id,
+                "capsule_position": position,
+                "selection_priority": "primary" if position == 0 else "closure_fallback",
+                **graph,
+            }
     return None
 
 
@@ -264,7 +339,11 @@ def _build_task_pack(
 ) -> dict[str, Any]:
     capsule_ids = [str(c.get("id") or "") for c in capsules if c.get("id")]
     output_kinds = list(task_profile["output_kinds"])
-    capsules_used = list(task_intent["retrieved_capsules"])
+    capsules_used = [
+        {**row, "usage": "support_context"}
+        for row in task_intent["retrieved_capsules"]
+        if isinstance(row, dict)
+    ]
     return {
         "schema_version": "reweave_task_pack.v1",
         "mode": "task_pack_preview",
@@ -276,6 +355,8 @@ def _build_task_pack(
         "task_plan_path": "task_plan.json",
         "task_plan": task_plan,
         "quality_gate_path": "quality_gate.json",
+        "source_project_write": False,
+        "product_entry": {"path": "index.html", "kind": "static_html"},
         "composer": task_plan["composer"],
         "task_scope": "preview_only",
         "selection_mode": selection_mode,
@@ -286,17 +367,17 @@ def _build_task_pack(
             {
                 "path": "index.html",
                 "kind": output_kinds[0],
-                "capsule_ids": capsule_ids,
+                "capsule_ids": [],
             },
             {
                 "path": "styles.css",
                 "kind": output_kinds[1],
-                "capsule_ids": capsule_ids,
+                "capsule_ids": [],
             },
             {
                 "path": "app.js",
                 "kind": output_kinds[2],
-                "capsule_ids": capsule_ids,
+                "capsule_ids": [],
             },
         ],
         "planned_files": [
@@ -362,13 +443,32 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
     if use_enriched:
         snippet_context = build_snippet_context(capsule_ids, task=task)
 
+    project_graph = _project_graph_for_capsules(capsules)
+    candidate_contract = (
+        snippet_context.get("behavior_contract")
+        if isinstance(snippet_context, dict) and isinstance(snippet_context.get("behavior_contract"), dict)
+        else None
+    )
+    reusable_content = bool(
+        count_snippets(snippet_context or {})
+        or project_graph is not None
+        or (candidate_contract and candidate_contract.get("status") == "closed")
+    )
+    if str(payload.get("backend") or "") == "lumo_lite_task_pack":
+        if not capsules:
+            raise ValueError("no_reusable_capsules")
+        if use_enriched and not reusable_content:
+            raise ValueError("no_reusable_capsule_content")
+
     stamp = _utc_now_iso()
     folder_name = _folder_name(task, stamp)
-    root = preview_packages_dir() / folder_name
-    root.mkdir(parents=True, exist_ok=False)
+    preview_packages_dir().mkdir(parents=True, exist_ok=True)
+    root = Path(tempfile.mkdtemp(prefix=f"{folder_name}_", dir=preview_packages_dir()))
+    folder_name = root.name
 
-    capsules_used = [_capsule_used_entry(c) for c in capsules]
-    content_aware_enabled = use_enriched and bool(snippet_context and snippet_context.get("capsules"))
+    capsules_used = [{**_capsule_used_entry(c), "usage": "support_context"} for c in capsules]
+    selected_primary_capsule_id = str(capsules[0].get("id") or "") if capsules else ""
+    content_aware_enabled = use_enriched and count_snippets(snippet_context or {}) > 0
     provenance: dict[str, Any] = {
         "schema_version": PREVIEW_SCHEMA_VERSION,
         "generated_at": stamp,
@@ -377,12 +477,14 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
         "task_intent_path": "task_intent.json",
         "task_plan_path": "task_plan.json",
         "quality_gate_path": "quality_gate.json",
+        "source_project_write": False,
         "capsule_ids": [c.get("id") for c in capsules],
-        "capsules": [_capsule_provenance_entry(c) for c in capsules],
+        "primary_capsule_id": None,
+        "capsules": [{**_capsule_provenance_entry(c), "usage": "support_context"} for c in capsules],
         "outputs": [
             {
                 "path": name,
-                "capsule_ids": [c.get("id") for c in capsules],
+                "capsule_ids": [],
                 "source_project_write": False,
             }
             for name in ("index.html", "styles.css", "app.js")
@@ -409,14 +511,25 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
         provenance["content_aware_generate"] = {"enabled": False}
 
     selection_mode = str(payload.get("selectionMode") or payload.get("selection_mode") or "selected_capsules")
-    project_graph = _project_graph_for_capsules(capsules)
     task_intent = _task_intent(task, capsules, project_graph=project_graph)
+    intent_patch = payload.get("intentPatch") if isinstance(payload.get("intentPatch"), dict) else {}
+    if intent_patch:
+        output_type = str(intent_patch.get("output_type") or "")
+        capabilities = intent_patch.get("capabilities")
+        if output_type not in {"page", "tool", "component", "data_panel", "document"}:
+            raise ValueError("invalid_intent_patch")
+        if not isinstance(capabilities, list) or not capabilities or any(
+            str(item) not in {"form", "table", "copy", "style", "logic", "data"}
+            for item in capabilities
+        ):
+            raise ValueError("invalid_intent_patch")
+        task_intent["output_type"] = output_type
+        task_intent["capabilities"] = list(dict.fromkeys(str(item) for item in capabilities))
+        task_intent["model_patch"] = {
+            "status": "applied",
+            "allowed_keys": ["output_type", "capabilities"],
+        }
     task_plan = _task_plan(task_intent)
-    candidate_contract = (
-        snippet_context.get("behavior_contract")
-        if isinstance(snippet_context, dict) and isinstance(snippet_context.get("behavior_contract"), dict)
-        else None
-    )
     behavior_contract = (
         candidate_contract
         if payload.get("reuseBehavior") is True and candidate_contract and candidate_contract.get("status") == "closed"
@@ -454,11 +567,15 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
         task_profile=task_profile,
         selection_mode=selection_mode,
     )
+    task_pack["primary_capsule_id"] = None
+    react_adaptation: dict[str, Any] = {}
     if project_graph is not None:
         task_pack["project_graph_path"] = "project_graph.json"
         provenance["project_graph"] = {
             "path": "project_graph.json",
             "source_id": project_graph.get("source_id"),
+            "capsule_id": project_graph.get("capsule_id"),
+            "selection_priority": project_graph.get("selection_priority"),
             "source_project_write": False,
         }
         react_preview = _build_react_preview(
@@ -481,6 +598,11 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
         task_plan["acceptance"].append("review safe React text-slot adaptation")
         task_pack["react_preview"] = react_preview
         task_pack["react_adaptation_path"] = "react_adaptation.json"
+        if react_preview.get("status") == "passed" and react_preview.get("runtime_entry"):
+            task_pack["product_entry"] = {
+                "path": str(react_preview["runtime_entry"]),
+                "kind": "react_build",
+            }
         provenance["react_preview"] = {
             "receipt_path": "react_compile.json",
             "adaptation_path": "react_adaptation.json",
@@ -489,9 +611,122 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
         }
     else:
         react_preview = None
+    provenance["product_entry"] = dict(task_pack["product_entry"])
+    text_slots = (
+        list(behavior_adaptation.get("allowed_text_slots") or [])
+        if isinstance(behavior_adaptation, dict)
+        else []
+    )
+    react_text_slots = (
+        list(react_adaptation.get("slots") or [])
+        if isinstance(react_adaptation, dict)
+        else []
+    )
+    declared_copy_slots = text_slots or react_text_slots
+    planning_model_meta = (
+        dict(payload.get("planningModelMeta"))
+        if isinstance(payload.get("planningModelMeta"), dict)
+        else {}
+    )
+    applied_planning_slots = [str(item) for item in planning_model_meta.get("applied_slots", []) if item]
+    planning_slot_status = (
+        planning_model_meta.get("slot_status")
+        if isinstance(planning_model_meta.get("slot_status"), dict)
+        else {}
+    )
+    task_pack["model_slots"] = {
+        "schema_version": "reweave_model_slots.v1",
+        "policy": "bounded_patches_only",
+        "execution": "disabled_by_default",
+        "copy_patch": {
+            "status": "ready" if text_slots else "declared" if react_text_slots else "unavailable",
+            "allowed_slot_ids": [
+                str(item.get("slot_id"))
+                for item in declared_copy_slots
+                if isinstance(item, dict) and item.get("slot_id")
+            ],
+        },
+        "intent_patch": {
+            "status": str(
+                (planning_slot_status.get("intent_patch") or {}).get("status")
+                or ("applied" if "intent_patch" in applied_planning_slots else "declared")
+            ),
+            "allowed_keys": ["output_type", "capabilities"],
+        },
+        "capsule_ranking": {
+            "status": (
+                str((planning_slot_status.get("capsule_ranking") or {}).get("status"))
+                if planning_slot_status.get("capsule_ranking")
+                else "applied"
+                if "capsule_ranking" in applied_planning_slots
+                else "declared"
+                if len(capsules) > 1
+                else "unavailable"
+            ),
+            "allowed_capsule_ids": [str(item.get("id")) for item in capsules if item.get("id")],
+        },
+        "structure_patch": {
+            "status": "unavailable",
+            "reason": "not_enabled",
+        },
+    }
+    provenance["model_slots"] = {
+        "policy": "bounded_patches_only",
+        "requested": list(planning_model_meta.get("requested_slots") or []),
+        "applied": applied_planning_slots,
+        "status": planning_model_meta.get("status") or "disabled",
+        "source_project_write": False,
+    }
+    if planning_model_meta:
+        task_pack["llm_generation"] = planning_model_meta
+        provenance["llm_generation"] = planning_model_meta
+        content_meta = (
+            provenance.get("content_aware_generate")
+            if isinstance(provenance.get("content_aware_generate"), dict)
+            else {}
+        )
+        content_meta.update(
+            {
+                "llm_called": bool(planning_model_meta.get("local_http_call")),
+                "model_call": bool(planning_model_meta.get("local_http_call")),
+                "network_call": bool(planning_model_meta.get("local_http_call")),
+            }
+        )
+        provenance["content_aware_generate"] = content_meta
     if behavior_contract is not None:
+        behavior_semantics = build_behavior_semantics(behavior_contract)
+        field_mapping_preview = build_field_mapping_preview(task, behavior_semantics["field_contract"])
+        behavior_adaptation = _add_field_mapping_adaptation(
+            behavior_adaptation or {}, behavior_contract, field_mapping_preview
+        )
+        field_mapping_application = dict(behavior_adaptation["field_mapping_application"])
+        semantic_compatibility = build_semantic_compatibility(behavior_semantics, semantic_claims([task]))
+        behavior_capsule_id = str(selection.get("capsule_id") or selected_primary_capsule_id)
+        task_pack["primary_capsule_id"] = behavior_capsule_id or None
+        provenance["primary_capsule_id"] = behavior_capsule_id or None
+        if behavior_capsule_id:
+            for output in provenance["outputs"]:
+                output["capsule_ids"] = [behavior_capsule_id]
+            for output in task_pack["planned_outputs"]:
+                output["capsule_ids"] = [behavior_capsule_id]
+            for output in task_plan["outputs"]:
+                output["capsule_ids"] = [behavior_capsule_id]
+            for rows in (capsules_used, provenance["capsules"], task_pack["capsules_used"]):
+                for row in rows:
+                    row["usage"] = (
+                        "output_contributor"
+                        if str(row.get("id") or "") == behavior_capsule_id
+                        else "support_context"
+                    )
         task_pack["behavior_contract_path"] = "behavior_contract.json"
         task_pack["behavior_adaptation_path"] = "behavior_adaptation.json"
+        task_pack["behavior_semantics_path"] = "behavior_semantics.json"
+        task_pack["field_mapping_preview_path"] = "field_mapping_preview.json"
+        task_pack["field_mapping_preview"] = field_mapping_preview
+        task_pack["field_mapping_application"] = field_mapping_application
+        task_pack["semantic_compatibility_path"] = "semantic_compatibility.json"
+        task_pack["semantic_compatibility"] = semantic_compatibility
+        task_pack["runtime_expected_text"] = str(behavior_adaptation.get("task_heading") or task)
         task_pack["behavior_reuse"] = {
             "status": "enabled",
             "mode": behavior_contract.get("mode"),
@@ -514,6 +749,12 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
             "source_read_at_generate_time": False,
             "source_project_write": False,
         }
+        provenance["behavior_semantics_path"] = "behavior_semantics.json"
+        provenance["field_mapping_preview_path"] = "field_mapping_preview.json"
+        provenance["field_mapping_preview"] = field_mapping_preview
+        provenance["field_mapping_application"] = field_mapping_application
+        provenance["semantic_compatibility_path"] = "semantic_compatibility.json"
+        provenance["semantic_compatibility"] = semantic_compatibility
     elif payload.get("reuseBehavior") is True:
         task_pack["behavior_reuse"] = {
             "status": "unavailable",
@@ -566,8 +807,18 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
     if behavior_contract is not None:
         _write_text(root / "behavior_contract.json", json.dumps(behavior_contract, indent=2, ensure_ascii=False) + "\n")
         _write_text(root / "behavior_adaptation.json", json.dumps(behavior_adaptation, indent=2, ensure_ascii=False) + "\n")
-        files.append("behavior_contract.json")
-        files.append("behavior_adaptation.json")
+        _write_text(root / "behavior_semantics.json", json.dumps(behavior_semantics, indent=2, ensure_ascii=False) + "\n")
+        _write_text(root / "field_mapping_preview.json", json.dumps(field_mapping_preview, indent=2, ensure_ascii=False) + "\n")
+        _write_text(root / "semantic_compatibility.json", json.dumps(semantic_compatibility, indent=2, ensure_ascii=False) + "\n")
+        files.extend(
+            [
+                "behavior_contract.json",
+                "behavior_adaptation.json",
+                "behavior_semantics.json",
+                "field_mapping_preview.json",
+                "semantic_compatibility.json",
+            ]
+        )
 
     snippets_used_count = 0
     if content_aware_enabled and snippet_context:
@@ -581,6 +832,7 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
         _write_text(root / "PREVIEW_README.md", _build_preview_readme(task, snippet_context))
         files.append("PREVIEW_README.md")
 
+    source_signals = _source_highlights(snippet_context) if content_aware_enabled else []
     quality_gate = _quality_gate(
         root,
         task,
@@ -588,8 +840,12 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
         content_aware=content_aware_enabled,
         behavior_contract=behavior_contract,
         behavior_adaptation=behavior_adaptation,
+        product_entry=task_pack["product_entry"],
+        source_signals=source_signals,
     )
     task_pack["quality_gate"] = quality_gate
+    task_pack["effects"]["runtime_network_access"] = False
+    provenance["runtime_network_access"] = False
     _write_text(root / "task_pack.json", json.dumps(task_pack, indent=2, ensure_ascii=False) + "\n")
     _write_text(root / "quality_gate.json", json.dumps(quality_gate, indent=2, ensure_ascii=False) + "\n")
     files.append("quality_gate.json")
@@ -597,28 +853,7 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
         shutil.rmtree(root, ignore_errors=True)
         raise ValueError("preview quality gate failed")
 
-    manifest = {
-        "schema_version": PREVIEW_SCHEMA_VERSION,
-        "generated_at": stamp,
-        "folder_name": folder_name,
-        "preview_path": str(root.resolve()),
-        "task": task,
-        "capsule_count": len(capsules),
-    }
-    latest_manifest_path().parent.mkdir(parents=True, exist_ok=True)
-    tmp = latest_manifest_path().with_suffix(".json.tmp")
-    tmp.write_text(json.dumps(manifest, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
-    tmp.replace(latest_manifest_path())
-
     rel_folder = f"preview_packages/{folder_name}/"
-    append_preview_history_entry(
-        folder_name=folder_name,
-        rel_folder=rel_folder.rstrip("/"),
-        created_at=stamp,
-        mode="content_aware_preview" if content_aware_enabled else "metadata_only",
-        content_aware=content_aware_enabled,
-        snippets_used=snippets_used_count,
-    )
     stats: dict[str, Any] = {
         "capsulesUsed": len(capsules),
         "preview": "Local preview package",
@@ -637,7 +872,7 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
         "mode": "content_aware_preview" if content_aware_enabled else None,
     }
 
-    return {
+    result = {
         "ok": True,
         "mock": False,
         "backend": provenance["backend"],
@@ -646,13 +881,19 @@ def build_preview_package(payload: dict[str, Any]) -> dict[str, Any]:
             "folder": rel_folder,
             "files": files,
             "stats": stats,
+            "productEntry": task_pack["product_entry"],
         },
+        "productEntry": task_pack["product_entry"],
         "capsulesUsed": capsules_used,
         "provenance": provenance,
         "taskPack": task_pack,
         "contentAwareGenerate": content_aware_generate,
         "snippetContext": snippet_context if use_enriched else None,
+        "previewPublished": False,
     }
+    if payload.get("deferPublish") is not True:
+        publish_preview_package(result)
+    return result
 
 
 def attach_luna_provenance(preview_path: str | Path, luna_record: dict[str, Any]) -> dict[str, Any]:
@@ -678,6 +919,7 @@ def attach_behavior_validation(preview_path: str | Path, receipt: dict[str, Any]
     provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
     task_pack["behavior_validation_path"] = "behavior_validation.json"
     task_pack["behavior_validation"] = receipt
+    _attach_runtime_quality_gate(root, task_pack, receipt, "behavior")
     provenance["behavior_validation_path"] = "behavior_validation.json"
     provenance["behavior_validation"] = receipt
     _write_text(root / "behavior_validation.json", json.dumps(receipt, indent=2, ensure_ascii=False) + "\n")
@@ -695,6 +937,7 @@ def attach_react_runtime_validation(preview_path: str | Path, receipt: dict[str,
     provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
     task_pack["react_runtime_validation_path"] = "react_runtime_validation.json"
     task_pack["react_runtime_validation"] = receipt
+    _attach_runtime_quality_gate(root, task_pack, receipt, "react")
     if isinstance(task_pack.get("react_preview"), dict):
         task_pack["react_preview"]["runtime_validation"] = receipt
     provenance["react_runtime_validation_path"] = "react_runtime_validation.json"
@@ -703,6 +946,40 @@ def attach_react_runtime_validation(preview_path: str | Path, receipt: dict[str,
     _write_text(task_pack_path, json.dumps(task_pack, indent=2, ensure_ascii=False) + "\n")
     _write_text(provenance_path, json.dumps(provenance, indent=2, ensure_ascii=False) + "\n")
     return {"taskPack": task_pack, "provenance": provenance}
+
+
+def _attach_runtime_quality_gate(
+    root: Path,
+    task_pack: dict[str, Any],
+    receipt: dict[str, Any],
+    kind: str,
+) -> None:
+    quality_path = root / "quality_gate.json"
+    gate = json.loads(quality_path.read_text(encoding="utf-8"))
+    checks = [
+        item
+        for item in gate.get("checks", [])
+        if isinstance(item, dict) and not str(item.get("name") or "").startswith("runtime_")
+    ]
+    checks.extend(
+        [
+            {"name": "runtime_product_rendered", "passed": receipt.get("rendered") is True},
+            {"name": "runtime_task_visible", "passed": receipt.get("task_text_rendered") is True},
+            {"name": "runtime_interaction_verified", "passed": receipt.get("interaction_changed") is True},
+        ]
+    )
+    status = str(receipt.get("status") or "unavailable")
+    gate["checks"] = checks
+    gate["runtime_validation"] = {"kind": kind, **receipt}
+    gate["status"] = (
+        "passed"
+        if status == "passed" and all(item["passed"] for item in checks)
+        else "failed"
+        if status == "failed"
+        else "needs_review"
+    )
+    task_pack["quality_gate"] = gate
+    _write_text(quality_path, json.dumps(gate, indent=2, ensure_ascii=False) + "\n")
 
 
 def build_luna_provenance_record(pack_result: dict[str, Any], *, success: bool) -> dict[str, Any]:
@@ -760,7 +1037,9 @@ def load_latest_preview() -> dict[str, Any] | None:
                     "preview": "Local preview package",
                     "provenance": "Provenance saved",
                 },
+                "productEntry": data.get("product_entry") or {"path": "index.html", "kind": "static_html"},
             },
+            "productEntry": data.get("product_entry") or {"path": "index.html", "kind": "static_html"},
             "generated_at": data.get("generated_at"),
             "task": data.get("task"),
         }

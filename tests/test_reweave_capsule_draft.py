@@ -73,6 +73,14 @@ class ReweaveCapsuleDraftTest(unittest.TestCase):
         self.assertEqual(candidates[0]["name"], "React/Vite Project")
         self.assertEqual(candidates[0]["tags"], ["react", "vite", "project"])
 
+    def test_corrupt_draft_is_backed_up_and_treated_missing(self) -> None:
+        path = draft.draft_file_path("source_bad")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{broken", encoding="utf-8")
+
+        self.assertIsNone(draft.load_draft("source_bad"))
+        self.assertTrue(list(path.parent.glob("source_bad.draft.json.corrupt.*.bak")))
+
 
 if __name__ == "__main__":
     unittest.main()

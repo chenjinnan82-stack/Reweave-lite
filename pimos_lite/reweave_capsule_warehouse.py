@@ -216,7 +216,11 @@ def promote_source_drafts(source_id: str) -> list[dict[str, Any]]:
 
     data = load_warehouse()
     capsules: list[dict[str, Any]] = data.setdefault("capsules", [])
-    existing_ids = {c.get("id") for c in capsules if isinstance(c, dict)}
+    existing_by_id = {
+        str(c.get("id")): index
+        for index, c in enumerate(capsules)
+        if isinstance(c, dict) and c.get("id")
+    }
     promoted: list[dict[str, Any]] = []
     now = _utc_now_iso()
 
@@ -225,8 +229,6 @@ def promote_source_drafts(source_id: str) -> list[dict[str, Any]]:
             continue
         draft_id = str(cand.get("draft_id", ""))
         cap_id = _capsule_id_from_draft(draft_id)
-        if cap_id in existing_ids:
-            continue
         capsule = {
             "id": cap_id,
             "name": cand.get("name", "Capsule"),
@@ -242,8 +244,16 @@ def promote_source_drafts(source_id: str) -> list[dict[str, Any]]:
             "promoted_at": now,
             "draft_id": draft_id,
         }
-        capsules.append(capsule)
-        existing_ids.add(cap_id)
+        existing_index = existing_by_id.get(cap_id)
+        if existing_index is None:
+            capsules.append(capsule)
+            existing_by_id[cap_id] = len(capsules) - 1
+        else:
+            existing = capsules[existing_index]
+            if isinstance(existing, dict) and existing.get("status") in {"disabled", "deprecated"}:
+                capsule["status"] = existing["status"]
+            capsule["refreshed_at"] = now
+            capsules[existing_index] = capsule
         promoted.append(capsule)
 
     save_warehouse(data)

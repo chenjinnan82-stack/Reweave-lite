@@ -119,7 +119,8 @@ class ReweaveCapsuleContentTest(unittest.TestCase):
         (self._source_dir / "alternate.html").write_text("<html><body>Alternate</body></html>", encoding="utf-8")
         (self._source_dir / "index.html").write_text(
             '<!doctype html><html><head><link rel="stylesheet" href="styles.css"></head>'
-            '<body><input id="amount"><button id="runBtn">Run</button><p id="status"></p>'
+            '<body><label for="amount">Invoice amount</label><input id="amount" placeholder="125">'
+            '<button id="runBtn">Run</button><p id="status"></p>'
             '<script src="app.js"></script></body></html>',
             encoding="utf-8",
         )
@@ -141,7 +142,148 @@ class ReweaveCapsuleContentTest(unittest.TestCase):
         self.assertEqual(contract["mode"], "whole_frontend_module")
         self.assertIn("textContent = 'done'", contract["files"]["script"]["content"])
         self.assertIn({"target_id": "runBtn", "event": "click"}, contract["interactions"]["events"])
+        semantics = content.build_behavior_semantics(contract)
+        fields = semantics["field_contract"]
+        self.assertEqual(
+            fields["inputs"],
+            [{"source_key": "amount", "control_kind": "input", "value_kind": "text", "label": "Invoice amount"}],
+        )
+        self.assertEqual(
+            fields["actions"],
+            [
+                {
+                    "source_key": "runBtn",
+                    "event": "click",
+                    "control_kind": "button",
+                    "label": "Run",
+                    "cardinality": 1,
+                }
+            ],
+        )
+        self.assertEqual(
+            fields["outputs"],
+            [
+                {
+                    "source_key": "status",
+                    "target_kind": "id",
+                    "write_property": "textContent",
+                    "value_kind": "text",
+                }
+            ],
+        )
+        self.assertEqual(fields["events"], [{"target_id": "runBtn", "event": "click"}])
+        self.assertEqual(fields["limits"], "source_labels_and_structural_roles_only")
         self.assertFalse(contract["safety"]["source_project_write"])
+
+    def test_field_contract_keeps_select_label_and_excludes_input_from_outputs(self) -> None:
+        (self._source_dir / "index.html").write_text(
+            '<html><body><label>Project size<select id="projectSize">'
+            '<option>Small</option><option>Large</option></select></label>'
+            '<button id="quoteButton">Build quote</button><button id="helpButton">Help</button>'
+            '<input id="quoteResult" readonly><p id="quoteSummary"></p>'
+            '<script src="app.js"></script></body></html>',
+            encoding="utf-8",
+        )
+        (self._source_dir / "app.js").write_text(
+            "const projectSize = document.getElementById('projectSize');"
+            "document.getElementById('quoteButton').addEventListener('click', () => {"
+            "document.getElementById('quoteResult').value = projectSize.value;"
+            "document.getElementById('quoteSummary').textContent = projectSize.value; });",
+            encoding="utf-8",
+        )
+        summary = scanner.scan_source_box(self.source_id)
+        contract = build_frontend_behavior_contract(self._source_dir, summary, {"name": "Page Shell"})
+
+        assert contract
+        fields = content.build_behavior_semantics(contract)["field_contract"]
+
+        self.assertEqual(
+            fields["inputs"],
+            [
+                {
+                    "source_key": "projectSize",
+                    "control_kind": "select",
+                    "value_kind": "selection",
+                    "label": "Project size",
+                    "options": [
+                        {"value": "Small", "label": "Small"},
+                        {"value": "Large", "label": "Large"},
+                    ],
+                }
+            ],
+        )
+        self.assertEqual([item["source_key"] for item in fields["actions"]], ["quoteButton"])
+        self.assertEqual(
+            fields["outputs"],
+            [
+                {
+                    "source_key": "quoteResult",
+                    "target_kind": "id",
+                    "write_property": "value",
+                    "value_kind": "text",
+                },
+                {
+                    "source_key": "quoteSummary",
+                    "target_kind": "id",
+                    "write_property": "textContent",
+                    "value_kind": "text",
+                },
+            ],
+        )
+        self.assertEqual(fields["status"], "observed")
+
+    def test_field_contract_distinguishes_assignments_from_comparisons(self) -> None:
+        parser = content._FrontendEntryParser()
+        parser.feed('<input id="amount" type="number"><button id="run">Run</button>')
+        comparisons = content._behavior_interactions(
+            parser,
+            "const amount = document.getElementById('amount'); "
+            "document.getElementById('run').addEventListener('click', () => amount.value === '2');",
+        )
+        assignment = content._behavior_interactions(
+            parser,
+            "const amount = document.getElementById('amount'); amount.value += 1;",
+        )
+
+        self.assertEqual(comparisons["writes"], [])
+        self.assertEqual(
+            assignment["writes"],
+            [
+                {
+                    "target_id": "amount",
+                    "property": "value",
+                    "operator": "+=",
+                    "value_kind": "number",
+                }
+            ],
+        )
+
+    def test_field_contract_stays_partial_when_multiple_events_cannot_be_related_to_outputs(self) -> None:
+        semantics = content.build_behavior_semantics(
+            {
+                "interactions": {
+                    "controls": [
+                        {"kind": "button", "id": "add", "text": "Add"},
+                        {"kind": "button", "id": "remove", "text": "Remove"},
+                    ],
+                    "events": [
+                        {"target_id": "add", "event": "click"},
+                        {"target_id": "remove", "event": "click"},
+                    ],
+                    "writes": [
+                        {
+                            "target_id": "total",
+                            "property": "textContent",
+                            "operator": "=",
+                            "value_kind": "text",
+                        }
+                    ],
+                }
+            }
+        )
+
+        self.assertEqual(semantics["field_contract"]["status"], "partial")
+        self.assertEqual(semantics["field_contract"]["relations"], [])
 
     def test_frontend_module_contract_blocks_multiple_scripts(self) -> None:
         (self._source_dir / "extra.js").write_text("console.log('extra')", encoding="utf-8")
@@ -214,6 +356,35 @@ class ReweaveCapsuleContentTest(unittest.TestCase):
         self.assertEqual(contract["status"], "closed")
         self.assertIn({"target_selector": "#run", "event": "click"}, contract["interactions"]["events"])
         self.assertIn("#status", contract["interactions"]["state_target_selectors"])
+        fields = content.build_behavior_semantics(contract)["field_contract"]
+        self.assertEqual([item["source_key"] for item in fields["actions"]], ["run"])
+        self.assertEqual(
+            fields["outputs"],
+            [
+                {
+                    "source_key": "#status",
+                    "target_kind": "selector",
+                    "write_property": "textContent",
+                    "value_kind": "text",
+                }
+            ],
+        )
+
+    def test_field_contract_recognizes_link_cta_as_an_action(self) -> None:
+        parser = content._FrontendEntryParser()
+        parser.feed('<a class="visit-link" href="#status">Request visit</a><p id="status">Open</p>')
+        interactions = content._behavior_interactions(
+            parser,
+            "const link = document.querySelector('.visit-link'); "
+            "const status = document.getElementById('status'); "
+            "link.addEventListener('click', () => { status.textContent = 'Requested'; });",
+        )
+        fields = content.build_behavior_semantics({"interactions": interactions})["field_contract"]
+
+        self.assertEqual(fields["status"], "observed")
+        self.assertEqual(fields["actions"][0]["source_key"], ".visit-link")
+        self.assertEqual(fields["actions"][0]["control_kind"], "a")
+        self.assertEqual(fields["actions"][0]["label"], "Request visit")
 
     def test_frontend_module_contract_accepts_observable_passive_timer(self) -> None:
         (self._source_dir / "index.html").write_text(
@@ -396,6 +567,41 @@ class ReweaveCapsuleContentTest(unittest.TestCase):
         self.assertIn("[REDACTED_SECRET]", redacted)
         self.assertNotIn("sk-abcdefghijklmnop", redacted)
 
+    def test_corrupt_capsule_content_is_backed_up_and_treated_missing(self) -> None:
+        path = content_file_path("bad")
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text("{broken", encoding="utf-8")
+
+        self.assertIsNone(content.load_capsule_content("bad"))
+        self.assertTrue(list(path.parent.glob("bad.content.json.corrupt.*.bak")))
+
+    def test_behavior_contract_rejects_remote_iframe_and_stylesheet_url(self) -> None:
+        (self._source_dir / "index.html").write_text(
+            '<!doctype html><html><head><link rel="stylesheet" href="styles.css"></head><body>'
+            '<iframe src="https://example.invalid/frame"></iframe><button id="run">Run</button>'
+            '<p id="status"></p><script src="app.js"></script></body></html>',
+            encoding="utf-8",
+        )
+        (self._source_dir / "styles.css").write_text(
+            "body { background: url(https://example.invalid/bg.png); }",
+            encoding="utf-8",
+        )
+        (self._source_dir / "app.js").write_text(
+            "document.getElementById('run').addEventListener('click', () => {"
+            "document.getElementById('status').textContent = 'done'; });",
+            encoding="utf-8",
+        )
+        summary = scanner.scan_source_box(self.source_id)
+
+        contract = build_frontend_behavior_contract(
+            self._source_dir,
+            summary,
+            {"name": "Page Shell", "tags": ["html", "entry"]},
+        )
+
+        self.assertEqual(contract["status"], "blocked")
+        self.assertTrue(any(str(row).startswith("runtime_network_reference:") for row in contract["blockers"]))
+
     def test_output_in_capsule_contents(self) -> None:
         enrich_capsule_content(self.capsule_id)
         path = content_file_path(self.capsule_id)
@@ -492,6 +698,136 @@ class ReweaveCapsuleContentTest(unittest.TestCase):
         meta = calls[0]["capsules"][0].get("content_enrichment")
         self.assertIsNotNone(meta)
         self.assertNotIn("snippets", calls[0]["capsules"][0])
+
+    def test_behavior_semantics_reports_missing_elapsed_time_without_blocking(self) -> None:
+        contract = {
+            "files": {
+                "script": {
+                    "content": "const score = 10; const accuracy = hits / total;",
+                }
+            },
+            "interactions": {
+                "controls": [{"kind": "button", "id": "start"}],
+                "events": [{"target_id": "start", "event": "click"}],
+                "state_target_ids": ["score", "accuracy"],
+            },
+        }
+
+        semantics = content.build_behavior_semantics(contract)
+        claims = content.semantic_claims(["Show reaction time and accuracy score"])
+        compatibility = content.build_semantic_compatibility(semantics, claims)
+
+        self.assertEqual(semantics["capabilities"], ["scoring_accuracy"])
+        self.assertEqual(semantics["field_contract"]["status"], "partial")
+        self.assertEqual(claims, ["scoring_accuracy", "elapsed_time"])
+        self.assertEqual(compatibility["status"], "needs_review")
+        self.assertEqual(compatibility["missing_capabilities"], ["elapsed_time"])
+        self.assertEqual(compatibility["enforcement"], "preview_acceptance_soft_gate")
+
+    def test_behavior_semantics_covers_selection_lookup_and_counter_progress(self) -> None:
+        selection = content.build_behavior_semantics(
+            {
+                "files": {"script": {"content": "const item = prices[document.getElementById('size').value];"}},
+                "interactions": {
+                    "controls": [{"kind": "select", "id": "size"}],
+                    "events": [{"target_id": "submit", "event": "click"}],
+                    "state_target_ids": ["summary"],
+                },
+            }
+        )
+        counter = content.build_behavior_semantics(
+            {
+                "files": {"script": {"content": "openTickets = Math.max(0, openTickets - 1);"}},
+                "interactions": {
+                    "controls": [{"kind": "button", "id": "resolve"}],
+                    "events": [{"target_id": "resolve", "event": "click"}],
+                    "state_target_ids": ["status"],
+                },
+            }
+        )
+
+        self.assertIn("selection_lookup", selection["capabilities"])
+        self.assertIn("counter_progress", counter["capabilities"])
+        self.assertEqual(content.semantic_claims(["Package selection and quote summary"]), ["selection_lookup"])
+        self.assertEqual(content.semantic_claims(["Resolve oldest ticket"]), ["counter_progress"])
+        self.assertEqual(content.semantic_claims(["Open the scorecard summary"]), [])
+
+    def test_behavior_semantics_covers_checklist_and_passive_status(self) -> None:
+        checklist = content.build_behavior_semantics(
+            {
+                "files": {"script": {"content": "items.filter((item) => item.checked).length;"}},
+                "interactions": {
+                    "controls": [{"kind": "input", "id": "step", "type": "checkbox"}],
+                    "events": [{"target_selector": ".step", "event": "change"}],
+                    "state_target_ids": ["progress"],
+                },
+            }
+        )
+        passive = content.build_behavior_semantics(
+            {
+                "files": {"script": {"content": "setInterval(updateStatus, 3000);"}},
+                "interactions": {
+                    "controls": [],
+                    "events": [],
+                    "passive_updates": [{"kind": "timer", "api": "setInterval"}],
+                    "state_target_ids": ["incidentLine"],
+                },
+            }
+        )
+
+        self.assertIn("checklist_progress", checklist["capabilities"])
+        self.assertIn("passive_status", passive["capabilities"])
+        self.assertEqual(content.semantic_claims(["Release checklist progress"]), ["checklist_progress"])
+        self.assertEqual(content.semantic_claims(["Automatic status refresh"]), ["passive_status"])
+
+    def test_field_mapping_preview_preserves_source_value_kinds(self) -> None:
+        contract = {
+            "status": "observed",
+            "inputs": [
+                {"source_key": "width", "label": "Width", "value_kind": "number"},
+                {"source_key": "height", "label": "Height", "value_kind": "number"},
+            ],
+            "actions": [{"source_key": "calculate", "label": "Calculate"}],
+            "outputs": [{"source_key": "total", "value_kind": "number"}],
+        }
+
+        preview = content.build_field_mapping_preview(
+            "Build a budget tool; Inputs: Room area, Material rate; Action: Calculate budget; Output: Estimated budget.",
+            contract,
+        )
+
+        self.assertEqual(preview["status"], "ready")
+        self.assertEqual([item["target_label"] for item in preview["mappings"]], [
+            "Room area",
+            "Material rate",
+            "Calculate budget",
+            "Estimated budget",
+        ])
+        self.assertEqual(
+            [item["compatibility"] for item in preview["mappings"]],
+            [
+                "source_value_kind_preserved",
+                "source_value_kind_preserved",
+                "source_role_preserved",
+                "source_value_kind_preserved",
+            ],
+        )
+        self.assertFalse(preview["source_project_write"])
+        self.assertFalse(preview["model_call"])
+
+    def test_field_mapping_preview_blocks_partial_or_mismatched_contracts(self) -> None:
+        preview = content.build_field_mapping_preview(
+            "Inputs: One, Two; Output: Result.",
+            {
+                "status": "partial",
+                "inputs": [{"source_key": "only", "value_kind": "text"}],
+                "actions": [],
+                "outputs": [{"source_key": "result", "value_kind": "text"}],
+            },
+        )
+
+        self.assertEqual(preview["status"], "needs_review")
+        self.assertEqual(preview["blockers"], ["field_contract_not_fully_observed", "inputs_count_mismatch"])
 
 
 if __name__ == "__main__":

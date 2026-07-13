@@ -118,6 +118,7 @@ JSON / provenance 里预期能看到：
 - 人工 Store 到本地 Capsule Warehouse。
 - 在桌面工作台选择胶囊进入任务。
 - 在 CLI 中列出胶囊，并手动选择要复用的胶囊。
+- 使用仓库内置的 Stage4 composer，组合兼容的“界面 + 逻辑”或“界面 + 逻辑 + 状态”。
 - 可选使用本地 Ollama 小模型优化 Small Project Pack。
 - 生成 Small Project Pack preview，包含：
   - `task_intent.json`
@@ -176,7 +177,7 @@ examples/source_boxes/ops-status-card
 桌面闭环：
 
 ```text
-Bind Source Box -> Scan -> Prepare -> Store -> 选择胶囊 -> Build Small Project Pack -> 查看 provenance
+Bind Source Box -> Scan -> Prepare -> Store -> 描述任务 -> Build Small Project Pack -> 查看 provenance
 ```
 
 macOS 桌面 smoke 已验证：程序打开后先进入 Source Box 开屏，Generate / Export / Open Folder 在未满足条件前保持隐藏，bridge 主流程可以生成 Task Pack preview，且不写源项目。
@@ -189,6 +190,7 @@ macOS 桌面 smoke 已验证：程序打开后先进入 Source Box 开屏，Gene
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -r requirements-dev.txt
+npm ci
 python -m pytest tests -q
 node --check reweave_frontend/app.js
 ```
@@ -196,8 +198,26 @@ node --check reweave_frontend/app.js
 macOS/Linux 可选桌面壳：
 
 ```bash
+python3 -m venv .venv-reweave
+. .venv-reweave/bin/activate
+python -m pip install -r pimos_lite/requirements-desktop.txt
 ./start_reweave_static.sh
 ```
+
+启动脚本不会自动安装依赖，也不会自动连接软件包仓库。
+
+多胶囊行为组合已内置，clone 一个仓库即可运行：
+
+```bash
+python scripts/run_public_stage4_demo.py
+python scripts/run_public_stage4_demo.py --case data
+```
+
+该命令调用仓库内唯一的 Stage4 module-native composer，组合 `order-form-ui`、`order-total-logic` 和 `result-history-state`，验证生成交互（`12 × 8 = 96`、历史计数 `1`），写出标准证据和运行验收文件，并确认三个 Source Box 均未改变。
+
+`data` 案例会另行组合记录列表胶囊、表格 UI 胶囊和纯汇总逻辑胶囊，渲染 3 行数据，并验证 `North → 420`、`South → 80`；UI 和汇总逻辑中均不保存订单数据。
+
+Reweave-lite 现在是这份 composer 源码的唯一维护方；原 Stage4 基线 `ab8e62d` 仅保留为迁移历史，不存在需要双向同步的第二份运行源码。
 
 Windows 桌面壳仍是 experimental；CLI demo 和测试已纳入 Windows CI。
 
@@ -212,6 +232,7 @@ REWEAVE_RUNTIME_STATE_PATH=/path/to/frontend_runtime_state.json \
 
 - GitHub Actions 会运行 Reweave 测试。
 - GitHub Actions 会在 Ubuntu 和 Windows 上运行公开 Task Pack demo。
+- GitHub Actions 会运行内置的 UI + logic + state 组合 demo。
 - GitHub Actions 会检查 `task_intent.json`、`task_plan.json`、`quality_gate.json`、`task_pack.json`、`capsules_used.json` 和 `provenance.json`。
 - GitHub Actions 会检查前端 JavaScript 语法。
 - 默认启动不依赖私有工作区路径。
