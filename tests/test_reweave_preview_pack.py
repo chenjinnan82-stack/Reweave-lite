@@ -15,7 +15,7 @@ from pimos_lite import reweave_capsule_warehouse as warehouse
 from pimos_lite import reweave_preview_pack as preview
 from pimos_lite import reweave_project_renderer as renderer
 from pimos_lite import reweave_react_preview as react_preview
-from pimos_lite.reweave_quality_gate import build_quality_gate
+from pimos_lite.reweave_quality_gate import build_quality_gate, inspect_static_runtime_security
 from pimos_lite.reweave_behavior_runtime import (
     _is_console_error,
     _is_preview_static_request,
@@ -50,6 +50,29 @@ class ReweavePreviewPackTest(unittest.TestCase):
 
     def test_empty_behavior_contract_has_no_search_text(self) -> None:
         self.assertEqual(behavior_contract_search_text({}), "")
+
+    def test_project_graph_records_ranked_complete_capsule_priority(self) -> None:
+        capsules = [
+            {"id": "cap-react", "source_id": "box"},
+            {"id": "cap-data", "source_id": "box"},
+        ]
+        records = {
+            "cap-react": {"project_files_complete": True},
+            "cap-data": {"project_files_complete": False},
+        }
+        summary = {"project_graph": {"project_kind": "react_vite", "entrypoints": ["src/main.tsx"]}}
+
+        with (
+            patch.object(preview, "load_capsule_content", side_effect=records.get),
+            patch.object(preview, "load_summary", return_value=summary),
+        ):
+            primary = preview._project_graph_for_capsules(capsules)
+            fallback = preview._project_graph_for_capsules(list(reversed(capsules)))
+
+        self.assertEqual(primary["capsule_id"], "cap-react")
+        self.assertEqual(primary["selection_priority"], "primary")
+        self.assertEqual(fallback["capsule_id"], "cap-react")
+        self.assertEqual(fallback["selection_priority"], "closure_fallback")
 
     def test_react_preview_rejects_truncated_capsule_files(self) -> None:
         record = {
@@ -107,6 +130,24 @@ class ReweavePreviewPackTest(unittest.TestCase):
 
         self.assertEqual(updated["src/pages/Home.tsx"], "<h1>Build a portfolio</h1>")
         self.assertEqual(receipt["changes"][0]["slot_id"], "src/pages/Home.tsx:h1-localized:0")
+
+    def test_react_preview_replaces_bounded_conditional_heading(self) -> None:
+        files = {
+            "src/pages/Home.tsx": "<h1>{localize(home.title, language)}</h1>",
+            "src/pages/Projects.tsx": "<h1>{isZh ? '项目' : 'Projects'}</h1>",
+        }
+        targets = [{"path": path, "kind": "component"} for path in files]
+
+        updated, receipt = react_preview._adapt_static_slots(
+            files,
+            "Build a portfolio project viewer",
+            targets,
+            preferred_route="/projects",
+        )
+
+        self.assertEqual(updated["src/pages/Projects.tsx"], "<h1>Build a portfolio project viewer</h1>")
+        self.assertEqual(updated["src/pages/Home.tsx"], files["src/pages/Home.tsx"])
+        self.assertEqual(receipt["changes"][0]["slot_id"], "src/pages/Projects.tsx:h1-conditional:0")
 
     def test_react_preview_uses_semantic_title_container(self) -> None:
         files = {
@@ -181,6 +222,27 @@ class ReweavePreviewPackTest(unittest.TestCase):
         self.assertEqual(contract["mode"], "declared_navigation_state")
         self.assertEqual(contract["control_selector"], "nav button")
 
+    def test_react_runtime_contract_prefers_declared_pressed_filter_state(self) -> None:
+        files = {
+            "src/components/FilterBar.tsx": (
+                '<div role="group"><button aria-pressed={selected} '
+                "onClick={() => onChange('next')}>Next</button></div>"
+            ),
+            "src/components/Header.tsx": (
+                "<nav><button className={active ? 'active' : ''} "
+                "onClick={() => setActive('home')}>Home</button></nav>"
+            ),
+        }
+
+        contract = react_preview._react_runtime_contract(
+            files,
+            [{"path": path, "kind": "component"} for path in files],
+        )
+
+        self.assertEqual(contract["mode"], "declared_pressed_state")
+        self.assertEqual(contract["state_target"], "control.aria-pressed")
+        self.assertEqual(contract["control_selector"], "main button[aria-pressed]")
+
     def test_react_preview_selects_matching_source_declared_initial_route(self) -> None:
         files = {
             "src/App.tsx": (
@@ -233,6 +295,30 @@ class ReweavePreviewPackTest(unittest.TestCase):
 
         self.assertIsNone(receipt)
         self.assertEqual(updated, files)
+
+    def test_react_preview_selects_source_declared_route_table_from_component_content(self) -> None:
+        files = {
+            "src/App.tsx": "const pathname = normalizePath(window.location.pathname); return resolvePage(pathname);",
+            "src/routes.tsx": (
+                "export const staticRoutes = ["
+                "{ path: '/', render: () => <Home /> },"
+                "{ path: '/projects', render: () => <Projects /> }];"
+            ),
+            "src/pages/Home.tsx": "export function Home(){return <p>Home</p>}",
+            "src/pages/Projects.tsx": "export function Projects(){return <h1>Portfolio project viewer</h1>}",
+        }
+        targets = [
+            {"path": "src/App.tsx", "kind": "entry"},
+            {"path": "src/routes.tsx", "kind": "module"},
+            {"path": "src/pages/Home.tsx", "kind": "component"},
+            {"path": "src/pages/Projects.tsx", "kind": "component"},
+        ]
+
+        updated, receipt = react_preview._adapt_source_declared_route(files, "Build a portfolio viewer", targets)
+
+        self.assertEqual(receipt["route"], "/projects")
+        self.assertEqual(receipt["mode"], "source_declared_route_table")
+        self.assertIn('normalizePath("/projects")', updated["src/App.tsx"])
 
     def test_react_runtime_contract_rejects_unscoped_button_guess(self) -> None:
         contract = react_preview._react_runtime_contract(
@@ -442,6 +528,7 @@ class ReweavePreviewPackTest(unittest.TestCase):
             self.assertTrue((preview_path / name).is_file())
         html = (preview_path / "index.html").read_text(encoding="utf-8")
         review_html = (preview_path / "review.html").read_text(encoding="utf-8")
+        self.assertIn("connect-src 'none'", html)
         self.assertNotIn("Task Intent", html)
         self.assertIn("reweaveDemoButton", html)
         self.assertIn("review.html", html)
@@ -465,6 +552,13 @@ class ReweavePreviewPackTest(unittest.TestCase):
         self.assertEqual(task_pack["task_intent_path"], "task_intent.json")
         self.assertEqual(task_pack["task_plan_path"], "task_plan.json")
         self.assertEqual(task_pack["quality_gate_path"], "quality_gate.json")
+        self.assertEqual(task_pack["product_entry"], {"path": "index.html", "kind": "static_html"})
+        self.assertEqual(task_pack["model_slots"]["policy"], "bounded_patches_only")
+        self.assertEqual(task_pack["model_slots"]["execution"], "disabled_by_default")
+        self.assertEqual(task_pack["model_slots"]["intent_patch"]["status"], "declared")
+        self.assertEqual(task_pack["model_slots"]["structure_patch"]["status"], "unavailable")
+        self.assertEqual(result["productEntry"], task_pack["product_entry"])
+        self.assertEqual(quality_gate["product_entry"], task_pack["product_entry"])
         self.assertEqual(task_pack["composer"]["mode"], "task_plan_and_snippets")
         self.assertEqual(task_intent["output_type"], "tool")
         self.assertIn("form", task_intent["capabilities"])
@@ -478,17 +572,25 @@ class ReweavePreviewPackTest(unittest.TestCase):
         self.assertEqual(task_pack["selection_mode"], "manual")
         self.assertFalse(task_pack["source_project_write"])
         self.assertEqual(task_pack["selected_capsule_ids"], cap_ids[:2])
+        self.assertTrue(all(item["capsule_ids"] == [] for item in task_pack["planned_outputs"]))
+        self.assertTrue(all(item["capsule_ids"] == [] for item in task_plan["outputs"]))
+        self.assertTrue(all(item["usage"] == "support_context" for item in task_pack["capsules_used"]))
+        capsules_used = json.loads((preview_path / "capsules_used.json").read_text(encoding="utf-8"))
+        self.assertTrue(all(item["usage"] == "support_context" for item in capsules_used))
         provenance = json.loads((preview_path / "provenance.json").read_text(encoding="utf-8"))
         self.assertEqual(provenance["backend"], "local")
         self.assertEqual(provenance["task_intent_path"], "task_intent.json")
         self.assertEqual(provenance["task_plan_path"], "task_plan.json")
         self.assertEqual(provenance["quality_gate_path"], "quality_gate.json")
+        self.assertFalse(provenance["source_project_write"])
         self.assertEqual(len(provenance["capsule_ids"]), 2)
         self.assertEqual(
             {item["path"] for item in provenance["outputs"]},
             {"index.html", "styles.css", "app.js"},
         )
         self.assertTrue(all(item["source_project_write"] is False for item in provenance["outputs"]))
+        self.assertTrue(all(item["capsule_ids"] == [] for item in provenance["outputs"]))
+        self.assertTrue(all(item["usage"] == "support_context" for item in provenance["capsules"]))
 
     def test_react_vite_graph_flows_into_preview_only_task_plan(self) -> None:
         root = self._state_dir / "react-vite-preview-source"
@@ -567,6 +669,11 @@ class ReweavePreviewPackTest(unittest.TestCase):
         self.assertTrue(all(item["write_mode"] == "preview_only" for item in plan["project_targets"]))
         self.assertEqual(plan["project_graph_path"], "project_graph.json")
         self.assertFalse(provenance["project_graph"]["source_project_write"])
+        self.assertEqual(
+            result["productEntry"],
+            {"path": "react_project/dist/index.html", "kind": "react_build"},
+        )
+        self.assertEqual(provenance["product_entry"], result["productEntry"])
         self.assertEqual(compile_receipt["status"], "passed")
         self.assertEqual(compile_receipt["compile_scope"], "allowlisted_runtime_dependencies_bundled")
         self.assertEqual(adaptation_receipt["status"], "applied")
@@ -718,12 +825,24 @@ class ReweavePreviewPackTest(unittest.TestCase):
 
         self.assertEqual([cap["source_id"] for cap in selected], ["timer"])
 
+    def test_task_selection_rejects_unrelated_capsules(self) -> None:
+        capsules = [
+            {
+                "id": "quote-ui",
+                "name": "HTML Surface",
+                "source": "customer-quote-widget",
+                "source_id": "quote",
+                "content_enrichment": {"status": "enriched"},
+                "_closed_behavior": True,
+            }
+        ]
+
+        self.assertEqual(select_capsules_for_task("Build a quantum telemetry simulator", capsules), [])
+
     def test_task_contract_is_shared_across_pack_renderer_gate_and_provenance(self) -> None:
         cap_ids = self._promote_capsules()
-        with (
-            patch.object(renderer, "_task_intent", side_effect=AssertionError("renderer recomputed task intent")),
-            patch.object(renderer, "_task_profile", side_effect=AssertionError("renderer recomputed task profile")),
-        ):
+        self.assertFalse(hasattr(renderer, "_task_intent"))
+        with patch.object(renderer, "_task_profile", side_effect=AssertionError("renderer recomputed task profile")):
             result = preview.build_preview_package(
                 {"taskText": "Build a customer quote dashboard", "capsuleIds": cap_ids[:2], "selectionMode": "manual"}
             )
@@ -762,7 +881,22 @@ class ReweavePreviewPackTest(unittest.TestCase):
     def test_source_cues_reject_code_fragments(self) -> None:
         self.assertEqual(renderer._clean_source_cue("// DOM elements"), "")
         self.assertEqual(renderer._clean_source_cue("target: document.getElementById('target'),"), "")
+        self.assertEqual(renderer._clean_source_cue('"name": "completion-upload",'), "")
+        self.assertEqual(renderer._clean_source_cue("```txt"), "")
+        self.assertEqual(renderer._clean_source_cue("content/projects/demo.md"), "")
         self.assertEqual(renderer._clean_source_cue("Daily hydration target"), "Daily hydration target")
+
+        context = {
+            "capsules": [
+                {
+                    "snippets": [
+                        {"relative_path": "package.json", "preview_excerpt": '"name": "demo"'},
+                        {"relative_path": "src/App.tsx", "preview_excerpt": "<h1>Repair queue</h1>"},
+                    ]
+                }
+            ]
+        }
+        self.assertEqual(renderer.source_highlights(context), ["Repair queue"])
 
     def test_latest_preview_restored(self) -> None:
         cap_ids = self._promote_capsules()
@@ -776,6 +910,18 @@ class ReweavePreviewPackTest(unittest.TestCase):
     def test_missing_capsules_raises(self) -> None:
         with self.assertRaises(ValueError):
             preview.build_preview_package({"taskText": "x", "capsuleIds": ["cap_missing"]})
+
+    def test_lumo_lite_rejects_capsules_without_reusable_content(self) -> None:
+        with self.assertRaisesRegex(ValueError, "no_reusable_capsule_content"):
+            preview.build_preview_package(
+                {
+                    "backend": "lumo_lite_task_pack",
+                    "taskText": "Build an asset dashboard",
+                    "capsuleIds": ["cap_empty"],
+                    "capsules": [{"id": "cap_empty", "name": "Metadata only"}],
+                    "useEnrichedContent": True,
+                }
+            )
 
     def test_failed_quality_gate_removes_new_preview_directory(self) -> None:
         cap_ids = self._promote_capsules()
@@ -801,9 +947,98 @@ class ReweavePreviewPackTest(unittest.TestCase):
 
         gate = build_quality_gate(root, "Invalid JS task", task_plan, content_aware=False)
 
-        syntax_check = next(check for check in gate["checks"] if check["name"] == "javascript_syntax_valid")
+        syntax_check = next(check for check in gate["checks"] if check["name"] == "product_entry_javascript_syntax_valid")
         self.assertFalse(syntax_check["passed"])
         self.assertEqual(gate["status"], "failed")
+
+    def test_quality_gate_rejects_broken_css_and_unlinked_static_assets(self) -> None:
+        root = self._state_dir / "broken-static-product"
+        root.mkdir()
+        task = "Broken static product"
+        (root / "index.html").write_text(f"<!doctype html><h1>{task}</h1>", encoding="utf-8")
+        (root / "review.html").write_text(
+            "Source excerpts used\nReason from capsule",
+            encoding="utf-8",
+        )
+        (root / "styles.css").write_text("body { color:", encoding="utf-8")
+        (root / "app.js").write_text("console.log('ok');", encoding="utf-8")
+        plan = {
+            "outputs": [{"path": name} for name in ("index.html", "styles.css", "app.js")],
+            "capsules": [{"reason": "Reason from capsule"}],
+        }
+
+        gate = build_quality_gate(root, task, plan, content_aware=True)
+        checks = {row["name"]: row["passed"] for row in gate["checks"]}
+
+        self.assertEqual(gate["status"], "failed")
+        self.assertFalse(checks["static_entry_links_stylesheet"])
+        self.assertFalse(checks["static_entry_links_javascript"])
+        self.assertFalse(checks["stylesheet_structure_valid"])
+
+    def test_quality_gate_reports_runtime_network_access_in_final_product(self) -> None:
+        root = self._state_dir / "remote-static-product"
+        root.mkdir()
+        task = "Remote static product"
+        (root / "index.html").write_text(
+            f'<!doctype html><link rel="stylesheet" href="styles.css"><h1>{task}</h1>'
+            '<iframe src="https://example.invalid/frame"></iframe><script src="app.js"></script>',
+            encoding="utf-8",
+        )
+        (root / "review.html").write_text("Reason from capsule", encoding="utf-8")
+        (root / "styles.css").write_text(
+            "body { background: url(https://example.invalid/bg.png); }",
+            encoding="utf-8",
+        )
+        (root / "app.js").write_text("console.log('ok');", encoding="utf-8")
+        plan = {
+            "outputs": [{"path": name} for name in ("index.html", "styles.css", "app.js")],
+            "capsules": [{"reason": "Reason from capsule"}],
+        }
+
+        gate = build_quality_gate(root, task, plan, content_aware=False)
+        network_check = next(row for row in gate["checks"] if row["name"] == "runtime_network_access_closed")
+
+        self.assertEqual(gate["status"], "failed")
+        self.assertFalse(network_check["passed"])
+        self.assertTrue(gate["runtime_network_access"])
+
+    def test_runtime_security_replaces_source_csp_and_rejects_file_urls(self) -> None:
+        source = (
+            '<html><head><meta http-equiv="Content-Security-Policy" content="default-src *">'
+            '</head><body><img src="file:///tmp/private.png"></body></html>'
+        )
+        secured = renderer.with_local_runtime_csp(source)
+
+        self.assertNotIn("default-src *", secured)
+        self.assertEqual(secured.count("Content-Security-Policy"), 1)
+        self.assertFalse(
+            inspect_static_runtime_security(
+                secured.replace("file:///tmp/private.png", "../private.png"),
+                "body {}",
+                "console.log('ok');",
+            )["local_resource_references"]
+        )
+
+        root = self._state_dir / "file-url-product"
+        root.mkdir()
+        task = "File URL product"
+        (root / "index.html").write_text(
+            secured.replace("</body>", f'<h1>{task}</h1><script src="app.js"></script></body>')
+            .replace("</head>", '<link rel="stylesheet" href="styles.css"></head>'),
+            encoding="utf-8",
+        )
+        (root / "review.html").write_text("Reason from capsule", encoding="utf-8")
+        (root / "styles.css").write_text("body {}", encoding="utf-8")
+        (root / "app.js").write_text("console.log('ok');", encoding="utf-8")
+        plan = {
+            "outputs": [{"path": name} for name in ("index.html", "styles.css", "app.js")],
+            "capsules": [{"reason": "Reason from capsule"}],
+        }
+
+        gate = build_quality_gate(root, task, plan, content_aware=False)
+
+        self.assertEqual(gate["status"], "failed")
+        self.assertFalse(next(row for row in gate["checks"] if row["name"] == "runtime_network_access_closed")["passed"])
 
     def test_preview_index_escapes_task_and_capsule_fields(self) -> None:
         html = preview._build_index_html(
@@ -829,6 +1064,10 @@ class ReweavePreviewPackTest(unittest.TestCase):
                     "preview": ["<script>bad()</script>"],
                 }
             ],
+            task_plan={
+                "outputs": [{"path": "index.html", "purpose": "escape test"}],
+                "capsules": [{"name": "<img src=x>", "reason": "<script>bad()</script>"}],
+            },
         )
         self.assertIn("&lt;img src=x&gt;", review_html)
         self.assertIn("&lt;script&gt;bad()&lt;/script&gt;", review_html)
@@ -860,12 +1099,111 @@ class ReweavePreviewPackTest(unittest.TestCase):
         self.assertNotIn("<script>alert(1)</script>", html)
         self.assertIn('id="runBtn"', html)
 
+    def test_behavior_adaptation_exposes_only_bounded_control_span(self) -> None:
+        contract = {
+            "status": "closed",
+            "files": {
+                "entry": {
+                    "content": (
+                        '<label for="amount">Amount</label><input id="amount">'
+                        '<button id="runBtn"><span>Calculate</span></button>'
+                        '<span>Unscoped status</span>'
+                        '<h2 id="status">Ready</h2>'
+                        '<span id="result">0%</span>'
+                    )
+                },
+                "script": {"content": "document.getElementById('runBtn')", "sha256": "demo"},
+            },
+            "interactions": {
+                "controls": [{"id": "runBtn"}],
+                "events": [{"target_id": "runBtn", "event": "click"}],
+            },
+        }
+
+        adaptation = renderer.build_behavior_adaptation("Build an invoice tool", contract)
+
+        self.assertFalse(any(item["tag"] == "label" for item in adaptation["allowed_text_slots"]))
+        self.assertIn(
+            {"slot_id": "span:0", "tag": "span", "occurrence": 0, "kind": "text", "value": "Calculate"},
+            adaptation["allowed_text_slots"],
+        )
+        self.assertFalse(any(item["slot_id"] == "h2:0" for item in adaptation["allowed_text_slots"]))
+        self.assertFalse(any(item["slot_id"] in {"span:1", "span:2"} for item in adaptation["allowed_text_slots"]))
+
+    def test_field_mapping_adaptation_changes_only_unique_safe_text_slots(self) -> None:
+        contract = {
+            "status": "closed",
+            "files": {
+                "entry": {
+                    "content": (
+                        '<html><body><label for="amount">Amount</label>'
+                        '<input id="amount" type="number" placeholder="0">'
+                        '<button id="run">Calculate</button>'
+                        '<p id="result">0</p></body></html>'
+                    )
+                },
+                "script": {"content": "document.getElementById('result').textContent = '1';", "sha256": "demo"},
+            },
+            "interactions": {
+                "controls": [{"id": "amount"}, {"id": "run"}],
+                "events": [{"target_id": "run", "event": "click"}],
+                "state_target_ids": ["result"],
+            },
+        }
+        mapping = {
+            "status": "ready",
+            "mappings": [
+                {"role": "input", "source_key": "amount", "source_label": "Amount", "target_label": "Hours"},
+                {"role": "action", "source_key": "run", "source_label": "Calculate", "target_label": "Estimate"},
+                {"role": "output", "source_key": "result", "source_label": "result", "target_label": "Total"},
+            ],
+        }
+
+        adaptation = renderer.add_field_mapping_adaptation(
+            renderer.build_behavior_adaptation("Build an estimate", contract), contract, mapping
+        )
+        rendered = renderer.build_index_html(
+            "Build an estimate", [], behavior_contract=contract, behavior_adaptation=adaptation
+        )
+
+        self.assertEqual(adaptation["field_mapping_application"]["status"], "partial")
+        self.assertEqual(len(adaptation["field_mapping_application"]["patches"]), 2)
+        self.assertEqual(adaptation["field_mapping_application"]["skipped"][0]["source_key"], "result")
+        self.assertIn('<label for="amount">Hours</label>', rendered)
+        self.assertIn('<button id="run">Estimate</button>', rendered)
+        self.assertIn('<p id="result">0</p>', rendered)
+        self.assertIn("document.getElementById('result').textContent = '1';", renderer.build_app_js(contract))
+
+    def test_field_mapping_adaptation_supports_one_link_cta(self) -> None:
+        contract = {
+            "files": {
+                "entry": {"content": '<a class="visit-link" href="#status">Request visit</a>'},
+            }
+        }
+        mapping = {
+            "status": "ready",
+            "mappings": [
+                {
+                    "role": "action",
+                    "source_key": ".visit-link",
+                    "source_label": "Request visit",
+                    "target_label": "Book a preview",
+                }
+            ],
+        }
+
+        adaptation = renderer.add_field_mapping_adaptation({}, contract, mapping)
+        rendered = renderer._apply_behavior_adaptation(contract["files"]["entry"]["content"], adaptation)
+
+        self.assertEqual(adaptation["field_mapping_application"]["status"], "applied")
+        self.assertEqual(rendered, '<a class="visit-link" href="#status">Book a preview</a>')
+
     def test_behavior_renderer_moves_inline_script_to_app_file(self) -> None:
         contract = {
             "status": "closed",
             "files": {
                 "entry": {
-                    "content": '<html><body><button id="runBtn">Run</button><script>window.inlineRan = true;</script></body></html>'
+                    "content": '<html><body><button id="runBtn">Run</button><script>window.inlineRan = true;</script ></body></html>'
                 },
                 "script": {"content": "window.inlineRan = true;", "sha256": "demo", "source_kind": "inline"},
             },

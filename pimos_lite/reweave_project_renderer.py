@@ -4,14 +4,93 @@ from __future__ import annotations
 
 import html
 import re
+from html.parser import HTMLParser
 from typing import Any
 
 from pimos_lite.reweave_task_intent import MAX_TASK_LEN
-from pimos_lite.reweave_task_intent import build_task_intent as _task_intent
 from pimos_lite.reweave_task_intent import build_task_profile as _task_profile
-from pimos_lite.reweave_task_plan import build_task_plan as _task_plan
 
 MAX_SNIPPET_LINES = 12
+LOCAL_RUNTIME_CSP = "default-src 'self'; connect-src 'none'; img-src 'self' data:; script-src 'self'; style-src 'self' 'unsafe-inline'; object-src 'none'; frame-src 'none'; base-uri 'none'; form-action 'none'"
+
+
+class _RuntimeAssetStripper(HTMLParser):
+    def __init__(
+        self,
+        source: str,
+        *,
+        remove_inline_script: bool,
+        remove_stylesheets: bool = True,
+        remove_external_scripts: bool = True,
+        remove_csp: bool = True,
+    ) -> None:
+        super().__init__(convert_charrefs=False)
+        self.source = source
+        self.remove_inline_script = remove_inline_script
+        self.remove_stylesheets = remove_stylesheets
+        self.remove_external_scripts = remove_external_scripts
+        self.remove_csp = remove_csp
+        self.ranges: list[tuple[int, int]] = []
+        self.script_start: int | None = None
+        self.line_offsets = [0]
+        self.line_offsets.extend(match.end() for match in re.finditer(r"\n", source))
+
+    def _offset(self) -> int:
+        line, column = self.getpos()
+        return self.line_offsets[line - 1] + column
+
+    def _tag_end(self, start: int) -> int:
+        end = self.source.find(">", start)
+        return len(self.source) if end < 0 else end + 1
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        values = {key.lower(): value or "" for key, value in attrs}
+        start = self._offset()
+        if self.remove_csp and tag.lower() == "meta" and values.get("http-equiv", "").strip().lower() == "content-security-policy":
+            self.ranges.append((start, self._tag_end(start)))
+        elif self.remove_stylesheets and tag.lower() == "link" and "stylesheet" in values.get("rel", "").lower():
+            self.ranges.append((start, self._tag_end(start)))
+        elif tag.lower() == "script" and (
+            (self.remove_external_scripts and values.get("src")) or self.remove_inline_script
+        ):
+            self.script_start = start
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() == "script" and self.script_start is not None:
+            self.ranges.append((self.script_start, self._tag_end(self._offset())))
+            self.script_start = None
+
+    def stripped(self) -> str:
+        self.feed(self.source)
+        self.close()
+        if self.script_start is not None:
+            self.ranges.append((self.script_start, len(self.source)))
+        result = self.source
+        for start, end in sorted(self.ranges, reverse=True):
+            result = result[:start] + result[end:]
+        return result
+
+
+def with_local_runtime_csp(source: str) -> str:
+    source = _RuntimeAssetStripper(
+        source,
+        remove_inline_script=False,
+        remove_stylesheets=False,
+        remove_external_scripts=False,
+    ).stripped()
+    meta = f'<meta http-equiv="Content-Security-Policy" content="{LOCAL_RUNTIME_CSP}">'
+    if re.search(r"</head>", source, flags=re.IGNORECASE):
+        return re.sub(r"</head>", meta + "\n</head>", source, count=1, flags=re.IGNORECASE)
+    return meta + "\n" + source
+
+
+def without_scripts(source: str) -> str:
+    return _RuntimeAssetStripper(
+        source,
+        remove_inline_script=True,
+        remove_stylesheets=False,
+        remove_csp=False,
+    ).stripped()
 
 
 def _behavior_file(contract: dict[str, Any], role: str) -> dict[str, Any] | None:
@@ -33,10 +112,15 @@ def _task_heading(task: str) -> str:
 
 def _safe_text_slots(source: str) -> list[dict[str, Any]]:
     slots: list[dict[str, Any]] = []
-    for tag in ("p", "h2", "h3", "button", "option"):
-        pattern = re.compile(rf"<{tag}\b[^>]*>([^<>]+)</{tag}>", flags=re.IGNORECASE)
+    button_ranges = [match.span() for match in re.finditer(r"<button\b[^>]*>.*?</button>", source, flags=re.IGNORECASE | re.DOTALL)]
+    for tag in ("p", "h2", "h3", "button", "option", "span"):
+        pattern = re.compile(rf"<{tag}\b(?P<attrs>[^>]*)>(?P<value>[^<>]+)</{tag}>", flags=re.IGNORECASE)
         for occurrence, match in enumerate(pattern.finditer(source)):
-            value = html.unescape(match.group(1).strip())
+            if tag != "button" and re.search(r"\bid\s*=", match.group("attrs"), flags=re.IGNORECASE):
+                continue
+            if tag == "span" and not any(start <= match.start() and match.end() <= end for start, end in button_ranges):
+                continue
+            value = html.unescape(match.group("value").strip())
             if 2 <= len(value) <= 160:
                 slots.append(
                     {
@@ -100,6 +184,83 @@ def build_behavior_adaptation(task: str, contract: dict[str, Any]) -> dict[str, 
     }
 
 
+def add_field_mapping_adaptation(
+    adaptation: dict[str, Any],
+    contract: dict[str, Any],
+    mapping_preview: dict[str, Any],
+) -> dict[str, Any]:
+    result = dict(adaptation)
+    if mapping_preview.get("status") != "ready":
+        result["field_mapping_application"] = {
+            "status": str(mapping_preview.get("status") or "not_requested"),
+            "mode": "safe_text_only",
+            "patches": [],
+            "skipped": [],
+            "source_project_write": False,
+        }
+        return result
+
+    source = str((_behavior_file(contract, "entry") or {}).get("content") or "")
+    patches: list[dict[str, str]] = []
+    skipped: list[dict[str, str]] = []
+    for mapping in mapping_preview.get("mappings") or []:
+        if not isinstance(mapping, dict):
+            continue
+        role = str(mapping.get("role") or "")
+        source_key = str(mapping.get("source_key") or "")
+        source_label = str(mapping.get("source_label") or "")
+        target_label = str(mapping.get("target_label") or "")
+        tags = ("button", "a") if role == "action" else ("label",)
+        matches = []
+        for tag in tags:
+            container = re.compile(
+                rf"<{tag}\b[^>]*>(?:(?!</{tag}>).)*?{re.escape(source_label)}"
+                rf"(?:(?!</{tag}>).)*?</{tag}>",
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            matches.extend((tag, match) for match in container.finditer(source) if source_label)
+        if len(matches) == 1 and matches[0][1].group(0).count(source_label) == 1:
+            tag = matches[0][0]
+            patches.append(
+                {
+                    "target": f"{tag}_text",
+                    "role": role,
+                    "source_key": source_key,
+                    "from": source_label,
+                    "to": target_label,
+                }
+            )
+            continue
+        input_id = source_key.removeprefix("#")
+        placeholder = re.compile(
+            rf"<input\b(?=[^>]*\bid\s*=\s*['\"]{re.escape(input_id)}['\"])[^>]*"
+            rf"\bplaceholder\s*=\s*['\"](?P<value>[^'\"]*)['\"]",
+            flags=re.IGNORECASE,
+        )
+        placeholder_match = placeholder.search(source) if role == "input" and input_id else None
+        if placeholder_match:
+            patches.append(
+                {
+                    "target": "placeholder",
+                    "role": role,
+                    "source_key": source_key,
+                    "from": placeholder_match.group("value"),
+                    "to": target_label,
+                }
+            )
+            continue
+        skipped.append({"role": role, "source_key": source_key, "reason": "no_unique_safe_text_slot"})
+
+    result["field_mapping_application"] = {
+        "status": "applied" if patches and not skipped else "partial" if patches else "not_applied",
+        "mode": "safe_text_only",
+        "patches": patches,
+        "skipped": skipped,
+        "source_project_write": False,
+    }
+    return result
+
+
 def _apply_behavior_adaptation(source: str, adaptation: dict[str, Any]) -> str:
     tags = {"document_title": "title", "primary_heading": "h1"}
     for patch in adaptation.get("patches") if isinstance(adaptation.get("patches"), list) else []:
@@ -113,33 +274,41 @@ def _apply_behavior_adaptation(source: str, adaptation: dict[str, Any]) -> str:
             source,
             count=1,
         )
+    application = adaptation.get("field_mapping_application")
+    field_patches = application.get("patches") if isinstance(application, dict) else []
+    for patch in field_patches if isinstance(field_patches, list) else []:
+        if not isinstance(patch, dict):
+            continue
+        target = str(patch.get("target") or "")
+        old = str(patch.get("from") or "")
+        replacement = html.escape(str(patch.get("to") or ""))
+        if target in {"label_text", "button_text", "a_text"} and old:
+            tag = target.removesuffix("_text")
+            pattern = re.compile(
+                rf"(<{tag}\b[^>]*>(?:(?!</{tag}>).)*?){re.escape(old)}"
+                rf"((?:(?!</{tag}>).)*?</{tag}>)",
+                flags=re.IGNORECASE | re.DOTALL,
+            )
+            source = pattern.sub(lambda match: f"{match.group(1)}{replacement}{match.group(2)}", source, count=1)
+        elif target == "placeholder" and patch.get("source_key"):
+            input_id = re.escape(str(patch["source_key"]).removeprefix("#"))
+            pattern = re.compile(
+                rf"(<input\b(?=[^>]*\bid\s*=\s*['\"]{input_id}['\"])[^>]*"
+                rf"\bplaceholder\s*=\s*['\"])[^'\"]*(['\"])",
+                flags=re.IGNORECASE,
+            )
+            source = pattern.sub(lambda match: f"{match.group(1)}{replacement}{match.group(2)}", source, count=1)
     return source
 
 
 def _build_behavior_index_html(task: str, contract: dict[str, Any], adaptation: dict[str, Any]) -> str:
     entry = _behavior_file(contract, "entry") or {}
     source = _apply_behavior_adaptation(str(entry.get("content") or ""), adaptation)
-    source = re.sub(
-        r"<link\b[^>]*\brel=[\"'][^\"']*stylesheet[^\"']*[\"'][^>]*>",
-        "",
-        source,
-        flags=re.IGNORECASE,
-    )
-    source = re.sub(
-        r"<script\b[^>]*\bsrc=[\"'][^\"']+[\"'][^>]*>\s*</script>",
-        "",
-        source,
-        flags=re.IGNORECASE,
-    )
     script_file = _behavior_file(contract, "script") or {}
-    if script_file.get("source_kind") == "inline":
-        source = re.sub(
-            r"<script\b(?![^>]*\bsrc=)[^>]*>.*?</script>",
-            "",
-            source,
-            count=1,
-            flags=re.IGNORECASE | re.DOTALL,
-        )
+    source = _RuntimeAssetStripper(
+        source,
+        remove_inline_script=script_file.get("source_kind") == "inline",
+    ).stripped()
     task_meta = f'<meta name="reweave-task" content="{html.escape((task or "")[:MAX_TASK_LEN], quote=True)}">'
     stylesheet = '<link rel="stylesheet" href="styles.css">'
     if re.search(r"</head>", source, flags=re.IGNORECASE):
@@ -159,7 +328,7 @@ def _build_behavior_index_html(task: str, contract: dict[str, Any], adaptation: 
         source = re.sub(r"</body>", f"  {footer}\n  {script}\n</body>", source, count=1, flags=re.IGNORECASE)
     else:
         source += "\n" + footer + "\n" + script + "\n"
-    return source
+    return with_local_runtime_csp(source)
 
 def build_index_html(
     task: str,
@@ -186,7 +355,7 @@ def build_index_html(
     action = str(source_page.get("action") or profile["action"])
     status = str(source_page.get("status") or "Ready for local review.")
     fields = source_page.get("fields") if isinstance(source_page.get("fields"), list) else []
-    source_cues = source_page.get("cards") or ([] if fields else _source_highlights(snippet_context) if content_aware else [])
+    source_cues = source_page.get("cards") or ([] if fields else source_highlights(snippet_context) if content_aware else [])
     fallback_cues = [] if fields else [str(profile["output_label"])]
     cue_cards = "".join(
         f"<article><h3>{html.escape(str(cue.get('title') or 'Project detail'))}</h3><p>{html.escape(str(cue.get('body') or ''))}</p></article>"
@@ -203,6 +372,7 @@ def build_index_html(
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta http-equiv="Content-Security-Policy" content="{LOCAL_RUNTIME_CSP}" />
   <title>{html.escape(document_title)}</title>
   <link rel="stylesheet" href="styles.css" />
 </head>
@@ -237,10 +407,10 @@ def build_review_html(
     *,
     content_aware: bool = False,
     snippet_context: dict[str, Any] | None = None,
-    task_plan: dict[str, Any] | None = None,
+    task_plan: dict[str, Any],
 ) -> str:
     task_title = html.escape((task or "New Task Pack")[:MAX_TASK_LEN])
-    plan = task_plan or _task_plan(_task_intent(task, capsules))
+    plan = task_plan
     capsule_tags = sorted(
         {
             str(tag)
@@ -357,7 +527,7 @@ def build_review_html(
 """
 
 
-def _source_highlights(snippet_context: dict[str, Any] | None) -> list[str]:
+def source_highlights(snippet_context: dict[str, Any] | None) -> list[str]:
     if not isinstance(snippet_context, dict):
         return []
     highlights: list[str] = []
@@ -366,6 +536,9 @@ def _source_highlights(snippet_context: dict[str, Any] | None) -> list[str]:
             continue
         for snip in cap.get("snippets") if isinstance(cap.get("snippets"), list) else []:
             if not isinstance(snip, dict):
+                continue
+            suffix = str(snip.get("relative_path") or "").lower()
+            if not suffix.endswith((".html", ".htm", ".md", ".txt", ".jsx", ".tsx", ".vue", ".svelte")):
                 continue
             excerpt = str(snip.get("preview_excerpt") or "")
             candidates = re.findall(r">([^<>]{3,80})<", excerpt) or excerpt.splitlines()
@@ -496,6 +669,14 @@ def _clean_source_cue(raw: str) -> str:
     if not text:
         return ""
     if text.startswith("//"):
+        return ""
+    if "`" in text:
+        return ""
+    if re.match(r"^[\"'][\w.-]+[\"']\s*:", text):
+        return ""
+    if re.match(r"(?i)^(?:import|export|const|let|var|function|class|return)\b", text):
+        return ""
+    if re.search(r"(?:^|\s)[\w.-]+/[\w./-]+\.(?:js|ts|tsx|jsx|json|py|md|txt)(?:\s|$)", text, flags=re.IGNORECASE):
         return ""
     if any(token in text for token in ("{", "}", ";", "<", ">", "=>")):
         return ""

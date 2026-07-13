@@ -117,6 +117,7 @@ The inspiration is a spider spinning silk: old project threads are cleaned, join
 - Stores approved capsules in a local Capsule Warehouse.
 - Lets the desktop workbench select capsules for a task.
 - Lets the CLI list capsules and manually select the ones to reuse.
+- Uses the built-in Stage4 composer to combine a compatible UI + logic pair or UI + logic + state chain.
 - Optionally lets a local Ollama model refine the Small Project Pack.
 - Builds a Small Project Pack preview with:
   - `task_intent.json`
@@ -175,7 +176,7 @@ examples/source_boxes/ops-status-card
 Desktop loop:
 
 ```text
-Bind Source Box -> Scan -> Prepare -> Store -> select capsules -> Build Small Project Pack -> View provenance
+Bind Source Box -> Scan -> Prepare -> Store -> describe task -> Build Small Project Pack -> View provenance
 ```
 
 Desktop smoke verified on macOS: the app opens on Source Box onboarding, Generate / Export / Open Folder actions stay hidden until eligible, and the bridge flow can build a Task Pack preview without source writes.
@@ -188,6 +189,7 @@ Run the public checks:
 python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -r requirements-dev.txt
+npm ci
 python -m pytest tests -q
 node --check reweave_frontend/app.js
 ```
@@ -195,8 +197,26 @@ node --check reweave_frontend/app.js
 Optional desktop shell on macOS/Linux:
 
 ```bash
+python3 -m venv .venv-reweave
+. .venv-reweave/bin/activate
+python -m pip install -r pimos_lite/requirements-desktop.txt
 ./start_reweave_static.sh
 ```
+
+The launcher never installs dependencies or contacts a package index automatically.
+
+Multi-capsule behavior composition is built in. A single clone is enough:
+
+```bash
+python scripts/run_public_stage4_demo.py
+python scripts/run_public_stage4_demo.py --case data
+```
+
+It runs the single built-in Stage4 module-native composer, combines `order-form-ui`, `order-total-logic`, and `result-history-state`, verifies the generated interaction (`12 × 8 = 96`, history `1`), writes the standard evidence and runtime validation files, and leaves all three Source Boxes unchanged.
+
+The `data` case separately combines a record-list capsule, a table UI capsule, and a pure aggregation capsule. It renders three rows and verifies `North → 420` and `South → 80`; neither the UI nor the aggregation logic contains the order records.
+
+Reweave-lite owns this canonical composer source. The former Stage4 baseline `ab8e62d` is migration history only; there is no second runtime copy to synchronize.
 
 Windows desktop shell support is experimental; the CLI demo and tests are CI-checked on Windows.
 
@@ -211,6 +231,7 @@ REWEAVE_RUNTIME_STATE_PATH=/path/to/frontend_runtime_state.json \
 
 - GitHub Actions runs the Reweave test suite.
 - GitHub Actions runs the public Task Pack demo on Ubuntu and Windows.
+- GitHub Actions runs the built-in UI + logic + state composition demo.
 - GitHub Actions checks `task_intent.json`, `task_plan.json`, `quality_gate.json`, `task_pack.json`, `capsules_used.json`, and `provenance.json`.
 - GitHub Actions checks frontend JavaScript syntax.
 - Local default launch does not depend on private workspace paths.

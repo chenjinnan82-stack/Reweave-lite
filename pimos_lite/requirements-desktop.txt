@@ -1,3 +1,3 @@
 # Reweave desktop shell (PySide6 + Qt WebEngine)
-pyside6>=6.6
-pyside6-addons>=6.6
+pyside6==6.11.1
+pyside6-addons==6.11.1

@@ -2,11 +2,31 @@
 
 from __future__ import annotations
 
+import json
 import re
+import shutil
+import subprocess
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_frontend_quality_status_requires_explicit_gate_result() -> None:
+    node = shutil.which("node")
+    if not node:
+        return
+    script = (
+        "global.window = {}; require(" + repr(str(ROOT / "reweave_frontend" / "renderers.js")) + ");"
+        "const files=['task_intent.json','task_plan.json','quality_gate.json'];"
+        "console.log(JSON.stringify([window.ReweaveRenderers.taskPackStatusFromFiles(files),"
+        "window.ReweaveRenderers.taskPackStatusFromFiles(files,{status:'passed'})]));"
+    )
+    result = subprocess.run([node, "-e", script], check=True, capture_output=True, text=True)
+    unknown, passed = json.loads(result.stdout)
+    assert "Quality report available" in unknown
+    assert "passed" not in unknown.lower()
+    assert "Quality gate passed" in passed
 
 
 def test_frontend_locale_copy_is_strictly_partitioned() -> None:
@@ -62,6 +82,7 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert "Recover old work" not in mock
     assert "src_output" not in mock
     assert "cap_form_shell" not in mock
+    assert 'cap.origin !== "stage4_module_native"' in app
     assert "Current Runtime" in index
     assert 'data-i18n="welcomeKicker"' in index
     assert "Bind Source Box" in index
@@ -76,7 +97,9 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert 'id="workflow-status"' in index
     assert 'id="workflow-status"' in index
     assert 'class="generated-title" data-i18n="currentRuntime"' in index
-    assert 'class="btn-secondary btn-open-folder hidden"' in index
+    assert "btn-open-folder" not in index
+    assert "btn-export-zip" not in index
+    assert "btn-export-copy" not in index
     assert '<span id="sources-count">0</span> <span data-i18n="bound">bound</span>' in index
     assert "Select old project folder" not in index
     assert "Local · Lumo engine" not in index
@@ -108,8 +131,7 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert "data.warehouseCapsules = [];" in app
     assert 'data.cleaningSteps = ["Current Runtime / artifacts"];' in app
     assert "Current Runtime / artifacts" in app
-    assert "currentPreviewPackageId && !isLumoLiteReadOnly()" in app
-    assert "!currentPreviewPackageId || isLumoLiteReadOnly()" in app
+    assert "currentPreviewPackageId" not in app
     assert 'cap.origin === "lumo_lite_capsule_warehouse") return canBuildTaskPackPreview();' in app
     assert "function isCapsuleManageEligible(cap)" in app
     assert "function syncSourceControls()" in app
@@ -128,6 +150,8 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert "function currentWorkflowStep(hasTaskPackPreview)" in app
     assert "function taskPackStatusFromFiles(files)" in app
     assert "Intent ready · Plan ready · Quality gate passed · Source writes 0" in renderers
+    assert 'qualityGate && qualityGate.status === "passed"' in renderers
+    assert "data.generatedTraceVerified === true" in app
     assert 't("workflowViewProvenance")' in app
     assert "function canBuildTaskPackPreview()" in app
     assert 'els.taskInput.disabled = !taskPackPreview;' in app
@@ -139,15 +163,19 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert 'model: "qwen2.5-coder:1.5b"' in app
     assert "resolveGenerateIds" not in app
     assert "Array.isArray(result.capsulesUsed)" in app
-    assert 'result.taskPack.selection_mode === "auto_match"' in app
+    assert "data.generatedPackage.productEntry = result.productEntry;" in app
+    assert "var productEntry = pkg.productEntry && pkg.productEntry.path;" in app
+    assert 'resolvedMode === "auto_match" || resolvedMode === "auto_behavior"' in app
     assert 'setLocalModelStatus("localModelRunning")' in app
     assert 'if (useBoundedLocalModel) setLocalModelStatus("localModelFallback");' in app
     assert "Generate will use exactly these capsules." in app
     assert "Capsule drafts are ready. Review the Source Box and store them." in app
     assert 'var ids = usedCapsuleSelectionMode === "manual" ? usedCapsuleIds.slice() : [];' in app
     assert 'usedCapsuleSelectionMode === "manual" && usedCapsuleIds.length > 0' in app
+    assert 'behaviorModuleCount >= 2 ? "auto_behavior" : "auto_match"' in app
     assert ".generation-input-note" in styles
-    assert 'openFolder.classList.add("hidden");' in app
+    assert "open_preview_folder" not in app
+    assert "handleExportPreviewPackage" not in app
     assert 'productSummary: "产品能力：{capability} · 源项目写入：{writes} · 追溯：{trace}"' in app
     assert 'productSummary: "Product capability: {capability} · Source writes: {writes} · Trace: {trace}"' in app
     assert "可生成小项目包预览 · 尚无历史验收 · 源项目写入：0" in app
@@ -169,6 +197,9 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert 'name === "quality_gate.json"' in renderers
     assert "capsules linked to this runtime" in app
     assert "No local preview history yet" in app
+    assert "Session history" in app
+    assert "CAPSULES_VISIBLE" not in app
+    assert 'id="btn-open-capsule"' not in index
     assert "show && hasDesktopBridge() && (!isLumoLiteReadOnly() || canBuildTaskPackPreview())" in app
     assert 'els.reweaveResponse.textContent = t("runtimeReadOnlyMessage");' in app
     assert "function blockReadyRender(message)" in app
@@ -263,6 +294,21 @@ def test_frontend_readme_matches_public_read_only_surface() -> None:
     assert "No frontend apply/export/open-folder write path is exposed." in text
 
 
+def test_desktop_frontend_declares_local_only_content_policy() -> None:
+    index = (ROOT / "reweave_frontend" / "index.html").read_text(encoding="utf-8")
+    desktop = (ROOT / "pimos_lite" / "desktop_reweave_static.py").read_text(encoding="utf-8")
+
+    assert "Content-Security-Policy" in index
+    assert "connect-src 'none'" in index
+    assert "frame-src 'none'" in index
+    assert "LocalContentCanAccessRemoteUrls, False" in desktop
+    assert "DnsPrefetchEnabled, False" in desktop
+    assert "JavascriptCanOpenWindows, False" in desktop
+    assert "acceptNavigationRequest" in desktop
+    assert "LocalFrontendRequestInterceptor" in desktop
+    assert 'new URLSearchParams(window.location.search).get("desktop") === "1"' in (ROOT / "reweave_frontend" / "app.js").read_text(encoding="utf-8")
+
+
 def test_desktop_user_flow_doc_is_linked() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     readme_cn = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")
@@ -274,3 +320,16 @@ def test_desktop_user_flow_doc_is_linked() -> None:
     assert "Bind Source Box" in text
     assert "Build Small Project Pack" in text
     assert "Real source project writes stay off." in text
+
+
+def test_stage4_desktop_preview_uses_runtime_review_copy() -> None:
+    source = (ROOT / "reweave_frontend" / "app.js").read_text(encoding="utf-8")
+
+    assert 'acceptance.reason === "desktop_runtime_validation_required"' in source
+    assert 'generatedFiles.indexOf("composition_plan.json") >= 0' not in source
+    assert 'generatedFiles.indexOf("adapter_mapping.json") >= 0' not in source
+    assert "data.generatedTraceVerified === true" in source
+    assert '"composition_plan.json": true' in source
+    assert '"adapter_mapping.json": true' in source
+    assert 'bridgeCall("open_generated_product")' in source
+    assert 'comparePackage.classList.add("hidden")' in source

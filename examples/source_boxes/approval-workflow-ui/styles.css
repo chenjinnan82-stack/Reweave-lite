@@ -1,0 +1,28 @@
+body {
+  margin: 0;
+  font: 16px/1.5 system-ui, sans-serif;
+  background: #f4f6f8;
+  color: #17202a;
+}
+
+main {
+  width: min(32rem, calc(100% - 2rem));
+  margin: 4rem auto;
+  padding: 2rem;
+  background: white;
+  border: 1px solid #d9e0e6;
+}
+
+label,
+input,
+button {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  margin-top: 1rem;
+}
+
+input,
+button {
+  padding: 0.75rem;
+}

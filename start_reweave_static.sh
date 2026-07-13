@@ -24,15 +24,15 @@ do
   fi
 done
 
-if [[ "$PYTHON" == "python3" ]]; then
-  echo "PySide6 + QtWebEngine not found. Setting up $VENV ..."
-  python3 -m venv "$VENV"
-  "$VENV/bin/pip" install --upgrade pip
-  # Large wheels (~440MB). Use mirror if default PyPI is slow or resets:
-  PIP_INDEX="${PIP_INDEX_URL:-https://pypi.org/simple}"
-  echo "Installing from: $PIP_INDEX (set PIP_INDEX_URL for a mirror if download fails)"
-  "$VENV/bin/pip" install --retries 10 --timeout 300 -i "$PIP_INDEX" -r "$REQ"
-  PYTHON="$VENV/bin/python"
+if [[ "$PYTHON" == "python3" ]] && ! python3 -c "from PySide6.QtWebEngineWidgets import QWebEngineView" 2>/dev/null; then
+  cat >&2 <<EOF
+PySide6 + QtWebEngine not found. Reweave will not install dependencies automatically.
+
+Install once, then rerun this script:
+  "$PYTHON" -m venv "$VENV"
+  "$VENV/bin/python" -m pip install -r "$REQ"
+EOF
+  exit 2
 fi
 
 echo "Using: $PYTHON"

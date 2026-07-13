@@ -118,6 +118,24 @@ def _static_text_slots(
             }
             for occurrence, match in enumerate(dynamic_heading.finditer(source))
         )
+        conditional_heading = re.compile(
+            r"(<(?P<tag>h1|h2)\b[^>]*>)(\{\s*[A-Za-z_$][\w$]*\s*\?\s*"
+            r"['\"][^'\"{}\r\n]{1,160}['\"]\s*:\s*['\"][^'\"{}\r\n]{1,160}['\"]\s*\})(</(?P=tag)>)",
+            flags=re.IGNORECASE,
+        )
+        file_slots.extend(
+            {
+                "slot_id": f"{relative}:{match.group('tag').lower()}-conditional:{occurrence}",
+                "file": relative,
+                "tag": match.group("tag").lower(),
+                "kind": "heading",
+                "mode": "conditional_heading",
+                "_start": match.start(3),
+                "_end": match.end(3),
+                "_slot_priority": 0,
+            }
+            for occurrence, match in enumerate(conditional_heading.finditer(source))
+        )
         nested_heading = re.compile(
             r"<(?P<tag>h1|h2)\b[^>]*>(?P<body>.{1,600}?)</(?P=tag)>",
             flags=re.IGNORECASE | re.DOTALL,
@@ -217,7 +235,12 @@ def _adapt_source_declared_route(
         for word in re.findall(r"[a-z0-9]+", task.lower())
         if len(word) > 2 and word not in {"build", "from", "project", "this", "tool", "tools", "with"}
     }
-    candidates: list[tuple[int, str, str]] = []
+    candidates: list[tuple[int, str, str, str]] = []
+    target_paths = {
+        str(item.get("path") or "")
+        for item in project_targets
+        if isinstance(item, dict) and item.get("path")
+    }
     component_paths = {
         str(item.get("path") or "")
         for item in project_targets
@@ -232,25 +255,55 @@ def _adapt_source_declared_route(
             route = match.group("route")
             score = len(task_words & set(re.findall(r"[a-z0-9]+", route.lower())))
             if score >= 2:
-                candidates.append((score, relative, route))
+                candidates.append((score, relative, route, "source_declared_path_constant"))
+    for relative in sorted(target_paths):
+        source = files.get(relative, "")
+        for match in re.finditer(
+            r"\{\s*path\s*:\s*['\"](?P<route>/[^'\"]*)['\"]\s*,\s*render\s*:\s*\(\)\s*=>\s*<(?P<component>[A-Z][A-Za-z0-9_]*)\b",
+            source,
+        ):
+            component = match.group("component")
+            component_source = next(
+                (files[path] for path in sorted(target_paths) if Path(path).stem == component and path in files),
+                "",
+            )
+            evidence = " ".join((match.group("route"), component, component_source)).lower()
+            score = len(task_words & set(re.findall(r"[a-z0-9]+", evidence)))
+            if score >= 1:
+                candidates.append((score, relative, match.group("route"), "source_declared_route_table"))
     if not candidates:
         return dict(files), None
-    _, relative, route = max(candidates, key=lambda item: (item[0], item[2]))
+    _, route_source, route, mode = max(candidates, key=lambda item: (item[0], item[2]))
     state_pattern = re.compile(
         r"(?P<prefix>useState(?:<[^>]+>)?\()\s*window\.location\.pathname\s*\)"
     )
     updated = dict(files)
-    updated[relative], count = state_pattern.subn(
-        lambda match: match.group("prefix") + json.dumps(route) + ")",
-        updated[relative],
-        count=1,
-    )
-    if count != 1:
+    changed_path = ""
+    for relative in sorted(target_paths):
+        source = updated.get(relative, "")
+        source, count = state_pattern.subn(
+            lambda match: match.group("prefix") + json.dumps(route) + ")",
+            source,
+            count=1,
+        )
+        if count == 0:
+            source, count = re.subn(
+                r"normalizePath\(\s*window\.location\.pathname\s*\)",
+                "normalizePath(" + json.dumps(route) + ")",
+                source,
+                count=1,
+            )
+        if count == 1:
+            updated[relative] = source
+            changed_path = relative
+            break
+    if not changed_path:
         return dict(files), None
     return updated, {
         "status": "applied",
-        "mode": "source_declared_initial_route",
-        "source_path": relative,
+        "mode": mode,
+        "source_path": changed_path,
+        "route_source_path": route_source,
         "route": route,
         "source_project_write": False,
     }
@@ -266,6 +319,23 @@ def _react_runtime_contract(
         for item in project_targets
         if isinstance(item, dict) and item.get("kind") in {"component", "entry"}
     }
+    for relative in sorted(component_paths):
+        source = files.get(relative, "")
+        if (
+            re.search(r"role\s*=\s*['\"]group['\"]", source)
+            and "aria-pressed=" in source
+            and "onClick=" in source
+        ):
+            return {
+                "status": "closed",
+                "mode": "declared_pressed_state",
+                "source_path": relative,
+                "control_selector": "main button[aria-pressed]",
+                "event": "click",
+                "state_target": "control.aria-pressed",
+                "expected_change": True,
+                "source_project_write": False,
+            }
     navigation_contract: dict[str, Any] | None = None
     for relative in sorted(component_paths):
         source = files.get(relative, "")
@@ -401,7 +471,7 @@ def _adapt_static_slots(
         primary = any(word in stem for word in ("home", "opening", "landing", "hero"))
         route_match = len(route_words & set(re.findall(r"[a-z0-9]+", path)))
         return (
-            0 if route_words and route_match >= 2 else 1,
+            0 if route_words and route_match >= 1 else 1,
             0 if stem == "app" else 1 if primary else 2,
             0 if slot.get("mode") == "route_semantic_subtitle" else 1,
             (0 if slot.get("tag") == "h1" else 1) if route_words else 0,

@@ -30,7 +30,7 @@ HEALTH_PROBE_PATHS: tuple[str, ...] = (
 
 def luna_base_url() -> str:
     raw = os.environ.get("LUNA_BASE_URL", DEFAULT_LUNA_BASE_URL).strip()
-    return (raw or DEFAULT_LUNA_BASE_URL).rstrip("/")
+    return _local_base_url(raw or DEFAULT_LUNA_BASE_URL)
 
 
 def admin_api_key() -> str:
@@ -56,11 +56,31 @@ def _is_loopback_url(base_url: str) -> bool:
     return host in {"localhost", "127.0.0.1", "::1"}
 
 
+def _local_base_url(base_url: str) -> str:
+    value = base_url.rstrip("/")
+    try:
+        parsed = urllib.parse.urlparse(value)
+        parsed.port
+    except ValueError:
+        raise ValueError("luna_url_must_be_localhost") from None
+    if (
+        parsed.scheme not in {"http", "https"}
+        or not _is_loopback_url(value)
+        or parsed.username is not None
+        or parsed.password is not None
+        or parsed.path not in {"", "/"}
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("luna_url_must_be_localhost")
+    return value
+
+
 class LunaHttpClient:
     """Small JSON HTTP client — no third-party deps."""
 
     def __init__(self, base_url: str | None = None, timeout_seconds: float = DEFAULT_TIMEOUT_SECONDS) -> None:
-        self.base_url = (base_url or luna_base_url()).rstrip("/")
+        self.base_url = _local_base_url(base_url or luna_base_url())
         self.timeout_seconds = max(0.1, float(timeout_seconds))
 
     def request_json(

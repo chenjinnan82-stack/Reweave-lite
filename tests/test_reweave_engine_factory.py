@@ -98,9 +98,20 @@ class ReweaveEngineFactoryTest(unittest.TestCase):
 
         self.assertIn('export REWEAVE_ENGINE="lumo_lite"', text)
         self.assertIn("unset REWEAVE_ENABLE_LEGACY_WORKBENCH", text)
+        self.assertNotIn("REWEAVE_STAGE4_BIN_DIR", text)
+        self.assertNotIn(".venv-stage4", text)
         self.assertNotIn("DEFAULT_LUMO_LITE_PRODUCT_STATE=", text)
         self.assertNotIn("DEFAULT_LUMO_LITE_RC4_STATE=", text)
         self.assertNotIn("PIMOS_ADMIN_API_KEY_FILE", text)
+        self.assertNotIn('pip" install', text)
+        self.assertNotIn("python3 -m venv \"$VENV\"\n  ", text)
+
+    def test_desktop_frontend_navigation_stays_inside_frontend_root(self) -> None:
+        from pimos_lite.desktop_reweave_static import _is_frontend_file, _is_preview_image, reweave_index_path
+
+        self.assertTrue(_is_frontend_file(str(reweave_index_path())))
+        self.assertFalse(_is_frontend_file(str(Path.home())))
+        self.assertFalse(_is_preview_image(str(Path.home() / "preview.png")))
 
     def test_lumo_available_when_luna_health_ok(self) -> None:
         class HealthyClient:

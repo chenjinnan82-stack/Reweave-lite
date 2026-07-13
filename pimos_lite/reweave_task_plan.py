@@ -6,11 +6,6 @@ from typing import Any
 
 
 def build_task_plan(task_intent: dict[str, Any]) -> dict[str, Any]:
-    capsule_ids = [
-        str(item.get("id"))
-        for item in task_intent.get("retrieved_capsules", [])
-        if isinstance(item, dict) and item.get("id")
-    ]
     output_type = str(task_intent.get("output_type") or "page")
     plan = {
         "schema_version": "reweave_task_plan.v1",
@@ -26,17 +21,17 @@ def build_task_plan(task_intent: dict[str, Any]) -> dict[str, Any]:
             {
                 "path": "index.html",
                 "purpose": f"render the {output_type} for local review",
-                "capsule_ids": capsule_ids,
+                "capsule_ids": [],
             },
             {
                 "path": "styles.css",
                 "purpose": "carry source-backed visual structure and spacing",
-                "capsule_ids": capsule_ids,
+                "capsule_ids": [],
             },
             {
                 "path": "app.js",
                 "purpose": "add only local preview interaction and review checks",
-                "capsule_ids": capsule_ids,
+                "capsule_ids": [],
             },
         ],
         "capsules": list(task_intent.get("retrieved_capsules") or []),

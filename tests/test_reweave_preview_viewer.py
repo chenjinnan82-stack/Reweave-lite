@@ -123,7 +123,14 @@ class ReweavePreviewViewerTest(unittest.TestCase):
         task_pack = json.loads((root / "task_pack.json").read_text(encoding="utf-8"))
         task_pack["behavior_reuse"] = {"status": "enabled"}
         (root / "task_pack.json").write_text(json.dumps(task_pack), encoding="utf-8")
-        receipt = {"status": "passed", "reason": "observable_state_changed"}
+        receipt = {
+            "status": "passed",
+            "reason": "observable_state_changed",
+            "rendered": True,
+            "task_text_rendered": True,
+            "interaction_present": True,
+            "interaction_changed": True,
+        }
         attach_behavior_validation(root, receipt)
 
         viewer = get_preview_package(root.name)

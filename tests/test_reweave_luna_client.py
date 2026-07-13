@@ -30,6 +30,10 @@ class LunaBaseUrlTest(unittest.TestCase):
             client = LunaHttpClient()
             self.assertEqual(client.base_url, "http://localhost:9999")
 
+    def test_luna_rejects_non_loopback_url(self) -> None:
+        with self.assertRaisesRegex(ValueError, "luna_url_must_be_localhost"):
+            LunaHttpClient(base_url="https://example.com")
+
 
 class LunaHttpClientHealthTest(unittest.TestCase):
     def test_health_connection_failure_returns_structured_error(self) -> None:

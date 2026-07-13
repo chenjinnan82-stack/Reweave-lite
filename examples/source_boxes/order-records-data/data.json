@@ -1,0 +1,5 @@
+[
+  {"order": "A-101", "region": "north", "amount": 120},
+  {"order": "A-102", "region": "south", "amount": 80},
+  {"order": "A-103", "region": "north", "amount": 300}
+]

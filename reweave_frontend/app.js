@@ -5,7 +5,6 @@
   var selectedCapsuleId = null;
   var usedCapsuleIds = [];
   var appState = "idle";
-  var CAPSULES_VISIBLE = 5;
   var isGenerating = false;
   var mainEventsBound = false;
   var locale = localStorage.getItem("reweave_locale") || "zh";
@@ -14,7 +13,7 @@
   var STR = {
     zh: {
       privacy: "本地运行，数据不会离开此设备。",
-      history: "历史",
+      history: "本次会话",
       artifacts: "构建资料",
       welcomeKicker: "来源箱 · 当前运行状态 · 构建资料",
       welcomeTagline: "绑定一个旧项目文件夹，将其整理为可复用胶囊。",
@@ -50,10 +49,7 @@
       localPreview: "本地预览",
       newTask: "新任务",
       docked: "已加入本次任务。",
-      openFolder: "已打开本地预览文件夹。",
-      openFolderMock: "当前仅支持本地预览。",
       useInTask: "用于任务",
-      openCapsule: "查看胶囊",
       readOnly: "只读",
       sourceReadOnly: "源项目只读",
       capsulesUsed: "个胶囊已使用",
@@ -96,6 +92,8 @@
       workflowStoreCapsules: "胶囊入仓",
       workflowBuildPack: "选择胶囊，然后生成小项目包",
       workflowIntentReady: "任务意图就绪 · 计划就绪 · 质量门通过 · 源项目写入 0",
+      workflowIntentReview: "任务意图就绪 · 计划就绪 · 质量报告可查看 · 源项目写入 0",
+      workflowQualityFailed: "任务意图就绪 · 计划就绪 · 质量门未通过 · 源项目写入 0",
       workflowPackReady: "小项目包就绪 · 源项目写入 0",
       viewPackage: "查看项目包",
       compareLast: "对比上次结果",
@@ -110,6 +108,7 @@
       noHistory: "暂无历史",
       historyMeta: "使用了 {count} 个胶囊 · {note}",
       scan: "扫描",
+      refresh: "刷新",
       store: "入仓",
       prepare: "准备",
       sourcePreparing: "准备中…",
@@ -137,16 +136,12 @@
       localModelRunning: "处理中",
       localModelApplied: "已应用",
       localModelFallback: "已回退",
-      openFolderButton: "打开文件夹",
-      exportZip: "导出 ZIP",
-      exportCopy: "导出副本",
       warnings: "警告",
       truncated: "已截断",
       redacted: "已脱敏",
       verify: "验证",
       review: "复核",
       promote: "提升",
-      exported: "已导出",
       approve: "通过",
       reject: "拒绝",
       defer: "稍后处理",
@@ -158,7 +153,7 @@
     },
     en: {
       privacy: "All local. Nothing leaves your machine.",
-      history: "History",
+      history: "Session history",
       artifacts: "Build notes",
       welcomeKicker: "Source Box · Current Runtime · Build notes",
       welcomeTagline: "Bind an old project folder and clean it into reusable capsules.",
@@ -194,10 +189,7 @@
       localPreview: "local preview",
       newTask: "New task",
       docked: "docked for this task.",
-      openFolder: "Opened local preview folder.",
-      openFolderMock: "Local preview only.",
       useInTask: "Use in task",
-      openCapsule: "Open capsule",
       readOnly: "Read-only",
       sourceReadOnly: "Source project read-only",
       capsulesUsed: "capsules used",
@@ -240,6 +232,8 @@
       workflowStoreCapsules: "Store Capsules",
       workflowBuildPack: "Select capsules, then Build Small Project Pack",
       workflowIntentReady: "Intent ready · Plan ready · Quality gate passed · Source writes 0",
+      workflowIntentReview: "Intent ready · Plan ready · Quality report available · Source writes 0",
+      workflowQualityFailed: "Intent ready · Plan ready · Quality gate failed · Source writes 0",
       workflowPackReady: "Task Pack ready · Source writes 0",
       viewPackage: "View package",
       compareLast: "Compare last",
@@ -254,6 +248,7 @@
       noHistory: "No history yet",
       historyMeta: "used {count} capsules · {note}",
       scan: "Scan",
+      refresh: "Refresh",
       store: "Store",
       prepare: "Prepare",
       sourcePreparing: "Preparing…",
@@ -281,16 +276,12 @@
       localModelRunning: "Running",
       localModelApplied: "Applied",
       localModelFallback: "Fallback",
-      openFolderButton: "Open in folder",
-      exportZip: "Export zip",
-      exportCopy: "Export copy",
       warnings: "Warnings",
       truncated: "truncated",
       redacted: "redacted",
       verify: "Verify",
       review: "Review",
       promote: "Promote",
-      exported: "Exported",
       approve: "Approve",
       reject: "Reject",
       defer: "Defer",
@@ -317,15 +308,16 @@
   var useEnrichedContentPreview = false;
   var useBoundedLocalModel = false;
   var usedCapsuleSelectionMode = "manual";
-  var currentPreviewPackageId = "";
   var previewViewerMode = "view";
   var lumoLiteArtifacts = [];
   var BUILD_NOTE_FILES = {
     "PREVIEW_README.md": true,
+    "adapter_mapping.json": true,
     "behavior_adaptation.json": true,
     "behavior_contract.json": true,
     "behavior_validation.json": true,
     "capsules_used.json": true,
+    "composition_plan.json": true,
     "frontend_runtime_state.json": true,
     "provenance.json": true,
     "quality_gate.json": true,
@@ -386,7 +378,6 @@
     data.history = [];
     data.sampleTask = "";
     lastPreviewPath = "";
-    currentPreviewPackageId = "";
   }
 
   function normalizeMockFallback() {
@@ -480,19 +471,19 @@
       els.btnLumoArtifacts.classList.toggle("hidden", lumoLiteArtifacts.length === 0);
     }
     var artifactFiles = lumoPreviewFiles();
-    var productFiles = userFacingFiles(artifactFiles);
     var generatedFiles = data.generatedPackage && Array.isArray(data.generatedPackage.files)
       ? data.generatedPackage.files
       : [];
+    var productFiles = userFacingFiles(artifactFiles.length ? artifactFiles : generatedFiles);
+    var generatedProductEntry = data.generatedPackage && data.generatedPackage.productEntry;
+    var generatedProductPath = generatedProductEntry && generatedProductEntry.path;
     var hasTaskPackPreview =
       taskPackPreview &&
       (productFiles.length > 0 ||
         (!!lastPreviewPath &&
-          generatedFiles.indexOf("task_pack.json") >= 0));
-    var generatedTraceAvailable =
-      hasTaskPackPreview &&
-      generatedFiles.indexOf("capsules_used.json") >= 0 &&
-      generatedFiles.indexOf("provenance.json") >= 0;
+          (generatedFiles.indexOf("task_pack.json") >= 0 ||
+            (!!generatedProductPath && generatedFiles.indexOf(generatedProductPath) >= 0))));
+    var generatedTraceAvailable = hasTaskPackPreview && data.generatedTraceVerified === true;
     var traceAvailable = !!summary.trace_available || generatedTraceAvailable;
     var capsulesUsed = hasTaskPackPreview ? usedCapsuleIds.length : Number(summary.capsules_used || 0);
     var traceText = traceAvailable ? t("traceAvailable") : t("traceUnavailable");
@@ -612,9 +603,13 @@
         ": " +
         capsulesUsed;
     }
-    if (els.previewPackageActions) els.previewPackageActions.classList.add("hidden");
-    var openFolder = $("btn-open-folder");
-    if (openFolder) openFolder.classList.add("hidden");
+    if (els.previewPackageActions) {
+      els.previewPackageActions.classList.toggle("hidden", !hasTaskPackPreview);
+      var viewPackage = $("btn-view-package");
+      var comparePackage = $("btn-compare-last");
+      if (viewPackage) viewPackage.classList.toggle("hidden", !hasTaskPackPreview);
+      if (comparePackage) comparePackage.classList.add("hidden");
+    }
     if (els.reweaveResponse) els.reweaveResponse.textContent = responseText;
   }
 
@@ -638,7 +633,10 @@
       files.indexOf("task_plan.json") >= 0 &&
       files.indexOf("quality_gate.json") >= 0
     ) {
-      return t("workflowIntentReady");
+      var qualityStatus = data.qualityGate && data.qualityGate.status;
+      if (qualityStatus === "passed") return t("workflowIntentReady");
+      if (qualityStatus === "failed") return t("workflowQualityFailed");
+      return t("workflowIntentReview");
     }
     if (files.indexOf("task_pack.json") >= 0) return t("workflowPackReady");
     return t("workflowViewProvenance");
@@ -758,7 +756,13 @@
   }
 
   function isCapsuleManageEligible(cap) {
-    return !!(cap && cap.origin !== "lumo_lite_capsule_warehouse" && isCapsuleGenerateEligible(cap));
+    return !!(
+      cap &&
+      !isLumoLiteReadOnly() &&
+      cap.origin !== "lumo_lite_capsule_warehouse" &&
+      cap.origin !== "stage4_module_native" &&
+      isCapsuleGenerateEligible(cap)
+    );
   }
 
   function applyWarehouseCapsules(capsules) {
@@ -790,6 +794,7 @@
     } else if (state.useLocalCapsules && Array.isArray(state.capsules) && state.capsules.length) {
       applyWarehouseCapsules(state.capsules);
     }
+    if (Array.isArray(state.history)) data.history = state.history.slice();
     if (state.generatedPackage) {
       data.generatedPackage = state.generatedPackage;
     }
@@ -1485,6 +1490,16 @@
         : null;
     if (result.generatedPackage) {
       data.generatedPackage = result.generatedPackage;
+      data.generatedPackage.mode = result.mode || "";
+    }
+    data.qualityGate = result.taskPack && result.taskPack.quality_gate ? result.taskPack.quality_gate : null;
+    data.generatedTraceVerified = !!(
+      result.provenance &&
+      result.provenance.source_project_write === false &&
+      (Array.isArray(result.provenance.outputs) || result.provenance.file_provenance)
+    );
+    if (result.productEntry && data.generatedPackage) {
+      data.generatedPackage.productEntry = result.productEntry;
     }
     if (result.previewPath) {
       lastPreviewPath = result.previewPath;
@@ -1501,7 +1516,8 @@
     }
     if (Array.isArray(result.capsulesUsed)) {
       usedCapsuleIds = result.capsulesUsed.map(function (cap) { return cap.id; }).filter(Boolean);
-      usedCapsuleSelectionMode = result.taskPack && result.taskPack.selection_mode === "auto_match" ? "auto_match" : "manual";
+      var resolvedMode = result.taskPack && result.taskPack.selection_mode;
+      usedCapsuleSelectionMode = resolvedMode === "auto_match" || resolvedMode === "auto_behavior" ? resolvedMode : "manual";
       renderUsedChips();
     }
     if (result.localModel && result.localModel.enabled) {
@@ -1527,6 +1543,7 @@
     if (acceptance.reason === "quality_gate_not_reported") return t("acceptanceNeedsQuality");
     if (
       acceptance.reason === "runtime_validation_required" ||
+      acceptance.reason === "desktop_runtime_validation_required" ||
       acceptance.reason === "react_runtime_not_verified" ||
       acceptance.reason === "react_compile_not_verified"
     ) return t("acceptanceNeedsRuntime");
@@ -1558,6 +1575,11 @@
       } catch (e) {
         callback(e);
       }
+    }
+
+    if (new URLSearchParams(window.location.search).get("desktop") === "1") {
+      useEmbed();
+      return;
     }
 
     var xhr = new XMLHttpRequest();
@@ -1649,8 +1671,6 @@
     }
     var useBtn = $("btn-use-in-task");
     if (useBtn) useBtn.textContent = t("useInTask");
-    var openCapBtn = $("btn-open-capsule");
-    if (openCapBtn) openCapBtn.textContent = t("openCapsule");
     var readerLabel = document.querySelector(".reader-slot-label");
     if (readerLabel) readerLabel.textContent = t("readerLabel").toUpperCase();
     syncWelcomeSourceBoxMode();
@@ -1776,7 +1796,6 @@
     els.previewPackageViewer = $("preview-package-viewer");
     els.previewViewerBody = $("preview-viewer-body");
     els.previewViewerTitle = $("preview-viewer-title");
-    els.previewViewerActions = $("preview-viewer-actions");
     els.btnLumoArtifacts = $("btn-lumo-artifacts");
     els.lumoArtifactsPopover = $("lumo-artifacts-popover");
     els.lumoArtifactsBody = $("lumo-artifacts-body");
@@ -1793,7 +1812,7 @@
   }
 
   function getVisibleCapsules() {
-    return (data.capsules || []).slice(0, CAPSULES_VISIBLE);
+    return (data.capsules || []).slice();
   }
 
   function capsuleSourceLabel(cap) {
@@ -1892,8 +1911,6 @@
         useBtn.disabled = !eligible;
         useBtn.textContent = eligible ? t("useInTask") : t("readOnly");
       }
-      var openBtn = $("btn-open-capsule");
-      if (openBtn) openBtn.classList.toggle("hidden", cap.origin === "lumo_lite_capsule_warehouse");
       var existingStatus = actions.querySelector(".reader-status-actions");
       if (existingStatus) existingStatus.remove();
       var existingEnrich = actions.querySelector(".reader-enrich-actions");
@@ -2056,7 +2073,7 @@
       els.usedCapsuleDock.appendChild(chip);
     });
     if (els.generationInputNote) {
-      els.generationInputNote.textContent = formatText(usedCapsuleSelectionMode === "auto_match" ? "generationResolved" : "generationManual", {
+      els.generationInputNote.textContent = formatText(usedCapsuleSelectionMode !== "manual" ? "generationResolved" : "generationManual", {
         count: usedCapsuleIds.length,
       });
     }
@@ -2071,6 +2088,10 @@
     var files = pkg.files || [];
     var visibleFiles = userFacingFiles(files);
     if (!visibleFiles.length) visibleFiles = files;
+    var productEntry = pkg.productEntry && pkg.productEntry.path;
+    if (productEntry) {
+      visibleFiles = [productEntry].concat(visibleFiles.filter(function (path) { return path !== productEntry; }));
+    }
     els.generatedTree.innerHTML = renderers.renderFileTree
       ? renderers.renderFileTree(folderLabel, visibleFiles, escapeHtml)
       : '<div class="folder">' + escapeHtml(folderLabel) + "</div>";
@@ -2103,10 +2124,6 @@
         "</span>";
     }
     updatePreviewPackageActions(!!showPreview);
-    var openFolder = $("btn-open-folder");
-    if (openFolder) {
-      openFolder.classList.toggle("hidden", isLumoLiteReadOnly() || !lastPreviewPath);
-    }
     applyLumoLiteRuntimeView();
   }
 
@@ -2142,9 +2159,7 @@
 
   function closePreviewPackageViewer() {
     if (els.previewPackageViewer) els.previewPackageViewer.classList.add("hidden");
-    currentPreviewPackageId = "";
     previewViewerMode = "view";
-    updatePreviewViewerExportActions(false);
   }
 
   function renderLumoLiteArtifacts(payload) {
@@ -2201,11 +2216,6 @@
     }
   }
 
-  function updatePreviewViewerExportActions(show) {
-    if (!els.previewViewerActions) return;
-    els.previewViewerActions.classList.toggle("hidden", !show);
-  }
-
   function shortExportPath(path) {
     if (!path) return "";
     var parts = String(path).split(/[/\\]/);
@@ -2235,8 +2245,6 @@
     if (!els.previewViewerBody || !payload || !payload.ok) return;
     previewViewerMode = "view";
     var pkg = payload.package || {};
-    currentPreviewPackageId = pkg.id || "";
-    updatePreviewViewerExportActions(!!(hasDesktopBridge() && currentPreviewPackageId && !isLumoLiteReadOnly()));
     var cag = (payload.provenance && payload.provenance.content_aware_generate) || {};
     var luna = (payload.provenance && payload.provenance.luna) || {};
     var snippets = payload.snippetsUsed || {};
@@ -2298,8 +2306,6 @@
   function renderPreviewCompareResult(result) {
     if (!els.previewViewerBody || !result || !result.ok) return;
     previewViewerMode = "compare";
-    currentPreviewPackageId = "";
-    updatePreviewViewerExportActions(false);
     var diff = result.diff || {};
     var html = "";
     html += '<p class="preview-viewer-mode"><strong>Compare</strong></p>';
@@ -2332,6 +2338,15 @@
 
   function handleViewPreviewPackage() {
     if (!hasDesktopBridge()) return;
+    if (data.generatedPackage && data.generatedPackage.mode === "stage4_behavior_composition_preview") {
+      bridgeCall("open_generated_product").then(function (raw) {
+        var opened = parseBridgeJson(raw);
+        if ((!opened || !opened.ok) && els.reweaveResponse) {
+          els.reweaveResponse.textContent = (opened && opened.error) || t("noPreviewPackage");
+        }
+      });
+      return;
+    }
     bridgeCall("get_latest_preview_package").then(function (raw) {
       var result = parseBridgeJson(raw);
       if (!result || !result.ok) {
@@ -2357,33 +2372,6 @@
       }
       renderPreviewCompareResult(result);
       openPreviewPackageViewer("Compare last");
-    });
-  }
-
-  function handleExportPreviewPackage(mode) {
-    if (!hasDesktopBridge() || !currentPreviewPackageId || isLumoLiteReadOnly()) return;
-    var bridgeMethod =
-      typeof desktopBridge.choose_export_folder_and_export === "function"
-        ? "choose_export_folder_and_export"
-        : "export_preview_package";
-    var payload = {
-      packageIdOrPath: currentPreviewPackageId,
-      mode: mode || "zip",
-    };
-    bridgeCall(bridgeMethod, JSON.stringify(payload)).then(function (raw) {
-      var result = parseBridgeJson(raw);
-      if (result && result.cancelled) return;
-      if (result && result.ok && els.reweaveResponse) {
-        els.reweaveResponse.textContent = t("exported") + " · " + shortExportPath(result.export_path);
-        bridgeCall("get_preview_package", currentPreviewPackageId).then(function (viewRaw) {
-          var viewResult = parseBridgeJson(viewRaw);
-          if (viewResult && viewResult.ok) renderPreviewViewerPayload(viewResult);
-        });
-        return;
-      }
-      if (els.reweaveResponse) {
-        els.reweaveResponse.textContent = (result && result.error) || "Export failed";
-      }
     });
   }
 
@@ -2439,6 +2427,17 @@
             handleScanSource(src.id);
           });
           right.appendChild(scanBtn);
+        } else if (scan === "scanned" && src.warehouse_status === "promoted" && desktopCapability("canScanSourceBox")) {
+          var refreshBtn = document.createElement("button");
+          refreshBtn.type = "button";
+          refreshBtn.className = "btn-ghost btn-source-scan";
+          refreshBtn.textContent = t("refresh");
+          refreshBtn.addEventListener("click", function (e) {
+            e.preventDefault();
+            e.stopPropagation();
+            handleScanSource(src.id);
+          });
+          right.appendChild(refreshBtn);
         } else if (src.draft_status === "drafted" && src.warehouse_status !== "promoted" && desktopCapability("canPromoteDrafts")) {
           var storeBtn = document.createElement("button");
           storeBtn.type = "button";
@@ -2649,25 +2648,6 @@
       syncSourceControls();
     }
 
-    $("btn-open-folder").addEventListener("click", function () {
-      if (isLumoLiteReadOnly()) {
-        els.reweaveResponse.textContent = t("runtimeReadOnlyMessage");
-        return;
-      }
-      if (hasDesktopBridge() && lastPreviewPath) {
-        bridgeCall("open_preview_folder", lastPreviewPath).then(function (raw) {
-          var result = parseBridgeJson(raw);
-          if (result && result.ok) {
-            els.reweaveResponse.textContent = t("openFolder");
-          } else {
-            els.reweaveResponse.textContent = t("openFolderMock");
-          }
-        });
-        return;
-      }
-      els.reweaveResponse.textContent = t("openFolderMock");
-    });
-
     var btnViewPackage = $("btn-view-package");
     if (btnViewPackage) {
       btnViewPackage.addEventListener("click", function (e) {
@@ -2689,21 +2669,6 @@
         closePreviewPackageViewer();
       });
     }
-    var btnExportZip = $("btn-export-zip");
-    if (btnExportZip) {
-      btnExportZip.addEventListener("click", function (e) {
-        e.preventDefault();
-        handleExportPreviewPackage("zip");
-      });
-    }
-    var btnExportCopy = $("btn-export-copy");
-    if (btnExportCopy) {
-      btnExportCopy.addEventListener("click", function (e) {
-        e.preventDefault();
-        handleExportPreviewPackage("copy");
-      });
-    }
-
     var langBtn = $("btn-lang");
     if (langBtn) langBtn.addEventListener("click", toggleLocale);
 
@@ -2768,7 +2733,12 @@
       return;
     }
     var text = els.taskInput.value.trim() || data.sampleTask || t("newTask");
-    usedCapsuleSelectionMode = usedCapsuleSelectionMode === "manual" && usedCapsuleIds.length > 0 ? "manual" : "auto_match";
+    var behaviorModuleCount = (data.capsules || []).filter(function (cap) {
+      return cap.origin === "stage4_module_native";
+    }).length;
+    usedCapsuleSelectionMode = usedCapsuleSelectionMode === "manual" && usedCapsuleIds.length > 0
+      ? "manual"
+      : (behaviorModuleCount >= 2 ? "auto_behavior" : "auto_match");
     var ids = usedCapsuleSelectionMode === "manual" ? usedCapsuleIds.slice() : [];
     if (!ids.length && !canBuildTaskPackPreview()) {
       els.reweaveResponse.textContent = t("selecting");

@@ -100,6 +100,9 @@ def build_snippet_context(capsule_ids: list[str], *, task: str = "") -> dict[str
             {
                 "capsule_id": cap_id,
                 "name": cap.get("name"),
+                "type": cap.get("type"),
+                "role": cap.get("role"),
+                "tags": list(cap.get("tags") or []),
                 "content_path": str(enrichment.get("content_path") or content_rel_path(cap_id)),
                 "snippets": snippet_entries,
             }

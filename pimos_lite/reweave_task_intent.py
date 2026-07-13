@@ -63,7 +63,7 @@ def task_capabilities(task: str) -> list[str]:
         name
         for name, words in CAPABILITY_KEYWORDS.items()
         if any(word in text for word in words)
-    ] or ["copy", "style"]
+    ]
 
 
 def score_capsule_for_task(task: str, cap: dict[str, Any], *, enrichable: bool = False) -> int:
@@ -113,10 +113,14 @@ def select_capsules_for_task(
         score = score_capsule_for_task(
             task,
             cap,
-            enrichable=isinstance(enrichment, dict) and enrichment.get("status") == "enriched",
+            enrichable=False,
         )
         score += source_domain_score(task, cap)
         score += source_label_score(task, cap)
+        if score <= 0:
+            continue
+        if isinstance(enrichment, dict) and enrichment.get("status") == "enriched":
+            score += 2
         if cap.get("_closed_behavior") is True:
             score += 1
         source_id = str(cap.get("source_id") or cap.get("source") or "")

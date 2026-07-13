@@ -405,6 +405,11 @@ class ReweaveAppService:
             return self._engine.get_lumo_lite_artifact_path(artifact_id_or_path)  # type: ignore[attr-defined]
         return None
 
+    def get_latest_product_entry_path(self) -> str | None:
+        if hasattr(self._engine, "get_latest_product_entry_path"):
+            return self._engine.get_latest_product_entry_path()  # type: ignore[attr-defined]
+        return None
+
     def generate_preview(self, payload: dict[str, Any]) -> dict[str, Any]:
         if self._is_lumo_lite():
             return self._engine.generate_preview(payload)
