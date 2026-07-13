@@ -21,7 +21,7 @@ from pimos_lite.composer.module_native import CAPABILITY_GRAPH_VERSION, build_mo
 from pimos_lite.reweave_app_service import ReweaveAppService
 from pimos_lite.reweave_engine.lumo_lite import LumoLiteReweaveEngine
 from pimos_lite.reweave_preview_viewer import get_latest_preview_package
-from pimos_lite.reweave_project_renderer import LOCAL_RUNTIME_CSP
+from pimos_lite.reweave_project_renderer import LOCAL_RUNTIME_CSP, without_scripts
 
 
 def _stage4_layout(root: Path) -> tuple[Path, Path]:
@@ -852,6 +852,14 @@ def test_stage4_extractor_rejects_source_file_symlink(tmp_path: Path) -> None:
         "reason": "source_symlink_not_allowed:styles.css",
         "source_project_write": False,
     }
+
+
+def test_stage4_script_stripping_handles_malformed_end_tag() -> None:
+    source = '<main>safe<script src="app.js"></script \t><p>after</p></main>'
+
+    result = without_scripts(source)
+
+    assert result == "<main>safe<p>after</p></main>"
 
 
 def test_stage4_data_extractor_rejects_symlink_and_secret(tmp_path: Path) -> None:

@@ -15,11 +15,21 @@ LOCAL_RUNTIME_CSP = "default-src 'self'; connect-src 'none'; img-src 'self' data
 
 
 class _RuntimeAssetStripper(HTMLParser):
-    def __init__(self, source: str, *, remove_inline_script: bool, remove_assets: bool = True) -> None:
+    def __init__(
+        self,
+        source: str,
+        *,
+        remove_inline_script: bool,
+        remove_stylesheets: bool = True,
+        remove_external_scripts: bool = True,
+        remove_csp: bool = True,
+    ) -> None:
         super().__init__(convert_charrefs=False)
         self.source = source
         self.remove_inline_script = remove_inline_script
-        self.remove_assets = remove_assets
+        self.remove_stylesheets = remove_stylesheets
+        self.remove_external_scripts = remove_external_scripts
+        self.remove_csp = remove_csp
         self.ranges: list[tuple[int, int]] = []
         self.script_start: int | None = None
         self.line_offsets = [0]
@@ -36,11 +46,13 @@ class _RuntimeAssetStripper(HTMLParser):
     def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
         values = {key.lower(): value or "" for key, value in attrs}
         start = self._offset()
-        if tag.lower() == "meta" and values.get("http-equiv", "").strip().lower() == "content-security-policy":
+        if self.remove_csp and tag.lower() == "meta" and values.get("http-equiv", "").strip().lower() == "content-security-policy":
             self.ranges.append((start, self._tag_end(start)))
-        elif self.remove_assets and tag.lower() == "link" and "stylesheet" in values.get("rel", "").lower():
+        elif self.remove_stylesheets and tag.lower() == "link" and "stylesheet" in values.get("rel", "").lower():
             self.ranges.append((start, self._tag_end(start)))
-        elif self.remove_assets and tag.lower() == "script" and (values.get("src") or self.remove_inline_script):
+        elif tag.lower() == "script" and (
+            (self.remove_external_scripts and values.get("src")) or self.remove_inline_script
+        ):
             self.script_start = start
 
     def handle_endtag(self, tag: str) -> None:
@@ -60,11 +72,25 @@ class _RuntimeAssetStripper(HTMLParser):
 
 
 def with_local_runtime_csp(source: str) -> str:
-    source = _RuntimeAssetStripper(source, remove_inline_script=False, remove_assets=False).stripped()
+    source = _RuntimeAssetStripper(
+        source,
+        remove_inline_script=False,
+        remove_stylesheets=False,
+        remove_external_scripts=False,
+    ).stripped()
     meta = f'<meta http-equiv="Content-Security-Policy" content="{LOCAL_RUNTIME_CSP}">'
     if re.search(r"</head>", source, flags=re.IGNORECASE):
         return re.sub(r"</head>", meta + "\n</head>", source, count=1, flags=re.IGNORECASE)
     return meta + "\n" + source
+
+
+def without_scripts(source: str) -> str:
+    return _RuntimeAssetStripper(
+        source,
+        remove_inline_script=True,
+        remove_stylesheets=False,
+        remove_csp=False,
+    ).stripped()
 
 
 def _behavior_file(contract: dict[str, Any], role: str) -> dict[str, Any] | None:

@@ -8,6 +8,7 @@ import re
 import urllib.error
 import urllib.parse
 import urllib.request
+from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
 
@@ -21,6 +22,25 @@ MAX_SUPPORT_CUES_PER_CAPSULE = 3
 MAX_SUPPORT_CUE_CHARS = 160
 
 
+class _VisibleTextParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__()
+        self.hidden_depth = 0
+        self.chunks: list[str] = []
+
+    def handle_starttag(self, tag: str, attrs: list[tuple[str, str | None]]) -> None:
+        if tag.lower() in {"script", "style"}:
+            self.hidden_depth += 1
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.lower() in {"script", "style"} and self.hidden_depth:
+            self.hidden_depth -= 1
+
+    def handle_data(self, data: str) -> None:
+        if not self.hidden_depth:
+            self.chunks.append(data)
+
+
 def _json(path: Path) -> dict[str, Any]:
     data = json.loads(path.read_text(encoding="utf-8"))
     return data if isinstance(data, dict) else {}
@@ -32,9 +52,13 @@ def _write_json(path: Path, data: dict[str, Any]) -> None:
 
 def _readable_support_cues(excerpt: str) -> list[str]:
     """Extract short reference text without exposing executable source to the model."""
-    cleaned = re.sub(r"<script\b[^>]*>.*?</script>", " ", excerpt, flags=re.IGNORECASE | re.DOTALL)
-    cleaned = re.sub(r"<style\b[^>]*>.*?</style>", " ", cleaned, flags=re.IGNORECASE | re.DOTALL)
-    visible = html.unescape(re.sub(r"<[^>]+>", " ", cleaned))
+    if "<" in excerpt and ">" in excerpt:
+        parser = _VisibleTextParser()
+        parser.feed(excerpt)
+        cleaned = " ".join(parser.chunks)
+    else:
+        cleaned = excerpt
+    visible = html.unescape(cleaned)
     candidates = re.split(r"[\r\n]+|(?<=[.!?。！？])\s+", visible)
     if not any(3 <= len(item.strip()) <= MAX_SUPPORT_CUE_CHARS for item in candidates):
         candidates.extend(

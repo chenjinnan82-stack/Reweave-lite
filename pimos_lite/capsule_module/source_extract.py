@@ -16,6 +16,7 @@ from pathlib import Path
 from typing import Any
 
 from pimos_lite.capsule_module.contract import validate_module_capsule
+from pimos_lite.reweave_project_renderer import without_scripts
 
 
 _FORBIDDEN_LOGIC = re.compile(
@@ -350,7 +351,7 @@ def _extract_event_behavior_modules(
     inputs_by_id = {row["id"]: row for row in parser.inputs}
     actions_by_id = {row["id"]: row for row in parser.actions}
     outputs_by_id = {row["id"]: row for row in parser.outputs}
-    normalized_html = re.sub(r"(?is)<script\b[^>]*>.*?</script\s*>", "", html)
+    normalized_html = without_scripts(html)
     normalized_html = normalized_html.replace(parser.stylesheets[0], "styles.css")
     ui_modules: dict[str, dict[str, Any]] = {}
     logic_modules: dict[str, dict[str, Any]] = {}

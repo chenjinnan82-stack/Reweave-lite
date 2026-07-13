@@ -594,7 +594,7 @@ def test_capsule_composition_uses_one_anchor_and_bounded_support_cues() -> None:
                         {
                             "preview_excerpt": (
                                 "<h2>Invoice summary</h2><p>Review the customer total before approval.</p>"
-                                "<script>document.getElementById('danger').remove()</script>"
+                                "<script>document.getElementById('danger').remove()</script \t>"
                             )
                         }
                     ],
