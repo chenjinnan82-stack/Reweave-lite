@@ -67,6 +67,16 @@ RELEASE_SUPPORT_RUNTIME_FILES = (
     "pimos_lite/reweave_reuse_suggestions.py",
     "pimos_lite/reweave_review_queue.py",
 )
+RELEASE_NON_ACTIVE_FOUNDATION_FILES = (
+    "pimos_lite/reweave_capsule_intake.py",
+    "pimos_lite/reweave_capsule_stage3.py",
+    "pimos_lite/reweave_capsule_store.py",
+    "pimos_lite/reweave_capsule_worker.py",
+    "pimos_lite/reweave_data_contract.py",
+    "scripts/analyze_reweave_extraction.mjs",
+    "scripts/analyze_reweave_security.mjs",
+    "scripts/validate_reweave_compute.mjs",
+)
 
 SURFACE_GLOBS = (
     "pimos_lite/capability_registry.py",
@@ -89,7 +99,12 @@ def build_reweave_release_surface_audit(root: str | Path | None = None) -> dict[
     entries = [_entry(base, relative) for relative in relatives]
     missing_product = [relative for relative in REQUIRED_SURFACE_FILES if not (base / relative).is_file()]
     missing_runtime = [relative for relative in RELEASE_SUPPORT_RUNTIME_FILES if not (base / relative).is_file()]
-    missing = missing_product + missing_runtime
+    missing_non_active = [
+        relative
+        for relative in RELEASE_NON_ACTIVE_FOUNDATION_FILES
+        if not (base / relative).is_file()
+    ]
+    missing = missing_product + missing_runtime + missing_non_active
     mock_fallback = any(row["mock_fallback_present"] for row in entries)
     checks = _release_checks(base)
     launcher = _read(base / "start_reweave_static.sh")
@@ -120,13 +135,22 @@ def build_reweave_release_surface_audit(root: str | Path | None = None) -> dict[
         "release_blockers": blockers,
         "missing_surface_files": missing,
         "entrypoint_count": len(entries),
-        "release_included_files": list(RELEASE_INCLUDED_SURFACE_FILES) + list(RELEASE_SUPPORT_RUNTIME_FILES),
+        "release_included_files": list(RELEASE_INCLUDED_SURFACE_FILES)
+        + list(RELEASE_SUPPORT_RUNTIME_FILES)
+        + list(RELEASE_NON_ACTIVE_FOUNDATION_FILES),
         "release_default_entrypoint_files": list(RELEASE_INCLUDED_SURFACE_FILES),
         "release_support_runtime_files": list(RELEASE_SUPPORT_RUNTIME_FILES),
+        "release_non_active_foundation_files": list(RELEASE_NON_ACTIVE_FOUNDATION_FILES),
         "missing_runtime_dependency_files": missing_runtime,
+        "missing_non_active_foundation_files": missing_non_active,
         "release_excluded_support_files": [],
         "release_included_entrypoints": [row["path"] for row in entries if row["release_disposition"] == "included"],
         "release_support_entrypoints": [row["path"] for row in entries if row["release_disposition"] == "included_support_runtime"],
+        "release_non_active_entrypoints": [
+            row["path"]
+            for row in entries
+            if row["release_disposition"] == "included_non_active_foundation"
+        ],
         "release_excluded_entrypoints": [],
         "release_unknown_entrypoints": unknown,
         "entrypoints": entries,
@@ -198,6 +222,8 @@ def _entry(base: Path, relative: str) -> dict[str, Any]:
 
 
 def _role(relative: str) -> str:
+    if relative in RELEASE_NON_ACTIVE_FOUNDATION_FILES:
+        return "non_active_warehouse_foundation"
     if relative.startswith(("pimos_lite/capsule_module/", "pimos_lite/composer/")) or relative in {
         "pimos_lite/capability_registry.py",
         "pimos_lite/safe_preview_write.py",
@@ -235,6 +261,8 @@ def _disposition(relative: str) -> str:
         return "included"
     if relative in RELEASE_SUPPORT_RUNTIME_FILES:
         return "included_support_runtime"
+    if relative in RELEASE_NON_ACTIVE_FOUNDATION_FILES:
+        return "included_non_active_foundation"
     return "unknown_release_surface"
 
 
@@ -245,6 +273,7 @@ def _surface_paths(base: Path) -> list[str]:
             if path.is_file():
                 paths.add(path.relative_to(base).as_posix())
     paths.update(REQUIRED_SURFACE_FILES)
+    paths.update(RELEASE_NON_ACTIVE_FOUNDATION_FILES)
     return sorted(paths)
 
 

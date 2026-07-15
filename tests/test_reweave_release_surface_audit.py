@@ -47,6 +47,27 @@ def test_reweave_release_surface_audit_checks_release_boundary() -> None:
     assert audit["missing_runtime_dependency_files"] == []
     assert "pimos_lite/reweave_engine/local.py" in audit["release_support_runtime_files"]
     assert "pimos_lite/reweave_preview_export.py" in audit["release_support_runtime_files"]
+    assert audit["release_non_active_foundation_files"] == [
+        "pimos_lite/reweave_capsule_intake.py",
+        "pimos_lite/reweave_capsule_stage3.py",
+        "pimos_lite/reweave_capsule_store.py",
+        "pimos_lite/reweave_capsule_worker.py",
+        "pimos_lite/reweave_data_contract.py",
+        "scripts/analyze_reweave_extraction.mjs",
+        "scripts/analyze_reweave_security.mjs",
+        "scripts/validate_reweave_compute.mjs",
+    ]
+    assert audit["release_non_active_entrypoints"] == [
+        "pimos_lite/reweave_capsule_intake.py",
+        "pimos_lite/reweave_capsule_stage3.py",
+        "pimos_lite/reweave_capsule_store.py",
+        "pimos_lite/reweave_capsule_worker.py",
+        "pimos_lite/reweave_data_contract.py",
+        "scripts/analyze_reweave_extraction.mjs",
+        "scripts/analyze_reweave_security.mjs",
+        "scripts/validate_reweave_compute.mjs",
+    ]
+    assert audit["missing_non_active_foundation_files"] == []
     assert audit["release_excluded_support_files"] == []
     assert "pimos_lite/reweave_preview_pack.py" not in audit["release_excluded_support_files"]
     dispositions = {row["path"]: row["release_disposition"] for row in audit["entrypoints"]}
@@ -57,6 +78,38 @@ def test_reweave_release_surface_audit_checks_release_boundary() -> None:
     assert dispositions["pimos_lite/reweave_engine/lumo_lite.py"] == "included"
     assert dispositions["pimos_lite/reweave_lumo_lite_state.py"] == "included"
     assert dispositions["pimos_lite/reweave_engine/local.py"] == "included_support_runtime"
+    assert (
+        dispositions["pimos_lite/reweave_capsule_store.py"]
+        == "included_non_active_foundation"
+    )
+    assert (
+        dispositions["pimos_lite/reweave_capsule_intake.py"]
+        == "included_non_active_foundation"
+    )
+    assert (
+        dispositions["pimos_lite/reweave_data_contract.py"]
+        == "included_non_active_foundation"
+    )
+    assert (
+        dispositions["scripts/analyze_reweave_extraction.mjs"]
+        == "included_non_active_foundation"
+    )
+    assert (
+        dispositions["pimos_lite/reweave_capsule_stage3.py"]
+        == "included_non_active_foundation"
+    )
+    assert (
+        dispositions["pimos_lite/reweave_capsule_worker.py"]
+        == "included_non_active_foundation"
+    )
+    assert (
+        dispositions["scripts/analyze_reweave_security.mjs"]
+        == "included_non_active_foundation"
+    )
+    assert (
+        dispositions["scripts/validate_reweave_compute.mjs"]
+        == "included_non_active_foundation"
+    )
     assert audit["release_unknown_entrypoints"] == []
     assert "scripts/run_public_reweave_demo.py" in audit["release_included_entrypoints"]
     assert "scripts/run_public_stage4_demo.py" in audit["release_included_entrypoints"]
