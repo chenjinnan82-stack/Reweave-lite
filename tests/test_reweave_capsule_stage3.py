@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import base64
-import hashlib
 import json
 import os
 import shutil
@@ -102,7 +101,10 @@ class HtmlCssSafetyTest(unittest.TestCase):
 @unittest.skipUnless(shutil.which("node"), "Node is required for TypeScript AST safety")
 class JavaScriptSafetyTest(unittest.TestCase):
     def _analyze(
-        self, source: str, capability_kind: str = "interaction"
+        self,
+        source: str,
+        capability_kind: str = "interaction",
+        extra_modules: list[dict[str, str]] | None = None,
     ) -> dict[str, object]:
         entrypoint = {
             "presentation": "render",
@@ -124,7 +126,10 @@ class JavaScriptSafetyTest(unittest.TestCase):
                 "schema": "event_outputs.v1",
                 "events": {"calculate_requested": {}},
             },
-            "javascript_modules": [{"path": module_name, "source": source}],
+            "javascript_modules": [
+                {"path": module_name, "source": source},
+                *(extra_modules or []),
+            ],
         }
         result = subprocess.run(
             [shutil.which("node"), str(ROOT / "scripts/analyze_reweave_security.mjs")],
@@ -180,6 +185,38 @@ class JavaScriptSafetyTest(unittest.TestCase):
 }"""
         )
         self.assertEqual(missing_dispose["error_code"], "interaction_dispose_not_closed")
+
+    def test_dom_provenance_and_imported_handlers_fail_closed(self) -> None:
+        escaped_dom = self._analyze(
+            """export function mount(root, ports) {
+  const button = root.querySelector("[data-action='calculate']");
+  root.querySelector("[data-action='calculate']").offsetParent.hidden = true;
+  const onClick = (event) => { event.preventDefault(); };
+  button.addEventListener("click", onClick);
+  return () => { button.removeEventListener("click", onClick); };
+}"""
+        )
+        self.assertEqual(escaped_dom["status"], "rejected")
+        self.assertEqual(escaped_dom["error_code"], "dom_write_forbidden")
+
+        imported_handler = self._analyze(
+            """import {onClick} from "./handler.js";
+export function mount(root, ports) {
+  const button = root.querySelector("[data-action='calculate']");
+  button.addEventListener("click", onClick);
+  return () => { button.removeEventListener("click", onClick); };
+}""",
+            extra_modules=[
+                {
+                    "path": "handler.js",
+                    "source": "export function onClick(event) { const leaked = event.target; }\n",
+                }
+            ],
+        )
+        self.assertEqual(imported_handler["status"], "rejected")
+        self.assertEqual(
+            imported_handler["error_code"], "event_handler_must_be_local"
+        )
 
     def test_computation_rejects_state_environment_and_input_mutation(self) -> None:
         rejected = [
@@ -603,6 +640,47 @@ class Stage3ComputationFlowTest(unittest.TestCase):
             )
             self.store.bump_revision(connection)
 
+        original_publication_snapshot_check = self.stage3._assert_snapshot
+
+        def reject_before_publication_transaction(prepared):
+            original_publication_snapshot_check(prepared)
+            with self.store.transaction() as connection:
+                connection.execute(
+                    "UPDATE review_items SET candidate_status = 'rejected', "
+                    "decision = 'reject', decided_at = 'concurrent' WHERE review_id = ?",
+                    (review["review_id"],),
+                )
+                self.store.bump_revision(connection)
+
+        with patch.object(
+            self.stage3,
+            "_assert_snapshot",
+            side_effect=reject_before_publication_transaction,
+        ), self.assertRaisesRegex(Stage3Error, "review_decision_conflict"):
+            self.stage3.publish_review(
+                review["review_id"],
+                decision="publish_general",
+                capability_key="bounded_total",
+                role_key="double_quantity",
+                display_name="Bounded total",
+            )
+        with self.store.read_connection() as connection:
+            self.assertEqual(connection.execute("SELECT count(*) FROM capsules").fetchone()[0], 0)
+            self.assertEqual(
+                connection.execute(
+                    "SELECT decision FROM review_items WHERE review_id = ?",
+                    (review["review_id"],),
+                ).fetchone()[0],
+                "reject",
+            )
+        with self.store.transaction() as connection:
+            connection.execute(
+                "UPDATE review_items SET candidate_status = 'review_required', "
+                "decision = NULL, decided_at = NULL WHERE review_id = ?",
+                (review["review_id"],),
+            )
+            self.store.bump_revision(connection)
+
         published = self.stage3.publish_review(
             review["review_id"],
             decision="publish_general",
@@ -657,6 +735,44 @@ class Stage3ComputationFlowTest(unittest.TestCase):
         self.assertFalse(duplicate["model_called"])
         self.assertEqual(self.supervisor.calls, 1)
 
+        original_split_snapshot_check = self.stage3._assert_snapshot
+
+        def mark_split_target_pending(prepared):
+            original_split_snapshot_check(prepared)
+            with self.store.transaction() as connection:
+                connection.execute(
+                    "UPDATE capsules SET status = 'pending_revalidation' "
+                    "WHERE capsule_id = ?",
+                    (published["capsule_id"],),
+                )
+                self.store.bump_revision(connection)
+
+        with patch.object(
+            self.stage3,
+            "_assert_snapshot",
+            side_effect=mark_split_target_pending,
+        ), self.assertRaisesRegex(Stage3Error, "semantic_split_target_invalid"):
+            self.stage3.publish_review(
+                second_review["review_id"],
+                decision="semantic_split",
+                capability_key="bounded_total_split",
+                role_key="double_quantity",
+                display_name="Bounded total split",
+            )
+        with self.store.read_connection() as connection:
+            unchanged_review = connection.execute(
+                "SELECT candidate_status, decision FROM review_items WHERE review_id = ?",
+                (second_review["review_id"],),
+            ).fetchone()
+            self.assertEqual(tuple(unchanged_review), ("duplicate", None))
+            self.assertEqual(connection.execute("SELECT count(*) FROM capsules").fetchone()[0], 1)
+        with self.store.transaction() as connection:
+            connection.execute(
+                "UPDATE capsules SET status = 'active' WHERE capsule_id = ?",
+                (published["capsule_id"],),
+            )
+            self.store.bump_revision(connection)
+
         split = self.stage3.publish_review(
             second_review["review_id"],
             decision="semantic_split",
@@ -673,7 +789,12 @@ class Stage3ComputationFlowTest(unittest.TestCase):
                     "SELECT status FROM capsules ORDER BY created_at, capsule_id"
                 )
             ]
+            split_review = connection.execute(
+                "SELECT decision, retained_version_id FROM review_items WHERE review_id = ?",
+                (second_review["review_id"],),
+            ).fetchone()
         self.assertCountEqual(statuses, ["disabled", "active"])
+        self.assertEqual(tuple(split_review), ("semantic_split", published["version_id"]))
 
         third_source = self.root / "third-source"
         shutil.copytree(self.source, third_source)
@@ -933,8 +1054,8 @@ alice&#64;example.com</main><script type="module" src="./compute.js"></script>
         )
         (self.source / "pixel.png").write_bytes(image_bytes)
         (self.source / "index.html").write_text(
-            """<!doctype html><html><body><main data-capsule-root>
-<span data-ref="title"></span><img src="./pixel.png" alt="sample"></main>
+            """<!doctype html><html><body><section data-capsule-root>
+<span data-ref="title"></span><img src="./pixel.png" alt="sample"></section>
 <script type="module" src="./presentation.js"></script></body></html>""",
             encoding="utf-8",
         )
@@ -964,7 +1085,7 @@ alice&#64;example.com</main><script type="module" src="./compute.js"></script>
 
         waiting = self.stage3.process_review(review["review_id"])
 
-        self.assertEqual(waiting["status"], "waiting_user")
+        self.assertEqual(waiting["status"], "waiting_user", waiting)
         self.assertEqual(
             waiting["error_code"], "asset_content_confirmation_required_stage3"
         )
@@ -981,6 +1102,43 @@ alice&#64;example.com</main><script type="module" src="./compute.js"></script>
         )
         second = self.intake.run_intake(project["project_id"])
         self.assertEqual(second["counts"]["extracted"], 1)
+
+    def test_atomic_root_does_not_collect_document_external_assets(self) -> None:
+        (self.source / "outside.png").write_bytes(b"not-read-by-the-atomic-capsule")
+        (self.source / "index.html").write_text(
+            """<!doctype html><html><body>
+<section data-capsule-root><span data-ref="title"></span></section>
+<img src="./outside.png" alt="outside">
+<script type="module" src="./presentation.js"></script></body></html>""",
+            encoding="utf-8",
+        )
+        (self.source / "presentation.js").write_text(
+            """export function render(root, input) {
+  if (typeof input.title !== "string" || input.title.length > 40) {
+    return {ok: false, error: {code: "INVALID_TITLE", field: "title", details: {}}};
+  }
+  const title = root.querySelector("[data-ref='title']");
+  title.textContent = input.title;
+}
+""",
+            encoding="utf-8",
+        )
+        source_root = self.intake.bind_source_root(
+            self.source, root_kind="single_project"
+        )
+        project = self.intake.discover_projects(source_root["root_id"])[0]
+        self.intake.confirm_project(project["project_id"])
+        run = self.intake.run_intake(project["project_id"])
+        with self.store.read_connection() as connection:
+            review = connection.execute(
+                "SELECT * FROM review_items WHERE run_id = ? AND candidate_status = 'extracted'",
+                (run["run_id"],),
+            ).fetchone()
+
+        prepared = self.stage3._prepare(dict(review))
+
+        self.assertEqual(prepared.artifact.assets, ())
+        self.assertNotIn("outside.png", prepared.artifact.canonical_payload["html"])
 
 
 DESKTOP_PYTHON = ROOT / ".venv-reweave" / "bin" / "python"
@@ -1017,21 +1175,15 @@ class Stage3PySideFlowTest(unittest.TestCase):
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR4nGP4z8DwHwAFAAH/iZk9HQAAAABJRU5ErkJggg=="
         )
         (self.source / "pixel.png").write_bytes(original)
-        cleaned = _clean_assets(
-            self.source, ["pixel.png"], {"pixel.png": hashlib.sha256(original).hexdigest()}
-        )
+        cleaned = _clean_assets({"pixel.png": original})
         self.assertEqual(cleaned[0].media_type, "image/png")
         self.assertEqual((cleaned[0].width, cleaned[0].height), (1, 1))
         self.assertEqual((self.source / "pixel.png").read_bytes(), original)
         (self.source / "fake.png").write_text("<html>not an image</html>", encoding="utf-8")
         with self.assertRaisesRegex(Stage3Error, "image_magic_forbidden"):
-            _clean_assets(
-                self.source,
-                ["fake.png"],
-                {"fake.png": hashlib.sha256(b"<html>not an image</html>").hexdigest()},
-            )
-        with self.assertRaisesRegex(Stage3Error, "source_changed_during_scan"):
-            _clean_assets(self.source, ["pixel.png"], {"pixel.png": "0" * 64})
+            _clean_assets({"fake.png": b"<html>not an image</html>"})
+        with self.assertRaisesRegex(Stage3Error, "image_format_mismatch"):
+            _clean_assets({"pixel.jpg": original})
 
     def test_real_qwebengine_runs_declared_event_and_dispose(self) -> None:
         (self.source / "index.html").write_text(
@@ -1126,6 +1278,40 @@ class Stage3PySideFlowTest(unittest.TestCase):
                 fixtures,
                 (),
                 [{"selector": "[data-action='run']", "event": "click"}],
+            )
+
+    def test_real_qwebengine_rejects_root_ancestor_mutation(self) -> None:
+        payload = {
+            "capability_kind": "interaction",
+            "activation": {"entry_module": "interaction.js", "entrypoint": "mount"},
+            "javascript_modules": [
+                {
+                    "path": "interaction.js",
+                    "source": """export function mount(root, ports) {
+  root.offsetParent.hidden = true;
+  return () => {};
+}
+""",
+                }
+            ],
+            "html": '<span data-ref="title"></span>',
+            "css": "",
+            "input_contract": {
+                "schema": "data_contract.v1",
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additional_properties": False,
+            },
+            "output_contract": {"schema": "event_outputs.v1", "events": {}},
+        }
+
+        with self.assertRaisesRegex(Stage3Error, "qweb_root_escape_detected"):
+            _validate_qweb(
+                payload,
+                {"normal": [{}], "boundary": [], "invalid": []},
+                (),
+                [],
             )
 
     def test_real_qwebengine_runs_every_boundary_fixture(self) -> None:

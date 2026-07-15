@@ -235,6 +235,7 @@ def sanitize_html(
     asset_paths: set[str],
     redact_strings: list[str],
     entry_relpath: str = "index.html",
+    referenced_asset_paths: set[str] | None = None,
 ) -> str:
     parser = _HtmlTreeParser()
     try:
@@ -335,6 +336,8 @@ def sanitize_html(
                         raise Stage3Error("html_asset_not_registered") from exc
                     if logical_asset not in asset_paths:
                         raise Stage3Error("html_asset_not_registered")
+                    if referenced_asset_paths is not None:
+                        referenced_asset_paths.add(logical_asset)
                     cleaned[name] = logical_asset
                 elif name == "loading":
                     if value not in {"eager", "lazy"}:
@@ -1131,26 +1134,28 @@ def _pyside_environment(temp_root: Path) -> dict[str, str]:
 
 
 def _clean_assets(
-    project_root: Path,
-    logical_paths: list[str],
-    expected_sha256: dict[str, str],
+    source_bytes: dict[str, bytes],
 ) -> tuple[CleanAsset, ...]:
     worker = Path(__file__).with_name("reweave_capsule_worker.py")
     cleaned: list[CleanAsset] = []
     total = 0
     raw_total = 0
-    for index, logical in enumerate(sorted(set(logical_paths))):
+    expected_media_types = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+    }
+    for index, logical in enumerate(sorted(source_bytes)):
         pure = PurePosixPath(logical)
         if pure.is_absolute() or any(part in {"", ".", ".."} for part in pure.parts):
             raise Stage3Error("asset_path_invalid")
-        source = project_root.joinpath(*pure.parts)
-        if source.is_symlink() or not source.is_file():
-            raise Stage3Error("asset_source_invalid")
-        raw = source.read_bytes()
+        expected_media_type = expected_media_types.get(pure.suffix.lower())
+        if expected_media_type is None:
+            raise Stage3Error("image_format_forbidden")
+        raw = source_bytes[logical]
         if len(raw) > MAX_ASSET_BYTES:
             raise Stage3Error("asset_size_forbidden")
-        if hashlib.sha256(raw).hexdigest() != expected_sha256.get(logical):
-            raise Stage3Error("source_changed_during_scan")
         raw_total += len(raw)
         if raw_total > MAX_ASSET_TOTAL_BYTES:
             raise Stage3Error("capsule_asset_total_forbidden")
@@ -1170,6 +1175,8 @@ def _clean_assets(
             )
             if result.get("status") != "passed":
                 raise Stage3Error(str(result.get("error_code") or "image_cleaning_failed"))
+            if result.get("media_type") != expected_media_type:
+                raise Stage3Error("image_format_mismatch")
             output = directory / output_name
             if not output.is_file():
                 raise Stage3Error("image_worker_output_missing")
@@ -1359,6 +1366,22 @@ def _qweb_harness(
     const root = document.getElementById("capsule-root");
     const outside = document.getElementById("outside-sentinel");
     const beforeOutside = outside.textContent;
+    const pendingMutations = [];
+    const observer = new MutationObserver((records) => pendingMutations.push(...records));
+    observer.observe(document.documentElement, {{
+      subtree: true,
+      attributes: true,
+      childList: true,
+      characterData: true,
+    }});
+    const assertScopedMutations = () => {{
+      pendingMutations.push(...observer.takeRecords());
+      const escaped = pendingMutations.some(
+        (record) => record.target !== root && !root.contains(record.target),
+      );
+      pendingMutations.length = 0;
+      if (escaped) throw new Error("qweb_root_escape_detected");
+    }};
     const candidate = ReweaveCandidate[request.entrypoint];
     if (typeof candidate !== "function") throw new Error("qweb_entrypoint_missing");
     const initialRoot = root.innerHTML;
@@ -1366,6 +1389,8 @@ def _qweb_harness(
     for (let index = 0; index < request.fixtures.length; index += 1) {{
       root.innerHTML = initialRoot;
       seedControls(root);
+      observer.takeRecords();
+      pendingMutations.length = 0;
       const fixture = freeze(strictClone(request.fixtures[index], 524288, "qweb_input_non_json"));
       if (request.kind === "presentation") {{
         const first = candidate(root, fixture);
@@ -1421,8 +1446,10 @@ def _qweb_harness(
         }}
         cases.push({{fixture_index: index, emissions}});
       }}
+      assertScopedMutations();
       if (outside.textContent !== beforeOutside) throw new Error("qweb_root_escape_detected");
     }}
+    observer.disconnect();
     globalThis.__reweave_result = {{
       schema_version: "qweb_validation.v1",
       status: "passed",
@@ -1933,12 +1960,14 @@ class ReweaveCapsuleStage3:
         comparison["user_rejection_reason"] = reason_code
         with self.store.transaction() as connection:
             followers = self._same_run_followers(connection, review)
-            connection.execute(
+            updated = connection.execute(
                 "UPDATE review_items SET candidate_status = 'rejected', decision = 'reject', "
                 "decided_at = ?, equivalence_comparison_json = ?, updated_at = ? "
-                "WHERE review_id = ?",
-                (now, _json(comparison), now, review_id),
+                "WHERE review_id = ? AND candidate_status = ? AND decision IS NULL",
+                (now, _json(comparison), now, review_id, review["candidate_status"]),
             )
+            if updated.rowcount != 1:
+                raise Stage3Error("review_decision_conflict")
             for follower in followers:
                 connection.execute(
                     "UPDATE review_items SET candidate_status = 'rejected', updated_at = ? "
@@ -2105,9 +2134,23 @@ class ReweaveCapsuleStage3:
         redact_strings = _sensitive_values(raw) + sensitive_html_values
         if usage_scope.get("kind") == "general":
             redact_strings.extend(profile.get("terms", []))
-        asset_paths = sorted(
+        registered_asset_paths = sorted(
             {_local_reference(entry_rel, item) for item in inventory.resources}
         )
+        if found["capability_kind"] == "computation":
+            cleaned_html = ""
+            asset_paths: list[str] = []
+        else:
+            referenced_asset_paths: set[str] = set()
+            cleaned_html = sanitize_html(
+                html_source,
+                dom_scope=found["dom_scope"],
+                asset_paths=set(registered_asset_paths),
+                redact_strings=redact_strings,
+                entry_relpath=entry_rel,
+                referenced_asset_paths=referenced_asset_paths,
+            )
+            asset_paths = sorted(referenced_asset_paths)
         if (
             found["capability_kind"] != "computation"
             and asset_paths
@@ -2141,23 +2184,24 @@ class ReweaveCapsuleStage3:
         ):
             raise Stage3Error("brand_asset_requires_brand_limited")
         if found["capability_kind"] == "computation":
-            cleaned_html = ""
             cleaned_css = ""
             assets: tuple[CleanAsset, ...] = ()
         else:
-            cleaned_html = sanitize_html(
-                html_source,
-                dom_scope=found["dom_scope"],
-                asset_paths=set(asset_paths),
-                redact_strings=redact_strings,
-                entry_relpath=entry_rel,
-            )
             cleaned_css = sanitize_css(css_source, redact_strings=redact_strings)
-            assets = _clean_assets(
-                context.path,
-                asset_paths,
-                {path: snapshot_rows[path].sha256 for path in asset_paths},
-            )
+            source_assets: dict[str, bytes] = {}
+            for logical in asset_paths:
+                try:
+                    content, _mtime_ns = self.intake._read_stable_bytes(
+                        context.path.joinpath(*PurePosixPath(logical).parts),
+                        root=context.path,
+                        relative=logical,
+                    )
+                except IntakeError as exc:
+                    raise Stage3Error(exc.code) from exc
+                if hashlib.sha256(content).hexdigest() != snapshot_rows[logical].sha256:
+                    raise Stage3Error("source_changed_during_scan")
+                source_assets[logical] = content
+            assets = _clean_assets(source_assets)
         if any(
             term
             and term.casefold()
@@ -2936,6 +2980,19 @@ class ReweaveCapsuleStage3:
             "validation_contract_version": VALIDATION_CONTRACT_VERSION,
         }
         now = _now()
+        comparison = _json(
+            {
+                "schema_version": "equivalence_comparison.v1",
+                "reason_codes": ["eligible_active_current_exact_duplicate"],
+                "candidates": [
+                    {
+                        "capsule_id": version["capsule_id"],
+                        "version_id": version["version_id"],
+                        "canonical_hash_equal": True,
+                    }
+                ],
+            }
+        )
         with self.store.transaction() as connection:
             current = connection.execute(
                 "SELECT cv.*, c.status, c.current_version_id, c.capability_key, "
@@ -2950,6 +3007,22 @@ class ReweaveCapsuleStage3:
                 or not self._eligible_exact(dict(current))
             ):
                 raise Stage3Error("exact_duplicate_target_expired")
+            updated = connection.execute(
+                "UPDATE review_items SET candidate_status = 'duplicate', "
+                "candidate_canonical_hash = ?, sanitized_candidate_json = ?, "
+                "retained_version_id = ?, equivalence_comparison_json = ?, updated_at = ? "
+                "WHERE review_id = ? AND candidate_status = 'extracted' AND decision IS NULL",
+                (
+                    prepared.artifact.canonical_hash,
+                    _json(sanitized),
+                    version["version_id"],
+                    comparison,
+                    now,
+                    review["review_id"],
+                ),
+            )
+            if updated.rowcount != 1:
+                raise Stage3Error("review_decision_conflict")
             connection.execute(
                 "INSERT OR IGNORE INTO capsule_sources "
                 "(source_link_id, version_id, project_id, source_identity, source_kind, "
@@ -2964,32 +3037,6 @@ class ReweaveCapsuleStage3:
                     review["source_hash"],
                     prepared.artifact.canonical_hash,
                     now,
-                ),
-            )
-            connection.execute(
-                "UPDATE review_items SET candidate_status = 'duplicate', "
-                "candidate_canonical_hash = ?, sanitized_candidate_json = ?, "
-                "retained_version_id = ?, equivalence_comparison_json = ?, updated_at = ? "
-                "WHERE review_id = ?",
-                (
-                    prepared.artifact.canonical_hash,
-                    _json(sanitized),
-                    version["version_id"],
-                    _json(
-                        {
-                            "schema_version": "equivalence_comparison.v1",
-                            "reason_codes": ["eligible_active_current_exact_duplicate"],
-                            "candidates": [
-                                {
-                                    "capsule_id": version["capsule_id"],
-                                    "version_id": version["version_id"],
-                                    "canonical_hash_equal": True,
-                                }
-                            ],
-                        }
-                    ),
-                    now,
-                    review["review_id"],
                 ),
             )
             self._sync_run_evidence(connection, str(review["run_id"]))
@@ -3044,6 +3091,15 @@ class ReweaveCapsuleStage3:
                 prepared.artifact.canonical_payload,
             ):
                 raise Stage3Error("retained_version_evidence_expired")
+            updated = connection.execute(
+                "UPDATE review_items SET candidate_status = 'merged', "
+                "decision = 'merge_existing', retained_version_id = ?, decided_at = ?, "
+                "updated_at = ? WHERE review_id = ? AND candidate_status = 'review_required' "
+                "AND decision IS NULL",
+                (retained_version_id, now, now, review["review_id"]),
+            )
+            if updated.rowcount != 1:
+                raise Stage3Error("review_decision_conflict")
             followers = self._same_run_followers(connection, review)
             for source_review in [review, *followers]:
                 connection.execute(
@@ -3062,12 +3118,6 @@ class ReweaveCapsuleStage3:
                         now,
                     ),
                 )
-            connection.execute(
-                "UPDATE review_items SET candidate_status = 'merged', "
-                "decision = 'merge_existing', retained_version_id = ?, decided_at = ?, "
-                "updated_at = ? WHERE review_id = ?",
-                (retained_version_id, now, now, review["review_id"]),
-            )
             for follower in followers:
                 connection.execute(
                     "UPDATE review_items SET candidate_status = 'merged', "
@@ -3164,8 +3214,65 @@ class ReweaveCapsuleStage3:
         version_id = f"ver_{uuid.uuid4().hex}"
         capsule_id: str
         old_status: str
+        expected_review_status = str(prepared.review["candidate_status"])
+        if (
+            (decision is None and expected_review_status != "extracted")
+            or (
+                decision == "semantic_split"
+                and expected_review_status not in {"review_required", "duplicate"}
+            )
+            or (
+                decision is not None
+                and decision != "semantic_split"
+                and expected_review_status != "review_required"
+            )
+        ):
+            raise Stage3Error("review_decision_conflict")
         try:
             with self.store.transaction() as connection:
+                updated = connection.execute(
+                    "UPDATE review_items SET candidate_status = 'publishable', decision = ?, "
+                    "retained_version_id = ?, "
+                    "decided_at = CASE WHEN ? IS NULL THEN decided_at ELSE ? END, updated_at = ? "
+                    "WHERE review_id = ? AND candidate_status = ? AND decision IS NULL",
+                    (
+                        decision,
+                        disable_version_id
+                        if decision == "semantic_split"
+                        else prepared.review.get("retained_version_id"),
+                        decision,
+                        now,
+                        now,
+                        prepared.review["review_id"],
+                        expected_review_status,
+                    ),
+                )
+                if updated.rowcount != 1:
+                    raise Stage3Error("review_decision_conflict")
+                if disable_capsule_id is not None:
+                    live_review = connection.execute(
+                        "SELECT equivalence_comparison_json FROM review_items WHERE review_id = ?",
+                        (prepared.review["review_id"],),
+                    ).fetchone()
+                    target_evidence = self._comparison_candidate(
+                        dict(live_review) if live_review is not None else {},
+                        capsule_id=disable_capsule_id,
+                    )
+                    split_target = connection.execute(
+                        "SELECT status, current_version_id, capability_kind FROM capsules "
+                        "WHERE capsule_id = ?",
+                        (disable_capsule_id,),
+                    ).fetchone()
+                    if (
+                        decision != "semantic_split"
+                        or target_evidence is None
+                        or target_evidence.get("version_id") != disable_version_id
+                        or split_target is None
+                        or split_target["status"] != "active"
+                        or split_target["current_version_id"] != disable_version_id
+                        or split_target["capability_kind"] != payload["capability_kind"]
+                    ):
+                        raise Stage3Error("semantic_split_target_invalid")
                 if existing_capsule is None:
                     if (
                         capability_key is None
@@ -3334,23 +3441,20 @@ class ReweaveCapsuleStage3:
                         now,
                     ),
                 )
-                connection.execute(
-                    "UPDATE review_items SET candidate_status = 'publishable', decision = ?, "
-                    "decided_at = CASE WHEN ? IS NULL THEN decided_at ELSE ? END, updated_at = ? "
-                    "WHERE review_id = ?",
-                    (decision, decision, now, now, prepared.review["review_id"]),
-                )
-                connection.execute(
+                updated = connection.execute(
                     "UPDATE review_items SET candidate_status = 'published', "
                     "candidate_canonical_hash = ?, sanitized_candidate_json = ?, updated_at = ? "
-                    "WHERE review_id = ?",
+                    "WHERE review_id = ? AND candidate_status = 'publishable' AND decision IS ?",
                     (
                         artifact.canonical_hash,
                         _json(review_summary),
                         now,
                         prepared.review["review_id"],
+                        decision,
                     ),
                 )
+                if updated.rowcount != 1:
+                    raise Stage3Error("review_decision_conflict")
                 for follower in followers:
                     connection.execute(
                         "UPDATE review_items SET candidate_status = 'duplicate', "
@@ -3361,18 +3465,24 @@ class ReweaveCapsuleStage3:
                     if disable_capsule_id == capsule_id:
                         raise Stage3Error("semantic_split_identity_unchanged")
                     previous = connection.execute(
-                        "SELECT status, current_version_id FROM capsules WHERE capsule_id = ?",
+                        "SELECT status, current_version_id, capability_kind FROM capsules "
+                        "WHERE capsule_id = ?",
                         (disable_capsule_id,),
                     ).fetchone()
-                    if previous is None or previous["status"] not in {
-                        "active",
-                        "pending_revalidation",
-                    } or previous["current_version_id"] != disable_version_id:
+                    if (
+                        previous is None
+                        or previous["status"] != "active"
+                        or previous["current_version_id"] != disable_version_id
+                        or previous["capability_kind"] != payload["capability_kind"]
+                    ):
                         raise Stage3Error("semantic_split_target_invalid")
-                    connection.execute(
-                        "UPDATE capsules SET status = 'disabled' WHERE capsule_id = ?",
-                        (disable_capsule_id,),
+                    disabled = connection.execute(
+                        "UPDATE capsules SET status = 'disabled' WHERE capsule_id = ? "
+                        "AND status = 'active' AND current_version_id = ?",
+                        (disable_capsule_id, disable_version_id),
                     )
+                    if disabled.rowcount != 1:
+                        raise Stage3Error("semantic_split_target_invalid")
                     connection.execute(
                         "INSERT INTO capsule_status_events "
                         "(event_id, capsule_id, event_type, from_status, to_status, version_id, "

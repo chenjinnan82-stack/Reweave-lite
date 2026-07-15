@@ -342,6 +342,21 @@ function analyzeCandidate() {
         const protectedKind = protectedKinds.get(node.text);
         return protectedKind ? new Set([protectedKind]) : new Set();
       }
+      if (ts.isCallExpression(node)) {
+        if (ts.isPropertyAccessExpression(node.expression)
+            || ts.isElementAccessExpression(node.expression)) {
+          const receiverReferences = protectedReferences(node.expression.expression);
+          const method = propertyName(node.expression);
+          if (["querySelector", "querySelectorAll"].includes(method)
+              && receiverReferences.has("root")) {
+            return new Set(["dom"]);
+          }
+          return new Set(
+            [...receiverReferences].map((base) => `${base}_derived`),
+          );
+        }
+        return new Set();
+      }
       if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
         const result = new Set();
         const name = propertyName(node);
@@ -461,6 +476,14 @@ function analyzeCandidate() {
         }
       }
       if (ts.isVariableDeclaration(node) && node.initializer) {
+        const declaredDomBinding = ts.isIdentifier(node.name)
+          && domBindings.has(node.name.text)
+          && ts.isCallExpression(node.initializer)
+          && (ts.isPropertyAccessExpression(node.initializer.expression)
+            || ts.isElementAccessExpression(node.initializer.expression))
+          && ["querySelector", "querySelectorAll"].includes(
+            propertyName(node.initializer.expression),
+          );
         if (!ts.isIdentifier(node.name) && ts.isCallExpression(node.initializer)
             && (ts.isPropertyAccessExpression(node.initializer.expression)
               || ts.isElementAccessExpression(node.initializer.expression))
@@ -471,7 +494,8 @@ function analyzeCandidate() {
         if ([...initializerReferences].some((item) => item.startsWith("event_"))) {
           throw new Rejection("event_object_property_forbidden", path);
         }
-        if ([...initializerReferences].some((item) => item !== "input_value")) {
+        if (!declaredDomBinding
+            && [...initializerReferences].some((item) => item !== "input_value")) {
           throw new Rejection(
             ts.isIdentifier(node.name)
               ? "protected_reference_alias_forbidden"
@@ -511,9 +535,22 @@ function analyzeCandidate() {
         if (ts.isPropertyAccessExpression(node.left) || ts.isElementAccessExpression(node.left)) {
           const owner = rootIdentifier(node.left);
           const name = propertyName(node.left);
+          const directOwner = ts.isIdentifier(node.left.expression)
+            ? node.left.expression.text
+            : null;
+          const ownerReferences = protectedReferences(node.left.expression);
+          const targetsScopedDom = [...ownerReferences].some(
+            (item) => item === "root" || item === "dom"
+              || item.startsWith("root_") || item.startsWith("dom_"),
+          );
           if (params.includes(owner) || owner === "input" || owner === "ports") throw new Rejection("input_mutation_forbidden", path);
           if (allowedGlobals.has(owner)) throw new Rejection("global_object_mutation_forbidden", path);
-          if (domBindings.has(owner)) {
+          if (targetsScopedDom) {
+            if (!directOwner || !domBindings.has(directOwner)
+                || !allowedDomWrite.has(name)) {
+              throw new Rejection("dom_write_forbidden", path);
+            }
+          } else if (domBindings.has(owner)) {
             if (!allowedDomWrite.has(name)) throw new Rejection("dom_write_forbidden", path);
           } else if (kind !== "interaction") {
             throw new Rejection("object_state_mutation_forbidden", path);

@@ -56,6 +56,16 @@ def _image(request: dict[str, Any]) -> dict[str, Any]:
         media_type, qt_format = "image/webp", b"webp"
     else:
         raise ValueError("image_magic_forbidden")
+    expected_media_type = {
+        ".png": "image/png",
+        ".jpg": "image/jpeg",
+        ".jpeg": "image/jpeg",
+        ".webp": "image/webp",
+    }.get(source.suffix.lower())
+    if expected_media_type is None:
+        raise ValueError("image_format_forbidden")
+    if media_type != expected_media_type:
+        raise ValueError("image_format_mismatch")
 
     reader = QImageReader(str(source))
     reader.setAutoTransform(True)

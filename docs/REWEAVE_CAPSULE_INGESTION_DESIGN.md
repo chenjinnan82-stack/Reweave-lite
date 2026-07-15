@@ -3576,3 +3576,51 @@ pytest 9.1.1
 - P2：发布面审计当前以显式非活跃文件清单为主，import graph 仍由限定 `rg` 检查；GitHub 托管 Ubuntu/Windows runner 尚未对未 push 的冻结提交执行。
 
 本冻结版本满足建立本地 checkpoint 的前置条件。checkpoint 后停止阶段 1–3 的独立审计；后续只有进入已批准的新阶段或出现来自真实使用、正式 CI 的可复现回归时，才重新打开相应范围。
+
+## 附录 G：阶段 3 对抗性边界补充收口记录
+
+收口日期：2026-07-15。
+
+本附录记录 checkpoint 后由具体对抗性复现重新打开的阶段 3 限定修复，并取代附录 F 中旧的冻结摘要、测试数字和阶段 3 最终判断。修复范围只包含阶段 3 安全分析、固定 PySide worker、阶段 3 服务及其测试；没有修改阶段 1/2、原前端、App、CLI、`module_native`、旧 JSON 仓或活跃生成路径。
+
+### G.1 已闭合的具体问题
+
+- JavaScript AST 现在把入口 `root`、合法查询返回值及其全部 DOM 派生值纳入 provenance。只有以已声明 selector 建立的直接 DOM binding 才能执行白名单读写；`offsetParent`、祖先、根外对象以及查询链上的派生属性均失败关闭。实现没有继续扩张 property denylist。
+- `addEventListener` 和 `removeEventListener` 只能引用当前模块中可静态解析到唯一函数体的 handler。导入 handler、无法解析 handler 和读取 Event 属性的嵌套 handler 均拒绝；Event 仍只允许直接调用 `preventDefault()`。
+- 真实 QWeb harness 使用 `MutationObserver` 监测整个文档的 `attributes`、`childList` 和 `characterData`。候选执行期间，除 capsule root 及其后代外的任一 mutation 都以 `qweb_root_escape_detected` 失败；原有文本哨兵继续作为冗余检查。
+- 图片只从清洗后原子 root 实际引用的 `<img src>` 形成资产闭包。文档其他区域登记的图片不会触发人工像素确认、不会进入 worker，也不会写入 `capsule_assets`。
+- 根内资产在进入 image worker 前使用阶段 2 现有稳定只读句柄重新读取，并立即与本次 snapshot SHA-256 比较。文件替换、父级符号链接和越界 resolved path 继续失败关闭；worker 不接收来源项目路径。
+- 图片后缀、magic、Qt 实际格式和返回 media type 使用固定映射交叉验证；PNG 字节使用 `.jpg` 等伪装路径以 `image_format_mismatch` 拒绝。位图像素仍必须由用户确认不含真实记录，未引入 OCR，也不把图片交给模型。
+- `semantic_split` 在 `BEGIN IMMEDIATE` 内重新绑定当前 review 的 comparison evidence，并要求被停用目标为同 kind 的 `active + current_version_id`。`pending_revalidation` 或过期目标使整笔事务回滚；成功拆分把被保留的旧 version 写入 `retained_version_id`。
+- 发布、人工合并、精确重复挂接和人工拒绝均在任何正式副作用前，以预期 candidate status 加 `decision IS NULL` 执行条件更新并检查 `rowcount = 1`。并发决定冲突返回 `review_decision_conflict`，不能覆盖先到决定，也不留下 capsule、version、source 或 event 残留。
+- presentation/interaction 继续运行全部正常和边界 fixture；无效 fixture 仍在应用边界检查。interaction 继续覆盖 dispose→mount、两次 dispose、dispose 后无 emit 且 DOM 不再响应。本轮没有把 synthetic 声明交互冒充真实 QWebEngine 验收。
+
+### G.2 冻结摘要与验证
+
+阶段 1–3 的 13 个冻结源码、脚本和测试文件继续使用附录 F.1 的固定顺序计算摘要；本轮最终值为：
+
+```text
+6b04e94df506b44ac1e875c0ab6a7f7f151a4794d1ad051ec1d0ab81589e520b
+```
+
+限定验证结果：
+
+- 阶段 3 聚焦：`24 passed, 26 subtests passed`。
+- 独立 Python 3.11.15、pytest 9.1.1 全量：`526 passed, 76 subtests passed`。
+- Node v24.18.0 与 Python 3.11 按 `.github/workflows/ci.yml` 的正式命令链在本机等价复验：`npm ci`、全量测试、public Reweave demo、Stage4 estimate/data demo、规定产物检查和前端 `node --check` 全部通过；npm audit 为 0 vulnerability。
+- 独立 `.venv-reweave` 实际运行 PySide image worker 与真实 QWebEngine；正常 interaction 和对抗性根祖先 mutation 用例均通过预期断言。它仍不是阶段 6 的可见桌面端到端用户验收。
+- Python 编译、阶段 3 安全脚本 `node --check`、`git diff --check` 和限定 diff 审阅通过。
+- 两组独立只读复核分别重跑资产竞态/闭包/格式探针以及 semantic split/CAS 探针，未发现限定范围内新的可复现 P0/P1。
+
+冻结提交尚未 push，因此没有把本机等价复验表述为 GitHub 托管 Ubuntu/Windows runner 已通过。该项保持 P2，并应在下一次获准 push 后由正式 runner 验证。
+
+### G.3 阶段判断
+
+- 阶段 1：`PASS`，本轮未修改。
+- 阶段 2：`PASS`，本轮只复用其稳定读取器，未修改其契约或实现。
+- 阶段 3：`PASS`，上述具体 P0/P1 已闭合；无新增可复现 P0/P1。
+- 整体迁移：仍为 `PARTIAL`，因为阶段 4 至阶段 6 尚未实施。
+- 阶段 4 进入判断：`READY`。可以开始原前端增量管理界面与旧 `capsules.json` 逐条重新清洗，但不得提前修改 `module_native`、生成读取、旧路径退出或引入双仓开关；这些仍分别属于阶段 5 及其后续门。
+- 阶段 4 必须承担的既有 P1 是：未来唯一应用服务在恢复前停止任务并关闭全部 SQLite 连接。它不阻止开始阶段 4，但在恢复 UI 或活跃切换验收时必须闭合。
+
+本附录完成后停止阶段 1–3 独立审计。除真实使用或托管 CI 提供新的可复现回归外，不再以无边界探针继续重开阶段 1–3。
