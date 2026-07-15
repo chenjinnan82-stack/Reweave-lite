@@ -117,6 +117,11 @@ console.log(JSON.stringify({before, after}));
 
 def test_capability_rename_and_historical_product_diagnostics_are_wired() -> None:
     app = (ROOT / "reweave_frontend" / "app.js").read_text(encoding="utf-8")
+    styles = (ROOT / "reweave_frontend" / "styles.css").read_text(encoding="utf-8")
+    popover_start = styles.index(".capsule-warehouse-popover {")
+    popover_rule = styles[popover_start : styles.index("\n}", popover_start)]
+    meta_start = styles.index(".warehouse-status,\n.warehouse-empty,\n.warehouse-meta {")
+    meta_rule = styles[meta_start : styles.index("\n}", meta_start)]
     assert 'bridgeCall(\n          "rename_capability_group"' in app
     assert 'rename.textContent = t("renameCapability");' in app
     assert "details.dataset.historicalProductId" in app
@@ -125,6 +130,8 @@ def test_capability_rename_and_historical_product_diagnostics_are_wired() -> Non
         app.index("ingestionManagement.historicalProducts.forEach") :
         app.index("\n  function renderManagementRuns", app.index("ingestionManagement.historicalProducts.forEach"))
     ]
+    assert "overflow-x: hidden;" in popover_rule
+    assert "overflow-wrap: anywhere;" in meta_rule
 
 
 def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:

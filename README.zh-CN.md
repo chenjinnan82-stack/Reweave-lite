@@ -48,6 +48,17 @@ Source Box -> 只读快照 -> 原子提取 -> 人工复核
 
 监督模型只在桌面仓库流程中显式选择，CLI 没有硬编码默认模型。生成只使用满足资格的 active/current 正式版本。
 
+### Static Web V1 支持范围
+
+| 支持 | V1 不支持 |
+| --- | --- |
+| 一个已确认的 HTML 入口 | classic `<script src>`、内联脚本、多页面自动推断 |
+| 由 `.js` / `.mjs` 和静态相对 import 组成的自包含本地 ES module 闭包 | CommonJS、TypeScript、JSX、React/Vue/Svelte 组件源码、动态 import、裸包导入 |
+| 不需要安装来源依赖、不需要构建即可运行的来源 | `node_modules`、必须构建的项目、未单独批准的 `dist` / `build` 输出 |
+| 能独立证明的 presentation、interaction、computation 原子角色 | SVG、字体，以及无法证明原子角色或本地资产闭包的代码 |
+
+Vite 不按名称一刀切：已经形成自包含原生 module 入口的静态来源可以符合条件；必须运行 Vite 或安装依赖的项目不属于 V1。
+
 ## 为什么做
 
 小模型不是完全不会写代码。它真正吃亏的地方，是很难稳定记住一个旧项目里的命名、布局、样式、业务词和细节规则。
@@ -59,7 +70,7 @@ Source Box -> 只读快照 -> 原子提取 -> 人工复核
 ## 现在能做什么
 
 - 绑定旧项目文件夹为 Source Box。
-- 通过只读快照提取可独立验证的 presentation、interaction 和 computation 胶囊。
+- 对符合 Static Web V1 支持条件的来源，通过只读快照提取可独立验证的 presentation、interaction 和 computation 胶囊。
 - 在桌面流程中完成复核、模型监督、验证、发布、备份和恢复。
 - 把正式不可变版本保存在唯一的本地 SQLite Capsule Warehouse。
 - 由唯一 `module_native` 组合器接收内存态正式胶囊。
@@ -68,6 +79,8 @@ Source Box -> 只读快照 -> 原子提取 -> 人工复核
 - 默认关闭真实源项目写入。
 
 ## 截图
+
+下列仓库图片仅作界面示意。发布验收以设计文档单独记录的真实 QWeb 交互和模型辅助截图证据为准；这些图片不是像素级签字。
 
 ### Source Box
 
@@ -103,12 +116,13 @@ py -3 scripts\run_public_reweave_demo.py `
 
 返回值中的 `previewPath` 指向生成产品；`productId`、`manifestDigest` 和 `capsulesUsed` 提供精确本地追溯。
 
-在桌面程序里试用公开 Source Box：
+当前正向流程使用仓库内版本化的 ESM 开发者夹具：
 
 ```text
-examples/source_boxes/customer-quote-widget
-examples/source_boxes/ops-status-card
+tests/fixtures/reweave_phase6_quote
 ```
+
+公开的 `customer-quote-widget` 和 `ops-status-card` 使用 classic script。它们保留为 V1 范围负向样例，预期停在 `classic_script_unsupported_v1`，不会完成正向入库。
 
 桌面闭环：
 
@@ -134,13 +148,14 @@ node --check reweave_frontend/app.js
 macOS/Linux 可选桌面壳：
 
 ```bash
+npm ci
 python3 -m venv .venv-reweave
 . .venv-reweave/bin/activate
 python -m pip install -r pimos_lite/requirements-desktop.txt
 ./start_reweave_static.sh
 ```
 
-启动脚本不会自动安装依赖，也不会自动连接软件包仓库。
+PySide6 只安装在独立 `.venv-reweave`，不进入核心依赖。启动脚本不会自动安装依赖，也不会自动连接软件包仓库。Ollama 监督只允许 loopback，并要求用户显式选择本机已安装模型；Reweave 没有硬编码默认模型。
 
 ### 历史 demo
 
@@ -168,6 +183,17 @@ REWEAVE_RUNTIME_STATE_PATH=/path/to/frontend_runtime_state.json \
 - 历史 demo 脚本不是 CI 直接入口。
 - 默认启动不依赖私有工作区路径。
 - Source project writes 默认保持关闭。
+
+运行证据标签严格区分：
+
+| 标签 | 能证明什么 |
+| --- | --- |
+| `synthetic_declared_interaction` | 只证明声明交互模拟，不是浏览器验收。 |
+| `real_qwebengine_render` / `real_qwebengine_interaction` | 候选在隔离的真实 QWebEngine 中完成渲染或交互。 |
+| `real_qwebengine_product_bootstrap` | 生成产品能在真实 QWebEngine 启动，不等于完整业务点击。 |
+| `real_qwebengine_product_interaction` | 外部输入和真实点击得到预期产品结果，不等于像素级或人工视觉签字。 |
+
+托管 CI 在 Ubuntu 和 Windows 上使用 Python 3.11、Node 24；它不安装 PySide6，也不能替代 macOS 本地真实 QWeb 桌面门。Windows 桌面打包仍为 experimental。
 
 历史内部工作台笔记，不作为这个公开仓库的运行前提。
 

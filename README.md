@@ -48,6 +48,17 @@ Source Box -> read-only snapshot -> atomic extraction -> review
 
 Supervision model selection belongs to the desktop warehouse workflow and has no hardcoded CLI default. Product generation consumes only eligible active/current formal versions.
 
+### Static Web V1 support
+
+| Supported | Not supported in V1 |
+| --- | --- |
+| One confirmed HTML entry | Classic `<script src>`, inline scripts, or automatic multi-page inference |
+| A self-contained local ES module closure using `.js` / `.mjs` and static relative imports | CommonJS, TypeScript, JSX, React/Vue/Svelte component source, dynamic imports, or bare package imports |
+| Sources that need no dependency install or build step | `node_modules`, build-required projects, and unapproved `dist` / `build` output |
+| Independently provable presentation, interaction, and computation roles | SVG, fonts, or code whose atomic role and local asset closure cannot be proven |
+
+Vite is judged by the executable source, not its name: an already self-contained native module entry may qualify, but a project that must run Vite or install dependencies does not.
+
 ## Why
 
 Small local models can write code, but they often lose the project memory that makes code useful: naming, layout, patterns, copy, and tiny business rules.
@@ -59,7 +70,7 @@ The inspiration is a spider spinning silk: old project threads are cleaned, join
 ## What It Does Today
 
 - Binds an old project folder as a local Source Box.
-- Takes a read-only snapshot and extracts independently verifiable presentation, interaction, and computation capsules.
+- For supported Static Web V1 sources, takes a read-only snapshot and extracts independently verifiable presentation, interaction, and computation capsules.
 - Uses the desktop workflow for review, model supervision, validation, publishing, backup, and restore.
 - Stores formal immutable versions in one local SQLite Capsule Warehouse.
 - Uses one `module_native` composer with in-memory formal capsule objects.
@@ -68,6 +79,8 @@ The inspiration is a spider spinning silk: old project threads are cleaned, join
 - Keeps real source project writes off by default.
 
 ## Screenshots
+
+The repository images below are interface illustrations. Release acceptance uses the separately recorded real-QWeb interaction and model-assisted screenshot evidence in the design document; these images are not pixel-level sign-off.
 
 ### Source Box
 
@@ -103,12 +116,13 @@ py -3 scripts\run_public_reweave_demo.py `
 
 The returned `previewPath` points to the generated product. `productId`, `manifestDigest`, and `capsulesUsed` provide exact local traceability.
 
-Try a public Source Box in the desktop app:
+Use the versioned ESM developer fixture for the current positive flow:
 
 ```text
-examples/source_boxes/customer-quote-widget
-examples/source_boxes/ops-status-card
+tests/fixtures/reweave_phase6_quote
 ```
+
+The public `customer-quote-widget` and `ops-status-card` examples use classic scripts. They are retained as V1 boundary examples and are expected to stop at `classic_script_unsupported_v1`, not complete the positive intake flow.
 
 Desktop loop:
 
@@ -134,13 +148,14 @@ node --check reweave_frontend/app.js
 Optional desktop shell on macOS/Linux:
 
 ```bash
+npm ci
 python3 -m venv .venv-reweave
 . .venv-reweave/bin/activate
 python -m pip install -r pimos_lite/requirements-desktop.txt
 ./start_reweave_static.sh
 ```
 
-The launcher never installs dependencies or contacts a package index automatically.
+PySide6 remains isolated in `.venv-reweave`; it is not a core dependency. The launcher never installs dependencies or contacts a package index automatically. Ollama supervision is loopback-only and requires an explicitly selected installed model; Reweave has no hardcoded default model.
 
 ### Historical demos
 
@@ -168,6 +183,17 @@ REWEAVE_RUNTIME_STATE_PATH=/path/to/frontend_runtime_state.json \
 - Historical demo scripts are not direct CI entrypoints.
 - Local default launch does not depend on private workspace paths.
 - Source project writes stay off by default.
+
+Runtime evidence labels are intentionally distinct:
+
+| Label | What it proves |
+| --- | --- |
+| `synthetic_declared_interaction` | Declared-interaction simulation only; it is not browser acceptance. |
+| `real_qwebengine_render` / `real_qwebengine_interaction` | Candidate render or interaction in an isolated real QWebEngine. |
+| `real_qwebengine_product_bootstrap` | The generated product starts in real QWebEngine; it is not a complete business interaction. |
+| `real_qwebengine_product_interaction` | External input and click reached the expected product result in real QWebEngine; it is not pixel-level or human visual sign-off. |
+
+Hosted CI uses Python 3.11 and Node 24 on Ubuntu and Windows. It does not install PySide6 or replace the local macOS real-QWeb desktop gate. Windows desktop packaging remains experimental.
 
 Historical internal workbench notes are not required for this public repo.
 
