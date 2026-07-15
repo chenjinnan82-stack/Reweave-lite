@@ -9,6 +9,23 @@
   var mainEventsBound = false;
   var locale = localStorage.getItem("reweave_locale") || "zh";
   var lastPreviewAcceptance = null;
+  var ingestionManagement = {
+    available: false,
+    loaded: false,
+    loading: false,
+    projects: [],
+    discovery: null,
+    models: [],
+    selectedModel: null,
+    reviewItems: [],
+    capabilityGroups: [],
+    backups: [],
+    recoverableProducts: [],
+    historicalProducts: [],
+    legacy: null,
+    runs: {},
+    errorKey: "",
+  };
 
   var STR = {
     zh: {
@@ -32,13 +49,14 @@
       buildSmallProjectPack: "生成小项目包",
       generationInput: "生成输入",
       usedPlaceholder: "选中的胶囊会出现在这里",
-      generationAuto: "未手动选择时，系统会自动匹配胶囊。",
+      generationAuto: "请先选择至少一个可生成的正式胶囊。",
       generationManual: "已选择 {count} 个胶囊；本次生成只使用这些胶囊。",
       generationResolved: "系统已匹配 {count} 个胶囊。",
       draftsReadyStore: "胶囊草稿已就绪，请在来源箱中确认入仓。",
       selecting: "正在选择胶囊…",
       readyResponse: "已使用 {count} 个胶囊生成本地项目预览。",
       acceptanceUsable: "可用 · 交互行为已验证",
+      acceptanceRealBootstrap: "真实 QWebEngine 已完成产品启动；完整交互仍需验收。",
       acceptanceNeedsBehavior: "需复核 · 未找到完整行为模块",
       acceptanceNeedsQuality: "需复核 · 质量检查结果缺失",
       acceptanceNeedsRuntime: "需复核 · 等待运行验证",
@@ -49,6 +67,9 @@
       localPreview: "本地预览",
       newTask: "新任务",
       docked: "已加入本次任务。",
+      removeCapsule: "移除 {name}",
+      formalSelectionInvalid: "所选正式胶囊无法组成同一项能力。",
+      formalSelectionNeedsDomRole: "正式胶囊组合至少需要一个展示或交互角色。",
       useInTask: "用于任务",
       readOnly: "只读",
       sourceReadOnly: "源项目只读",
@@ -130,12 +151,62 @@
       enrichContent: "补充内容",
       copied: "已复制",
       enrichedContentPreview: "使用补充内容预览",
-      localModelRefinement: "本地模型优化",
-      localModelOff: "关闭",
-      localModelReady: "就绪",
-      localModelRunning: "处理中",
-      localModelApplied: "已应用",
-      localModelFallback: "已回退",
+      capsuleWarehouse: "胶囊仓库",
+      sourceProjects: "来源项目",
+      discoverSource: "发现来源",
+      refreshAll: "全部刷新",
+      supervisionModel: "监督模型",
+      selectModel: "选择模型",
+      modelTimeoutNote: "已安装不等于已通过监督验证；冷启动或较大模型可能在固定超时后进入等待模型状态。",
+      save: "保存",
+      reviewItems: "待复核项",
+      capabilityGroups: "能力分组",
+      backupRestore: "备份与恢复",
+      createBackup: "创建备份",
+      importLegacy: "导入旧仓",
+      intakeRuns: "入库任务",
+      managementLoading: "正在载入胶囊仓库…",
+      managementUnavailable: "胶囊仓库管理当前不可用。",
+      managementReady: "胶囊仓库管理已就绪。",
+      noItems: "暂无项目。",
+      noReviews: "暂无待复核项。",
+      noCapabilities: "暂无正式能力。",
+      noBackups: "暂无备份。",
+      noRuns: "暂无入库任务。",
+      confirmProjects: "确认所选项目",
+      brandMode: "品牌范围",
+      brandInherit: "继承来源根配置",
+      brandClear: "清除品牌",
+      brandReplace: "替换品牌配置",
+      brandProfile: "品牌配置 JSON",
+      brandProfileInvalid: "品牌配置必须是 JSON 对象。",
+      projectConfirmationPartial: "部分项目未能确认，请查看项目状态。",
+      refreshProject: "刷新项目",
+      cancelRun: "取消",
+      restore: "恢复",
+      viewDetails: "查看详情",
+      renameCapability: "修改名称",
+      renameCapabilityPrompt: "输入新的能力展示名称",
+      manifestDigest: "Manifest 摘要",
+      preRestoreBackup: "恢复前备份",
+      backupUnavailable: "不可用",
+      disableCapsule: "停用",
+      enableCapsule: "启用",
+      restoreConfirm: "恢复会把本地仓库回退到该备份时点。是否继续？",
+      decisionSaved: "决定已保存。",
+      modelSaved: "监督模型已保存。",
+      backupCreated: "备份已创建。",
+      retryUsage: "补登记产品记录",
+      usageRetryComplete: "产品使用记录已补登记。",
+      restoreComplete: "仓库恢复完成。",
+      importStarted: "旧仓重新清洗任务已启动。",
+      legacyNotFound: "未发现旧胶囊仓。",
+      legacyWarehouse: "旧胶囊仓",
+      legacyAliases: "迁移关系",
+      legacyPending: "待人工映射",
+      legacyRelationship: "关系",
+      legacyTarget: "新胶囊版本",
+      mapLegacy: "确认映射",
       warnings: "警告",
       truncated: "已截断",
       redacted: "已脱敏",
@@ -172,13 +243,14 @@
       buildSmallProjectPack: "Build Small Project Pack",
       generationInput: "Generation input",
       usedPlaceholder: "Selected capsules dock here",
-      generationAuto: "Generate will auto-pick capsules if none are selected.",
+      generationAuto: "Select at least one eligible formal capsule before generating.",
       generationManual: "Generation input: {count} selected. Generate will use exactly these capsules.",
       generationResolved: "Reweave matched {count} capsules.",
       draftsReadyStore: "Capsule drafts are ready. Review the Source Box and store them.",
       selecting: "Reweave is selecting capsules…",
       readyResponse: "Reweave used {count} capsules and prepared a local preview package.",
       acceptanceUsable: "Usable · Interaction verified",
+      acceptanceRealBootstrap: "Product bootstrapped in real QWebEngine; full interaction still needs review.",
       acceptanceNeedsBehavior: "Needs review · No closed behavior module",
       acceptanceNeedsQuality: "Needs review · Quality result missing",
       acceptanceNeedsRuntime: "Needs review · Runtime validation required",
@@ -189,6 +261,9 @@
       localPreview: "local preview",
       newTask: "New task",
       docked: "docked for this task.",
+      removeCapsule: "Remove {name}",
+      formalSelectionInvalid: "The selected formal capsules cannot form one capability.",
+      formalSelectionNeedsDomRole: "A formal selection needs at least one presentation or interaction role.",
       useInTask: "Use in task",
       readOnly: "Read-only",
       sourceReadOnly: "Source project read-only",
@@ -270,12 +345,62 @@
       enrichContent: "Enrich content",
       copied: "Copied",
       enrichedContentPreview: "Use enriched content preview",
-      localModelRefinement: "Local model refinement",
-      localModelOff: "Off",
-      localModelReady: "Ready",
-      localModelRunning: "Running",
-      localModelApplied: "Applied",
-      localModelFallback: "Fallback",
+      capsuleWarehouse: "Capsule Warehouse",
+      sourceProjects: "Source projects",
+      discoverSource: "Discover source",
+      refreshAll: "Refresh all",
+      supervisionModel: "Supervision model",
+      selectModel: "Select a model",
+      modelTimeoutNote: "Installed does not mean supervision-verified; cold or large models may enter waiting-model after the fixed timeout.",
+      save: "Save",
+      reviewItems: "Review items",
+      capabilityGroups: "Capability groups",
+      backupRestore: "Backup and restore",
+      createBackup: "Create backup",
+      importLegacy: "Import legacy warehouse",
+      intakeRuns: "Intake runs",
+      managementLoading: "Loading Capsule Warehouse…",
+      managementUnavailable: "Capsule Warehouse management is unavailable.",
+      managementReady: "Capsule Warehouse management is ready.",
+      noItems: "No projects.",
+      noReviews: "No review items.",
+      noCapabilities: "No formal capabilities.",
+      noBackups: "No backups.",
+      noRuns: "No intake runs.",
+      confirmProjects: "Confirm selected projects",
+      brandMode: "Brand scope",
+      brandInherit: "Inherit source-root profile",
+      brandClear: "Remove brand",
+      brandReplace: "Replace brand profile",
+      brandProfile: "Brand profile JSON",
+      brandProfileInvalid: "Brand profile must be a JSON object.",
+      projectConfirmationPartial: "Some projects could not be confirmed; review their status.",
+      refreshProject: "Refresh project",
+      cancelRun: "Cancel",
+      restore: "Restore",
+      viewDetails: "View details",
+      renameCapability: "Rename",
+      renameCapabilityPrompt: "Enter a new capability display name",
+      manifestDigest: "Manifest digest",
+      preRestoreBackup: "Pre-restore backup",
+      backupUnavailable: "Unavailable",
+      disableCapsule: "Disable",
+      enableCapsule: "Enable",
+      restoreConfirm: "Restore rewinds the local warehouse to this backup. Continue?",
+      decisionSaved: "Decision saved.",
+      modelSaved: "Supervision model saved.",
+      backupCreated: "Backup created.",
+      retryUsage: "Register product usage",
+      usageRetryComplete: "Product usage registration completed.",
+      restoreComplete: "Warehouse restore complete.",
+      importStarted: "Legacy recleaning run started.",
+      legacyNotFound: "No legacy capsule warehouse found.",
+      legacyWarehouse: "Legacy capsule warehouse",
+      legacyAliases: "Migration relationships",
+      legacyPending: "Pending human mapping",
+      legacyRelationship: "Relationship",
+      legacyTarget: "New capsule version",
+      mapLegacy: "Confirm mapping",
       warnings: "Warnings",
       truncated: "truncated",
       redacted: "redacted",
@@ -306,7 +431,6 @@
   var lastReactPreview = null;
   var pendingGeneratePromise = null;
   var useEnrichedContentPreview = false;
-  var useBoundedLocalModel = false;
   var usedCapsuleSelectionMode = "manual";
   var previewViewerMode = "view";
   var lumoLiteArtifacts = [];
@@ -369,6 +493,10 @@
     return bridgeHelpers.canBuildTaskPackPreview
       ? bridgeHelpers.canBuildTaskPackPreview(desktopShellState, data)
       : false;
+  }
+
+  function canGenerateProduct() {
+    return desktopCapability("canGenerateProduct");
   }
 
   function clearLumoLiteMockState() {
@@ -466,7 +594,7 @@
       return;
     }
     var summary = getLumoLiteRuntimeSummary() || {};
-    var taskPackPreview = canBuildTaskPackPreview();
+    var taskPackPreview = canGenerateProduct() || canBuildTaskPackPreview();
     if (els.btnLumoArtifacts) {
       els.btnLumoArtifacts.classList.toggle("hidden", lumoLiteArtifacts.length === 0);
     }
@@ -501,7 +629,9 @@
     );
     var capability =
       lastPreviewAcceptance && hasTaskPackPreview
-        ? lastPreviewAcceptance.verdict === "usable"
+        ? lastPreviewAcceptance.reason === "real_qwebengine_product_bootstrap"
+          ? t("capabilityReview")
+          : lastPreviewAcceptance.verdict === "usable"
           ? t("capabilityReady")
           : lastPreviewAcceptance.verdict === "needs_review"
             ? t("capabilityReview")
@@ -695,11 +825,20 @@
     }
 
     function connectQtBridge() {
-      if (finished || connecting || typeof qt === "undefined" || !qt.webChannelTransport || typeof QWebChannel === "undefined") {
+      if (
+        finished ||
+        connecting ||
+        window.__reweaveWebChannelConnecting ||
+        typeof qt === "undefined" ||
+        !qt.webChannelTransport ||
+        typeof QWebChannel === "undefined"
+      ) {
         return false;
       }
       connecting = true;
+      window.__reweaveWebChannelConnecting = true;
       new QWebChannel(qt.webChannelTransport, function (channel) {
+        window.__reweaveWebChannelConnecting = false;
         window.reweaveBridge = channel.objects.reweaveBridge;
         connecting = false;
         attach();
@@ -750,17 +889,18 @@
 
   function isCapsuleGenerateEligible(cap) {
     if (!cap) return false;
-    if (cap.origin === "lumo_lite_capsule_warehouse") return canBuildTaskPackPreview();
     var status = cap.status || "active";
+    if (cap.formal_version) {
+      return status === "active" && cap.generation_eligible === true;
+    }
     return status === "active" || status === "ready";
   }
 
   function isCapsuleManageEligible(cap) {
     return !!(
       cap &&
+      !cap.formal_version &&
       !isLumoLiteReadOnly() &&
-      cap.origin !== "lumo_lite_capsule_warehouse" &&
-      cap.origin !== "stage4_module_native" &&
       isCapsuleGenerateEligible(cap)
     );
   }
@@ -772,16 +912,32 @@
     data.generateCapsuleIds = data.capsules.filter(isCapsuleGenerateEligible).map(function (cap) {
       return cap.id;
     });
+    usedCapsuleIds = usedCapsuleIds.filter(function (id) {
+      return data.generateCapsuleIds.indexOf(id) !== -1;
+    });
+    if (selectedCapsuleId && data.generateCapsuleIds.indexOf(selectedCapsuleId) === -1) {
+      selectedCapsuleId = null;
+      if (els.reader) hideCapsuleReader();
+    }
     if (els.capsuleStrip) {
       renderCapsuleStrip();
     }
+    if (els.usedCapsuleDock && els.usedCount) renderUsedChips();
     updateEnrichedContentToggle();
   }
 
   function applyDesktopInitialState(state) {
     if (!hasDesktopBridge() || !state || !data) return;
+    clearLumoLiteMockState();
+    delete data.lumoLiteMode;
+    delete data.lumoLiteRuntimeSummary;
+    lastPreviewAcceptance = null;
+    lastReactPreview = null;
+    delete data.qualityGate;
+    data.generatedTraceVerified = false;
+    delete data.lunaPack;
+    delete data.contentAwareGenerate;
     if (isLumoLiteState(state)) {
-      clearLumoLiteMockState();
       data.lumoLiteRuntimeSummary = state.lumoLiteRuntimeSummary || null;
     }
     if (Array.isArray(state.sourceBoxes)) {
@@ -795,26 +951,948 @@
       applyWarehouseCapsules(state.capsules);
     }
     if (Array.isArray(state.history)) data.history = state.history.slice();
+    applyIngestionInitialState(state.capsuleIngestionV1 || null);
     if (state.generatedPackage) {
       data.generatedPackage = state.generatedPackage;
+    } else {
+      delete data.generatedPackage;
     }
-    if (Array.isArray(state.lumoLiteArtifacts)) {
-      lumoLiteArtifacts = state.lumoLiteArtifacts.slice();
-      if (els.btnLumoArtifacts) {
-        els.btnLumoArtifacts.classList.toggle("hidden", lumoLiteArtifacts.length === 0);
-      }
+    lumoLiteArtifacts = Array.isArray(state.lumoLiteArtifacts)
+      ? state.lumoLiteArtifacts.slice()
+      : [];
+    if (els.btnLumoArtifacts) {
+      els.btnLumoArtifacts.classList.toggle("hidden", lumoLiteArtifacts.length === 0);
     }
     if (state.previewPath) {
       lastPreviewPath = state.previewPath;
     } else if (state.lastPreview && state.lastPreview.previewPath) {
       lastPreviewPath = state.lastPreview.previewPath;
+    } else {
+      lastPreviewPath = "";
     }
     if ($("sources-count")) {
       renderSources();
     }
     syncSourceControls();
     syncWelcomeSourceBoxMode();
+    if ($("history-list")) renderHistory();
+    if (els.reweaveResponse) els.reweaveResponse.textContent = "";
+    if (els.generatedTree && els.generatedPreview) syncGeneratedPackageView();
+    if (!isLumoLiteReadOnly()) {
+      var canGenerate = canGenerateProduct();
+      if (els.taskInput) {
+        els.taskInput.disabled = !canGenerate;
+        els.taskInput.placeholder = t("taskPlaceholder");
+      }
+      if (els.btnGenerate) {
+        els.btnGenerate.disabled = !canGenerate;
+        els.btnGenerate.classList.toggle("hidden", !canGenerate);
+        els.btnGenerate.setAttribute("aria-disabled", canGenerate ? "false" : "true");
+      }
+    }
     applyLumoLiteRuntimeView();
+  }
+
+  function managementPayload(result) {
+    if (!result || result.ok === false) return null;
+    return result.data && typeof result.data === "object" ? result.data : result;
+  }
+
+  function managementList(result, names) {
+    var payload = managementPayload(result);
+    if (!payload) return [];
+    if (Array.isArray(payload)) return payload.slice();
+    for (var i = 0; i < names.length; i += 1) {
+      if (Array.isArray(payload[names[i]])) return payload[names[i]].slice();
+    }
+    return [];
+  }
+
+  function managementError(result) {
+    var error = result && result.error;
+    return error && (error.message_key || error.code) ? String(error.message_key || error.code) : "internal_error";
+  }
+
+  function applyIngestionInitialState(block) {
+    if (!block || typeof block !== "object") return;
+    var payload = block.data && typeof block.data === "object" ? block.data : block;
+    ingestionManagement.available = payload.available !== false;
+    if (Array.isArray(payload.projects)) ingestionManagement.projects = payload.projects.slice();
+    if (Array.isArray(payload.review_items)) ingestionManagement.reviewItems = payload.review_items.slice();
+    if (Array.isArray(payload.capability_groups)) ingestionManagement.capabilityGroups = payload.capability_groups.slice();
+    if (Array.isArray(payload.backups)) ingestionManagement.backups = payload.backups.slice();
+    if (Array.isArray(payload.recoverableProducts)) {
+      ingestionManagement.recoverableProducts = payload.recoverableProducts.slice();
+    }
+    if (Array.isArray(payload.historicalProducts)) {
+      ingestionManagement.historicalProducts = payload.historicalProducts.slice();
+    }
+    if (payload.legacy && typeof payload.legacy === "object") ingestionManagement.legacy = payload.legacy;
+    if (payload.selected_model || payload.selectedSupervisionModel) {
+      ingestionManagement.selectedModel = payload.selected_model || payload.selectedSupervisionModel;
+    }
+    ingestionManagement.loaded = false;
+    var button = $("btn-capsule-warehouse");
+    if (button) button.classList.toggle("hidden", !ingestionManagement.available);
+    renderIngestionManagement();
+  }
+
+  function setManagementStatus(key) {
+    ingestionManagement.errorKey = key || "";
+    var status = $("capsule-warehouse-status");
+    if (!status) return;
+    status.textContent = key ? (STR[locale][key] || key) : t("managementReady");
+    status.classList.toggle("is-error", !!key && [
+      "managementLoading",
+      "decisionSaved",
+      "modelSaved",
+      "backupCreated",
+      "restoreComplete",
+      "importStarted",
+    ].indexOf(key) < 0);
+  }
+
+  function emptyManagementList(container, key) {
+    if (!container) return;
+    var item = document.createElement("p");
+    item.className = "warehouse-empty";
+    item.textContent = t(key);
+    container.appendChild(item);
+  }
+
+  function managementBrandProfile(project) {
+    var profile = project && project.brand_profile_json;
+    if (profile && typeof profile === "object" && !Array.isArray(profile)) return profile;
+    if (typeof profile === "string") {
+      try {
+        var parsed = JSON.parse(profile);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+      } catch (_error) {
+        return {};
+      }
+    }
+    return {};
+  }
+
+  function createBrandEditor(project) {
+    var wrap = document.createElement("div");
+    wrap.className = "warehouse-actions warehouse-brand-editor";
+    var modeLabel = document.createElement("label");
+    modeLabel.className = "warehouse-field";
+    modeLabel.appendChild(document.createTextNode(t("brandMode")));
+    var mode = document.createElement("select");
+    [
+      ["inherit", "brandInherit"],
+      ["clear", "brandClear"],
+      ["replace", "brandReplace"],
+    ].forEach(function (definition) {
+      var option = document.createElement("option");
+      option.value = definition[0];
+      option.textContent = t(definition[1]);
+      mode.appendChild(option);
+    });
+    var savedMode = String((project && project.brand_mode) || "inherit");
+    mode.value = ["inherit", "clear", "replace"].indexOf(savedMode) >= 0
+      ? savedMode
+      : "inherit";
+    modeLabel.appendChild(mode);
+    wrap.appendChild(modeLabel);
+
+    var profileLabel = document.createElement("label");
+    profileLabel.className = "warehouse-field warehouse-brand-profile";
+    profileLabel.appendChild(document.createTextNode(t("brandProfile")));
+    var profile = document.createElement("textarea");
+    profile.rows = 3;
+    profile.maxLength = 32768;
+    profile.spellcheck = false;
+    profile.value = JSON.stringify(managementBrandProfile(project), null, 2);
+    profileLabel.appendChild(profile);
+    wrap.appendChild(profileLabel);
+
+    function sync() {
+      profileLabel.classList.toggle("hidden", mode.value !== "replace");
+    }
+    mode.addEventListener("change", sync);
+    sync();
+    return {
+      element: wrap,
+      read: function () {
+        var result = { brand_mode: mode.value };
+        if (mode.value === "replace") {
+          try {
+            var parsed = JSON.parse(profile.value || "{}");
+            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("object required");
+            result.brand_profile = parsed;
+          } catch (_error) {
+            setManagementStatus("brandProfileInvalid");
+            profile.focus();
+            return null;
+          }
+        }
+        return result;
+      },
+    };
+  }
+
+  function submitProjectConfirmations(entries, onComplete) {
+    bridgeCall("confirm_projects", JSON.stringify({ projects: entries })).then(function (raw) {
+      var result = parseBridgeJson(raw);
+      var payload = managementPayload(result);
+      if (!payload) {
+        setManagementStatus(managementError(result));
+        return;
+      }
+      var errors = Array.isArray(payload.errors) ? payload.errors : [];
+      if (errors.length) setManagementStatus("projectConfirmationPartial");
+      if (typeof onComplete === "function") onComplete(errors);
+      if (!trackManagementRuns(result)) refreshIngestionManagement();
+    });
+  }
+
+  function renderManagementProjects() {
+    var container = $("warehouse-projects");
+    if (!container) return;
+    container.innerHTML = "";
+    var discovery = ingestionManagement.discovery;
+    var discovered = discovery && Array.isArray(discovery.projects) ? discovery.projects : [];
+    if (discovered.length) {
+      var form = document.createElement("div");
+      form.className = "warehouse-discovery";
+      discovered.forEach(function (project) {
+        var projectConfig = document.createElement("div");
+        projectConfig.className = "warehouse-project-config";
+        var label = document.createElement("label");
+        label.className = "warehouse-project-choice";
+        var input = document.createElement("input");
+        input.type = "checkbox";
+        input.checked = project.selected !== false;
+        input.value = String(project.project_id || project.id || "");
+        label.appendChild(input);
+        label.appendChild(document.createTextNode(" " + String(project.display_name || project.name || project.root_relpath || input.value)));
+        projectConfig.appendChild(label);
+        var brandEditor = createBrandEditor(project);
+        input._brandEditor = brandEditor;
+        projectConfig.appendChild(brandEditor.element);
+        form.appendChild(projectConfig);
+      });
+      var confirm = document.createElement("button");
+      confirm.type = "button";
+      confirm.className = "btn-ghost";
+      confirm.textContent = t("confirmProjects");
+      confirm.addEventListener("click", function () {
+        var entries = [];
+        var checked = Array.prototype.slice.call(form.querySelectorAll('input[type="checkbox"]:checked'));
+        for (var index = 0; index < checked.length; index += 1) {
+          var brand = checked[index]._brandEditor.read();
+          if (!brand) return;
+          entries.push(Object.assign({ project_id: checked[index].value }, brand));
+        }
+        submitProjectConfirmations(entries, function (errors) {
+          if (!errors.length) ingestionManagement.discovery = null;
+        });
+      });
+      form.appendChild(confirm);
+      container.appendChild(form);
+    }
+    ingestionManagement.projects.forEach(function (project) {
+      var row = document.createElement("div");
+      row.className = "warehouse-row";
+      var projectStatus = project.project_state || project.status || "";
+      var text = document.createElement("span");
+      text.textContent = String(project.display_name || project.name || project.project_key || project.root_relpath || project.project_id || "project") +
+        " · " + String(projectStatus);
+      row.appendChild(text);
+      var refresh = document.createElement("button");
+      refresh.type = "button";
+      refresh.className = "btn-ghost";
+      refresh.textContent = t("refreshProject");
+      refresh.disabled = !project.project_id || projectStatus !== "ready";
+      refresh.addEventListener("click", function () {
+        startManagementRun("start_refresh_project", { project_id: project.project_id });
+      });
+      row.appendChild(refresh);
+      var projectBlock = document.createElement("div");
+      projectBlock.className = "warehouse-project-config";
+      projectBlock.appendChild(row);
+      var existingBrand = createBrandEditor(project);
+      var saveBrand = document.createElement("button");
+      saveBrand.type = "button";
+      saveBrand.className = "btn-ghost";
+      saveBrand.textContent = t("save");
+      saveBrand.addEventListener("click", function () {
+        var brand = existingBrand.read();
+        if (!brand) return;
+        submitProjectConfirmations([
+          Object.assign({ project_id: project.project_id }, brand),
+        ]);
+      });
+      existingBrand.element.appendChild(saveBrand);
+      projectBlock.appendChild(existingBrand.element);
+      container.appendChild(projectBlock);
+    });
+    if (!discovered.length && !ingestionManagement.projects.length) emptyManagementList(container, "noItems");
+  }
+
+  function renderManagementModels() {
+    var select = $("supervision-model-select");
+    if (!select) return;
+    select.innerHTML = "";
+    var empty = document.createElement("option");
+    empty.value = "";
+    empty.textContent = t("selectModel");
+    select.appendChild(empty);
+    ingestionManagement.models.forEach(function (model, index) {
+      var option = document.createElement("option");
+      option.value = String(index);
+      option.textContent = String(model.name || "") + (model.digest ? " · " + String(model.digest).slice(0, 12) : "");
+      if (
+        ingestionManagement.selectedModel &&
+        model.name === ingestionManagement.selectedModel.name &&
+        model.digest === ingestionManagement.selectedModel.digest
+      ) option.selected = true;
+      select.appendChild(option);
+    });
+  }
+
+  function managementReviewDecisionPayload(reviewId, decision, controls) {
+    var payload = { review_id: reviewId, decision: decision };
+    var identityDecisions = ["publish_general", "publish_brand_limited", "create_variant", "semantic_split"];
+    var names = identityDecisions.indexOf(decision) >= 0
+      ? ["capability_key", "role_key", "variant_key", "display_name"]
+      : [];
+    if (decision === "merge_existing") names.push("retained_version_id");
+    if (decision === "replace_current" || decision === "semantic_split") names.push("target_capsule_id");
+    for (var i = 0; i < names.length; i += 1) {
+      var control = controls[names[i]];
+      var value = control ? String(control.value || "").trim() : "";
+      if (!value || (typeof control.checkValidity === "function" && !control.checkValidity())) {
+        if (control && typeof control.reportValidity === "function") control.reportValidity();
+        return null;
+      }
+      payload[names[i]] = value;
+    }
+    return payload;
+  }
+
+  function renderManagementReviews() {
+    var container = $("warehouse-review-items");
+    var count = $("warehouse-review-count");
+    if (!container || !count) return;
+    count.textContent = String(ingestionManagement.reviewItems.length);
+    container.innerHTML = "";
+    if (!ingestionManagement.reviewItems.length) {
+      emptyManagementList(container, "noReviews");
+      return;
+    }
+    ingestionManagement.reviewItems.forEach(function (item) {
+      var candidate = item.candidate && typeof item.candidate === "object" ? item.candidate : {};
+      var details = document.createElement("details");
+      details.className = "warehouse-review";
+      var summary = document.createElement("summary");
+      summary.textContent = String(item.display_name || item.suggested_name || candidate.suggested_display_name || item.review_id || "review") +
+        " · " + String(item.candidate_status || item.status || "");
+      details.appendChild(summary);
+      var meta = document.createElement("p");
+      meta.className = "warehouse-meta";
+      meta.textContent = [item.capability_kind || candidate.capability_kind, item.reason_code || item.error_code].filter(Boolean).join(" · ");
+      details.appendChild(meta);
+      var decisions = Array.isArray(item.allowed_decisions) ? item.allowed_decisions :
+        (Array.isArray(item.decisions) ? item.decisions : []);
+      if (!decisions.length && item.candidate_status === "waiting_user") {
+        var codes = item.redaction && Array.isArray(item.redaction.codes) ? item.redaction.codes : [];
+        var stage3Code = candidate.stage3_failure && candidate.stage3_failure.error_code;
+        if (
+          item.sensitivity_decision == null &&
+          (codes.indexOf("sensitivity_confirmation_required") >= 0 || stage3Code === "sensitivity_confirmation_required_stage3")
+        ) {
+          decisions = decisions.concat([
+            "confirm_fictional_fixture",
+            "confirm_safe_redaction",
+            "confirm_real_record_reject",
+          ]);
+        }
+        if (item.brand_decision == null && codes.indexOf("brand_confirmation_required") >= 0) {
+          decisions = decisions.concat(["remove_brand", "retain_brand_limited"]);
+        }
+        if (item.asset_decision == null && stage3Code === "asset_content_confirmation_required_stage3") {
+          decisions.push("confirm_assets_contain_no_real_records");
+        }
+      }
+      var controls = {};
+      var identityDecisions = ["publish_general", "publish_brand_limited", "create_variant", "semantic_split"];
+      if (decisions.some(function (decision) { return identityDecisions.indexOf(decision) >= 0; })) {
+        var identityFields = document.createElement("div");
+        identityFields.className = "warehouse-actions";
+        ["capability_key", "role_key", "variant_key", "display_name"].forEach(function (name) {
+          var label = document.createElement("label");
+          label.className = "warehouse-field";
+          label.textContent = name;
+          var input = document.createElement("input");
+          input.type = "text";
+          input.name = name;
+          input.required = true;
+          input.autocomplete = "off";
+          input.spellcheck = false;
+          if (name !== "display_name") input.pattern = "[a-z_][a-z0-9_]*";
+          if (name === "variant_key") input.value = "default";
+          if (name === "display_name") input.maxLength = 200;
+          controls[name] = input;
+          label.appendChild(input);
+          identityFields.appendChild(label);
+        });
+        details.appendChild(identityFields);
+      }
+      var comparison = item.comparison && typeof item.comparison === "object" ? item.comparison : {};
+      var comparisonCandidates = Array.isArray(comparison.candidates) ? comparison.candidates : [];
+      [
+        { name: "retained_version_id", enabled: decisions.indexOf("merge_existing") >= 0, value: "version_id" },
+        {
+          name: "target_capsule_id",
+          enabled: decisions.indexOf("replace_current") >= 0 || decisions.indexOf("semantic_split") >= 0,
+          value: "capsule_id",
+        },
+      ].forEach(function (definition) {
+        if (!definition.enabled) return;
+        var label = document.createElement("label");
+        label.className = "warehouse-field";
+        label.textContent = definition.name;
+        var select = document.createElement("select");
+        select.name = definition.name;
+        select.required = true;
+        var empty = document.createElement("option");
+        empty.value = "";
+        empty.textContent = definition.name;
+        select.appendChild(empty);
+        var seen = {};
+        comparisonCandidates.forEach(function (candidateOption) {
+          var value = candidateOption && candidateOption[definition.value];
+          if (!value || seen[value]) return;
+          seen[value] = true;
+          var option = document.createElement("option");
+          option.value = String(value);
+          option.textContent = [
+            candidateOption.capability_key,
+            candidateOption.role_key,
+            candidateOption.variant_key,
+            candidateOption.version_id,
+          ].filter(Boolean).join(" · ") || String(value);
+          select.appendChild(option);
+        });
+        controls[definition.name] = select;
+        label.appendChild(select);
+        details.appendChild(label);
+      });
+      var actions = document.createElement("div");
+      actions.className = "warehouse-actions";
+      decisions.forEach(function (decision) {
+        var button = document.createElement("button");
+        button.type = "button";
+        button.className = "btn-ghost";
+        button.textContent = String(decision);
+        button.addEventListener("click", function () {
+          var decisionPayload = managementReviewDecisionPayload(item.review_id, decision, controls);
+          if (!decisionPayload) return;
+          bridgeCall("decide_review_item", JSON.stringify(decisionPayload)).then(function (raw) {
+            var result = parseBridgeJson(raw);
+            if (!managementPayload(result)) {
+              setManagementStatus(managementError(result));
+              return;
+            }
+            if (!trackManagementRuns(result, function () {
+              setManagementStatus("decisionSaved");
+            })) {
+              setManagementStatus("decisionSaved");
+              refreshIngestionManagement();
+            }
+          });
+        });
+        actions.appendChild(button);
+      });
+      details.appendChild(actions);
+      container.appendChild(details);
+    });
+  }
+
+  function renderManagementGroups() {
+    var container = $("warehouse-capability-groups");
+    if (!container) return;
+    container.innerHTML = "";
+    if (!ingestionManagement.capabilityGroups.length) {
+      emptyManagementList(container, "noCapabilities");
+      return;
+    }
+    ingestionManagement.capabilityGroups.forEach(function (group) {
+      var details = document.createElement("details");
+      details.className = "warehouse-capability";
+      var summary = document.createElement("summary");
+      summary.textContent = String(group.display_name || group.capability_key || "capability");
+      details.appendChild(summary);
+      var rename = document.createElement("button");
+      rename.type = "button";
+      rename.className = "btn-ghost";
+      rename.textContent = t("renameCapability");
+      rename.addEventListener("click", function () {
+        var next = window.prompt(
+          t("renameCapabilityPrompt"),
+          String(group.display_name || group.capability_key || "")
+        );
+        if (next === null) return;
+        bridgeCall(
+          "rename_capability_group",
+          JSON.stringify({ capability_key: group.capability_key, display_name: next })
+        ).then(function (raw) {
+          var result = parseBridgeJson(raw);
+          var renamed = managementPayload(result);
+          if (!renamed) {
+            setManagementStatus(managementError(result));
+            return;
+          }
+          group.display_name = renamed.display_name;
+          summary.textContent = renamed.display_name;
+          refreshIngestionManagement();
+        });
+      });
+      details.appendChild(rename);
+      var capsules = Array.isArray(group.capsules) ? group.capsules : (Array.isArray(group.roles) ? group.roles : []);
+      capsules.forEach(function (capsule) {
+        var row = document.createElement("div");
+        row.className = "warehouse-row";
+        var label = document.createElement("span");
+        label.textContent = [capsule.role_key, capsule.variant_key, capsule.capability_kind, capsule.status].filter(Boolean).join(" · ");
+        row.appendChild(label);
+        if (capsule.capsule_id) {
+          var view = document.createElement("button");
+          view.type = "button";
+          view.className = "btn-ghost";
+          view.textContent = t("viewDetails");
+          view.addEventListener("click", function () {
+            bridgeCall("get_capsule_detail", JSON.stringify({ capsule_id: capsule.capsule_id })).then(function (raw) {
+              var result = parseBridgeJson(raw);
+              var detail = managementPayload(result);
+              if (!detail) {
+                setManagementStatus(managementError(result));
+                return;
+              }
+              var detailCapsule = detail.capsule || detail;
+              var latestVersion = Array.isArray(detail.versions) && detail.versions.length ? detail.versions[0] : {};
+              label.textContent = [
+                detailCapsule.role_key || capsule.role_key,
+                detailCapsule.variant_key || capsule.variant_key,
+                detailCapsule.capability_kind || capsule.capability_kind,
+                detailCapsule.status || capsule.status,
+                latestVersion.version_number != null ? "v" + latestVersion.version_number : "",
+              ].filter(Boolean).join(" · ");
+            });
+          });
+          row.appendChild(view);
+          var statusButton = document.createElement("button");
+          statusButton.type = "button";
+          statusButton.className = "btn-ghost";
+          statusButton.textContent = capsule.status === "active" ? t("disableCapsule") : t("enableCapsule");
+          statusButton.addEventListener("click", function () {
+            var status = capsule.status === "active" ? "disabled" : "active";
+            bridgeCall("set_capsule_status", JSON.stringify({ capsule_id: capsule.capsule_id, status: status })).then(function (raw) {
+              var result = parseBridgeJson(raw);
+              if (!managementPayload(result)) setManagementStatus(managementError(result));
+              else refreshIngestionManagement();
+            });
+          });
+          row.appendChild(statusButton);
+        }
+        details.appendChild(row);
+      });
+      container.appendChild(details);
+    });
+  }
+
+  function renderManagementLegacy() {
+    var container = $("warehouse-legacy");
+    var importButton = $("btn-warehouse-import");
+    if (!container) return;
+    container.innerHTML = "";
+    var legacy = ingestionManagement.legacy;
+    if (importButton) importButton.disabled = !(legacy && legacy.present);
+    if (!legacy || !legacy.present) {
+      emptyManagementList(container, "legacyNotFound");
+      return;
+    }
+    var summary = document.createElement("p");
+    summary.className = "warehouse-meta";
+    summary.textContent = [
+      t("legacyWarehouse"),
+      legacy.status,
+      String(legacy.recognizableEntries || 0),
+      legacy.path,
+    ].filter(Boolean).join(" · ");
+    container.appendChild(summary);
+    var aliases = Array.isArray(legacy.aliases) ? legacy.aliases : [];
+    if (!aliases.length) return;
+    aliases.forEach(function (alias) {
+      var row = document.createElement("div");
+      row.className = "warehouse-legacy-alias";
+      var label = document.createElement("span");
+      label.textContent = [
+        alias.legacy_capsule_id,
+        alias.relationship === "pending" ? t("legacyPending") : alias.relationship,
+        alias.reason_code,
+      ].filter(Boolean).join(" · ");
+      row.appendChild(label);
+      var targets = Array.isArray(alias.eligible_targets) ? alias.eligible_targets : [];
+      if (alias.relationship === "pending" && targets.length) {
+        var controls = document.createElement("div");
+        controls.className = "warehouse-actions";
+        var relationship = document.createElement("select");
+        relationship.setAttribute("aria-label", t("legacyRelationship"));
+        ["cleaned_successor", "merged", "variant"].forEach(function (value) {
+          var option = document.createElement("option");
+          option.value = value;
+          option.textContent = value;
+          relationship.appendChild(option);
+        });
+        var target = document.createElement("select");
+        target.setAttribute("aria-label", t("legacyTarget"));
+        targets.forEach(function (value, index) {
+          var option = document.createElement("option");
+          option.value = String(index);
+          option.textContent = [
+            value.display_name || value.capability_key,
+            value.role_key,
+            value.variant_key,
+          ].filter(Boolean).join(" · ");
+          target.appendChild(option);
+        });
+        var map = document.createElement("button");
+        map.type = "button";
+        map.className = "btn-ghost";
+        map.textContent = t("mapLegacy");
+        map.addEventListener("click", function () {
+          var selected = targets[Number(target.value)];
+          if (!selected) return;
+          startManagementRun("start_legacy_import", {
+            links: [
+              {
+                legacy_capsule_id: alias.legacy_capsule_id,
+                relationship: relationship.value,
+                capsule_id: selected.capsule_id,
+                version_id: selected.version_id,
+              },
+            ],
+          });
+        });
+        controls.appendChild(relationship);
+        controls.appendChild(target);
+        controls.appendChild(map);
+        row.appendChild(controls);
+      }
+      container.appendChild(row);
+    });
+  }
+
+  function renderManagementBackups() {
+    var container = $("warehouse-backups");
+    if (!container) return;
+    container.innerHTML = "";
+    if (
+      !ingestionManagement.backups.length &&
+      !ingestionManagement.recoverableProducts.length &&
+      !ingestionManagement.historicalProducts.length
+    ) {
+      emptyManagementList(container, "noBackups");
+      return;
+    }
+    ingestionManagement.backups.forEach(function (backup) {
+      var row = document.createElement("div");
+      row.className = "warehouse-row";
+      var label = document.createElement("span");
+      label.textContent = [backup.created_at, backup.kind, backup.sha256 ? String(backup.sha256).slice(0, 12) : ""].filter(Boolean).join(" · ");
+      row.appendChild(label);
+      var restore = document.createElement("button");
+      restore.type = "button";
+      restore.className = "btn-ghost";
+      restore.textContent = t("restore");
+      restore.disabled = backup.valid === false || !backup.path || !backup.sha256;
+      restore.addEventListener("click", function () {
+        inspectAndRestoreBackup(backup);
+      });
+      row.appendChild(restore);
+      container.appendChild(row);
+    });
+    ingestionManagement.recoverableProducts.forEach(function (product) {
+      var row = document.createElement("div");
+      row.className = "warehouse-row";
+      var label = document.createElement("span");
+      label.textContent = String(product.product_id) + " · " + String(product.status);
+      row.appendChild(label);
+      var retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "btn-ghost";
+      retry.textContent = t("retryUsage");
+      retry.addEventListener("click", function () {
+        bridgeCall(
+          "retry_product_usage_registration",
+          JSON.stringify({ product_id: product.product_id })
+        ).then(function (raw) {
+          var result = parseBridgeJson(raw);
+          if (!managementPayload(result)) setManagementStatus(managementError(result));
+          else {
+            setManagementStatus("usageRetryComplete");
+            refreshIngestionManagement();
+          }
+        });
+      });
+      row.appendChild(retry);
+      container.appendChild(row);
+    });
+    ingestionManagement.historicalProducts.forEach(function (product) {
+      var details = document.createElement("details");
+      details.className = "warehouse-capability";
+      details.dataset.historicalProductId = String(product.product_id || "");
+      var summary = document.createElement("summary");
+      summary.textContent = String(product.product_id) + " · " + String(product.status);
+      details.appendChild(summary);
+      var digest = document.createElement("p");
+      digest.className = "warehouse-meta";
+      digest.textContent = t("manifestDigest") + ": " + String(product.manifest_digest || "");
+      details.appendChild(digest);
+      var backup = document.createElement("p");
+      backup.className = "warehouse-meta";
+      backup.textContent =
+        t("preRestoreBackup") + ": " +
+        String(product.pre_restore_backup_path || t("backupUnavailable"));
+      details.appendChild(backup);
+      container.appendChild(details);
+    });
+  }
+
+  function renderManagementRuns() {
+    var container = $("warehouse-runs");
+    if (!container) return;
+    container.innerHTML = "";
+    var runIds = Object.keys(ingestionManagement.runs);
+    if (!runIds.length) {
+      emptyManagementList(container, "noRuns");
+      return;
+    }
+    runIds.forEach(function (runId) {
+      var run = ingestionManagement.runs[runId] || {};
+      var row = document.createElement("div");
+      row.className = "warehouse-row";
+      var label = document.createElement("span");
+      label.textContent = String(runId) + " · " + String(run.status || "queued");
+      row.appendChild(label);
+      if (run.status === "queued" || run.status === "running") {
+        var cancel = document.createElement("button");
+        cancel.type = "button";
+        cancel.className = "btn-ghost";
+        cancel.textContent = t("cancelRun");
+        cancel.addEventListener("click", function () {
+          bridgeCall("cancel_intake_run", JSON.stringify({ run_id: runId }));
+        });
+        row.appendChild(cancel);
+      }
+      container.appendChild(row);
+    });
+  }
+
+  function renderIngestionManagement() {
+    if (!$("capsule-warehouse-popover")) return;
+    renderManagementProjects();
+    renderManagementModels();
+    renderManagementReviews();
+    renderManagementGroups();
+    renderManagementLegacy();
+    renderManagementBackups();
+    renderManagementRuns();
+    setManagementStatus(ingestionManagement.errorKey);
+  }
+
+  function refreshIngestionManagement() {
+    if (!hasDesktopBridge()) {
+      setManagementStatus("managementUnavailable");
+      return Promise.resolve();
+    }
+    if (ingestionManagement.loading) return Promise.resolve();
+    ingestionManagement.loading = true;
+    setManagementStatus("managementLoading");
+    return Promise.all([
+      bridgeCall("get_initial_state"),
+      bridgeCall("list_supervision_models", JSON.stringify({})),
+      bridgeCall("list_review_items", JSON.stringify({})),
+      bridgeCall("list_capability_groups", JSON.stringify({})),
+      bridgeCall("list_backups", JSON.stringify({})),
+    ]).then(function (rawResults) {
+      var results = rawResults.map(parseBridgeJson);
+      if (results[0] && results[0].ok !== false) {
+        desktopShellState = results[0];
+        applyDesktopInitialState(desktopShellState);
+      }
+      ingestionManagement.reviewItems = managementList(results[2], ["review_items", "items"]);
+      ingestionManagement.capabilityGroups = managementList(results[3], ["capability_groups", "groups", "items"]);
+      ingestionManagement.backups = managementList(results[4], ["backups", "items"]);
+      var modelPayload = managementPayload(results[1]);
+      if (modelPayload && modelPayload.run_id) {
+        trackManagementRuns(results[1], function (run) {
+          ingestionManagement.models = managementList({ ok: true, data: run.data || {} }, ["models", "items"]);
+          renderManagementModels();
+        }, false);
+      } else {
+        ingestionManagement.models = managementList(results[1], ["models", "items"]);
+      }
+      ingestionManagement.loading = false;
+      ingestionManagement.loaded = true;
+      var failed = results.slice(2).find(function (result) {
+        return !result || result.ok === false;
+      });
+      ingestionManagement.errorKey = failed ? managementError(failed) : "";
+      renderIngestionManagement();
+    });
+  }
+
+  function collectRunIds(result) {
+    var payload = managementPayload(result);
+    if (!payload) return [];
+    var ids = [];
+    if (payload.run_id) ids.push(String(payload.run_id));
+    (payload.run_ids || []).forEach(function (id) {
+      if (id) ids.push(String(id));
+    });
+    return ids;
+  }
+
+  function rememberManagementRun(runId, run) {
+    delete ingestionManagement.runs[runId];
+    ingestionManagement.runs[runId] = run;
+    // ponytail: UI receipts only; persist them if users ever need older history.
+    var terminal = Object.keys(ingestionManagement.runs).filter(function (id) {
+      var status = ingestionManagement.runs[id].status;
+      return status !== "queued" && status !== "running";
+    });
+    terminal.slice(0, -100).forEach(function (id) {
+      delete ingestionManagement.runs[id];
+    });
+  }
+
+  function pollManagementRun(runId, onComplete, refreshAfter) {
+    bridgeCall("get_intake_run", JSON.stringify({ run_id: runId })).then(function (raw) {
+      var result = parseBridgeJson(raw);
+      var payload = managementPayload(result);
+      if (!payload) {
+        rememberManagementRun(runId, { status: "failed" });
+        setManagementStatus(managementError(result));
+        renderManagementRuns();
+        return;
+      }
+      var run = payload.run && typeof payload.run === "object" ? payload.run : payload;
+      rememberManagementRun(runId, run);
+      renderManagementRuns();
+      if (run.status === "queued" || run.status === "running") {
+        setTimeout(function () { pollManagementRun(runId, onComplete, refreshAfter); }, 750);
+      } else {
+        if (run.status === "failed" && run.error) setManagementStatus(managementError({ error: run.error }));
+        if (run.status === "completed" && typeof onComplete === "function") onComplete(run);
+        if (refreshAfter !== false) refreshIngestionManagement();
+      }
+    });
+  }
+
+  function trackManagementRuns(result, onComplete, refreshAfter) {
+    var ids = collectRunIds(result);
+    ids.forEach(function (runId) {
+      rememberManagementRun(runId, { status: "queued" });
+      pollManagementRun(runId, onComplete, refreshAfter);
+    });
+    renderManagementRuns();
+    return ids.length > 0;
+  }
+
+  function startManagementRun(method, payload, onComplete, refreshAfter) {
+    return bridgeCall(method, JSON.stringify(payload || {})).then(function (raw) {
+      var result = parseBridgeJson(raw);
+      if (!trackManagementRuns(result, onComplete, refreshAfter)) setManagementStatus(managementError(result));
+      return result;
+    });
+  }
+
+  function inspectAndRestoreBackup(backup) {
+    bridgeCall("inspect_backup", JSON.stringify({ path: backup.path })).then(function (raw) {
+      var result = parseBridgeJson(raw);
+      if (!managementPayload(result)) {
+        setManagementStatus(managementError(result));
+        return;
+      }
+      var inspection = managementPayload(result);
+      var counts = inspection.counts && typeof inspection.counts === "object" ? inspection.counts : inspection;
+      var impact = Object.keys(counts).filter(function (key) {
+        return typeof counts[key] === "number";
+      }).map(function (key) {
+        return key + ": " + counts[key];
+      }).join(" · ");
+      if (!window.confirm(t("restoreConfirm") + (impact ? "\n" + impact : ""))) return;
+      startManagementRun("restore_backup", {
+        path: inspection.path || backup.path,
+        expected_sha256: inspection.sha256 || backup.sha256,
+      }, function () {
+        setManagementStatus("restoreComplete");
+      });
+    });
+  }
+
+  function bindIngestionManagementEvents() {
+    var discover = $("btn-warehouse-discover");
+    if (discover) discover.addEventListener("click", function () {
+      bridgeCall("choose_source_root").then(function (raw) {
+        var result = parseBridgeJson(raw);
+        var payload = managementPayload(result);
+        if (!payload) {
+          if (!(result && result.cancelled)) setManagementStatus(managementError(result));
+          return;
+        }
+        if (!trackManagementRuns(result, function (run) {
+          ingestionManagement.discovery = run.data || null;
+          renderManagementProjects();
+        }, false)) {
+          ingestionManagement.discovery = payload.discovery || payload;
+          renderManagementProjects();
+        }
+      });
+    });
+    var refreshAll = $("btn-warehouse-refresh-all");
+    if (refreshAll) refreshAll.addEventListener("click", function () {
+      startManagementRun("start_refresh_all", {});
+    });
+    var refreshModels = $("btn-supervision-model-refresh");
+    if (refreshModels) refreshModels.addEventListener("click", refreshIngestionManagement);
+    var saveModel = $("btn-supervision-model-save");
+    if (saveModel) saveModel.addEventListener("click", function () {
+      var select = $("supervision-model-select");
+      var model = select && select.value !== "" ? ingestionManagement.models[Number(select.value)] : null;
+      if (!model) return;
+      bridgeCall("select_supervision_model", JSON.stringify({ name: model.name, digest: model.digest })).then(function (raw) {
+        var result = parseBridgeJson(raw);
+        if (!managementPayload(result)) setManagementStatus(managementError(result));
+        else if (!trackManagementRuns(result, function () {
+          ingestionManagement.selectedModel = { name: model.name, digest: model.digest };
+          renderManagementModels();
+          setManagementStatus("modelSaved");
+        }, false)) {
+          ingestionManagement.selectedModel = { name: model.name, digest: model.digest };
+          renderManagementModels();
+          setManagementStatus("modelSaved");
+        }
+      });
+    });
+    var backup = $("btn-warehouse-backup");
+    if (backup) backup.addEventListener("click", function () {
+      startManagementRun("create_backup", { kind: "manual" }, function () {
+        setManagementStatus("backupCreated");
+      });
+    });
+    var legacyImport = $("btn-warehouse-import");
+    if (legacyImport) legacyImport.addEventListener("click", function () {
+      startManagementRun("start_legacy_import", {}, function () {
+        setManagementStatus("importStarted");
+      });
+    });
   }
 
   function addBoundSource(source) {
@@ -1407,10 +2485,7 @@
   }
 
   function getGenerateCandidateIds() {
-    if (usedCapsuleSelectionMode === "manual" && usedCapsuleIds.length > 0) return usedCapsuleIds.slice();
-    return (data.capsules || []).filter(isCapsuleGenerateEligible).map(function (cap) {
-      return cap.id;
-    });
+    return usedCapsuleIds.slice();
   }
 
   function anyEnrichedInIds(ids) {
@@ -1432,24 +2507,40 @@
     }
   }
 
-  function setLocalModelStatus(key) {
-    var status = $("local-model-status");
-    if (!status) return;
-    status.setAttribute("data-i18n", key);
-    status.textContent = t(key);
+  function failedProductResult(code) {
+    return {
+      ok: false,
+      error: { code: code || "product_generation_failed", message_key: "generationFailed" },
+    };
   }
 
-  function updateLocalModelToggle() {
-    var wrap = $("local-model-toggle-wrap");
-    var checkbox = $("use-local-model");
-    if (!wrap || !checkbox) return;
-    var supported = hasDesktopBridge() && desktopCapability("canUseBoundedLocalModel");
-    wrap.classList.toggle("hidden", !supported);
-    if (!supported) {
-      useBoundedLocalModel = false;
-      checkbox.checked = false;
-      setLocalModelStatus("localModelOff");
-    }
+  function pollProductRun(runId) {
+    return new Promise(function (resolve) {
+      function poll() {
+        bridgeCall("get_intake_run", JSON.stringify({ run_id: runId })).then(function (raw) {
+          var result = parseBridgeJson(raw);
+          var payload = managementPayload(result);
+          var task = payload && payload.run && typeof payload.run === "object" ? payload.run : payload;
+          if (!task || !task.status) {
+            resolve(result || failedProductResult("product_run_unavailable"));
+            return;
+          }
+          if (task.status === "queued" || task.status === "running") {
+            setTimeout(poll, 750);
+            return;
+          }
+          if (task.status === "completed" && task.data && typeof task.data === "object") {
+            resolve(task.data);
+            return;
+          }
+          var code = task.error && (task.error.code || task.error.message_key);
+          resolve(failedProductResult(code || "product_generation_failed"));
+        }).catch(function () {
+          resolve(failedProductResult("product_run_unavailable"));
+        });
+      }
+      poll();
+    });
   }
 
   function notifyDesktopGenerate(text, ids) {
@@ -1457,22 +2548,17 @@
       pendingGeneratePromise = null;
       return Promise.resolve(null);
     }
-    var candidates = ids.length ? ids : getGenerateCandidateIds();
     var payload = {
-      taskText: text,
-      capsuleIds: ids,
-      capsules: ids.map(findCapsule).filter(Boolean),
-      selectionMode: usedCapsuleSelectionMode,
-      useEnrichedContent: !!(useEnrichedContentPreview && anyEnrichedInIds(candidates)),
-      validateRuntime: true,
-      localModel: useBoundedLocalModel
-        ? { enabled: true, provider: "ollama", model: "qwen2.5-coder:1.5b" }
-        : { enabled: false },
-      sourceBoxes: (data.sourceBoxes || []).map(function (s) {
-        return { id: s.id, label: s.label, path: s.path || "", status: s.status };
-      }),
+      task: text,
+      capsule_ids: ids,
+      selection_mode: "manual",
     };
-    pendingGeneratePromise = bridgeCall("notify_generate", JSON.stringify(payload));
+    pendingGeneratePromise = bridgeCall("generate_product", JSON.stringify(payload)).then(function (raw) {
+      var result = parseBridgeJson(raw);
+      var started = managementPayload(result);
+      if (!started || !started.run_id) return result || failedProductResult("product_run_unavailable");
+      return pollProductRun(String(started.run_id));
+    });
     return pendingGeneratePromise;
   }
 
@@ -1515,20 +2601,19 @@
       data.contentAwareGenerate = result.contentAwareGenerate;
     }
     if (Array.isArray(result.capsulesUsed)) {
-      usedCapsuleIds = result.capsulesUsed.map(function (cap) { return cap.id; }).filter(Boolean);
-      var resolvedMode = result.taskPack && result.taskPack.selection_mode;
-      usedCapsuleSelectionMode = resolvedMode === "auto_match" || resolvedMode === "auto_behavior" ? resolvedMode : "manual";
+      usedCapsuleIds = result.capsulesUsed.map(function (cap) {
+        return cap.id || cap.capsule_id;
+      }).filter(Boolean);
+      usedCapsuleSelectionMode = "manual";
       renderUsedChips();
-    }
-    if (result.localModel && result.localModel.enabled) {
-      setLocalModelStatus(result.localModel.applied ? "localModelApplied" : "localModelFallback");
-    } else if (useBoundedLocalModel) {
-      setLocalModelStatus("localModelFallback");
     }
   }
 
   function previewAcceptanceText(acceptance) {
     if (!acceptance) return "";
+    if (acceptance.reason === "real_qwebengine_product_bootstrap") {
+      return t("acceptanceRealBootstrap");
+    }
     if (
       acceptance.verdict === "usable" &&
       (acceptance.reason === "runtime_behavior_verified" || acceptance.reason === "react_runtime_verified")
@@ -1678,6 +2763,7 @@
       renderHistory();
       renderSources();
     }
+    renderIngestionManagement();
     if (selectedCapsuleId && els.reader && !els.reader.classList.contains("hidden")) {
       var selected = findCapsule(selectedCapsuleId);
       if (selected) showCapsuleReader(selected);
@@ -1696,6 +2782,8 @@
   }
 
   function initWelcome() {
+    cacheElements();
+    bindMainEvents();
     applyLocale();
     syncWelcomeSourceBoxMode();
     $("btn-select-folder").addEventListener("click", function () {
@@ -1758,7 +2846,7 @@
     isGenerating = false;
     applyLocale();
     renderCapsuleStrip();
-    renderGeneratedPackage(!!lastPreviewPath);
+    syncGeneratedPackageView();
     renderHistory();
     renderSources();
     bindMainEvents();
@@ -1799,10 +2887,11 @@
     els.btnLumoArtifacts = $("btn-lumo-artifacts");
     els.lumoArtifactsPopover = $("lumo-artifacts-popover");
     els.lumoArtifactsBody = $("lumo-artifacts-body");
+    els.btnCapsuleWarehouse = $("btn-capsule-warehouse");
+    els.capsuleWarehousePopover = $("capsule-warehouse-popover");
     els.runtimeSidecarMode = $("runtime-sidecar-mode");
     els.runtimeSidecarSource = $("runtime-sidecar-source");
     els.runtimeSidecarStatus = $("runtime-sidecar-status");
-    updateLocalModelToggle();
   }
 
   function shortName(name) {
@@ -2070,10 +3159,22 @@
         '<span class="reuse-chip-name">' +
         escapeHtml(shortName(cap.name)) +
         "</span>";
+      var remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "reuse-chip-remove";
+      remove.textContent = "×";
+      remove.setAttribute("aria-label", formatText("removeCapsule", { name: cap.name }));
+      remove.addEventListener("click", function () {
+        usedCapsuleIds = usedCapsuleIds.filter(function (selectedId) {
+          return selectedId !== id;
+        });
+        renderUsedChips();
+      });
+      chip.appendChild(remove);
       els.usedCapsuleDock.appendChild(chip);
     });
     if (els.generationInputNote) {
-      els.generationInputNote.textContent = formatText(usedCapsuleSelectionMode !== "manual" ? "generationResolved" : "generationManual", {
+      els.generationInputNote.textContent = formatText("generationManual", {
         count: usedCapsuleIds.length,
       });
     }
@@ -2101,7 +3202,10 @@
       els.generatedPackage.classList.remove("runtime-read-only");
       els.generatedPackage.classList.toggle("is-ready", !!showPreview);
     }
-    var count = usedCapsuleIds.length;
+    var packageCount = pkg.stats && Number(pkg.stats.capsulesUsed);
+    var count = Number.isInteger(packageCount) && packageCount >= 0
+      ? packageCount
+      : usedCapsuleIds.length;
     els.genCapsulesUsed.innerHTML =
       '<span class="meta-icon" aria-hidden="true">◫</span> ' + count + " " + t("capsulesUsed");
     if (data.lunaPack && data.lunaPack.pack_id && els.genCapsulesUsed) {
@@ -2123,8 +3227,61 @@
         sn +
         "</span>";
     }
+    if (els.workflowStatus) {
+      els.workflowStatus.innerHTML =
+        '<span class="meta-icon" aria-hidden="true">↳</span> ' +
+        escapeHtml(t("workflow")) +
+        ": " +
+        escapeHtml(currentWorkflowStep(!!showPreview));
+    }
+    var metaLines = document.querySelectorAll(".generated-meta .meta-line");
+    if (metaLines[2]) {
+      metaLines[2].innerHTML =
+        '<span class="meta-icon" aria-hidden="true">◎</span> ' +
+        escapeHtml(t(showPreview ? "previewReady" : "previewNotReady"));
+    }
+    if (metaLines[3]) {
+      metaLines[3].innerHTML =
+        '<span class="meta-icon" aria-hidden="true">⛓</span> ' +
+        escapeHtml(t(showPreview ? "traceAvailable" : "traceUnavailable"));
+    }
     updatePreviewPackageActions(!!showPreview);
     applyLumoLiteRuntimeView();
+  }
+
+  function syncGeneratedPackageView() {
+    if (data.generatedPackage) {
+      renderGeneratedPackage(!!lastPreviewPath);
+      return;
+    }
+    if (els.generatedTree) els.generatedTree.innerHTML = "";
+    if (els.generatedPreview) els.generatedPreview.classList.add("hidden");
+    if (els.generatedPackage) els.generatedPackage.classList.remove("is-ready");
+    if (els.workflowStatus) {
+      els.workflowStatus.innerHTML =
+        '<span class="meta-icon" aria-hidden="true">↳</span> ' +
+        escapeHtml(t("workflow")) +
+        ": " +
+        escapeHtml(currentWorkflowStep(false));
+    }
+    if (els.genCapsulesUsed) {
+      els.genCapsulesUsed.innerHTML =
+        '<span class="meta-icon" aria-hidden="true">◫</span> 0 ' +
+        escapeHtml(t("capsulesUsed"));
+    }
+    var metaLines = document.querySelectorAll(".generated-meta .meta-line");
+    if (metaLines[2]) {
+      metaLines[2].innerHTML =
+        '<span class="meta-icon" aria-hidden="true">◎</span> ' +
+        escapeHtml(t("previewNotReady"));
+    }
+    if (metaLines[3]) {
+      metaLines[3].innerHTML =
+        '<span class="meta-icon" aria-hidden="true">⛓</span> ' +
+        escapeHtml(t("traceUnavailable"));
+    }
+    if (els.reweaveResponse) els.reweaveResponse.textContent = "";
+    updatePreviewPackageActions(false);
   }
 
   function localPreviewFileUrl(relativePath) {
@@ -2153,7 +3310,7 @@
 
   function updatePreviewPackageActions(show) {
     if (!els.previewPackageActions) return;
-    var visible = !!(show && hasDesktopBridge() && (!isLumoLiteReadOnly() || canBuildTaskPackPreview()));
+    var visible = !!(show && hasDesktopBridge() && canGenerateProduct());
     els.previewPackageActions.classList.toggle("hidden", !visible);
   }
 
@@ -2338,25 +3495,11 @@
 
   function handleViewPreviewPackage() {
     if (!hasDesktopBridge()) return;
-    if (data.generatedPackage && data.generatedPackage.mode === "stage4_behavior_composition_preview") {
-      bridgeCall("open_generated_product").then(function (raw) {
-        var opened = parseBridgeJson(raw);
-        if ((!opened || !opened.ok) && els.reweaveResponse) {
-          els.reweaveResponse.textContent = (opened && opened.error) || t("noPreviewPackage");
-        }
-      });
-      return;
-    }
-    bridgeCall("get_latest_preview_package").then(function (raw) {
-      var result = parseBridgeJson(raw);
-      if (!result || !result.ok) {
-        if (els.reweaveResponse) {
-          els.reweaveResponse.textContent = (result && result.error) || t("noPreviewPackage");
-        }
-        return;
+    bridgeCall("open_generated_product").then(function (raw) {
+      var opened = parseBridgeJson(raw);
+      if ((!opened || !opened.ok) && els.reweaveResponse) {
+        els.reweaveResponse.textContent = t("noPreviewPackage");
       }
-      renderPreviewViewerPayload(result);
-      openPreviewPackageViewer("Preview package");
     });
   }
 
@@ -2558,13 +3701,6 @@
         useEnrichedContentPreview = !!enrichedCheckbox.checked;
       });
     }
-    var localModelCheckbox = $("use-local-model");
-    if (localModelCheckbox) {
-      localModelCheckbox.addEventListener("change", function () {
-        useBoundedLocalModel = !!localModelCheckbox.checked;
-        setLocalModelStatus(useBoundedLocalModel ? "localModelReady" : "localModelOff");
-      });
-    }
     els.taskInput.addEventListener("keydown", function (e) {
       if (e.key === "Enter") {
         e.preventDefault();
@@ -2598,6 +3734,14 @@
       togglePopover("history");
     });
 
+    if (els.btnCapsuleWarehouse) {
+      els.btnCapsuleWarehouse.addEventListener("click", function (e) {
+        e.stopPropagation();
+        togglePopover("capsule-warehouse");
+        if (!ingestionManagement.loaded && !ingestionManagement.loading) refreshIngestionManagement();
+      });
+    }
+
     $("btn-sources").addEventListener("click", function (e) {
       e.stopPropagation();
       togglePopover("sources");
@@ -2613,6 +3757,7 @@
         handleLumoArtifactAction(e.target);
       });
     }
+    bindIngestionManagementEvents();
 
     document.querySelectorAll(".popover-close[data-close]").forEach(function (btn) {
       btn.addEventListener("click", function () {
@@ -2683,6 +3828,7 @@
     var historyOpen = !els.historyPopover.classList.contains("hidden");
     var sourcesOpen = !els.sourcesPopover.classList.contains("hidden");
     var artifactsOpen = els.lumoArtifactsPopover && !els.lumoArtifactsPopover.classList.contains("hidden");
+    var warehouseOpen = els.capsuleWarehousePopover && !els.capsuleWarehousePopover.classList.contains("hidden");
     if (els.reader && !els.reader.classList.contains("hidden")) hideCapsuleReader();
     closeAllPopovers();
     if (which === "history" && !historyOpen) {
@@ -2697,6 +3843,10 @@
       openLumoArtifactsPopover();
       els.backdrop.classList.remove("hidden");
       if (els.btnLumoArtifacts) els.btnLumoArtifacts.setAttribute("aria-expanded", "true");
+    } else if (which === "capsule-warehouse" && !warehouseOpen) {
+      els.capsuleWarehousePopover.classList.remove("hidden");
+      els.backdrop.classList.remove("hidden");
+      els.btnCapsuleWarehouse.setAttribute("aria-expanded", "true");
     }
   }
 
@@ -2704,10 +3854,12 @@
     els.historyPopover.classList.add("hidden");
     els.sourcesPopover.classList.add("hidden");
     if (els.lumoArtifactsPopover) els.lumoArtifactsPopover.classList.add("hidden");
+    if (els.capsuleWarehousePopover) els.capsuleWarehousePopover.classList.add("hidden");
     els.backdrop.classList.add("hidden");
     $("btn-history").setAttribute("aria-expanded", "false");
     $("btn-sources").setAttribute("aria-expanded", "false");
     if (els.btnLumoArtifacts) els.btnLumoArtifacts.setAttribute("aria-expanded", "false");
+    if (els.btnCapsuleWarehouse) els.btnCapsuleWarehouse.setAttribute("aria-expanded", "false");
   }
 
   function ensureCapsuleElement(id) {
@@ -2728,25 +3880,24 @@
 
   function runGenerate() {
     if (isGenerating) return;
-    if (!desktopCapability("canGeneratePreview")) {
+    if (!canGenerateProduct()) {
       els.reweaveResponse.textContent = t("runtimeReadOnlyMessage");
       return;
     }
-    var text = els.taskInput.value.trim() || data.sampleTask || t("newTask");
-    var behaviorModuleCount = (data.capsules || []).filter(function (cap) {
-      return cap.origin === "stage4_module_native";
-    }).length;
-    usedCapsuleSelectionMode = usedCapsuleSelectionMode === "manual" && usedCapsuleIds.length > 0
-      ? "manual"
-      : (behaviorModuleCount >= 2 ? "auto_behavior" : "auto_match");
-    var ids = usedCapsuleSelectionMode === "manual" ? usedCapsuleIds.slice() : [];
-    if (!ids.length && !canBuildTaskPackPreview()) {
-      els.reweaveResponse.textContent = t("selecting");
+    if (usedCapsuleIds.length === 0) {
+      els.reweaveResponse.textContent = t("generationAuto");
       return;
     }
+    var selectionError = formalSelectionError(usedCapsuleIds, true);
+    if (selectionError) {
+      els.reweaveResponse.textContent = t(selectionError);
+      return;
+    }
+    var text = els.taskInput.value.trim() || data.sampleTask || t("newTask");
+    usedCapsuleSelectionMode = "manual";
+    var ids = usedCapsuleIds.slice();
 
     notifyDesktopGenerate(text, ids);
-    if (useBoundedLocalModel) setLocalModelStatus("localModelRunning");
 
     isGenerating = true;
     setAppState("invoking");
@@ -2841,11 +3992,18 @@
   function dockCapsule(id, single) {
     var cap = findCapsule(id);
     if (!isCapsuleGenerateEligible(cap)) {
-      return;
+      return false;
     }
-    if (usedCapsuleIds.indexOf(id) === -1) {
-      usedCapsuleIds.push(id);
+    var nextIds = usedCapsuleIds.slice();
+    if (nextIds.indexOf(id) === -1) {
+      nextIds.push(id);
     }
+    var selectionError = formalSelectionError(nextIds, false);
+    if (selectionError) {
+      els.reweaveResponse.textContent = t(selectionError);
+      return false;
+    }
+    usedCapsuleIds = nextIds;
     usedCapsuleSelectionMode = "manual";
     renderUsedChips();
     if (single) {
@@ -2861,16 +4019,52 @@
           t("generationManual").replace("{count}", String(usedCapsuleIds.length));
       }
     }
+    return true;
+  }
+
+  function formalSelectionError(ids, requireDomRole) {
+    var capsules = ids.map(findCapsule).filter(Boolean);
+    var formalCapsules = capsules.filter(function (cap) {
+      return cap.formal_version === true;
+    });
+    if (formalCapsules.length === 0) return "";
+    if (
+      capsules.length !== ids.length ||
+      formalCapsules.length !== capsules.length ||
+      formalCapsules.length > 3
+    ) {
+      return "formalSelectionInvalid";
+    }
+    var capabilityKey = "";
+    var seenKinds = {};
+    for (var i = 0; i < formalCapsules.length; i += 1) {
+      var current = formalCapsules[i];
+      var currentCapability = Array.isArray(current.tags) ? String(current.tags[0] || "") : "";
+      var kind = String(current.type || "");
+      if (
+        !currentCapability ||
+        ["presentation", "interaction", "computation"].indexOf(kind) === -1 ||
+        (capabilityKey && currentCapability !== capabilityKey) ||
+        seenKinds[kind]
+      ) {
+        return "formalSelectionInvalid";
+      }
+      capabilityKey = currentCapability;
+      seenKinds[kind] = true;
+    }
+    if (requireDomRole && !seenKinds.presentation && !seenKinds.interaction) {
+      return "formalSelectionNeedsDomRole";
+    }
+    return "";
   }
 
   function finishGenerate(taskText, count, localeOnly) {
     function blockReadyRender(message) {
       isGenerating = false;
       pendingGeneratePromise = null;
-      if (useBoundedLocalModel) setLocalModelStatus("localModelFallback");
       if (els.taskBay) els.taskBay.classList.remove("is-invoking");
       if (isLumoLiteReadOnly()) applyLumoLiteRuntimeView();
-      if (els.btnGenerate) els.btnGenerate.disabled = !canBuildTaskPackPreview();
+      if (els.btnGenerate) els.btnGenerate.disabled = !canGenerateProduct();
       if (els.reweaveResponse) els.reweaveResponse.textContent = message;
       setAppState("error");
     }
@@ -2902,11 +4096,11 @@
     if (pendingGeneratePromise) {
       pendingGeneratePromise.then(function (raw) {
         var result = parseBridgeJson(raw);
-        if ((isLumoLiteReadOnly() && !canBuildTaskPackPreview()) || !result || result.ok === false) {
+        if (!result || result.ok === false) {
           blockReadyRender(
             result && result.previewAcceptance
               ? previewAcceptanceText(result.previewAcceptance)
-              : (isLumoLiteReadOnly() ? t("taskPackUnavailable") : t("generationFailed"))
+              : t("generationFailed")
           );
           return;
         }
@@ -2918,7 +4112,7 @@
       });
       return;
     }
-    if (isLumoLiteReadOnly() && !canBuildTaskPackPreview()) {
+    if (!canGenerateProduct()) {
       blockReadyRender(t("runtimeReadOnlyMessage"));
       return;
     }

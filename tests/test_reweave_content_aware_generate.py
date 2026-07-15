@@ -274,8 +274,8 @@ class ReweaveContentAwareGenerateTest(unittest.TestCase):
         result = service.generate_preview(
             {"taskText": "Tool", "capsuleIds": [self.capsule_id], "useEnrichedContent": True}
         )
-        self.assertTrue(result["ok"])
-        self.assertTrue(result["contentAwareGenerate"]["enabled"])
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "legacy_generation_inactive")
 
 
 if __name__ == "__main__":

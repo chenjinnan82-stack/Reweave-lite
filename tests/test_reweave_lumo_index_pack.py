@@ -150,10 +150,8 @@ class LumoAppServiceGenerateTest(unittest.TestCase):
         result = service.generate_preview(
             {"taskText": "Fallback preview", "capsuleIds": cap_ids[:1], "sourceBoxes": []}
         )
-        self.assertTrue(result["ok"])
-        self.assertEqual(result["engine"], "lumo")
-        self.assertIn("luna_index_pack_failed", result.get("warnings") or [])
-        self.assertTrue(Path(result["previewPath"]).is_dir())
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "legacy_generation_inactive")
 
     def test_provenance_records_luna_pack_on_success(self) -> None:
         class HealthyClient:
@@ -180,11 +178,8 @@ class LumoAppServiceGenerateTest(unittest.TestCase):
         result = service.generate_preview(
             {"taskText": "Pack provenance", "capsuleIds": cap_ids[:1], "sourceBoxes": []}
         )
-        self.assertTrue(result["ok"])
-        self.assertEqual(result["lunaPack"]["pack_id"], "luna-pym-prov-001")
-        prov = json.loads((Path(result["previewPath"]) / "provenance.json").read_text(encoding="utf-8"))
-        self.assertEqual(prov["luna"]["pack_id"], "luna-pym-prov-001")
-        self.assertFalse(prov["luna"]["dispatch"])
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "legacy_generation_inactive")
 
     def test_provenance_records_luna_failure(self) -> None:
         class FailPackClient:
@@ -209,10 +204,8 @@ class LumoAppServiceGenerateTest(unittest.TestCase):
         result = service.generate_preview(
             {"taskText": "Pack failure", "capsuleIds": cap_ids[:1], "sourceBoxes": []}
         )
-        self.assertTrue(result["ok"])
-        prov = json.loads((Path(result["previewPath"]) / "provenance.json").read_text(encoding="utf-8"))
-        self.assertFalse(prov["luna"]["ok"])
-        self.assertEqual(prov["luna"]["error"], "timeout")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "legacy_generation_inactive")
 
     def test_does_not_write_user_source_folder(self) -> None:
         class HealthyClient:
@@ -276,11 +269,8 @@ class LocalEngineUnchangedTest(unittest.TestCase):
         result = service.generate_preview(
             {"taskText": "Local only", "capsuleIds": [promoted[0]["id"]], "backend": "local"}
         )
-        self.assertTrue(result["ok"])
-        self.assertEqual(result.get("backend"), "local")
-        self.assertNotIn("lunaPack", result)
-        prov = json.loads((Path(result["previewPath"]) / "provenance.json").read_text(encoding="utf-8"))
-        self.assertNotIn("luna", prov)
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "legacy_generation_inactive")
 
 
 if __name__ == "__main__":

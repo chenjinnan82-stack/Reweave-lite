@@ -60,6 +60,7 @@ def normalize_capsule_contracts(
         if (
             output_contract.get("schema") != "event_outputs.v1"
             or type(events) is not dict
+            or len(events) != 1
             or any(
                 not _valid_member_name(name)
                 for name in events

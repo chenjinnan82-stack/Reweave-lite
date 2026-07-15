@@ -49,6 +49,84 @@ def test_frontend_locale_copy_is_strictly_partitioned() -> None:
         assert f'data-i18n="{key}"' in (ROOT / "reweave_frontend" / "index.html").read_text(encoding="utf-8")
 
 
+def test_formal_capsule_selection_is_correctable_and_fail_closed() -> None:
+    app = (ROOT / "reweave_frontend" / "app.js").read_text(encoding="utf-8")
+    styles = (ROOT / "reweave_frontend" / "styles.css").read_text(encoding="utf-8")
+    validation = app[
+        app.index("  function formalSelectionError(") : app.index(
+            "\n  function finishGenerate(", app.index("  function formalSelectionError(")
+        )
+    ]
+
+    assert 'remove.className = "reuse-chip-remove";' in app
+    assert 'remove.setAttribute("aria-label", formatText("removeCapsule", { name: cap.name }));' in app
+    assert "usedCapsuleIds = usedCapsuleIds.filter(function (selectedId)" in app
+    assert ".reuse-chip-remove:focus-visible" in styles
+    assert "capsules.length !== ids.length" in validation
+    assert "formalCapsules.length !== capsules.length" in validation
+    assert "formalCapsules.length > 3" in validation
+    assert "currentCapability !== capabilityKey" in validation
+    assert "seenKinds[kind]" in validation
+    assert "requireDomRole && !seenKinds.presentation && !seenKinds.interaction" in validation
+    assert "formalSelectionError(usedCapsuleIds, true)" in app
+    assert "formalSelectionError(nextIds, false)" in app
+
+
+def test_desktop_and_frontend_share_one_qwebchannel_connection_guard() -> None:
+    app = (ROOT / "reweave_frontend" / "app.js").read_text(encoding="utf-8")
+    desktop = (ROOT / "pimos_lite" / "desktop_reweave_static.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "window.__reweaveWebChannelConnecting = true;" in app
+    assert "window.__reweaveWebChannelConnecting = false;" in app
+    assert desktop.count("window.__reweaveWebChannelConnecting = true;") == 2
+    assert desktop.count("window.__reweaveWebChannelConnecting = false;") == 2
+
+
+def test_management_run_receipts_are_bounded_in_the_frontend() -> None:
+    node = shutil.which("node")
+    if not node:
+        return
+    app = (ROOT / "reweave_frontend" / "app.js").read_text(encoding="utf-8")
+    start = app.index("  function rememberManagementRun(")
+    end = app.index("\n  function pollManagementRun(", start)
+    script = "var ingestionManagement = {runs: {}};\n" + app[start:end] + """
+for (let i = 0; i < 105; i += 1) {
+  rememberManagementRun('done-' + i, {status: 'completed'});
+}
+rememberManagementRun('live', {status: 'running'});
+const before = Object.keys(ingestionManagement.runs);
+rememberManagementRun('live', {status: 'completed'});
+const after = Object.keys(ingestionManagement.runs);
+console.log(JSON.stringify({before, after}));
+"""
+    result = subprocess.run(
+        [node, "-e", script], check=True, capture_output=True, text=True
+    )
+    rows = json.loads(result.stdout)
+    assert len(rows["before"]) == 101
+    assert "done-0" not in rows["before"]
+    assert "done-5" in rows["before"]
+    assert "live" in rows["before"]
+    assert len(rows["after"]) == 100
+    assert "done-5" not in rows["after"]
+    assert "done-6" in rows["after"]
+    assert "live" in rows["after"]
+
+
+def test_capability_rename_and_historical_product_diagnostics_are_wired() -> None:
+    app = (ROOT / "reweave_frontend" / "app.js").read_text(encoding="utf-8")
+    assert 'bridgeCall(\n          "rename_capability_group"' in app
+    assert 'rename.textContent = t("renameCapability");' in app
+    assert "details.dataset.historicalProductId" in app
+    assert 't("preRestoreBackup")' in app
+    assert "retry_product_usage_registration" not in app[
+        app.index("ingestionManagement.historicalProducts.forEach") :
+        app.index("\n  function renderManagementRuns", app.index("ingestionManagement.historicalProducts.forEach"))
+    ]
+
+
 def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     app = (ROOT / "reweave_frontend" / "app.js").read_text(encoding="utf-8")
     bridge = (ROOT / "reweave_frontend" / "bridge.js").read_text(encoding="utf-8")
@@ -82,7 +160,7 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert "Recover old work" not in mock
     assert "src_output" not in mock
     assert "cap_form_shell" not in mock
-    assert 'cap.origin !== "stage4_module_native"' in app
+    assert "stage4_module_native" not in app
     assert "Current Runtime" in index
     assert 'data-i18n="welcomeKicker"' in index
     assert "Bind Source Box" in index
@@ -92,8 +170,8 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert 'placeholder="Source project read-only; local preview enabled"' in index
     assert "GENERATION INPUT" in index
     assert 'id="generation-input-note"' in index
-    assert 'id="use-local-model"' in index
-    assert 'data-i18n="localModelRefinement"' in index
+    assert 'id="use-local-model"' not in index
+    assert "useBoundedLocalModel" not in app
     assert 'id="workflow-status"' in index
     assert 'id="workflow-status"' in index
     assert 'class="generated-title" data-i18n="currentRuntime"' in index
@@ -132,7 +210,12 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert 'data.cleaningSteps = ["Current Runtime / artifacts"];' in app
     assert "Current Runtime / artifacts" in app
     assert "currentPreviewPackageId" not in app
-    assert 'cap.origin === "lumo_lite_capsule_warehouse") return canBuildTaskPackPreview();' in app
+    assert 'if (cap.formal_version) {' in app
+    assert 'status === "active" && cap.generation_eligible === true' in app
+    assert '!cap.formal_version &&' in app
+    assert 'cap.origin === "lumo_lite_capsule_warehouse"' not in app
+    assert "formal_version: c.formal_version === undefined ? null : c.formal_version" in capsule_reader
+    assert "generation_eligible: c.generation_eligible === true" in capsule_reader
     assert "function isCapsuleManageEligible(cap)" in app
     assert "function syncSourceControls()" in app
     assert "function syncWelcomeSourceBoxMode()" in app
@@ -158,21 +241,105 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert 'els.btnGenerate.classList.toggle("hidden", !taskPackPreview);' in app
     assert "Build Small Project Pack" in app
     assert "Small Project Pack ready" in app
-    assert "selectionMode: usedCapsuleSelectionMode" in app
-    assert 'desktopCapability("canUseBoundedLocalModel")' in app
-    assert 'model: "qwen2.5-coder:1.5b"' in app
+    generate_request = app[
+        app.index("  function notifyDesktopGenerate(") : app.index(
+            "\n  function applyGenerateResult("
+        )
+    ]
+    assert 'bridgeCall("generate_product", JSON.stringify(payload))' in generate_request
+    assert "task: text" in generate_request
+    assert "capsule_ids: ids" in generate_request
+    assert 'selection_mode: "manual"' in generate_request
+    for forbidden in (
+        "taskText",
+        "capsuleIds",
+        "capsules:",
+        "sourceBoxes",
+        "localModel",
+        "origin",
+        "validateRuntime",
+        "useEnrichedContent",
+    ):
+        assert forbidden not in generate_request
+    assert 'bridgeCall("get_intake_run", JSON.stringify({ run_id: runId }))' in app
+    assert 'bridgeCall("notify_generate"' not in app
+    assert 'desktopCapability("canGenerateProduct")' in app
+    assert 'desktopCapability("canUseBoundedLocalModel")' not in app
+    assert "qwen2.5-coder:1.5b" not in app
     assert "resolveGenerateIds" not in app
     assert "Array.isArray(result.capsulesUsed)" in app
     assert "data.generatedPackage.productEntry = result.productEntry;" in app
     assert "var productEntry = pkg.productEntry && pkg.productEntry.path;" in app
-    assert 'resolvedMode === "auto_match" || resolvedMode === "auto_behavior"' in app
-    assert 'setLocalModelStatus("localModelRunning")' in app
-    assert 'if (useBoundedLocalModel) setLocalModelStatus("localModelFallback");' in app
+    assert 'usedCapsuleSelectionMode = "manual";' in app
+    assert "setLocalModelStatus" not in app
     assert "Generate will use exactly these capsules." in app
     assert "Capsule drafts are ready. Review the Source Box and store them." in app
-    assert 'var ids = usedCapsuleSelectionMode === "manual" ? usedCapsuleIds.slice() : [];' in app
-    assert 'usedCapsuleSelectionMode === "manual" && usedCapsuleIds.length > 0' in app
-    assert 'behaviorModuleCount >= 2 ? "auto_behavior" : "auto_match"' in app
+    assert 'var ids = usedCapsuleIds.slice();' in app
+    assert 'if (usedCapsuleIds.length === 0)' in app
+    assert 'els.reweaveResponse.textContent = t("generationAuto");' in app
+    assert "auto_match" not in app
+    assert "behaviorModuleCount" not in app
+    assert 'id="btn-capsule-warehouse" class="btn-ghost btn-collapsed hidden"' in index
+    assert 'id="capsule-warehouse-popover"' in index
+    assert index.count('class="warehouse-section"') == 6
+    assert '<details class="warehouse-section"' in index
+    assert "var ingestionManagement = {" in app
+    assert 'bridgeCall("list_supervision_models", JSON.stringify({}))' in app
+    assert 'bridgeCall("list_review_items", JSON.stringify({}))' in app
+    assert 'bridgeCall("list_capability_groups", JSON.stringify({}))' in app
+    assert 'bridgeCall("get_capsule_detail", JSON.stringify({ capsule_id: capsule.capsule_id }))' in app
+    assert 'bridgeCall("list_backups", JSON.stringify({}))' in app
+    assert 'bridgeCall("get_intake_run", JSON.stringify({ run_id: runId }))' in app
+    assert 'bridgeCall("decide_review_item"' in app
+    assert 'function managementReviewDecisionPayload(reviewId, decision, controls)' in app
+    assert '["capability_key", "role_key", "variant_key", "display_name"]' in app
+    assert 'names.push("retained_version_id")' in app
+    assert 'names.push("target_capsule_id")' in app
+    assert 'bridgeCall("decide_review_item", JSON.stringify(decisionPayload))' in app
+    decision_start = app.index("  function managementReviewDecisionPayload(")
+    decision_end = app.index("\n  function renderManagementReviews(", decision_start)
+    decision_payload = app[decision_start:decision_end]
+    assert "source_relpath" not in decision_payload
+    assert "source_hash" not in decision_payload
+    assert "redaction" not in decision_payload
+    model_start = app.index('bridgeCall("select_supervision_model"')
+    model_end = app.index("    var backup =", model_start)
+    assert "trackManagementRuns(result" in app[model_start:model_end]
+    assert 'bridgeCall("inspect_backup"' in app
+    assert 'startManagementRun("start_legacy_import"' in app
+    assert 'id="warehouse-legacy"' in index
+    assert "function createBrandEditor(project)" in app
+    assert 'brand_mode: mode.value' in app
+    brand_editor_start = app.index("  function createBrandEditor(project)")
+    brand_editor_end = app.index("\n  function submitProjectConfirmations(", brand_editor_start)
+    brand_editor = app[brand_editor_start:brand_editor_end]
+    assert '["inherit", "brandInherit"]' in brand_editor
+    assert '["clear", "brandClear"]' in brand_editor
+    assert '["replace", "brandReplace"]' in brand_editor
+    assert '"extend"' not in brand_editor
+    assert "function renderManagementLegacy()" in app
+    assert 'legacy_capsule_id: alias.legacy_capsule_id' in app
+    assert 'relationship: relationship.value' in app
+    assert 'capsule_id: selected.capsule_id' in app
+    assert 'version_id: selected.version_id' in app
+    assert 'legacy.status' in app
+    assert 'legacy.path' in app
+    legacy_start = app.index("  function renderManagementLegacy()")
+    legacy_end = app.index("\n  function renderManagementBackups()", legacy_start)
+    legacy_ui = app[legacy_start:legacy_end]
+    assert "alias.eligible_targets" in legacy_ui
+    assert "ingestionManagement.capabilityGroups" not in legacy_ui
+    management_start = app.index("  function managementPayload(")
+    management_end = app.index("\n  function addBoundSource(", management_start)
+    management = app[management_start:management_end]
+    assert "data.capsules" not in management
+    assert "usedCapsuleIds" not in management
+    assert "notifyDesktopGenerate" not in management
+    welcome_start = app.index("  function initWelcome() {")
+    welcome_end = app.index("\n  function startCleaning()", welcome_start)
+    welcome = app[welcome_start:welcome_end]
+    assert "cacheElements();" in welcome
+    assert "bindMainEvents();" in welcome
     assert ".generation-input-note" in styles
     assert "open_preview_folder" not in app
     assert "handleExportPreviewPackage" not in app
@@ -200,12 +367,15 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert "Session history" in app
     assert "CAPSULES_VISIBLE" not in app
     assert 'id="btn-open-capsule"' not in index
-    assert "show && hasDesktopBridge() && (!isLumoLiteReadOnly() || canBuildTaskPackPreview())" in app
+    assert "show && hasDesktopBridge() && canGenerateProduct()" in app
     assert 'els.reweaveResponse.textContent = t("runtimeReadOnlyMessage");' in app
     assert "function blockReadyRender(message)" in app
     assert "function previewAcceptanceText(acceptance)" in app
     assert 'acceptance.reason === "react_runtime_verified"' in app
     assert 'acceptance.reason === "react_runtime_failed"' in app
+    assert 'acceptance.reason === "real_qwebengine_product_bootstrap"' in app
+    assert "完整交互仍需验收" in app
+    assert "full interaction still needs review" in app
     assert 'lastReactPreview ? t("reactRuntimeVerified") : previewText' in app
     assert "previewAcceptanceText(payload.previewAcceptance)" in app
     assert "lastPreviewAcceptance = result.previewAcceptance || null;" in app
@@ -226,7 +396,6 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert '"project_graph.json": true' in app
     assert '"react_compile.json": true' in app
     assert '"react_runtime_validation.json": true' in app
-    assert "validateRuntime: true" in app
     assert "function renderGeneratedPreview()" in app
     assert 'runtimeValidation.preview_image === "react_project/dist/preview.png"' in app
     assert "React app · Runtime verified" in app
@@ -332,4 +501,11 @@ def test_stage4_desktop_preview_uses_runtime_review_copy() -> None:
     assert '"composition_plan.json": true' in source
     assert '"adapter_mapping.json": true' in source
     assert 'bridgeCall("open_generated_product")' in source
+    view_handler = source[
+        source.index("  function handleViewPreviewPackage()") : source.index(
+            "\n  function handleComparePreviewPackages()"
+        )
+    ]
+    assert "get_latest_preview_package" not in view_handler
+    assert "stage4_behavior_composition_preview" not in source
     assert 'comparePackage.classList.add("hidden")' in source

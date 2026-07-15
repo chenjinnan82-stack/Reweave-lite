@@ -28,13 +28,5 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install -r requirements-dev.txt
       - run: python -m pytest tests -q
-      - run: python scripts/run_public_reweave_demo.py --source examples/source_boxes/customer-quote-widget --task "Build a quote summary card"
-      - name: Check public demo artifacts
-        run: |
-          python -c "import tempfile; from pathlib import Path; out = Path(tempfile.gettempdir()) / 'reweave_public_demo'; missing = [name for name in ('task_intent.json', 'task_plan.json', 'quality_gate.json', 'task_pack.json', 'capsules_used.json', 'provenance.json', 'snippets_used.json') if not (out / name).is_file()]; raise SystemExit(('missing demo artifacts in %s: %s' % (out, missing)) if missing else 0)"
-      - run: python scripts/run_public_stage4_demo.py
-      - name: Check Stage4 composition artifacts
-        run: |
-          python -c "import tempfile; from pathlib import Path; out = Path(tempfile.gettempdir()) / 'reweave_stage4_demo'; missing = [name for name in ('index.html', 'styles.css', 'app.js', 'composition_plan.json', 'adapter_mapping.json', 'task_pack.json', 'capsules_used.json', 'provenance.json', 'quality_gate.json', 'runtime_validation.json') if not (out / name).is_file()]; raise SystemExit(('missing Stage4 demo artifacts in %s: %s' % (out, missing)) if missing else 0)"
-      - run: python scripts/run_public_stage4_demo.py --case data
+      - run: python scripts/run_public_reweave_demo.py --help
       - run: node --check reweave_frontend/app.js

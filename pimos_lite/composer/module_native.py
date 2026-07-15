@@ -7,17 +7,68 @@ This is the one-way migration of the minimal composer from Stage4 baseline
 from __future__ import annotations
 
 import hashlib
+import html
 import json
+import os
 import re
+import shutil
+import subprocess
+import tempfile
 from html.parser import HTMLParser
+from importlib import import_module
 from itertools import combinations, permutations
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
-from pimos_lite.capsule_module import compare_behavior_ports, load_module_capsules, validate_module_capsule
-from pimos_lite.composer.intent import build_intent_record
-from pimos_lite.reweave_project_renderer import with_local_runtime_csp
-from pimos_lite.safe_preview_write import write_preview_files
+from pimos_lite.reweave_data_contract import (
+    DataContractError,
+    contracts_compatible,
+    generate_synthetic_fixtures,
+    normalize_capsule_contracts,
+)
+
+
+def _legacy_call(module: str, name: str, *args: Any, **kwargs: Any) -> Any:
+    return getattr(import_module(module), name)(*args, **kwargs)
+
+
+def compare_behavior_ports(*args: Any, **kwargs: Any) -> Any:
+    return _legacy_call(
+        "pimos_lite.capsule_module", "compare_behavior_ports", *args, **kwargs
+    )
+
+
+def load_module_capsules(*args: Any, **kwargs: Any) -> Any:
+    return _legacy_call(
+        "pimos_lite.capsule_module", "load_module_capsules", *args, **kwargs
+    )
+
+
+def validate_module_capsule(*args: Any, **kwargs: Any) -> Any:
+    return _legacy_call(
+        "pimos_lite.capsule_module", "validate_module_capsule", *args, **kwargs
+    )
+
+
+def build_intent_record(*args: Any, **kwargs: Any) -> Any:
+    return _legacy_call(
+        "pimos_lite.composer.intent", "build_intent_record", *args, **kwargs
+    )
+
+
+def with_local_runtime_csp(*args: Any, **kwargs: Any) -> Any:
+    return _legacy_call(
+        "pimos_lite.reweave_project_renderer",
+        "with_local_runtime_csp",
+        *args,
+        **kwargs,
+    )
+
+
+def write_preview_files(*args: Any, **kwargs: Any) -> Any:
+    return _legacy_call(
+        "pimos_lite.safe_preview_write", "write_preview_files", *args, **kwargs
+    )
 
 
 COMPOSITION_PLAN_VERSION = "lite_composition_plan.v1"
@@ -27,6 +78,641 @@ _MAX_CAPABILITY_PLANS = 256
 _MAX_MODEL_PLAN_CANDIDATES = 12
 REGION_MERGE_CONTRACT_VERSION = "module_native_region_merge_contract.v1"
 WIRING_RECEIPT_VERSION = "module_native_wiring_receipt.v1"
+FORMAL_PRODUCT_COMPOSER_VERSION = "module_native_formal_product.v1"
+FORMAL_PRODUCT_MANIFEST_VERSION = "module_native_product_composition.v1"
+FORMAL_PRODUCT_CSP = (
+    "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; "
+    "font-src 'none'; connect-src 'none'; object-src 'none'; frame-src 'none'; "
+    "worker-src 'none'; base-uri 'none'; form-action 'none'"
+)
+
+
+def compose_capsule_product(
+    *,
+    task: str,
+    product_id: str,
+    generated_at: str,
+    capsules: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Compose eligible formal capsules supplied entirely in memory.
+
+    This boundary deliberately knows nothing about SQLite, source projects, the
+    legacy JSON warehouse, or final product writes.  All temporary files below
+    exist only to run the repository-pinned esbuild and safety analyzer.
+    """
+    if type(task) is not str or not task.strip() or len(task) > 4096:
+        raise ValueError("product_task_invalid")
+    if type(product_id) is not str or not re.fullmatch(r"product_[a-z0-9]{16,64}", product_id):
+        raise ValueError("product_id_invalid")
+    if type(generated_at) is not str or not generated_at:
+        raise ValueError("product_generated_at_invalid")
+    if type(capsules) is not list or not 1 <= len(capsules) <= 3:
+        raise ValueError("product_capsule_count_invalid")
+
+    normalized = sorted(
+        (_normalize_formal_capsule(row) for row in capsules),
+        key=lambda row: (
+            row["capability_key"],
+            row["role_key"],
+            row["variant_key"],
+            row["capability_kind"],
+            row["capsule_id"],
+            row["version_id"],
+        ),
+    )
+    capability_keys = {row["capability_key"] for row in normalized}
+    kinds = [row["capability_kind"] for row in normalized]
+    if len(capability_keys) != 1:
+        raise ValueError("product_capability_group_mismatch")
+    if len(kinds) != len(set(kinds)):
+        raise ValueError("product_capability_kind_duplicate")
+    if not ({"presentation", "interaction"} & set(kinds)):
+        raise ValueError("product_dom_capsule_required")
+    by_kind = {row["capability_kind"]: row for row in normalized}
+    dom_rows = [row for row in normalized if row["capability_kind"] != "computation"]
+    if len({row["html"] for row in dom_rows}) != 1:
+        raise ValueError("product_dom_contract_mismatch")
+
+    connections = _formal_connections(by_kind)
+    asset_files, asset_rewrites, asset_provenance = _formal_assets(normalized)
+    root_id = f"reweave-{product_id.removeprefix('product_')}-root"
+    root_selector = f"#{root_id}"
+    id_prefix = f"reweave-{product_id.removeprefix('product_')}"
+    fragment = dom_rows[0]["html"].replace("__CAPSULE_ID__", id_prefix)
+    fragment = _rewrite_asset_references(fragment, asset_rewrites)
+    if "__CAPSULE_ID__" in fragment:
+        raise ValueError("product_html_id_rewrite_failed")
+
+    styles: list[str] = []
+    for row in dom_rows:
+        css = _rewrite_asset_references(row["css"], asset_rewrites)
+        if css:
+            css = css.replace("__CAPSULE_ROOT__", root_selector)
+            if "__CAPSULE_ROOT__" in css:
+                raise ValueError("product_css_scope_rewrite_failed")
+            if css not in styles:
+                styles.append(css.rstrip() + "\n")
+    styles_text = "\n".join(styles)
+
+    bundles: dict[str, str] = {}
+    globals_by_kind: dict[str, str] = {}
+    for index, row in enumerate(sorted(normalized, key=lambda item: item["capability_kind"])):
+        global_name = f"ReweaveFormalCapsule{index}"
+        globals_by_kind[row["capability_kind"]] = global_name
+        bundles[row["capability_kind"]] = _bundle_formal_capsule(row, global_name)
+    bootstrap = _formal_bootstrap(by_kind, globals_by_kind, connections, root_id)
+    app_text = "\n".join(
+        [
+            '"use strict";',
+            *(bundles[kind].rstrip() for kind in sorted(bundles)),
+            bootstrap,
+            "",
+        ]
+    )
+    _check_generated_javascript(app_text)
+
+    title = html.escape(task.strip(), quote=False)
+    index_text = (
+        "<!doctype html>\n"
+        '<html lang="zh-CN">\n<head>\n<meta charset="utf-8">\n'
+        '<meta name="viewport" content="width=device-width,initial-scale=1">\n'
+        f'<meta http-equiv="Content-Security-Policy" content="{FORMAL_PRODUCT_CSP}">\n'
+        f"<title>{title}</title>\n"
+        '<link rel="stylesheet" href="./styles.css">\n</head>\n<body>\n'
+        f'<main id="{root_id}" data-reweave-product-root="true">{fragment}</main>\n'
+        '<script src="./app.js"></script>\n</body>\n</html>\n'
+    )
+    ordered = sorted(normalized, key=lambda item: item["capability_kind"])
+    capsule_receipts = [
+        {
+            key: row[key]
+            for key in (
+                "capsule_id",
+                "version_id",
+                "capability_key",
+                "role_key",
+                "variant_key",
+                "capability_kind",
+            )
+        }
+        for row in ordered
+    ]
+    provenance = {
+        "composer_version": FORMAL_PRODUCT_COMPOSER_VERSION,
+        "capsules": capsule_receipts,
+        "file_provenance": {
+            "index.html": [row["version_id"] for row in dom_rows],
+            "styles.css": [row["version_id"] for row in dom_rows if row["css"]],
+            "app.js": [row["version_id"] for row in ordered],
+        },
+        "asset_provenance": asset_provenance,
+    }
+    return {
+        "status": "composed",
+        "composer_version": FORMAL_PRODUCT_COMPOSER_VERSION,
+        "files": {
+            "index.html": index_text,
+            "styles.css": styles_text,
+            "app.js": app_text,
+        },
+        "assets": asset_files,
+        "composition_manifest": {
+            "schema_version": FORMAL_PRODUCT_MANIFEST_VERSION,
+            "product_id": product_id,
+            "generated_at": generated_at,
+            "capability_key": next(iter(capability_keys)),
+            "root_selector": root_selector,
+            "capsules": capsule_receipts,
+            "connections": connections,
+        },
+        "provenance": provenance,
+    }
+
+
+def _normalize_formal_capsule(value: Any) -> dict[str, Any]:
+    required = {
+        "capsule_id", "version_id", "capability_key", "role_key", "variant_key",
+        "capability_kind", "activation", "input_contract", "output_contract",
+        "error_contract", "runtime_allowlist", "dom_scope", "usage_scope", "html",
+        "css", "javascript_modules", "assets",
+    }
+    if type(value) is not dict or set(value) != required:
+        raise ValueError("formal_capsule_object_invalid")
+    row = dict(value)
+    for key in ("capsule_id", "version_id"):
+        if type(row[key]) is not str or not re.fullmatch(r"[A-Za-z0-9_-]{3,128}", row[key]):
+            raise ValueError("formal_capsule_identity_invalid")
+    for key in ("capability_key", "role_key", "variant_key"):
+        if type(row[key]) is not str or not re.fullmatch(r"[a-z][a-z0-9_]{0,95}", row[key]):
+            raise ValueError("formal_capsule_key_invalid")
+    kind = row["capability_kind"]
+    if kind not in {"presentation", "interaction", "computation"}:
+        raise ValueError("formal_capsule_kind_invalid")
+    try:
+        input_contract, output_contract, error_contract = normalize_capsule_contracts(
+            kind, row["input_contract"], row["output_contract"], row["error_contract"]
+        )
+    except DataContractError as exc:
+        raise ValueError("formal_capsule_data_contract_invalid") from exc
+    if (input_contract, output_contract, error_contract) != (
+        row["input_contract"], row["output_contract"], row["error_contract"]
+    ):
+        raise ValueError("formal_capsule_data_contract_not_normalized")
+    if kind == "interaction" and len(output_contract["events"]) != 1:
+        raise ValueError("interaction_single_event_required_v1")
+    activation = _normalize_activation(kind, row["activation"])
+    modules = _normalize_modules(row["javascript_modules"], activation)
+    assets = _normalize_assets(row["assets"])
+    runtime = _normalize_runtime_allowlist(kind, row["runtime_allowlist"], bool(assets))
+    dom_scope = _normalize_dom_scope(kind, row["dom_scope"])
+    usage_scope = _normalize_usage_scope(row["usage_scope"])
+    if type(row["html"]) is not str or type(row["css"]) is not str:
+        raise ValueError("formal_capsule_markup_invalid")
+    if kind == "computation" and (row["html"] or row["css"] or assets):
+        raise ValueError("computation_dom_content_forbidden")
+    if kind != "computation" and not row["html"]:
+        raise ValueError("dom_capsule_html_required")
+    return {
+        **row,
+        "activation": activation,
+        "input_contract": input_contract,
+        "output_contract": output_contract,
+        "error_contract": error_contract,
+        "runtime_allowlist": runtime,
+        "dom_scope": dom_scope,
+        "usage_scope": usage_scope,
+        "javascript_modules": modules,
+        "assets": assets,
+    }
+
+
+def _normalize_activation(kind: str, value: Any) -> dict[str, str]:
+    expected = {
+        "presentation": ("declared_input_render", "render"),
+        "interaction": ("declared_event_mount", "mount"),
+        "computation": ("declared_input_compute", "compute"),
+    }[kind]
+    keys = {"mode", "entry_module", "entrypoint"}
+    if kind == "interaction":
+        keys.add("cleanup")
+    if type(value) is not dict or set(value) != keys:
+        raise ValueError("formal_capsule_activation_invalid")
+    if value.get("mode") != expected[0] or value.get("entrypoint") != expected[1]:
+        raise ValueError("formal_capsule_activation_invalid")
+    if kind == "interaction" and value.get("cleanup") != "returned_dispose":
+        raise ValueError("formal_capsule_activation_invalid")
+    entry = _safe_module_path(value.get("entry_module"))
+    return {key: str(value[key]) for key in sorted(value)} | {"entry_module": entry}
+
+
+def _safe_module_path(value: Any) -> str:
+    if type(value) is not str or "\\" in value or not value.endswith((".js", ".mjs")):
+        raise ValueError("formal_capsule_module_path_invalid")
+    path = PurePosixPath(value)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts):
+        raise ValueError("formal_capsule_module_path_invalid")
+    return path.as_posix()
+
+
+def _normalize_modules(value: Any, activation: dict[str, str]) -> list[dict[str, str]]:
+    if type(value) is not list or not value or len(value) > 32:
+        raise ValueError("formal_capsule_modules_invalid")
+    result: list[dict[str, str]] = []
+    paths: set[str] = set()
+    for item in value:
+        if type(item) is not dict or set(item) != {"path", "source"} or type(item.get("source")) is not str:
+            raise ValueError("formal_capsule_module_invalid")
+        path = _safe_module_path(item.get("path"))
+        if path in paths:
+            raise ValueError("formal_capsule_module_duplicate")
+        paths.add(path)
+        result.append({"path": path, "source": item["source"]})
+    if activation["entry_module"] not in paths or result != sorted(result, key=lambda item: item["path"]):
+        raise ValueError("formal_capsule_modules_not_normalized")
+    return result
+
+
+def _normalize_assets(value: Any) -> list[dict[str, Any]]:
+    if type(value) is not list:
+        raise ValueError("formal_capsule_assets_invalid")
+    suffix_types = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp"}
+    result: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in value:
+        if type(item) is not dict or set(item) != {"logical_path", "media_type", "sha256", "content"}:
+            raise ValueError("formal_capsule_asset_invalid")
+        logical = _safe_asset_path(item.get("logical_path"))
+        content = item.get("content")
+        media = item.get("media_type")
+        digest = item.get("sha256")
+        if (
+            logical in seen or type(content) is not bytes or not content
+            or suffix_types.get(PurePosixPath(logical).suffix.casefold()) != media
+            or type(digest) is not str or hashlib.sha256(content).hexdigest() != digest
+        ):
+            raise ValueError("formal_capsule_asset_invalid")
+        seen.add(logical)
+        result.append({"logical_path": logical, "media_type": media, "sha256": digest, "content": content})
+    if result != sorted(result, key=lambda item: item["logical_path"]):
+        raise ValueError("formal_capsule_assets_not_normalized")
+    return result
+
+
+def _safe_asset_path(value: Any) -> str:
+    if type(value) is not str or "\\" in value:
+        raise ValueError("formal_capsule_asset_path_invalid")
+    path = PurePosixPath(value)
+    if path.is_absolute() or any(part in {"", ".", ".."} for part in path.parts) or path.parts[0] != "assets":
+        raise ValueError("formal_capsule_asset_path_invalid")
+    return path.as_posix()
+
+
+def _normalize_runtime_allowlist(kind: str, value: Any, has_assets: bool) -> list[str]:
+    expected = {
+        "presentation": {"local_computation", "scoped_ui_update"},
+        "interaction": {"declared_event_handling", "declared_output_emit", "memory_state", "scoped_input_read", "scoped_ui_update"},
+        "computation": {"local_computation"},
+    }[kind]
+    if has_assets:
+        expected.add("bundled_asset_read")
+    if type(value) is not list or any(type(item) is not str for item in value) or set(value) != expected or value != sorted(value):
+        raise ValueError("formal_capsule_runtime_allowlist_invalid")
+    return list(value)
+
+
+def _normalize_dom_scope(kind: str, value: Any) -> dict[str, Any]:
+    keys = {"root_contract", "selectors", "classes", "attributes", "events"}
+    if type(value) is not dict or set(value) != keys or value.get("root_contract") != "capsule_root":
+        raise ValueError("formal_capsule_dom_scope_invalid")
+    result = {"root_contract": "capsule_root"}
+    for key in ("selectors", "classes", "attributes", "events"):
+        rows = value.get(key)
+        if type(rows) is not list or any(type(item) is not str or not item for item in rows) or rows != sorted(set(rows)):
+            raise ValueError("formal_capsule_dom_scope_invalid")
+        result[key] = list(rows)
+    if kind == "computation" and any(result[key] for key in ("selectors", "classes", "attributes", "events")):
+        raise ValueError("computation_dom_scope_forbidden")
+    if kind == "presentation" and result["events"]:
+        raise ValueError("presentation_events_forbidden")
+    if any(event not in {"click", "input", "change", "select", "submit", "reset"} for event in result["events"]):
+        raise ValueError("formal_capsule_event_invalid")
+    return result
+
+
+def _normalize_usage_scope(value: Any) -> dict[str, str]:
+    if value == {"kind": "general"}:
+        return {"kind": "general"}
+    if (
+        type(value) is dict and set(value) == {"kind", "brand_profile_id", "brand_profile_digest"}
+        and value.get("kind") == "brand_limited"
+        and type(value.get("brand_profile_id")) is str and value["brand_profile_id"]
+        and type(value.get("brand_profile_digest")) is str
+        and re.fullmatch(r"[0-9a-f]{64}", value["brand_profile_digest"])
+    ):
+        return dict(value)
+    raise ValueError("formal_capsule_usage_scope_invalid")
+
+
+def _formal_connections(by_kind: dict[str, dict[str, Any]]) -> list[dict[str, str]]:
+    presentation = by_kind.get("presentation")
+    interaction = by_kind.get("interaction")
+    computation = by_kind.get("computation")
+    connections: list[dict[str, str]] = []
+    if interaction and computation:
+        matches = [
+            name for name, contract in interaction["output_contract"]["events"].items()
+            if contracts_compatible(contract, computation["input_contract"])
+        ]
+        if len(matches) != 1:
+            raise ValueError("product_interaction_computation_wiring_ambiguous")
+        connections.append({
+            "from_version_id": interaction["version_id"], "output": matches[0],
+            "to_version_id": computation["version_id"], "input": "$",
+        })
+    if computation and presentation:
+        if not contracts_compatible(computation["output_contract"], presentation["input_contract"]):
+            raise ValueError("product_computation_presentation_incompatible")
+        connections.append({
+            "from_version_id": computation["version_id"], "output": "value",
+            "to_version_id": presentation["version_id"], "input": "$",
+        })
+    elif interaction and presentation:
+        matches = [
+            name for name, contract in interaction["output_contract"]["events"].items()
+            if contracts_compatible(contract, presentation["input_contract"])
+        ]
+        if len(matches) != 1:
+            raise ValueError("product_interaction_presentation_wiring_ambiguous")
+        connections.append({
+            "from_version_id": interaction["version_id"], "output": matches[0],
+            "to_version_id": presentation["version_id"], "input": "$",
+        })
+    return connections
+
+
+def _formal_assets(capsules: list[dict[str, Any]]) -> tuple[dict[str, bytes], dict[str, str], dict[str, Any]]:
+    files: dict[str, bytes] = {}
+    rewrites: dict[str, str] = {}
+    provenance: dict[str, Any] = {}
+    seen: dict[str, tuple[str, str]] = {}
+    for row in capsules:
+        for asset in row["assets"]:
+            logical = asset["logical_path"]
+            identity = (asset["sha256"], asset["media_type"])
+            if logical in seen and seen[logical] != identity:
+                raise ValueError("product_asset_logical_collision")
+            seen[logical] = identity
+            output = f"assets/{asset['sha256'][:16]}/{PurePosixPath(logical).name}"
+            if output in files and files[output] != asset["content"]:
+                raise ValueError("product_asset_output_collision")
+            files[output] = asset["content"]
+            rewrites[logical] = output
+            receipt = provenance.setdefault(output, {"sha256": asset["sha256"], "media_type": asset["media_type"], "sources": []})
+            receipt["sources"].append({"version_id": row["version_id"], "logical_path": logical})
+    for receipt in provenance.values():
+        receipt["sources"].sort(key=lambda item: (item["version_id"], item["logical_path"]))
+    return dict(sorted(files.items())), rewrites, dict(sorted(provenance.items()))
+
+
+def _rewrite_asset_references(source: str, rewrites: dict[str, str]) -> str:
+    result = source
+    for logical, output in sorted(rewrites.items(), key=lambda item: len(item[0]), reverse=True):
+        result = result.replace(f'"{logical}"', f'"{output}"').replace(f"'{logical}'", f"'{output}'")
+        result = result.replace(f'"./{logical}"', f'"{output}"').replace(f"'./{logical}'", f"'{output}'")
+    references = re.findall(r"\bsrc=(?:\"|')(assets/[^\"']+)(?:\"|')", result)
+    if any(reference not in set(rewrites.values()) for reference in references):
+        raise ValueError("product_asset_reference_missing")
+    return result
+
+
+def _node_binary_formal() -> str:
+    node = os.environ.get("REWEAVE_NODE") or shutil.which("node")
+    if not node:
+        raise ValueError("node_unavailable")
+    return node
+
+
+def _run_formal_analyzer(payload: dict[str, Any]) -> None:
+    root = Path(__file__).resolve().parents[2]
+    completed = subprocess.run(
+        [_node_binary_formal(), str(root / "scripts" / "analyze_reweave_security.mjs")],
+        input=json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False),
+        capture_output=True, text=True, cwd=root, timeout=15, check=False,
+        env={"PATH": os.environ.get("PATH", "")},
+    )
+    try:
+        result = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise ValueError("formal_bundle_security_analyzer_failed") from exc
+    if completed.returncode or completed.stderr or result.get("status") != "passed":
+        raise ValueError(str(result.get("error_code") or "formal_bundle_security_rejected"))
+
+
+def _bundle_formal_capsule(capsule: dict[str, Any], global_name: str) -> str:
+    root = Path(__file__).resolve().parents[2]
+    _run_formal_analyzer({
+        "mode": "candidate",
+        "capability_kind": capsule["capability_kind"],
+        "activation": capsule["activation"],
+        "dom_scope": capsule["dom_scope"],
+        "output_contract": capsule["output_contract"],
+        "javascript_modules": capsule["javascript_modules"],
+        "redact_strings": [],
+    })
+    if not (root / "node_modules" / "esbuild" / "package.json").is_file():
+        raise ValueError("esbuild_unavailable")
+    with tempfile.TemporaryDirectory(prefix="reweave-formal-compose-") as temporary:
+        directory = Path(temporary)
+        modules_root = directory / "modules"
+        for module in capsule["javascript_modules"]:
+            target = modules_root.joinpath(*PurePosixPath(module["path"]).parts)
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_text(module["source"], encoding="utf-8", newline="\n")
+        output = directory / "bundle.js"
+        build_script = (
+            "import {build} from 'esbuild';const [work,entry,out,name]=process.argv.slice(1);"
+            "await build({absWorkingDir:work,entryPoints:[entry],bundle:true,format:'iife',"
+            "platform:'browser',globalName:name,external:[],logLevel:'error',sourcemap:false,"
+            "outfile:out});"
+        )
+        completed = subprocess.run(
+            [
+                _node_binary_formal(),
+                "--input-type=module",
+                "--eval",
+                build_script,
+                str(modules_root),
+                capsule["activation"]["entry_module"],
+                str(output),
+                global_name,
+            ],
+            capture_output=True, text=True, cwd=root, timeout=15, check=False,
+            env={"PATH": os.environ.get("PATH", "")},
+        )
+        if completed.returncode or completed.stderr or not output.is_file():
+            raise ValueError("formal_esbuild_bundle_failed")
+        source = output.read_text(encoding="utf-8")
+        checked = subprocess.run(
+            [_node_binary_formal(), "--check", str(output)], capture_output=True, text=True,
+            cwd=directory, timeout=10, check=False, env={"PATH": os.environ.get("PATH", "")},
+        )
+        if checked.returncode or checked.stderr:
+            raise ValueError("formal_bundle_syntax_invalid")
+        _run_formal_analyzer({"mode": "bundle", "source": source})
+        return source
+
+
+def _formal_bootstrap(
+    by_kind: dict[str, dict[str, Any]],
+    globals_by_kind: dict[str, str],
+    connections: list[dict[str, str]],
+    root_id: str,
+) -> str:
+    samples = {
+        kind: generate_synthetic_fixtures(row["input_contract"])["normal"][0]
+        for kind, row in by_kind.items()
+    }
+    event = (
+        connections[0]["output"]
+        if connections and "interaction" in by_kind
+        else next(iter(by_kind["interaction"]["output_contract"]["events"]))
+        if "interaction" in by_kind
+        else ""
+    )
+    presentation = globals_by_kind.get("presentation", "null")
+    interaction = globals_by_kind.get("interaction", "null")
+    computation = globals_by_kind.get("computation", "null")
+    contracts = {
+        "presentation_input": by_kind.get("presentation", {}).get("input_contract"),
+        "interaction_input": by_kind.get("interaction", {}).get("input_contract"),
+        "interaction_events": by_kind.get("interaction", {})
+        .get("output_contract", {})
+        .get("events", {}),
+        "computation_input": by_kind.get("computation", {}).get("input_contract"),
+        "computation_output": by_kind.get("computation", {}).get("output_contract"),
+    }
+    payload = json.dumps(
+        {"samples": samples, "event": event, "contracts": contracts},
+        ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    )
+    return f"""(() => {{
+  const root = document.getElementById({json.dumps(root_id)});
+  if (!root) throw new Error("product_root_missing");
+  const config = {payload};
+  const own = (value, key) => Object.prototype.hasOwnProperty.call(value, key);
+  const validText = (value) => {{
+    for (let index = 0; index < value.length; index += 1) {{
+      const code = value.charCodeAt(index);
+      if (code >= 0xd800 && code <= 0xdbff) {{
+        const next = value.charCodeAt(index + 1);
+        if (!(next >= 0xdc00 && next <= 0xdfff)) return false;
+        index += 1;
+      }} else if (code >= 0xdc00 && code <= 0xdfff) return false;
+    }}
+    return true;
+  }};
+  const decimal = (value) => {{
+    if (typeof value !== "string" || !/^-?(?:0|[1-9][0-9]*)(?:[.][0-9]+)?$/.test(value)) return null;
+    const negative = value.startsWith("-");
+    const parts = (negative ? value.slice(1) : value).split(".");
+    if (parts[0].length > 18 || (parts[1] && parts[1].endsWith("0"))) return null;
+    const digits = BigInt(parts[0] + (parts[1] || ""));
+    if (negative && digits === 0n) return null;
+    return {{number: negative ? -digits : digits, scale: (parts[1] || "").length}};
+  }};
+  const compareDecimal = (left, right) => {{
+    const scale = Math.max(left.scale, right.scale);
+    const a = left.number * 10n ** BigInt(scale - left.scale);
+    const b = right.number * 10n ** BigInt(scale - right.scale);
+    return a < b ? -1 : a > b ? 1 : 0;
+  }};
+  const valid = (contract, value, seen) => {{
+    if (!contract || typeof contract !== "object") return false;
+    if (contract.enum && !contract.enum.some((item) => item === value)) return false;
+    if (contract.type === "string") return typeof value === "string" && validText(value) && value.length >= contract.min_length && value.length <= contract.max_length;
+    if (contract.type === "boolean") return typeof value === "boolean";
+    if (contract.type === "integer") return Number.isSafeInteger(value) && value >= contract.minimum && value <= contract.maximum;
+    if (contract.type === "decimal") {{
+      const item = decimal(value);
+      const minimum = decimal(contract.minimum);
+      const maximum = decimal(contract.maximum);
+      return !!item && !!minimum && !!maximum && item.scale <= contract.max_scale && compareDecimal(item, minimum) >= 0 && compareDecimal(item, maximum) <= 0;
+    }}
+    if (!value || typeof value !== "object" || seen.has(value)) return false;
+    seen.add(value);
+    let accepted = false;
+    if (contract.type === "array") {{
+      const keys = Array.isArray(value) ? Object.keys(value) : [];
+      const descriptors = Array.isArray(value) ? Object.getOwnPropertyDescriptors(value) : {{}};
+      accepted = Array.isArray(value) && Object.getPrototypeOf(value) === Array.prototype && keys.length === value.length && Reflect.ownKeys(value).length === value.length + 1 && value.length >= contract.min_items && value.length <= contract.max_items && keys.every((key, index) => key === String(index) && descriptors[key].enumerable && own(descriptors[key], "value") && valid(contract.items, descriptors[key].value, seen));
+    }} else if (contract.type === "object" && !Array.isArray(value)) {{
+      const prototype = Object.getPrototypeOf(value);
+      const keys = Object.keys(value);
+      const descriptors = Object.getOwnPropertyDescriptors(value);
+      accepted = (prototype === Object.prototype || prototype === null) && Reflect.ownKeys(value).length === keys.length && keys.every((key) => own(contract.properties, key) && descriptors[key].enumerable && own(descriptors[key], "value") && valid(contract.properties[key], descriptors[key].value, seen)) && contract.required.every((key) => own(value, key));
+    }}
+    seen.delete(value);
+    return accepted;
+  }};
+  const accepts = (contract, value) => {{ try {{ return valid(contract, value, new Set()); }} catch (_error) {{ return false; }} }};
+  const freeze = (value) => {{ if (value && typeof value === "object") {{ Object.freeze(value); for (const key of Object.keys(value)) freeze(value[key]); }} return value; }};
+  const safe = (value, contract, code) => {{
+    if (!accepts(contract, value)) throw new Error(code);
+    return freeze(JSON.parse(JSON.stringify(value)));
+  }};
+  const presentation = {presentation};
+  const interaction = {interaction};
+  const computation = {computation};
+  let disposed = false;
+  let emissionCount = 0;
+  const render = (value) => {{
+    if (!presentation) return;
+    const input = safe(value, config.contracts.presentation_input, "presentation_input_contract_violation");
+    const result = presentation.{by_kind.get('presentation', {}).get('activation', {}).get('entrypoint', 'render')}(root, input);
+    if (result !== undefined) throw new Error("presentation_return_invalid");
+  }};
+  const compute = (value) => {{
+    if (!computation) return value;
+    const input = safe(value, config.contracts.computation_input, "computation_input_contract_violation");
+    const result = computation.{by_kind.get('computation', {}).get('activation', {}).get('entrypoint', 'compute')}(input);
+    if (!result || result.ok !== true || !result.value || typeof result.value !== "object" || Array.isArray(result.value)) throw new Error("computation_result_invalid");
+    return safe(result.value, config.contracts.computation_output, "computation_output_contract_violation");
+  }};
+  if (computation) render(compute(config.samples.computation));
+  else if (presentation) render(config.samples.presentation);
+  let dispose = () => {{ disposed = true; }};
+  if (interaction) {{
+    const returned = interaction.{by_kind.get('interaction', {}).get('activation', {}).get('entrypoint', 'mount')}(root, {{
+      input: safe(config.samples.interaction, config.contracts.interaction_input, "interaction_input_contract_violation"),
+      emit(name, value) {{
+        if (disposed) throw new Error("emit_after_dispose");
+        if (name !== config.event && config.event) throw new Error("undeclared_product_event");
+        const output = safe(value, config.contracts.interaction_events[name], "interaction_output_contract_violation");
+        emissionCount += 1;
+        render(compute(output));
+        globalThis.__reweave_result = {{schema_version:"reweave_product_runtime_result.v1",status:"passed",acceptance_scope:"real_qwebengine_product_bootstrap",emission_count:emissionCount}};
+      }}
+    }});
+    if (typeof returned !== "function") throw new Error("interaction_dispose_missing");
+    dispose = () => {{ if (!disposed) {{ disposed = true; returned(); }} }};
+  }}
+  globalThis.__reweave_dispose = dispose;
+  globalThis.__reweave_result = {{schema_version:"reweave_product_runtime_result.v1",status:"passed",acceptance_scope:"real_qwebengine_product_bootstrap",emission_count:emissionCount}};
+}})();"""
+
+
+def _check_generated_javascript(source: str) -> None:
+    with tempfile.TemporaryDirectory(prefix="reweave-product-check-") as temporary:
+        target = Path(temporary) / "app.js"
+        target.write_text(source, encoding="utf-8", newline="\n")
+        completed = subprocess.run(
+            [_node_binary_formal(), "--check", str(target)], capture_output=True, text=True,
+            timeout=10, check=False, env={"PATH": os.environ.get("PATH", "")},
+        )
+    if completed.returncode or completed.stderr:
+        raise ValueError("product_javascript_syntax_invalid")
+
+
 def compose_module_native_preview(
     *,
     goal: str,
@@ -1838,6 +2524,8 @@ __all__ = [
     "CAPABILITY_GRAPH_VERSION",
     "COMPOSER_VERSION",
     "COMPOSITION_PLAN_VERSION",
+    "FORMAL_PRODUCT_COMPOSER_VERSION",
     "build_module_capability_graph",
+    "compose_capsule_product",
     "compose_module_native_preview",
 ]

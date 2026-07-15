@@ -9,6 +9,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import sqlite3
 import tempfile
 import uuid
@@ -1188,26 +1189,44 @@ class CapsuleWarehouseStore:
         return result
 
     def inspect_restore(self, backup_path: str | Path) -> dict[str, Any]:
-        self.initialize()
         backup = _resolve_backup_path(backup_path, self.path)
         info = _verify_database(backup)
-        current = {
-            "capsules": self._read_ids(self.path, "capsules", "capsule_id"),
-            "versions": self._read_ids(self.path, "capsule_versions", "version_id"),
-            "usage": self._read_ids(self.path, "product_capsule_usage", "usage_id"),
-        }
         restored = {
             "capsules": self._read_ids(backup, "capsules", "capsule_id"),
             "versions": self._read_ids(backup, "capsule_versions", "version_id"),
             "usage": self._read_ids(backup, "product_capsule_usage", "usage_id"),
         }
+        current_available = True
+        try:
+            _verify_database(self.path)
+            current = {
+                "capsules": self._read_ids(self.path, "capsules", "capsule_id"),
+                "versions": self._read_ids(self.path, "capsule_versions", "version_id"),
+                "usage": self._read_ids(self.path, "product_capsule_usage", "usage_id"),
+            }
+        except (OSError, sqlite3.Error, CapsuleStoreError):
+            current_available = False
+            current = None
         return {
             "path": str(backup),
             "sha256": _sha256_file(backup),
             "user_version": info["user_version"],
-            "capsules_removed": len(current["capsules"] - restored["capsules"]),
-            "versions_removed": len(current["versions"] - restored["versions"]),
-            "product_usage_removed": len(current["usage"] - restored["usage"]),
+            "current_database_available": current_available,
+            "capsules_removed": (
+                len(current["capsules"] - restored["capsules"])
+                if current is not None
+                else None
+            ),
+            "versions_removed": (
+                len(current["versions"] - restored["versions"])
+                if current is not None
+                else None
+            ),
+            "product_usage_removed": (
+                len(current["usage"] - restored["usage"])
+                if current is not None
+                else None
+            ),
         }
 
     def restore_backup(
@@ -1217,7 +1236,11 @@ class CapsuleWarehouseStore:
         if not expected_sha256 or preview["sha256"] != expected_sha256:
             raise CapsuleStoreError("restore confirmation digest does not match backup")
         backup = Path(preview["path"])
-        pre_restore = self.create_backup("pre_restore")
+        pre_restore = (
+            self.create_backup("pre_restore")
+            if preview["current_database_available"]
+            else self._preserve_current_database_bytes()
+        )
         candidate = _temporary_database_path(self.path.parent, "restore")
         replaced = False
         try:
@@ -1239,14 +1262,23 @@ class CapsuleWarehouseStore:
             if replaced:
                 rollback = _temporary_database_path(self.path.parent, "rollback")
                 try:
-                    _copy_database(Path(pre_restore["path"]), rollback)
-                    _prepare_database_file(rollback)
+                    if pre_restore.get("raw_bytes", False):
+                        _copy_file_bytes(Path(pre_restore["path"]), rollback)
+                        _ensure_private_file(rollback)
+                        _fsync_file(rollback)
+                    else:
+                        _copy_database(Path(pre_restore["path"]), rollback)
+                        _prepare_database_file(rollback)
                     _fsync_directory(rollback.parent)
                     os.replace(rollback, self.path)
                     _ensure_private_file(self.path)
                     _fsync_file(self.path)
                     _fsync_directory(self.path.parent)
-                    _verify_database(self.path)
+                    if pre_restore.get("raw_bytes", False):
+                        if _sha256_file(self.path) != pre_restore["sha256"]:
+                            raise CapsuleStoreError("raw rollback bytes do not match")
+                    else:
+                        _verify_database(self.path)
                 except BaseException as rollback_exc:
                     raise CapsuleStoreError(
                         f"restore failed and recovery failed: {rollback_exc}"
@@ -1260,6 +1292,26 @@ class CapsuleWarehouseStore:
             **preview,
             "restored": True,
             "pre_restore_backup_path": pre_restore["path"],
+            "pre_restore_backup_is_raw": bool(pre_restore.get("raw_bytes", False)),
+        }
+
+    def _preserve_current_database_bytes(self) -> dict[str, Any]:
+        if not self.path.is_file():
+            raise CapsuleStoreError("current database is unavailable and has no bytes to preserve")
+        backup_root = self.path.parent / BACKUP_DIRECTORY
+        _ensure_private_directory(backup_root)
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%fZ")
+        path = backup_root / (
+            f"capsule_warehouse.pre_restore.{stamp}.{uuid.uuid4().hex[:8]}.sqlite3.raw"
+        )
+        _copy_file_bytes(self.path, path)
+        _ensure_private_file(path)
+        _fsync_file(path)
+        _fsync_directory(path.parent)
+        return {
+            "path": str(path),
+            "sha256": _sha256_file(path),
+            "raw_bytes": True,
         }
 
     def _connect(self) -> sqlite3.Connection:
@@ -1683,6 +1735,11 @@ def _copy_database(source_path: Path, destination_path: Path) -> None:
     finally:
         destination.close()
         source.close()
+
+
+def _copy_file_bytes(source_path: Path, destination_path: Path) -> None:
+    with source_path.open("rb") as source, destination_path.open("xb") as destination:
+        shutil.copyfileobj(source, destination, length=1024 * 1024)
 
 
 def _prepare_database_file(path: Path) -> None:

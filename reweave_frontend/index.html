@@ -63,6 +63,9 @@
         <button type="button" id="btn-lumo-artifacts" class="btn-ghost btn-collapsed hidden" aria-expanded="false" aria-controls="lumo-artifacts-popover">
           <span class="btn-icon" aria-hidden="true">◎</span> <span data-i18n="artifacts">Build notes</span>
         </button>
+        <button type="button" id="btn-capsule-warehouse" class="btn-ghost btn-collapsed hidden" aria-expanded="false" aria-controls="capsule-warehouse-popover">
+          <span class="btn-icon" aria-hidden="true">▦</span> <span data-i18n="capsuleWarehouse">Capsule Warehouse</span>
+        </button>
         <button type="button" id="btn-history" class="btn-ghost btn-collapsed" aria-expanded="false" aria-controls="history-popover">
           <span class="btn-icon" aria-hidden="true">◷</span> <span data-i18n="history">History</span>
         </button>
@@ -102,12 +105,6 @@
               <label id="enriched-content-toggle-wrap" class="generation-option hidden" for="use-enriched-content">
                 <input type="checkbox" id="use-enriched-content" />
                 <span data-i18n="enrichedContentPreview">Use enriched content preview</span>
-              </label>
-              <label id="local-model-toggle-wrap" class="generation-option hidden" for="use-local-model">
-                <input type="checkbox" id="use-local-model" />
-                <span data-i18n="localModelRefinement">Local model refinement</span>
-                <span aria-hidden="true">·</span>
-                <span id="local-model-status" class="generation-option-status" data-i18n="localModelOff">Off</span>
               </label>
             </div>
             <div class="used-dock used-dock-tray">
@@ -234,6 +231,64 @@ preview: pending</div>
       <button type="button" class="popover-close" data-close="history" aria-label="Close" data-i18n-aria-label="close">×</button>
     </div>
     <ul id="history-list" class="history-list"></ul>
+  </aside>
+
+  <!-- Capsule ingestion and warehouse management. It is not a generation input before Phase 5. -->
+  <aside id="capsule-warehouse-popover" class="popover capsule-warehouse-popover hidden" role="dialog" aria-label="Capsule Warehouse">
+    <div class="popover-head">
+      <h3 data-i18n="capsuleWarehouse">Capsule Warehouse</h3>
+      <button type="button" class="popover-close" data-close="capsule-warehouse" aria-label="Close" data-i18n-aria-label="close">×</button>
+    </div>
+    <p id="capsule-warehouse-status" class="warehouse-status" aria-live="polite"></p>
+
+    <details class="warehouse-section" open>
+      <summary data-i18n="sourceProjects">Source projects</summary>
+      <div class="warehouse-actions">
+        <button type="button" id="btn-warehouse-discover" class="btn-ghost" data-i18n="discoverSource">Discover source</button>
+        <button type="button" id="btn-warehouse-refresh-all" class="btn-ghost" data-i18n="refreshAll">Refresh all</button>
+      </div>
+      <div id="warehouse-projects" class="warehouse-list"></div>
+    </details>
+
+    <details class="warehouse-section">
+      <summary data-i18n="supervisionModel">Supervision model</summary>
+      <div class="warehouse-actions warehouse-model-actions">
+        <label class="warehouse-field" for="supervision-model-select">
+          <span data-i18n="supervisionModel">Supervision model</span>
+          <select id="supervision-model-select">
+            <option value="" data-i18n="selectModel">Select a model</option>
+          </select>
+        </label>
+        <button type="button" id="btn-supervision-model-refresh" class="btn-ghost" data-i18n="refresh">Refresh</button>
+        <button type="button" id="btn-supervision-model-save" class="btn-ghost" data-i18n="save">Save</button>
+      </div>
+      <p class="warehouse-meta" data-i18n="modelTimeoutNote">Installed does not mean supervision-verified; cold or large models may enter waiting-model after the fixed timeout.</p>
+    </details>
+
+    <details class="warehouse-section" open>
+      <summary><span data-i18n="reviewItems">Review items</span> <span id="warehouse-review-count">0</span></summary>
+      <div id="warehouse-review-items" class="warehouse-list"></div>
+    </details>
+
+    <details class="warehouse-section" open>
+      <summary data-i18n="capabilityGroups">Capability groups</summary>
+      <div id="warehouse-capability-groups" class="warehouse-list"></div>
+    </details>
+
+    <details class="warehouse-section">
+      <summary data-i18n="backupRestore">Backup and restore</summary>
+      <div class="warehouse-actions">
+        <button type="button" id="btn-warehouse-backup" class="btn-ghost" data-i18n="createBackup">Create backup</button>
+        <button type="button" id="btn-warehouse-import" class="btn-ghost" data-i18n="importLegacy">Import legacy warehouse</button>
+      </div>
+      <div id="warehouse-legacy" class="warehouse-list"></div>
+      <div id="warehouse-backups" class="warehouse-list"></div>
+    </details>
+
+    <details class="warehouse-section">
+      <summary data-i18n="intakeRuns">Intake runs</summary>
+      <div id="warehouse-runs" class="warehouse-list"></div>
+    </details>
   </aside>
 
   <!-- Sources popover -->

@@ -1647,15 +1647,54 @@ const roleEntrypoints = [
 function exportedRoleSeeds(record) {
   const seeds = [];
   for (const [entrypoint, kind] of roleEntrypoints) {
-    let activationEntrypoint = entrypoint;
+    let exposeAlias = false;
     let local = record.exports.get(entrypoint);
     if (!local && record.exports.get("default") === entrypoint) {
-      activationEntrypoint = "default";
       local = record.exports.get("default");
+      exposeAlias = true;
     }
-    if (local) seeds.push({ entrypoint, kind, activationEntrypoint, local });
+    if (local) seeds.push({ entrypoint, kind, activationEntrypoint: entrypoint, local, exposeAlias });
   }
   return seeds;
+}
+
+function implicitRoleSeeds(record) {
+  const seeds = [];
+  for (const [local, fn] of record.functions) {
+    if (fn.parameters.length === 1) {
+      seeds.push({ entrypoint: "compute", kind: "computation", activationEntrypoint: "compute", local });
+    }
+    if (fn.parameters.length === 2) {
+      seeds.push({ entrypoint: "render", kind: "presentation", activationEntrypoint: "render", local });
+      seeds.push({ entrypoint: "mount", kind: "interaction", activationEntrypoint: "mount", local });
+    }
+  }
+  return seeds;
+}
+
+function exposeImplicitEntrypoint(candidate, record, local, entrypoint) {
+  const suffix = record.source.endsWith("\n") ? "" : "\n";
+  const source = `${record.source}${suffix}export { ${local} as ${entrypoint} };\n`;
+  candidate.javascript_modules = candidate.javascript_modules.map((module) => (
+    module.path === record.rel ? { ...module, source } : module
+  ));
+  return candidate;
+}
+
+function buildRoleCandidate(record, modules, seed) {
+  const { entrypoint, kind, activationEntrypoint, local } = seed;
+  const literalEvidence = assertAtomicSymbolClosure(record, local, modules, kind);
+  const fn = record.functions.get(local);
+  if (!fn?.body) throw new Rejection(`invalid_${entrypoint}_signature`);
+  assertEntryLocalFunctionClosure(fn, kind);
+  let candidate = null;
+  if (kind === "presentation") candidate = presentationCandidate(record, fn, modules, activationEntrypoint);
+  if (kind === "interaction") candidate = interactionCandidate(record, fn, modules, activationEntrypoint);
+  if (kind === "computation") candidate = computationCandidate(record, fn, modules, activationEntrypoint);
+  assertCandidateSymbolCoverage(record, local, modules, candidate);
+  candidate.literal_values = literalEvidence.literalValues;
+  candidate.composed_literal_values = literalEvidence.composedLiteralValues;
+  return candidate;
 }
 
 function analyzeEntry(entry) {
@@ -1663,7 +1702,8 @@ function analyzeEntry(entry) {
   const record = moduleCache.get(normalizeRel(entry));
   const candidates = [];
   const rejections = [];
-  const seeds = exportedRoleSeeds(record);
+  const explicitSeeds = exportedRoleSeeds(record);
+  const seeds = explicitSeeds.length ? explicitSeeds : implicitRoleSeeds(record);
   const closureKinds = new Set(
     modules.flatMap((relative) => exportedRoleSeeds(moduleCache.get(relative)).map((item) => item.kind)),
   );
@@ -1678,24 +1718,34 @@ function analyzeEntry(entry) {
       })),
     };
   }
-  for (const { entrypoint, kind, activationEntrypoint, local } of seeds) {
+  for (const { entrypoint, kind, activationEntrypoint, local, exposeAlias } of seeds) {
     try {
-      const literalEvidence = assertAtomicSymbolClosure(record, local, modules, kind);
-      const fn = record.functions.get(local);
-      if (!fn?.body) throw new Rejection(`invalid_${entrypoint}_signature`);
-      assertEntryLocalFunctionClosure(fn, kind);
-      let candidate = null;
-      if (kind === "presentation") candidate = presentationCandidate(record, fn, modules, activationEntrypoint);
-      if (kind === "interaction") candidate = interactionCandidate(record, fn, modules, activationEntrypoint);
-      if (kind === "computation") candidate = computationCandidate(record, fn, modules, activationEntrypoint);
-      assertCandidateSymbolCoverage(record, local, modules, candidate);
-      candidate.literal_values = literalEvidence.literalValues;
-      candidate.composed_literal_values = literalEvidence.composedLiteralValues;
+      let candidate = buildRoleCandidate(
+        record,
+        modules,
+        { entrypoint, kind, activationEntrypoint, local },
+      );
+      if (!explicitSeeds.length || exposeAlias) {
+        candidate = exposeImplicitEntrypoint(candidate, record, local, entrypoint);
+      }
       candidates.push(candidate);
     } catch (error) {
       if (!(error instanceof Rejection)) throw error;
-      rejections.push({ entry_module: record.rel, entrypoint, capability_kind: kind, error_code: error.code });
+      if (explicitSeeds.length) {
+        rejections.push({ entry_module: record.rel, entrypoint, capability_kind: kind, error_code: error.code });
+      }
     }
+  }
+  if (!explicitSeeds.length && candidates.length > 1) {
+    return {
+      candidates: [],
+      rejections: candidates.map((candidate) => ({
+        entry_module: record.rel,
+        entrypoint: candidate.activation.entrypoint,
+        capability_kind: candidate.capability_kind,
+        error_code: "non_atomic_role_closure_v1",
+      })),
+    };
   }
   if (!candidates.length && !rejections.length) rejections.push({ entry_module: record.rel, entrypoint: null, capability_kind: null, error_code: "missing_supported_entrypoint_v1" });
   return { candidates, rejections };

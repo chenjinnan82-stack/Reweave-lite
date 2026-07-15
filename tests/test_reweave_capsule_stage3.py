@@ -14,7 +14,10 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from unittest.mock import patch
 
-from pimos_lite.reweave_capsule_intake import ReweaveCapsuleIntake
+from pimos_lite.reweave_capsule_intake import (
+    EXTRACTION_CONTRACT_VERSION,
+    ReweaveCapsuleIntake,
+)
 from pimos_lite.reweave_capsule_stage3 import (
     OllamaSupervisor,
     ReweaveCapsuleStage3,
@@ -311,7 +314,7 @@ export function mount(root, ports) {
         }
         evidence = {
             "schema_version": "stage3_evidence.v1",
-            "extraction_contract_version": "extraction_contract.v1",
+            "extraction_contract_version": EXTRACTION_CONTRACT_VERSION,
             "redaction_rules_version": "redaction_rules.v1",
             "canonicalization_version": 1,
             "security_rules_version": "security_rules.v1",
@@ -328,7 +331,7 @@ export function mount(root, ports) {
             "status": "active",
             "version_id": "old-version",
             "current_version_id": "new-version",
-            "extraction_contract_version": "extraction_contract.v1",
+            "extraction_contract_version": EXTRACTION_CONTRACT_VERSION,
             "redaction_rules_version": "redaction_rules.v1",
             "canonicalization_version": 1,
             "security_rules_version": "security_rules.v1",
@@ -379,7 +382,7 @@ export function mount(root, ports) {
     def test_manual_publication_evidence_requires_real_kind_specific_scope(self) -> None:
         evidence = {
             "schema_version": "stage3_evidence.v1",
-            "extraction_contract_version": "extraction_contract.v1",
+            "extraction_contract_version": EXTRACTION_CONTRACT_VERSION,
             "redaction_rules_version": "redaction_rules.v1",
             "canonicalization_version": 1,
             "security_rules_version": "security_rules.v1",
@@ -512,6 +515,9 @@ class OllamaBoundaryTest(unittest.TestCase):
                 self.assertEqual(len(response_hash), 64)
                 self.assertEqual(selected["name"], "local-model")
                 self.assertNotIn("export function", state["prompts"][0])
+                self.assertIn('"schema_version":"capsule_supervision.v1"', state["prompts"][0])
+                self.assertIn('"capability_kind":"computation"', state["prompts"][0])
+                self.assertIn('"duplicate_suggestions":[]', state["prompts"][0])
                 state["digest"] = "e" * 64
                 with self.assertRaisesRegex(Stage3Error, "ollama_model_digest_changed"):
                     supervisor.supervise({}, "computation")
@@ -735,6 +741,27 @@ class Stage3ComputationFlowTest(unittest.TestCase):
         self.assertFalse(duplicate["model_called"])
         self.assertEqual(self.supervisor.calls, 1)
 
+        with self.store.transaction() as connection:
+            connection.execute(
+                "UPDATE projects SET brand_mode = 'extend' WHERE project_id = ?",
+                (second_project["project_id"],),
+            )
+        with self.assertRaisesRegex(
+            Stage3Error, "project_brand_extend_unsupported_v1"
+        ):
+            self.stage3.publish_review(
+                second_review["review_id"],
+                decision="semantic_split",
+                capability_key="bounded_total_split",
+                role_key="double_quantity",
+                display_name="Bounded total split",
+            )
+        with self.store.transaction() as connection:
+            connection.execute(
+                "UPDATE projects SET brand_mode = 'inherit' WHERE project_id = ?",
+                (second_project["project_id"],),
+            )
+
         original_split_snapshot_check = self.stage3._assert_snapshot
 
         def mark_split_target_pending(prepared):
@@ -815,6 +842,144 @@ class Stage3ComputationFlowTest(unittest.TestCase):
         self.assertEqual(revalidated["status"], "published")
         self.assertEqual(revalidated["version_number"], 2)
         self.assertEqual(self.supervisor.calls, 2)
+
+    def test_brand_scope_revalidation_replaces_the_pending_current_version(self) -> None:
+        (self.source / "index.html").write_text(
+            """<!doctype html><html><body><main data-capsule-root></main>
+<script type="module" src="./compute.js"></script></body></html>""",
+            encoding="utf-8",
+        )
+        (self.source / "compute.js").write_text(
+            """export function compute(input) {
+  if (!input || typeof input !== "object" || Object.keys(input).length !== 1) {
+    return {ok: false, error: {code: "INVALID_INPUT", field: null, details: {}}};
+  }
+  if (!Number.isInteger(input.quantity) || input.quantity < 1 || input.quantity > 10) {
+    return {ok: false, error: {code: "INVALID_QUANTITY", field: "quantity", details: {}}};
+  }
+  return {ok: true, value: {total: input.quantity * 2}};
+}
+""",
+            encoding="utf-8",
+        )
+        source_root = self.intake.bind_source_root(
+            self.source,
+            root_kind="single_project",
+            brand_profile={"names": ["HP"]},
+        )
+        project = self.intake.discover_projects(source_root["root_id"])[0]
+        self.intake.confirm_project(project["project_id"])
+        first = self.intake.run_intake(project["project_id"])
+        with self.store.read_connection() as connection:
+            review = connection.execute(
+                "SELECT review_id, sanitized_candidate_json FROM review_items "
+                "WHERE run_id = ? AND candidate_status = 'extracted'",
+                (first["run_id"],),
+            ).fetchone()
+        candidate = json.loads(review["sanitized_candidate_json"])
+        candidate["usage_scope"] = {
+            "kind": "brand_limited",
+            "brand_profile_id": source_root["brand_profile_id"],
+            "brand_profile_digest": source_root["brand_profile_digest"],
+        }
+        with self.store.transaction() as connection:
+            connection.execute(
+                "UPDATE review_items SET sanitized_candidate_json = ? WHERE review_id = ?",
+                (json.dumps(candidate), review["review_id"]),
+            )
+        initial_review = self.stage3.process_review(review["review_id"])
+        self.assertEqual(initial_review["status"], "review_required", initial_review)
+        published = self.stage3.publish_review(
+            review["review_id"],
+            decision="publish_brand_limited",
+            capability_key="branded_total",
+            role_key="double_quantity",
+            display_name="Branded total",
+        )
+
+        self.intake.set_project_brand(
+            project["project_id"], mode="replace", brand_profile={"names": ["IBM"]}
+        )
+        with self.store.transaction() as connection:
+            connection.execute(
+                "UPDATE capsules SET status = 'pending_revalidation' WHERE capsule_id = ?",
+                (published["capsule_id"],),
+            )
+            connection.execute(
+                "INSERT INTO capsule_status_events VALUES "
+                "('evt_brand_scope_change', ?, 'revalidation_required', 'active', "
+                "'pending_revalidation', ?, 'brand_profile_changed', "
+                "'2026-07-16T00:00:00Z')",
+                (published["capsule_id"], published["version_id"]),
+            )
+            self.store.bump_revision(connection)
+        second = self.intake.run_intake(project["project_id"])
+        with self.store.read_connection() as connection:
+            replacement_review = connection.execute(
+                "SELECT review_id FROM review_items WHERE run_id = ? "
+                "AND candidate_status = 'extracted'",
+                (second["run_id"],),
+            ).fetchone()
+        reviewed = self.stage3.process_review(replacement_review["review_id"])
+        self.assertEqual(reviewed["status"], "review_required", reviewed)
+        with self.store.read_connection() as connection:
+            comparison = json.loads(
+                connection.execute(
+                    "SELECT equivalence_comparison_json FROM review_items WHERE review_id = ?",
+                    (replacement_review["review_id"],),
+                ).fetchone()[0]
+            )
+        target = next(
+            row
+            for row in comparison["candidates"]
+            if row["capsule_id"] == published["capsule_id"]
+        )
+        self.assertFalse(target["contract_match"])
+        self.assertTrue(target["scope_revalidation_match"])
+
+        original_snapshot_check = self.stage3._assert_snapshot
+
+        def activate_target_before_publish(prepared):
+            original_snapshot_check(prepared)
+            with self.store.transaction() as connection:
+                connection.execute(
+                    "UPDATE capsules SET status = 'active' WHERE capsule_id = ?",
+                    (published["capsule_id"],),
+                )
+
+        with patch.object(
+            self.stage3,
+            "_assert_snapshot",
+            side_effect=activate_target_before_publish,
+        ), self.assertRaisesRegex(Stage3Error, "replace_current_target_expired"):
+            self.stage3.publish_review(
+                replacement_review["review_id"],
+                decision="replace_current",
+                target_capsule_id=published["capsule_id"],
+            )
+        with self.store.transaction() as connection:
+            connection.execute(
+                "UPDATE capsules SET status = 'pending_revalidation' WHERE capsule_id = ?",
+                (published["capsule_id"],),
+            )
+
+        replacement = self.stage3.publish_review(
+            replacement_review["review_id"],
+            decision="replace_current",
+            target_capsule_id=published["capsule_id"],
+        )
+        self.assertEqual(replacement["capsule_id"], published["capsule_id"])
+        self.assertEqual(replacement["version_number"], 2)
+        with self.store.read_connection() as connection:
+            current = connection.execute(
+                "SELECT c.status, c.current_version_id, cv.usage_scope_json "
+                "FROM capsules c JOIN capsule_versions cv "
+                "ON cv.version_id = c.current_version_id WHERE c.capsule_id = ?",
+                (published["capsule_id"],),
+            ).fetchone()
+        self.assertEqual(current["status"], "active")
+        self.assertEqual(current["current_version_id"], replacement["version_id"])
+        self.assertEqual(json.loads(current["usage_scope_json"]), {"kind": "general"})
 
     def test_human_merge_rechecks_active_current_target_inside_transaction(self) -> None:
         html_source = """<!doctype html><html><body><main data-capsule-root></main>

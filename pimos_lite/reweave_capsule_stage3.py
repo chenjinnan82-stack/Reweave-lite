@@ -832,8 +832,23 @@ class OllamaSupervisor:
             selected["base_url"]
         ):
             raise Stage3Error("ollama_model_digest_changed")
+        example = {
+            "schema_version": "capsule_supervision.v1",
+            "verdict": "approve",
+            "capability_kind": capability_kind,
+            "semantic_summary": "Describe the declared local capability.",
+            "keep_reason_codes": ["DECLARED_LOCAL_CAPABILITY"],
+            "remove_reason_codes": [],
+            "brand_signals": [],
+            "sensitive_data_status": "clear",
+            "hidden_dependency_codes": [],
+            "duplicate_suggestions": [],
+            "review_required": False,
+        }
         prompt = (
-            "Return only one JSON object matching capsule_supervision.v1. "
+            "Return only one JSON object with exactly the keys and value types in this example: "
+            + _json(example)
+            + ". Use approve, review, or reject for verdict and keep capability_kind unchanged. "
             "You may supervise and name; do not change extraction boundaries, contracts, or code.\n"
             + _json(summary)
         )
@@ -1746,6 +1761,14 @@ class ReweaveCapsuleStage3:
         retained_version_id: str | None = None,
     ) -> dict[str, Any]:
         review = self._review(review_id)
+        if review["project_id"] is not None:
+            try:
+                context = self.intake._project_context(str(review["project_id"]))
+                self.intake._effective_brand_profile(
+                    context.project, context.source_root
+                )
+            except IntakeError as exc:
+                raise Stage3Error(exc.code) from exc
         if self._representative_review_id(review) is not None:
             raise Stage3Error("same_run_duplicate_member_not_decidable")
         if (
@@ -1828,29 +1851,22 @@ class ReweaveCapsuleStage3:
             target_evidence = self._comparison_candidate(
                 review, capsule_id=target_capsule_id
             )
-            if target_evidence is None or target_evidence.get("contract_match") is not True:
+            if target_evidence is None or not (
+                target_evidence.get("contract_match") is True
+                or target_evidence.get("scope_revalidation_match") is True
+            ):
                 raise Stage3Error("target_not_in_comparison_evidence")
             existing = self._capsule(target_capsule_id)
             if existing["current_version_id"] != target_evidence.get("version_id"):
                 raise Stage3Error("target_comparison_evidence_expired")
             with self.store.read_connection() as connection:
-                target_version = connection.execute(
-                    "SELECT * FROM capsule_versions WHERE version_id = ?",
-                    (existing["current_version_id"],),
-                ).fetchone()
-            if target_version is None or any(
-                json.loads(target_version[column])
-                != prepared.artifact.canonical_payload[payload_key]
-                for column, payload_key in (
-                    ("activation_json", "activation"),
-                    ("input_contract_json", "input_contract"),
-                    ("output_contract_json", "output_contract"),
-                    ("error_contract_json", "error_contract"),
-                    ("runtime_allowlist_json", "runtime_allowlist"),
-                    ("dom_scope_json", "dom_scope"),
-                    ("usage_scope_json", "usage_scope"),
+                target_ok = self._replace_target_eligible(
+                    connection,
+                    review,
+                    target_capsule_id,
+                    prepared.artifact.canonical_payload,
                 )
-            ):
+            if not target_ok:
                 raise Stage3Error("replace_current_requires_same_role_contract")
         else:
             if decision == "semantic_split":
@@ -2645,23 +2661,51 @@ class ReweaveCapsuleStage3:
         with self.store.read_connection() as connection:
             rows = connection.execute(
                 "SELECT c.capsule_id, c.capability_key, c.role_key, c.variant_key, "
-                "cv.version_id, cv.canonical_hash, cv.input_contract_json, "
-                "cv.output_contract_json, cv.error_contract_json, cv.usage_scope_json "
+                "c.status, cv.version_id, cv.canonical_hash, cv.activation_json, "
+                "cv.input_contract_json, cv.output_contract_json, cv.error_contract_json, "
+                "cv.runtime_allowlist_json, cv.dom_scope_json, cv.usage_scope_json, "
+                "EXISTS (SELECT 1 FROM capsule_sources cs WHERE cs.version_id = cv.version_id "
+                "AND cs.project_id = ?) AS project_contributed_current, "
+                "EXISTS (SELECT 1 FROM capsule_status_events se "
+                "WHERE se.capsule_id = c.capsule_id AND se.version_id = cv.version_id "
+                "AND se.event_type = 'revalidation_required' "
+                "AND se.reason_code = 'brand_profile_changed' "
+                "AND se.to_status = 'pending_revalidation') AS brand_revalidation_required "
                 "FROM capsules c JOIN capsule_versions cv ON cv.version_id = c.current_version_id "
                 "WHERE c.capability_kind = ? AND c.status IN ('active', 'pending_revalidation') "
                 "ORDER BY c.capability_key, c.role_key, c.variant_key LIMIT 100",
-                (payload["capability_kind"],),
+                (prepared.review["project_id"], payload["capability_kind"]),
             ).fetchall()
         exact_versions = {str(row["version_id"]) for row in hash_matches}
         candidates = []
         for row in rows:
-            contract_match = (
-                json.loads(row["input_contract_json"]) == payload["input_contract"]
-                and json.loads(row["output_contract_json"]) == payload["output_contract"]
-                and json.loads(row["error_contract_json"]) == payload["error_contract"]
-                and json.loads(row["usage_scope_json"]) == payload["usage_scope"]
+            role_contract_match = all(
+                json.loads(row[column]) == payload[payload_key]
+                for column, payload_key in (
+                    ("activation_json", "activation"),
+                    ("input_contract_json", "input_contract"),
+                    ("output_contract_json", "output_contract"),
+                    ("error_contract_json", "error_contract"),
+                    ("runtime_allowlist_json", "runtime_allowlist"),
+                    ("dom_scope_json", "dom_scope"),
+                )
             )
-            if contract_match or row["version_id"] in exact_versions:
+            current_scope = json.loads(row["usage_scope_json"])
+            contract_match = (
+                role_contract_match and current_scope == payload["usage_scope"]
+            )
+            scope_revalidation_match = (
+                row["status"] == "pending_revalidation"
+                and bool(row["project_contributed_current"])
+                and bool(row["brand_revalidation_required"])
+                and role_contract_match
+                and current_scope != payload["usage_scope"]
+            )
+            if (
+                contract_match
+                or scope_revalidation_match
+                or row["version_id"] in exact_versions
+            ):
                 candidates.append(
                     {
                         "capsule_id": row["capsule_id"],
@@ -2672,6 +2716,7 @@ class ReweaveCapsuleStage3:
                         "canonical_hash_equal": row["canonical_hash"]
                         == prepared.artifact.canonical_hash,
                         "contract_match": contract_match,
+                        "scope_revalidation_match": scope_revalidation_match,
                     }
                 )
         return {
@@ -3158,6 +3203,66 @@ class ReweaveCapsuleStage3:
             == payload["usage_scope"]
         )
 
+    def _replace_target_eligible(
+        self,
+        connection: sqlite3.Connection,
+        review: dict[str, Any],
+        capsule_id: str,
+        payload: dict[str, Any],
+    ) -> bool:
+        comparison_target = self._comparison_candidate(
+            review, capsule_id=capsule_id
+        )
+        if comparison_target is None:
+            return False
+        target = connection.execute(
+            "SELECT cv.*, c.status, c.current_version_id, c.capability_kind "
+            "FROM capsules c JOIN capsule_versions cv "
+            "ON cv.version_id = c.current_version_id WHERE c.capsule_id = ?",
+            (capsule_id,),
+        ).fetchone()
+        if (
+            target is None
+            or target["version_id"] != comparison_target.get("version_id")
+            or target["current_version_id"] != target["version_id"]
+            or target["capability_kind"] != payload["capability_kind"]
+            or target["status"] not in {"active", "pending_revalidation"}
+        ):
+            return False
+        role_contract_match = all(
+            json.loads(target[column]) == payload[payload_key]
+            for column, payload_key in (
+                ("activation_json", "activation"),
+                ("input_contract_json", "input_contract"),
+                ("output_contract_json", "output_contract"),
+                ("error_contract_json", "error_contract"),
+                ("runtime_allowlist_json", "runtime_allowlist"),
+                ("dom_scope_json", "dom_scope"),
+            )
+        )
+        if not role_contract_match:
+            return False
+        current_scope = json.loads(target["usage_scope_json"])
+        if comparison_target.get("contract_match") is True:
+            return current_scope == payload["usage_scope"]
+        if comparison_target.get("scope_revalidation_match") is not True:
+            return False
+        return bool(
+            target["status"] == "pending_revalidation"
+            and current_scope != payload["usage_scope"]
+            and connection.execute(
+                "SELECT 1 FROM capsule_sources WHERE version_id = ? AND project_id = ?",
+                (target["version_id"], review.get("project_id")),
+            ).fetchone()
+            and connection.execute(
+                "SELECT 1 FROM capsule_status_events WHERE capsule_id = ? "
+                "AND version_id = ? AND event_type = 'revalidation_required' "
+                "AND reason_code = 'brand_profile_changed' "
+                "AND to_status = 'pending_revalidation'",
+                (capsule_id, target["version_id"]),
+            ).fetchone()
+        )
+
     def _publish_version(
         self,
         prepared: _PreparedReview,
@@ -3249,6 +3354,23 @@ class ReweaveCapsuleStage3:
                 )
                 if updated.rowcount != 1:
                     raise Stage3Error("review_decision_conflict")
+                if decision == "replace_current":
+                    live_review = connection.execute(
+                        "SELECT project_id, equivalence_comparison_json FROM review_items "
+                        "WHERE review_id = ?",
+                        (prepared.review["review_id"],),
+                    ).fetchone()
+                    if (
+                        existing_capsule is None
+                        or live_review is None
+                        or not self._replace_target_eligible(
+                            connection,
+                            dict(live_review),
+                            str(existing_capsule["capsule_id"]),
+                            payload,
+                        )
+                    ):
+                        raise Stage3Error("replace_current_target_expired")
                 if disable_capsule_id is not None:
                     live_review = connection.execute(
                         "SELECT equivalence_comparison_json FROM review_items WHERE review_id = ?",

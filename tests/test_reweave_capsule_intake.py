@@ -229,6 +229,16 @@ class DataContractV1Test(unittest.TestCase):
             "interaction", input_contract, event_contract, errors
         )
         self.assertEqual(normalized[1]["schema"], "event_outputs.v1")
+        for events in ({}, {"first": object_contract({}), "second": object_contract({})}):
+            with self.subTest(events=events), self.assertRaisesRegex(
+                DataContractError, "event_outputs_contract_invalid"
+            ):
+                normalize_capsule_contracts(
+                    "interaction",
+                    input_contract,
+                    {"schema": "event_outputs.v1", "events": events},
+                    errors,
+                )
         with self.assertRaisesRegex(DataContractError, "presentation_output_contract_invalid"):
             normalize_capsule_contracts(
                 "presentation", input_contract, object_contract({}), errors
@@ -802,6 +812,177 @@ class CapsuleIntakeStage2Test(unittest.TestCase):
         )
         self.assertEqual(compute["usage_scope"]["kind"], "brand_limited")
         self.assertEqual(compute["usage_scope"]["brand_profile_id"], source_root["brand_profile_id"])
+
+    def test_brand_decisions_are_bound_to_effective_profile_identity(self) -> None:
+        self._write_complete_project(self.source)
+        compute = self.source / "compute.js"
+        compute.write_text(
+            compute.read_text(encoding="utf-8").replace(
+                "export function compute(input) {",
+                'export function compute(input) {\n  const label = "HP IBM";',
+            ).replace(
+                "{total: multiply(input.unit_price, input.quantity)}",
+                "{total: multiply(input.unit_price, input.quantity), label}",
+            ),
+            encoding="utf-8",
+        )
+        source_root = self.intake.bind_source_root(
+            self.source,
+            root_kind="single_project",
+            brand_profile={"names": ["HP"]},
+        )
+        project = self.intake.discover_projects(source_root["root_id"])[0]
+        self.intake.confirm_project(project["project_id"])
+
+        first = self.intake.run_intake(project["project_id"])
+        first_waiting = next(
+            row
+            for row in self._review_rows(first["run_id"])
+            if row["candidate_status"] == "waiting_user"
+        )
+        first_binding = json.loads(first_waiting["redaction_summary_json"])
+        self.intake.record_review_decisions(
+            first_waiting["review_id"], brand_decision="retain_brand_limited"
+        )
+        self.assertEqual(self.intake.run_intake(project["project_id"])["status"], "completed")
+
+        replaced = self.intake.set_project_brand(
+            project["project_id"], mode="replace", brand_profile={"names": ["HP"]}
+        )
+        third = self.intake.run_intake(project["project_id"])
+        third_waiting = next(
+            row
+            for row in self._review_rows(third["run_id"])
+            if row["candidate_status"] == "waiting_user"
+        )
+        third_binding = json.loads(third_waiting["redaction_summary_json"])
+        self.assertNotEqual(
+            first_binding["brand_profile_id"], third_binding["brand_profile_id"]
+        )
+        self.assertEqual(
+            first_binding["brand_profile_digest"], third_binding["brand_profile_digest"]
+        )
+        self.assertEqual(third_binding["brand_profile_id"], replaced["brand_profile_id"])
+        self.assertIsNone(third_waiting["brand_decision"])
+        self.intake.record_review_decisions(
+            third_waiting["review_id"], brand_decision="remove_brand"
+        )
+        self.assertEqual(self.intake.run_intake(project["project_id"])["status"], "completed")
+
+        self.intake.set_project_brand(
+            project["project_id"], mode="replace", brand_profile={"names": ["IBM"]}
+        )
+        fifth = self.intake.run_intake(project["project_id"])
+        fifth_waiting = next(
+            row
+            for row in self._review_rows(fifth["run_id"])
+            if row["candidate_status"] == "waiting_user"
+        )
+        self.assertIsNone(fifth_waiting["brand_decision"])
+        self.assertIn(
+            "brand_confirmation_required",
+            json.loads(fifth_waiting["redaction_summary_json"])["codes"],
+        )
+
+    def test_brand_decision_rechecks_current_profile_and_review_evidence(self) -> None:
+        self._write_complete_project(self.source)
+        compute = self.source / "compute.js"
+        compute.write_text(
+            compute.read_text(encoding="utf-8").replace(
+                "export function compute(input) {",
+                'export function compute(input) {\n  const label = "HP";',
+            ).replace(
+                "{total: multiply(input.unit_price, input.quantity)}",
+                "{total: multiply(input.unit_price, input.quantity), label}",
+            ),
+            encoding="utf-8",
+        )
+        source_root = self.intake.bind_source_root(
+            self.source,
+            root_kind="single_project",
+            brand_profile={"names": ["HP"]},
+        )
+        project = self.intake.discover_projects(source_root["root_id"])[0]
+        self.intake.confirm_project(project["project_id"])
+        first = self.intake.run_intake(project["project_id"])
+        waiting = next(
+            row
+            for row in self._review_rows(first["run_id"])
+            if row["candidate_status"] == "waiting_user"
+        )
+
+        with self.assertRaisesRegex(IntakeError, "review_decision_not_allowed"):
+            self.intake.record_review_decisions(
+                waiting["review_id"],
+                asset_decision="confirm_assets_contain_no_real_records",
+            )
+        self.intake.set_root_brand_profile(
+            source_root["root_id"], {"names": ["IBM"]}
+        )
+        with self.assertRaisesRegex(IntakeError, "brand_profile_changed"):
+            self.intake.record_review_decisions(
+                waiting["review_id"], brand_decision="retain_brand_limited"
+            )
+        with self.store.read_connection() as connection:
+            self.assertIsNone(
+                connection.execute(
+                    "SELECT brand_decision FROM review_items WHERE review_id = ?",
+                    (waiting["review_id"],),
+                ).fetchone()[0]
+            )
+
+    def test_project_brand_extend_is_rejected_in_v1(self) -> None:
+        self._write_complete_project(self.source)
+        project = self._bind_discover_confirm(self.source)
+
+        with self.assertRaisesRegex(IntakeError, "project_brand_extend_unsupported_v1"):
+            self.intake.set_project_brand(
+                project["project_id"],
+                mode="extend",
+                brand_profile={"names": ["IBM"]},
+            )
+
+        self.assertEqual(
+            self.intake.get_project(project["project_id"])["brand_mode"], "inherit"
+        )
+
+    def test_existing_project_brand_extend_fails_closed_during_intake(self) -> None:
+        self._write_complete_project(self.source)
+        source_root = self.intake.bind_source_root(
+            self.source,
+            root_kind="single_project",
+            brand_profile={"names": ["HP"]},
+        )
+        project = self.intake.discover_projects(source_root["root_id"])[0]
+        self.intake.confirm_project(project["project_id"])
+        self.intake.set_project_brand(
+            project["project_id"],
+            mode="replace",
+            brand_profile={"names": ["IBM"]},
+        )
+        with self.store.transaction() as connection:
+            connection.execute(
+                "UPDATE projects SET brand_mode = 'extend' WHERE project_id = ?",
+                (project["project_id"],),
+            )
+
+        with self.assertRaisesRegex(
+            IntakeError, "project_brand_extend_unsupported_v1"
+        ):
+            self.intake.run_intake(project["project_id"])
+
+        with self.store.read_connection() as connection:
+            run = connection.execute(
+                "SELECT status, error_code FROM intake_runs WHERE project_id = ? "
+                "ORDER BY created_at DESC LIMIT 1",
+                (project["project_id"],),
+            ).fetchone()
+            review_count = connection.execute(
+                "SELECT COUNT(*) FROM review_items WHERE project_id = ?",
+                (project["project_id"],),
+            ).fetchone()[0]
+        self.assertEqual(tuple(run), ("failed", "project_brand_extend_unsupported_v1"))
+        self.assertEqual(review_count, 0)
 
     def test_indirect_const_strings_cannot_bypass_sensitive_or_brand_gates(self) -> None:
         self._write_complete_project(self.source)
@@ -1396,7 +1577,80 @@ export function compute(input) {
         compute_candidate = next(
             item for item in candidates if item["capability_kind"] == "computation"
         )
-        self.assertEqual(compute_candidate["activation"]["entrypoint"], "default")
+        self.assertEqual(compute_candidate["activation"]["entrypoint"], "compute")
+
+        snapshot = self.intake.snapshot_project(project["project_id"])
+        analysis, _inventory = self.intake._extract(
+            self.intake._project_context(project["project_id"]), snapshot
+        )
+        raw_compute = next(
+            item
+            for item in analysis["candidates"]
+            if item["capability_kind"] == "computation"
+        )
+        compute_source = next(
+            module["source"]
+            for module in raw_compute["javascript_modules"]
+            if module["path"] == raw_compute["activation"]["entry_module"]
+        )
+        self.assertTrue(compute_source.endswith("export { compute as compute };\n"))
+
+    def test_ordinary_es_module_function_names_receive_fixed_role_exports(self) -> None:
+        self._write_complete_project(self.source)
+        replacements = {
+            "presentation.js": ("export function render", "function showQuote"),
+            "interaction.js": ("export function mount", "function wireQuote"),
+            "compute.js": ("export function compute", "function calculateTotal"),
+        }
+        for filename, (before, after) in replacements.items():
+            path = self.source / filename
+            path.write_text(
+                path.read_text(encoding="utf-8").replace(before, after),
+                encoding="utf-8",
+            )
+        project = self._bind_discover_confirm(self.source)
+
+        snapshot = self.intake.snapshot_project(project["project_id"])
+        analysis, _inventory = self.intake._extract(
+            self.intake._project_context(project["project_id"]), snapshot
+        )
+        by_kind = {
+            candidate["capability_kind"]: candidate
+            for candidate in analysis["candidates"]
+        }
+        expected_exports = {
+            "presentation": "export { showQuote as render };",
+            "interaction": "export { wireQuote as mount };",
+            "computation": "export { calculateTotal as compute };",
+        }
+        for kind, export_statement in expected_exports.items():
+            entry_module = by_kind[kind]["activation"]["entry_module"]
+            entry_source = next(
+                module["source"]
+                for module in by_kind[kind]["javascript_modules"]
+                if module["path"] == entry_module
+            )
+            self.assertTrue(entry_source.endswith(export_statement + "\n"))
+
+        result = self.intake.run_intake(project["project_id"])
+
+        candidates = [
+            json.loads(row["sanitized_candidate_json"])
+            for row in self._review_rows(result["run_id"])
+            if row["candidate_status"] == "extracted"
+        ]
+        self.assertEqual(result["counts"]["extracted"], 3)
+        self.assertEqual(
+            {
+                item["capability_kind"]: item["activation"]["entrypoint"]
+                for item in candidates
+            },
+            {
+                "presentation": "render",
+                "interaction": "mount",
+                "computation": "compute",
+            },
+        )
 
     def test_cancel_and_restart_recovery_leave_no_half_candidate(self) -> None:
         self._write_complete_project(self.source)

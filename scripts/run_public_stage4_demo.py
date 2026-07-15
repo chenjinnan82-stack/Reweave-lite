@@ -16,7 +16,6 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from scripts.run_public_reweave_demo import _import_reweave, _prepare_out, _public_files, _safe_out, _temporary_state_dir
 from pimos_lite.reweave_preview_pack import load_preview_history
 
 
@@ -130,6 +129,17 @@ process.stdout.write(JSON.stringify({northTotal, southTotal: elements['#region-t
 
 
 def run(out: Path, *, task: str = "", case: str = "estimate") -> dict[str, object]:
+    del out, task, case
+    return {
+        "ok": False,
+        "error": {
+            "code": "legacy_stage4_demo_inactive",
+            "message_key": "legacy_stage4_demo_inactive",
+        },
+    }
+
+    # Historical implementation retained below for migration archaeology only.
+    # The unconditional return above keeps it outside the active call graph.
     cases = {
         "estimate": (SOURCES, DEFAULT_TASK),
         "workflow": (WORKFLOW_SOURCES, WORKFLOW_TASK),
@@ -230,20 +240,22 @@ def run(out: Path, *, task: str = "", case: str = "estimate") -> dict[str, objec
     }
 
 
-def main() -> None:
+def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--out", default=str(DEFAULT_OUT))
     parser.add_argument("--task", default="")
     parser.add_argument("--case", choices=("estimate", "workflow", "data"), default="estimate")
     args = parser.parse_args()
+    result = run(Path(args.out), task=args.task, case=args.case)
     print(
         json.dumps(
-            run(Path(args.out), task=args.task, case=args.case),
+            result,
             indent=2,
             ensure_ascii=False,
         )
     )
+    return 0 if result.get("ok") is True else 1
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

@@ -668,10 +668,21 @@ class CapsuleWarehouseStoreTest(unittest.TestCase):
 
         def fail_once_on_replaced_database(path: Path) -> dict[str, object]:
             nonlocal failed
+            info = real_verify(path)
             if Path(path).resolve() == self.store.path.resolve() and not failed:
-                failed = True
-                raise CapsuleStoreError("forced post-replace verification failure")
-            return real_verify(path)
+                connection = sqlite3.connect(path)
+                try:
+                    phase = json.loads(
+                        connection.execute(
+                            "SELECT value_json FROM app_settings WHERE setting_key = 'phase'"
+                        ).fetchone()[0]
+                    )
+                finally:
+                    connection.close()
+                if phase == "backup":
+                    failed = True
+                    raise CapsuleStoreError("forced post-replace verification failure")
+            return info
 
         with patch.object(
             store_module,
@@ -685,6 +696,61 @@ class CapsuleWarehouseStoreTest(unittest.TestCase):
 
         self.assertTrue(failed)
         self.assertEqual(self._read_setting("phase"), "current")
+
+    def test_corrupt_current_database_can_list_inspect_and_restore_backup(self) -> None:
+        self._write_setting("phase", "backup")
+        backup = self.store.create_backup("manual")
+        corrupt_bytes = b"not a sqlite database\x00customer bytes"
+        self.path.write_bytes(corrupt_bytes)
+
+        rows = self.store.list_backups()
+        listed = next(row for row in rows if row["path"] == backup["path"])
+        self.assertTrue(listed["valid"])
+
+        preview = self.store.inspect_restore(backup["path"])
+        self.assertFalse(preview["current_database_available"])
+        self.assertIsNone(preview["capsules_removed"])
+        self.assertIsNone(preview["versions_removed"])
+        self.assertIsNone(preview["product_usage_removed"])
+
+        result = self.store.restore_backup(
+            backup["path"], expected_sha256=backup["sha256"]
+        )
+        self.assertTrue(result["restored"])
+        self.assertTrue(result["pre_restore_backup_is_raw"])
+        self.assertEqual(
+            Path(result["pre_restore_backup_path"]).read_bytes(), corrupt_bytes
+        )
+        self.assertEqual(self._read_setting("phase"), "backup")
+
+    def test_corrupt_current_database_raw_bytes_are_restored_on_failure(self) -> None:
+        self._write_setting("phase", "backup")
+        backup = self.store.create_backup("manual")
+        corrupt_bytes = b"broken active database\x00must survive"
+        self.path.write_bytes(corrupt_bytes)
+        real_verify = store_module._verify_database
+        failed = False
+
+        def fail_after_replacement(path: Path) -> dict[str, object]:
+            nonlocal failed
+            info = real_verify(path)
+            if Path(path).resolve() == self.store.path.resolve() and not failed:
+                failed = True
+                raise CapsuleStoreError("forced post-replace verification failure")
+            return info
+
+        with patch.object(
+            store_module, "_verify_database", side_effect=fail_after_replacement
+        ):
+            with self.assertRaisesRegex(
+                CapsuleStoreError, "original database preserved"
+            ):
+                self.store.restore_backup(
+                    backup["path"], expected_sha256=backup["sha256"]
+                )
+
+        self.assertTrue(failed)
+        self.assertEqual(self.path.read_bytes(), corrupt_bytes)
 
     def test_restore_rejects_candidate_that_does_not_match_confirmed_backup(self) -> None:
         self._write_setting("phase", "expected")

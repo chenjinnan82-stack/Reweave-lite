@@ -34,7 +34,7 @@ from pimos_lite.reweave_data_contract import (
 from pimos_lite.reweave_source_registry import state_dir
 
 
-EXTRACTION_CONTRACT_VERSION = "extraction_contract.v1"
+EXTRACTION_CONTRACT_VERSION = "extraction_contract.v2"
 REDACTION_RULES_VERSION = "redaction_rules.v1"
 SECURITY_RULES_VERSION = "not_run.stage2"
 SUPERVISION_RULES_VERSION = "not_run.stage2"
@@ -407,8 +407,10 @@ class ReweaveCapsuleIntake:
     ) -> dict[str, Any]:
         if mode not in {"inherit", "extend", "replace", "clear"}:
             raise IntakeError("project_brand_mode_invalid")
+        if mode == "extend":
+            raise IntakeError("project_brand_extend_unsupported_v1")
         project = self.get_project(project_id)
-        if mode in {"extend", "replace"}:
+        if mode == "replace":
             profile = self._profile_fields(brand_profile, previous=project)
             if profile["id"] is None:
                 raise IntakeError("project_brand_profile_required")
@@ -760,12 +762,21 @@ class ReweaveCapsuleIntake:
                 self._cancel_if_requested(run_id, cancel_check)
                 before = self.snapshot_project(project_id)
                 profile = self._effective_brand_profile(context.project, context.source_root)
-                if self._is_no_change(project_id, before.digest, profile.get("digest")):
+                if self._is_no_change(
+                    project_id,
+                    before.digest,
+                    profile.get("id"),
+                    profile.get("digest"),
+                ):
                     after = self.snapshot_project(project_id)
                     if after.digest != before.digest:
                         raise IntakeError("source_changed_during_scan")
                     self._cancel_if_requested(run_id, cancel_check)
-                    counts = {"candidates": 0, "effective_brand_profile_digest": profile.get("digest")}
+                    counts = {
+                        "candidates": 0,
+                        "effective_brand_profile_id": profile.get("id"),
+                        "effective_brand_profile_digest": profile.get("digest"),
+                    }
                     self._finish_run(run_id, "no_change", before.digest, after.digest, counts)
                     return {"run_id": run_id, "status": "no_change", "counts": counts, "review_ids": []}
 
@@ -792,6 +803,7 @@ class ReweaveCapsuleIntake:
                     "review_required": sum(row["candidate_status"] == "review_required" for row in rows),
                     "rejected": rejected,
                     "extracted": sum(row["candidate_status"] == "extracted" for row in rows),
+                    "effective_brand_profile_id": profile.get("id"),
                     "effective_brand_profile_digest": profile.get("digest"),
                 }
                 status = "completed_with_pending" if waiting else "completed"
@@ -829,14 +841,38 @@ class ReweaveCapsuleIntake:
             ).fetchone()
             if row is None or row["candidate_status"] != "waiting_user":
                 raise IntakeError("review_item_not_waiting_user")
+            allowed = self._allowed_review_decisions(row)
+            if any(
+                decision is not None and decision not in allowed
+                for decision in (sensitivity_decision, brand_decision, asset_decision)
+            ):
+                raise IntakeError("review_decision_not_allowed")
             if sensitivity_decision and row["sensitivity_decision"] is not None:
                 raise IntakeError("sensitivity_decision_already_set")
             if brand_decision and row["brand_decision"] is not None:
                 raise IntakeError("brand_decision_already_set")
             if asset_decision and row["asset_decision"] is not None:
                 raise IntakeError("asset_decision_already_set")
+            candidate_brand = self._review_brand_binding(row["redaction_summary_json"])
+            current_brand: tuple[str | None, str | None] | None = None
+            if brand_decision is not None:
+                current = connection.execute(
+                    "SELECT CASE WHEN p.brand_mode = 'inherit' THEN r.brand_profile_id "
+                    "WHEN p.brand_mode = 'clear' THEN NULL ELSE p.brand_profile_id END, "
+                    "CASE WHEN p.brand_mode = 'inherit' THEN r.brand_profile_digest "
+                    "WHEN p.brand_mode = 'clear' THEN NULL ELSE p.brand_profile_digest END "
+                    "FROM projects p JOIN source_roots r ON r.root_id = p.source_root_id "
+                    "WHERE p.project_id = ?",
+                    (row["project_id"],),
+                ).fetchone()
+                if current is None:
+                    raise IntakeError("project_not_found")
+                current_brand = (current[0], current[1])
+                if candidate_brand != current_brand:
+                    raise IntakeError("brand_profile_changed")
             bound_rows = connection.execute(
-                "SELECT sensitivity_decision, brand_decision, asset_decision FROM review_items "
+                "SELECT sensitivity_decision, brand_decision, asset_decision, "
+                "redaction_summary_json FROM review_items "
                 "WHERE project_id = ? AND source_relpath = ? AND source_hash = ? "
                 "AND redaction_rules_version = ?",
                 (
@@ -855,6 +891,8 @@ class ReweaveCapsuleIntake:
                 str(item["brand_decision"])
                 for item in bound_rows
                 if item["brand_decision"] is not None
+                and self._review_brand_binding(item["redaction_summary_json"])
+                == candidate_brand
             }
             existing_asset = {
                 str(item["asset_decision"])
@@ -883,9 +921,7 @@ class ReweaveCapsuleIntake:
                 values.extend([sensitivity_decision, now])
             if brand_decision:
                 if brand_decision == "retain_brand_limited":
-                    project = self.get_project(str(row["project_id"]))
-                    context = self._project_context(project["project_id"], allow_unconfirmed_children=True)
-                    if not self._effective_brand_profile(project, context.source_root).get("id"):
+                    if current_brand is None or current_brand[0] is None:
                         raise IntakeError("brand_profile_required_for_retention")
                 updates.extend(["brand_decision = ?", "brand_decided_at = ?"])
                 values.extend([brand_decision, now])
@@ -1074,7 +1110,12 @@ class ReweaveCapsuleIntake:
                 + [unescape(html_text), css_text]
             )
             sensitivity = self._sensitivity(raw, profile)
-            decisions = self._bound_decisions(project_id, source_relpath, source_hash)
+            decisions = self._bound_decisions(
+                project_id,
+                source_relpath,
+                source_hash,
+                profile=profile,
+            )
             status = "extracted"
             reason_codes = list(sensitivity["codes"])
             if sensitivity["secret_count"]:
@@ -1162,6 +1203,8 @@ class ReweaveCapsuleIntake:
                             "secret_count": sensitivity["secret_count"],
                             "ambiguous_count": sensitivity["ambiguous_count"],
                             "brand_count": sensitivity["brand_count"],
+                            "brand_profile_id": profile.get("id"),
+                            "brand_profile_digest": profile.get("digest"),
                         }
                     ),
                 }
@@ -1307,17 +1350,32 @@ class ReweaveCapsuleIntake:
         return [row["review_id"] for row in rows]
 
     def _bound_decisions(
-        self, project_id: str, source_relpath: str, source_hash: str
+        self,
+        project_id: str,
+        source_relpath: str,
+        source_hash: str,
+        *,
+        profile: dict[str, Any] | None = None,
     ) -> dict[str, str | None]:
+        if profile is None:
+            context = self._project_context(project_id, allow_unconfirmed_children=True)
+            profile = self._effective_brand_profile(context.project, context.source_root)
         with self.store.read_connection() as connection:
             rows = connection.execute(
-                "SELECT sensitivity_decision, brand_decision, asset_decision FROM review_items "
+                "SELECT sensitivity_decision, brand_decision, asset_decision, "
+                "redaction_summary_json FROM review_items "
                 "WHERE project_id = ? AND source_relpath = ? AND source_hash = ? "
                 "AND redaction_rules_version = ? ORDER BY created_at DESC",
                 (project_id, source_relpath, source_hash, REDACTION_RULES_VERSION),
             ).fetchall()
         sensitivity_values = {str(row[0]) for row in rows if row[0] is not None}
-        brand_values = {str(row[1]) for row in rows if row[1] is not None}
+        current_brand = (profile.get("id"), profile.get("digest"))
+        brand_values = {
+            str(row[1])
+            for row in rows
+            if row[1] is not None
+            and self._review_brand_binding(row[3]) == current_brand
+        }
         asset_values = {str(row[2]) for row in rows if row[2] is not None}
         if "confirm_real_record_reject" in sensitivity_values:
             sensitivity = "confirm_real_record_reject"
@@ -1332,6 +1390,58 @@ class ReweaveCapsuleIntake:
         brand = next(iter(brand_values), None)
         asset = next(iter(asset_values), None)
         return {"sensitivity": sensitivity, "brand": brand, "asset": asset}
+
+    @staticmethod
+    def _review_brand_binding(
+        summary_json: str,
+    ) -> tuple[str | None, str | None] | None:
+        try:
+            summary = json.loads(summary_json)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        if (
+            type(summary) is not dict
+            or "brand_profile_id" not in summary
+            or "brand_profile_digest" not in summary
+        ):
+            return None
+        profile_id = summary["brand_profile_id"]
+        profile_digest = summary["brand_profile_digest"]
+        if profile_id is not None and type(profile_id) is not str:
+            return None
+        if profile_digest is not None and type(profile_digest) is not str:
+            return None
+        return profile_id, profile_digest
+
+    @staticmethod
+    def _allowed_review_decisions(row: Any) -> frozenset[str]:
+        try:
+            summary = json.loads(row["redaction_summary_json"])
+            candidate = json.loads(row["sanitized_candidate_json"])
+        except (json.JSONDecodeError, TypeError):
+            return frozenset()
+        if type(summary) is not dict or type(candidate) is not dict:
+            return frozenset()
+        raw_codes = summary.get("codes")
+        if type(raw_codes) is not list or not all(type(code) is str for code in raw_codes):
+            return frozenset()
+        codes = set(raw_codes)
+        failure = candidate.get("stage3_failure")
+        failure_code = failure.get("error_code") if type(failure) is dict else None
+        allowed: set[str] = set()
+        if (
+            "sensitivity_confirmation_required" in codes
+            or failure_code == "sensitivity_confirmation_required_stage3"
+        ):
+            allowed.update(_SENSITIVITY_DECISIONS)
+        if (
+            "brand_confirmation_required" in codes
+            or failure_code == "brand_confirmation_required"
+        ):
+            allowed.update(_BRAND_DECISIONS)
+        if failure_code == "asset_content_confirmation_required_stage3":
+            allowed.update(_ASSET_DECISIONS)
+        return frozenset(allowed)
 
     @staticmethod
     def _sensitivity(raw: str, profile: dict[str, Any]) -> dict[str, Any]:
@@ -1723,6 +1833,8 @@ class ReweaveCapsuleIntake:
         project: dict[str, Any], source_root: dict[str, Any]
     ) -> dict[str, Any]:
         mode = project.get("brand_mode")
+        if mode == "extend":
+            raise IntakeError("project_brand_extend_unsupported_v1")
         row = source_root if mode == "inherit" else project
         if mode == "clear" or not row.get("brand_profile_id"):
             return {"id": None, "digest": None, "terms": []}
@@ -1830,7 +1942,11 @@ class ReweaveCapsuleIntake:
             raise IntakeError("intake_cancelled")
 
     def _is_no_change(
-        self, project_id: str, snapshot_hash: str, brand_digest: str | None
+        self,
+        project_id: str,
+        snapshot_hash: str,
+        brand_profile_id: str | None,
+        brand_digest: str | None,
     ) -> bool:
         with self.store.read_connection() as connection:
             project = connection.execute(
@@ -1844,7 +1960,9 @@ class ReweaveCapsuleIntake:
         if project is None or project[0] != snapshot_hash or run is None:
             return False
         try:
-            previous_digest = json.loads(run["counts_json"]).get("effective_brand_profile_digest")
+            previous_counts = json.loads(run["counts_json"])
+            previous_profile_id = previous_counts.get("effective_brand_profile_id")
+            previous_digest = previous_counts.get("effective_brand_profile_digest")
         except (json.JSONDecodeError, TypeError):
             return False
         return (
@@ -1854,6 +1972,7 @@ class ReweaveCapsuleIntake:
             and run["supervision_rules_version"] == SUPERVISION_RULES_VERSION
             and run["validation_contract_version"] == VALIDATION_CONTRACT_VERSION
             and run["canonicalization_version"] == CANONICALIZATION_VERSION
+            and previous_profile_id == brand_profile_id
             and previous_digest == brand_digest
         )
 

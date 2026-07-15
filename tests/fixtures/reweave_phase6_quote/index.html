@@ -1,0 +1,16 @@
+<!doctype html>
+<html>
+<body>
+<section data-capsule-root>
+  <span>Quantity</span>
+  <input data-ref="quantity" type="number" min="1" max="10" step="1" value="2">
+  <span>Unit price</span>
+  <input data-ref="unit-price" type="number" min="1" max="100" step="1" value="3">
+  <button data-action="calculate" type="button">Calculate</button>
+  <span data-ref="total"></span>
+</section>
+<script type="module" src="./view.js"></script>
+<script type="module" src="./controls.js"></script>
+<script type="module" src="./pricing.js"></script>
+</body>
+</html>
