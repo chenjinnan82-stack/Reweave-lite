@@ -31,6 +31,7 @@ from pimos_lite.reweave_data_contract import (
     generate_synthetic_fixtures,
     normalize_capsule_contracts,
 )
+from pimos_lite.reweave_process_environment import restricted_subprocess_environment
 from pimos_lite.reweave_source_registry import state_dir
 
 
@@ -1021,7 +1022,7 @@ class ReweaveCapsuleIntake:
                 text=True,
                 timeout=15,
                 check=False,
-                env={"PATH": os.environ.get("PATH", "")},
+                env=restricted_subprocess_environment(),
             )
         except subprocess.TimeoutExpired as exc:
             raise IntakeError("extraction_analyzer_timeout") from exc

@@ -43,6 +43,7 @@ from pimos_lite.reweave_capsule_store import (
     CapsuleWarehouseStore,
     canonicalize_capsule,
 )
+from pimos_lite.reweave_process_environment import restricted_subprocess_environment
 from pimos_lite.reweave_source_registry import state_dir
 
 APP_SERVICE_VERSION = "v2"
@@ -438,7 +439,7 @@ def _fsync_product_tree(root: Path) -> None:
         if path.is_symlink():
             raise ProductGenerationError("product_file_unsafe")
         if path.is_file():
-            with path.open("rb") as handle:
+            with path.open("r+b") as handle:
                 os.fsync(handle.fileno())
         elif path.is_dir() and os.name == "posix":
             descriptor = os.open(path, os.O_RDONLY)
@@ -498,7 +499,7 @@ def _validate_product_static(root: Path) -> dict[str, Any]:
         text=True,
         timeout=10,
         check=False,
-        env={"PATH": os.environ.get("PATH", "")},
+        env=restricted_subprocess_environment(),
     )
     checks["javascript_syntax"] = checked.returncode == 0 and not checked.stderr
     if not all(checks.values()):
@@ -513,8 +514,7 @@ def _validate_product_static(root: Path) -> dict[str, Any]:
 
 
 def _product_worker_environment(temporary: Path) -> dict[str, str]:
-    return {
-        "PATH": os.environ.get("PATH", ""),
+    return restricted_subprocess_environment({
         "HOME": str(temporary),
         "TMPDIR": str(temporary),
         "TMP": str(temporary),
@@ -528,7 +528,7 @@ def _product_worker_environment(temporary: Path) -> dict[str, str]:
         "QTWEBENGINE_CHROMIUM_FLAGS": os.environ.get(
             "QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu"
         ),
-    }
+    })
 
 
 def _desktop_worker_python() -> str:

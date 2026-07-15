@@ -20,6 +20,7 @@ REQUIRED_SURFACE_FILES = (
     "pimos_lite/reweave_capsule_stage3.py",
     "pimos_lite/reweave_capsule_worker.py",
     "pimos_lite/reweave_data_contract.py",
+    "pimos_lite/reweave_process_environment.py",
     "pimos_lite/reweave_source_registry.py",
     "pimos_lite/reweave_source_scanner.py",
     "scripts/analyze_reweave_extraction.mjs",

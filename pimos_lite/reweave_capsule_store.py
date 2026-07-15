@@ -1779,7 +1779,7 @@ def _ensure_private_file(path: Path) -> None:
 
 
 def _fsync_file(path: Path) -> None:
-    with path.open("rb") as handle:
+    with path.open("r+b") as handle:
         os.fsync(handle.fileno())
 
 

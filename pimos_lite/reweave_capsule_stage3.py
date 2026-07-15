@@ -41,6 +41,7 @@ from pimos_lite.reweave_data_contract import (
     generate_synthetic_fixtures,
     normalize_capsule_contracts,
 )
+from pimos_lite.reweave_process_environment import restricted_subprocess_environment
 
 
 SECURITY_RULES_VERSION = "security_rules.v1"
@@ -1098,7 +1099,7 @@ def _bundle_javascript(
         cwd=root,
         timeout=15,
         check=False,
-        env={"PATH": os.environ.get("PATH", "")},
+        env=restricted_subprocess_environment(),
     )
     if completed.returncode or completed.stderr or not bundle_path.is_file():
         raise Stage3Error("esbuild_bundle_failed")
@@ -1110,7 +1111,7 @@ def _bundle_javascript(
         cwd=directory,
         timeout=10,
         check=False,
-        env={"PATH": os.environ.get("PATH", "")},
+        env=restricted_subprocess_environment(),
     )
     if checked.returncode or checked.stderr:
         raise Stage3Error("bundle_syntax_invalid")
@@ -1127,8 +1128,7 @@ def _bundle_javascript(
 
 
 def _pyside_environment(temp_root: Path) -> dict[str, str]:
-    env = {
-        "PATH": os.environ.get("PATH", ""),
+    env = restricted_subprocess_environment({
         "HOME": str(temp_root),
         "TMPDIR": str(temp_root),
         "TMP": str(temp_root),
@@ -1141,7 +1141,7 @@ def _pyside_environment(temp_root: Path) -> dict[str, str]:
         "QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen"),
         "QTWEBENGINE_CHROMIUM_FLAGS": "--disable-gpu",
         "QT_LOGGING_RULES": "*.debug=false;qt.webenginecontext.info=false",
-    }
+    })
     for key in ("LANG", "LC_ALL"):
         if os.environ.get(key):
             env[key] = os.environ[key]
@@ -1265,7 +1265,7 @@ def _validate_computation(
             cwd=directory,
             timeout=10,
             error_code="compute_worker_failed",
-            env={"PATH": os.environ.get("PATH", "")},
+            env=restricted_subprocess_environment(),
         )
     if result.get("status") != "passed" or type(result.get("cases")) is not list:
         raise Stage3Error(str(result.get("error_code") or "compute_validation_failed"))

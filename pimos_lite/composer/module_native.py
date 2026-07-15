@@ -26,6 +26,7 @@ from pimos_lite.reweave_data_contract import (
     generate_synthetic_fixtures,
     normalize_capsule_contracts,
 )
+from pimos_lite.reweave_process_environment import restricted_subprocess_environment
 
 
 def _legacy_call(module: str, name: str, *args: Any, **kwargs: Any) -> Any:
@@ -498,7 +499,7 @@ def _run_formal_analyzer(payload: dict[str, Any]) -> None:
         [_node_binary_formal(), str(root / "scripts" / "analyze_reweave_security.mjs")],
         input=json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False),
         capture_output=True, text=True, cwd=root, timeout=15, check=False,
-        env={"PATH": os.environ.get("PATH", "")},
+        env=restricted_subprocess_environment(),
     )
     try:
         result = json.loads(completed.stdout)
@@ -547,14 +548,14 @@ def _bundle_formal_capsule(capsule: dict[str, Any], global_name: str) -> str:
                 global_name,
             ],
             capture_output=True, text=True, cwd=root, timeout=15, check=False,
-            env={"PATH": os.environ.get("PATH", "")},
+            env=restricted_subprocess_environment(),
         )
         if completed.returncode or completed.stderr or not output.is_file():
             raise ValueError("formal_esbuild_bundle_failed")
         source = output.read_text(encoding="utf-8")
         checked = subprocess.run(
             [_node_binary_formal(), "--check", str(output)], capture_output=True, text=True,
-            cwd=directory, timeout=10, check=False, env={"PATH": os.environ.get("PATH", "")},
+            cwd=directory, timeout=10, check=False, env=restricted_subprocess_environment(),
         )
         if checked.returncode or checked.stderr:
             raise ValueError("formal_bundle_syntax_invalid")
@@ -707,7 +708,7 @@ def _check_generated_javascript(source: str) -> None:
         target.write_text(source, encoding="utf-8", newline="\n")
         completed = subprocess.run(
             [_node_binary_formal(), "--check", str(target)], capture_output=True, text=True,
-            timeout=10, check=False, env={"PATH": os.environ.get("PATH", "")},
+            timeout=10, check=False, env=restricted_subprocess_environment(),
         )
     if completed.returncode or completed.stderr:
         raise ValueError("product_javascript_syntax_invalid")
