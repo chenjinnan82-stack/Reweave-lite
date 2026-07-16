@@ -4195,3 +4195,68 @@ Vite 按是否已形成无需构建的原生静态闭包判断，不按名称判
 - 同四个固定公开项目在全新隔离仓库中重跑后仍为 `4 candidates / 0 extracted / 4 rejected`；四个来源树、Git 状态和 intake 快照前后相同，正式表为零。新证据位于 `/private/tmp/reweave-real-pilots-rootfix.Nu5J6C/evidence.json`，SHA-256 为 `3806be82b15423935b3d1d6f01cbc806a57dd91fe62c90bef1309c756ee8e32f`。
 
 限定结论：该根契约 P1 已关闭，当前已知 P0/P1 为零。阶段 1–6 在封板支持面内保持 `PASS`；额外真实正向项目仍为 0，因此外部真实项目接受度保持 `PARTIAL`。普通应用 bootstrap 已明确在 V1 外，不继续随机寻找项目或设计自动转换器。
+
+## 附录 Q：V1 外部真实项目扩面与 Bootstrap 决策封板
+
+完成日期：2026-07-16。本附录执行 P.8 之后批准的限定扩面计划，不修改正文架构或阶段 1–6 契约。
+
+### Q.1 冻结边界与交付物
+
+本轮只增加三个证据层交付物：
+
+- 固定样本清单：`docs/reports/REWEAVE_STATIC_WEB_V1_PILOT_CORPUS.json`。
+- 无网络只读运行器：`scripts/run_reweave_v1_real_project_pilots.py`。
+- 回归测试：`tests/test_reweave_real_project_pilots.py`。
+
+运行器使用现有 `ReweaveAppService` 和每项目独立的 `CapsuleWarehouseStore`，不建立新 repository、仓库或组合器；不克隆、安装、构建、改写来源，也不自动发布或代替人工决定。失败族只在报告层派生，不写 SQLite。原始错误码、项目级最早终止门、candidate 级原因、规则版本、来源前后摘要、intake 快照和正式表增量均保留为结构化证据。
+
+最终固定 manifest 文件 SHA-256 为 `dfd55804fe51b86311041c4863176571072bc910996c6c795d1bb79d7a1a5ebe`，规范 JSON SHA-256 为 `672a37a8e6bdb87a2bd175896dcad01475f977250a508550b3072f12a5d4f788`；运行器 SHA-256 为 `0f5e46947da5e38881afa6e6abec101da8608b7fbb01c958f4ee71b9a9fcf1ac`。运行器在任何写入前拒绝与来源 workspace 重叠的状态目录、位于来源内的输出文件和符号链接 checkout 根；服务失败仍执行来源后置检查，intake 快照不一致直接失败；duplicate 不冒充模型调用，所有 primary/secondary 未知码都使分类门失败。
+
+### Q.2 正向轨道结论
+
+presentation、interaction、computation 各检查固定上限 20 个公开搜索结果，总计 60 项。没有项目同时满足 V1 正向资格，因此没有为了取得成功而替换样本、改写源码或把 fixture 计作外部项目。搜索证据 SHA-256 分别为：
+
+- presentation：`9edb8b1ed5884be12657c850762190869f9971feaae7cf1a00bdfd8eb6da24c0`。
+- interaction：`113816c2392ea3ea7c523a2821eba595fb45a22f72bf600357fe0895e49a97e7`。
+- computation：`5925000c328967e081d6a60b470e4857b98ecf1d492407bc04e075a82e0086ad`。
+
+固定预算耗尽后的正式结论为：`eligible_projects_found=0`、`validated_positive=0`、正式角色覆盖为空、真实外部产品业务断言未执行。外部真实正向覆盖保持 `PARTIAL` 并停止搜索；它不改变阶段 1–6 在既定支持面内的 `PASS`，也不能由仓库 fixture 或全量绿色测试替代。
+
+### Q.3 八项目失败观察
+
+固定八项目漏斗为：
+
+```text
+screened=8
+→ ready=4
+→ extracted_any=0
+→ stage3_pass_any=0
+→ active=0
+→ product_asserted=0（证据值为 null）
+```
+
+项目级最早失败族为：`bootstrap_top_level_not_declarative_v1=3`、`module_graph_unsupported_v1=1`、`qualification_closure_boundary=2`、`qualification_entry_unsupported_v1=2`。所有错误码均成功分类，没有 `unclassified`。八个来源前后摘要与 Git 状态一致，四个 intake 快照一致，所有正式表增量为零；没有模型或 worker 调用。
+
+最终结构化证据为 `/private/tmp/reweave-v1-pilot-evidence-final5.json`，SHA-256 为 `d5453ae35d8cb2eb811ee9b5fe70437799702d59ca647ca29f1817bb0d9c01b0`。每个项目与 candidate 都显式记录最远门禁及最早失败，`unclassified_raw_error_codes=[]`；仓库只保存本附录与试点报告中的结构化摘要和 SHA-256，不保存第三方源码、绝对来源路径、控制台原文、模型 prompt 或 response。
+
+### Q.4 Bootstrap v3 决策
+
+机会探针固定复用八项目，只读检查预批准的“一个静态相对 named/default import → 一个最终直接调用 → 独立叶子角色”形态。观察结果为：匹配项目 1（门槛 3）、叶子原样通过 extraction v2 为 0、正式角色种类 0（门槛 2）、Stage 3 和 worker 运行均为 0。
+
+唯一外层形态匹配项的叶子仍以 `unsupported_string_construction_v1` 被 v2 拒绝。证据 SHA-256 为 `e48044fe967957367f431cfd4b36fca86c8e68fe652e0582f672ff8544d65b60`。因此：
+
+```text
+decision = do_not_approve_extraction_contract_v3
+extraction_contract_version = extraction_contract.v2
+```
+
+不实施 v3，不触发贡献项目重扫或 `pending_revalidation`，不修改 Stage 3、SQLite、composer、前端或产品运行契约。普通 bootstrap 继续在 V1 外；不新增 wrapper、模板、fallback、第二仓库或第二组合器。
+
+### Q.5 验证与停止门
+
+- Python 3.14.5、PySide6 6.11.1、Node 22.22.3 全量：`565 passed, 98 subtests passed`。
+- Python 3.11、Node 24.18.0 本机 CI 等价链：`564 passed, 1 skipped, 98 subtests passed`；唯一 skip 是临时 Python 3.11 环境没有 PySide6。
+- 试点工具聚焦：`8 passed`；`npm ci`、Node 语法、Python 编译和 `git diff --check` 通过。
+- 本轮没有 push，未把本机等价链表述为该快照的 GitHub 托管 CI。
+
+本轮停止条件已经触发：正向搜索预算耗尽，bootstrap v3 证据门没有满足。限定复核未发现新增可复现 P0/P1。阶段 1–6 的架构和支持面不变；外部真实正向覆盖保持 `PARTIAL`，后续只能在用户提供新的符合 V1 资格的固定项目时追加证据，不能通过扩大契约或自动转换不合格项目来改变本轮结论。

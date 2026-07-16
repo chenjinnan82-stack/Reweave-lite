@@ -1,0 +1,117 @@
+{
+  "schema_version": "reweave_v1_pilot_manifest.v1",
+  "reweave_head": "da365305f06b4af3ed6ae2b2dc9aa4c68334a9b3",
+  "rules": {
+    "schema_version": 1,
+    "extraction_contract_version": "extraction_contract.v2",
+    "redaction_rules_version": "redaction_rules.v1",
+    "canonicalization_version": 1,
+    "security_rules_version": "security_rules.v1",
+    "supervision_rules_version": "supervision_rules.v1",
+    "validation_contract_version": "validation_contract.v1"
+  },
+  "positive_scout": {
+    "screened_by_kind": {
+      "presentation": 20,
+      "interaction": 20,
+      "computation": 20
+    },
+    "eligible_projects_found": 0,
+    "status": "budget_exhausted_no_eligible_project",
+    "raw_search_evidence_sha256": {
+      "presentation": "9edb8b1ed5884be12657c850762190869f9971feaae7cf1a00bdfd8eb6da24c0",
+      "interaction": "113816c2392ea3ea7c523a2821eba595fb45a22f72bf600357fe0895e49a97e7",
+      "computation": "5925000c328967e081d6a60b470e4857b98ecf1d492407bc04e075a82e0086ad"
+    }
+  },
+  "projects": [
+    {
+      "id": "snake-js",
+      "cohort": "bootstrap",
+      "selection_order": 1,
+      "repository_url": "https://github.com/MasiaAntoine/snake-js",
+      "commit": "894e7dc8549b0aa347ecbe985704a3c32fbbc767",
+      "checkout_dir": "snake-js",
+      "entry_relpath": "index.html",
+      "license_relpath": null,
+      "expected_kind": null
+    },
+    {
+      "id": "awesome-books",
+      "cohort": "bootstrap",
+      "selection_order": 2,
+      "repository_url": "https://github.com/nwakauc/ES6-Awesome-books",
+      "commit": "582758d79513c5447324f8ea360bfe88a5bf0148",
+      "checkout_dir": "awesome-books",
+      "entry_relpath": "index.html",
+      "license_relpath": "LICENSE",
+      "expected_kind": null
+    },
+    {
+      "id": "wordle",
+      "cohort": "bootstrap",
+      "selection_order": 3,
+      "repository_url": "https://github.com/titusdmoore/wordle",
+      "commit": "2d01427ccac3324dafadd31c0bb128d6039442b1",
+      "checkout_dir": "wordle",
+      "entry_relpath": "index.html",
+      "license_relpath": null,
+      "expected_kind": null
+    },
+    {
+      "id": "hw10-js",
+      "cohort": "bootstrap",
+      "selection_order": 4,
+      "repository_url": "https://github.com/daria4783/hw10.js",
+      "commit": "c3b879cc81b27c716c27fc03e0c9c733663750dc",
+      "checkout_dir": "hw10-js",
+      "entry_relpath": "js.html",
+      "license_relpath": null,
+      "expected_kind": null
+    },
+    {
+      "id": "vanilla-js-todo",
+      "cohort": "bootstrap",
+      "selection_order": 5,
+      "repository_url": "https://github.com/jrletner/vanilla_js_todo",
+      "commit": "cd61d97231ea9b565dd2468eac4d3f45c0f97c11",
+      "checkout_dir": "vanilla-js-todo",
+      "entry_relpath": "index.html",
+      "license_relpath": "LICENSE",
+      "expected_kind": null
+    },
+    {
+      "id": "cipher-lab",
+      "cohort": "bootstrap",
+      "selection_order": 6,
+      "repository_url": "https://github.com/AdityaKumar1511/cipher-lab",
+      "commit": "0ee47a80a1eff3f588cddda374a21a997910f0fb",
+      "checkout_dir": "cipher-lab",
+      "entry_relpath": "index.html",
+      "license_relpath": "LICENSE",
+      "expected_kind": null
+    },
+    {
+      "id": "noteforge",
+      "cohort": "bootstrap",
+      "selection_order": 7,
+      "repository_url": "https://github.com/DaveHomeAssist/noteforge",
+      "commit": "ba380b9ab83c5d0e110b39b8f1ce0018b8cfc37e",
+      "checkout_dir": "noteforge",
+      "entry_relpath": "index.html",
+      "license_relpath": "LICENSE",
+      "expected_kind": null
+    },
+    {
+      "id": "countup-js",
+      "cohort": "bootstrap",
+      "selection_order": 8,
+      "repository_url": "https://github.com/inorganik/countUp.js",
+      "commit": "2346e4994f870fdc9028944b3d79dc80af3b33d2",
+      "checkout_dir": "countup-js",
+      "entry_relpath": "index.html",
+      "license_relpath": "LICENSE.md",
+      "expected_kind": null
+    }
+  ]
+}

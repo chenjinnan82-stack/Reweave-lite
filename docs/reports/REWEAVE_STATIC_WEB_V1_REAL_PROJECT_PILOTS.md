@@ -76,3 +76,86 @@ bind_source_root(single_project)
 根契约回归覆盖唯一显式标记、唯一 `<main>`、唯一 `<form>`、多显式根、歧义根、嵌套显式根及 computation 隔离；阶段 2/3 聚焦为 `74 passed, 53 subtests passed`。无显式标记的唯一 `<main>` interaction 已在真实 QWebEngine 中运行，单独结果为 `1 passed`。完整验证及 CI 等价数字记录在设计文档 P.8。
 
 本次修复只消除了合法 UI 根在阶段 2/3 之间的不一致，没有改写四个项目的顶层 JavaScript，也没有新增自动转换器。额外真实正向项目仍为 0，所以本报告的外部正向覆盖结论继续保持 `PARTIAL`。
+
+## 6. 冻结扩面清单与可复现工具
+
+本节及后续章节记录“V1 真实项目扩面与 Bootstrap 决策方案”的最终执行结果；第 1–5 节保留此前四项目试点的历史证据。最终固定清单位于 `docs/reports/REWEAVE_STATIC_WEB_V1_PILOT_CORPUS.json`，文件 SHA-256 为 `dfd55804fe51b86311041c4863176571072bc910996c6c795d1bb79d7a1a5ebe`，规范 JSON SHA-256 为 `672a37a8e6bdb87a2bd175896dcad01475f977250a508550b3072f12a5d4f788`。
+
+新增无网络试点脚本为 `scripts/run_reweave_v1_real_project_pilots.py`，只接受：
+
+```text
+--manifest
+--workspace
+--state-root
+--output
+```
+
+脚本不克隆项目、不安装来源依赖、不运行来源构建器、不写来源目录，也不自动形成任何人工复核决定。它只处理已检出的固定提交，并在执行前校验 Reweave HEAD 与规则版本、来源 HEAD、Git clean 状态、origin、入口和许可证路径；每个项目使用独立 SQLite 状态目录。`--state-root` 与来源 workspace 必须完全分离，`--output` 不得位于来源 workspace 内，checkout 根或整树出现符号链接均失败关闭。服务中途失败也必须执行来源后置检查，intake 快照不一致使整份证据失败；同批 duplicate 不冒充模型调用，任何 secondary 未知错误码同样使分类门失败。最终脚本 SHA-256 为 `0f5e46947da5e38881afa6e6abec101da8608b7fbb01c958f4ee71b9a9fcf1ac`。
+
+报告层保留原始错误码，另外派生固定 `failure_family`；未知错误码为 `unclassified` 并使整份证据失败。模型和三个 worker 使用 `true`、`false`、`null` 三态记录，`product_asserted` 只有真实业务断言才能取布尔值，不能从正式表、manifest 或浏览器启动成功推断。
+
+## 7. 真实正向覆盖轨道
+
+按 presentation、interaction、computation 三类分别检查前 20 个公开搜索结果，共检查 60 项后停止。没有项目同时满足许可证、单入口本地 ESM、自包含静态闭包、无构建、无远程资源/品牌/位图，以及可静态预筛为单一原子角色等全部条件，因此固定正向清单为空，未在运行结果之后替换或制造样本。
+
+| 搜索轨道 | 检查数 | 合格数 | 原始搜索证据 SHA-256 |
+|---|---:|---:|---|
+| presentation | 20 | 0 | `9edb8b1ed5884be12657c850762190869f9971feaae7cf1a00bdfd8eb6da24c0` |
+| interaction | 20 | 0 | `113816c2392ea3ea7c523a2821eba595fb45a22f72bf600357fe0895e49a97e7` |
+| computation | 20 | 0 | `5925000c328967e081d6a60b470e4857b98ecf1d492407bc04e075a82e0086ad` |
+
+原始搜索证据位于 `/private/tmp/reweave-v1-positive-scout/`，仓库只保存数量和 SHA-256，不保存搜索结果正文。由于样本预算已经耗尽，本轮正向完成门没有满足：`validated_positive=0`，覆盖角色为空，真实外部项目 `end_to_end_positive` 未执行。该结果必须保持 `PARTIAL`，不能用仓库 fixture、现有全量测试或安全拒绝替代外部真实正向证据。
+
+## 8. 固定八项目失败观察轨道
+
+八项目清单由此前四个固定项目和四个新增普通 ESM 项目构成，运行前已经冻结。最终漏斗为：
+
+```text
+screened=8
+→ ready=4
+→ extracted_any=0
+→ stage3_pass_any=0
+→ active=0
+→ product_asserted=0（真实值为 null，未执行）
+```
+
+| 固定项目 | 最早终止门 | `raw_error_code` | `failure_family` |
+|---|---|---|---|
+| `MasiaAntoine/snake-js@894e7dc` | intake | `module_top_level_statement_unsupported` | `bootstrap_top_level_not_declarative_v1` |
+| `nwakauc/ES6-Awesome-books@582758d` | intake | `module_import_unsupported` | `module_graph_unsupported_v1` |
+| `titusdmoore/wordle@2d01427` | intake | `module_top_level_side_effect` | `bootstrap_top_level_not_declarative_v1` |
+| `daria4783/hw10.js@c3b879c` | intake | `module_top_level_statement_unsupported` | `bootstrap_top_level_not_declarative_v1` |
+| `jrletner/vanilla_js_todo@cd61d97` | 资格入口 | `classic_script_unsupported_v1` | `qualification_entry_unsupported_v1` |
+| `AdityaKumar1511/cipher-lab@0ee47a8` | 资格闭包 | `static_closure_external_reference` | `qualification_closure_boundary` |
+| `DaveHomeAssist/noteforge@ba380b9` | 资格闭包 | `static_closure_external_reference` | `qualification_closure_boundary` |
+| `inorganik/countUp.js@2346e49` | 资格入口 | `inline_script_unsupported_v1` | `qualification_entry_unsupported_v1` |
+
+项目级失败族分别为：bootstrap 顶层非声明式 3、模块图 1、资格闭包 2、资格入口 2。候选级仅统计四个实际形成的 rejected candidate：bootstrap 顶层非声明式 3、模块图 1。项目数和 candidate 数没有混用分母。
+
+最终证据位于 `/private/tmp/reweave-v1-pilot-evidence-final5.json`，SHA-256 为 `d5453ae35d8cb2eb811ee9b5fe70437799702d59ca647ca29f1817bb0d9c01b0`。证据门和未知分类门均为 `passed`，`unclassified_raw_error_codes=[]`。八个项目都记录了显式 `farthest_gate` 与项目级 `primary_failure`。八个来源的整树摘要与 Git 状态前后分别相同，四个 intake 快照前后相同，八个隔离仓库的全部正式表增量均为 0；没有调用 Ollama、Node computation worker、Image worker 或 QWeb worker。
+
+## 9. Bootstrap 机会探针与 v3 决定
+
+只读机会探针对固定八项目沿 import 证据检查预批准形态，不创建候选、不写正式仓库、不运行 Stage 3 或 worker，也没有 wrapper、源码改写、tree-shaking 或模型边界判断。
+
+只有 `jrletner/vanilla_js_todo` 出现“一个静态相对 named import → 一个最终直接调用”的外层形态；它的叶子模块仍以 `unsupported_string_construction_v1` 被 extraction v2 拒绝，且没有形成可验证的正式原子角色。其余七项分别包含 `window.onload`、多 import/调用、全局事件、无 import、动态 import、`DOMContentLoaded`、`new`、生成输出或多执行语句等拒绝形态。
+
+| 决策指标 | 门槛 | 观察值 |
+|---|---:|---:|
+| 相同预批准形态的独立项目 | 3 | 1 |
+| 覆盖正式原子角色种类 | 2 | 0 |
+| 叶子模块原样通过 v2 | 必须通过 | 0 |
+| Stage 3 / worker 通过 | 必须通过 | 0 / 0 |
+
+机会探针证据位于 `/private/tmp/reweave-bootstrap-opportunity-evidence.json`，SHA-256 为 `e48044fe967957367f431cfd4b36fca86c8e68fe652e0582f672ff8544d65b60`。门槛没有满足，正式决定为 `do_not_approve_extraction_contract_v3`：继续使用 `extraction_contract.v2`，普通 bootstrap 保持 V1 不支持，不新增 wrapper、模板、fallback、仓库、组合器或运行时兼容路径。
+
+## 10. 最终验证与停止结论
+
+- Python 3.14.5、PySide6 6.11.1、Node 22.22.3 全量：`565 passed, 98 subtests passed`。
+- Python 3.11、Node 24.18.0 本机 CI 等价链：`564 passed, 1 skipped, 98 subtests passed`；唯一 skip 是临时 Python 3.11 环境没有 PySide6。
+- 新试点工具聚焦：`8 passed`。
+- `npm ci`：7 packages、0 vulnerabilities。
+- Node 22/24 语法、Python 编译和 `git diff --check`：通过。
+- 本轮未 push，因此没有把本机等价链描述为该未提交快照的 GitHub 托管 CI。
+
+最终判断：阶段 1–6 在已经封板的 Static Web V1 契约内保持 `PASS`；新增证据工具没有改变 SQLite、提取、Stage 3、组合器、前端或产品运行路径。外部真实正向覆盖因固定预算内没有合格项目而保持 `PARTIAL`，普通 bootstrap 的 v3 门未通过且停止扩围。当前没有由本轮引入或复现的 P0/P1；剩余项是外部正向证据不足，不是把不符合 V1 的项目自动转换为可接受项目的代码缺陷。
