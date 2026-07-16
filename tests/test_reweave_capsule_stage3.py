@@ -81,6 +81,47 @@ class HtmlCssSafetyTest(unittest.TestCase):
                 redact_strings=[],
             )
 
+    def test_html_root_selection_contract(self) -> None:
+        allowed = {
+            "explicit": (
+                "<main>outside</main><section data-capsule-root>inside</section>",
+                "<section>inside</section>",
+            ),
+            "main": ("<aside>outside</aside><main>inside</main>", "<main>inside</main>"),
+            "form": ("<aside>outside</aside><form>inside</form>", "<form>inside</form>"),
+        }
+        for label, (source, expected) in allowed.items():
+            with self.subTest(label=label):
+                self.assertEqual(
+                    sanitize_html(
+                        source,
+                        dom_scope={"selectors": []},
+                        asset_paths=set(),
+                        redact_strings=[],
+                    ),
+                    expected,
+                )
+
+        rejected = {
+            "multiple_explicit": (
+                "<main data-capsule-root></main><section data-capsule-root></section>"
+            ),
+            "ambiguous": "<main></main><main></main><form></form><form></form>",
+            "nested_explicit": (
+                "<section data-capsule-root><div data-capsule-root></div></section>"
+            ),
+        }
+        for label, source in rejected.items():
+            with self.subTest(label=label), self.assertRaisesRegex(
+                Stage3Error, "html_capsule_root_invalid"
+            ):
+                sanitize_html(
+                    source,
+                    dom_scope={"selectors": []},
+                    asset_paths=set(),
+                    redact_strings=[],
+                )
+
     def test_css_parser_scopes_safe_rules_and_rejects_escape_or_global_access(self) -> None:
         cleaned = sanitize_css(
             ".thumbnail > [data-state='ready']:hover { display: grid; gap: 0.75rem; }",
@@ -1272,7 +1313,7 @@ alice&#64;example.com</main><script type="module" src="./compute.js"></script>
         (self.source / "outside.png").write_bytes(b"not-read-by-the-atomic-capsule")
         (self.source / "index.html").write_text(
             """<!doctype html><html><body>
-<section data-capsule-root><span data-ref="title"></span></section>
+<main><span data-ref="title"></span></main>
 <img src="./outside.png" alt="outside">
 <script type="module" src="./presentation.js"></script></body></html>""",
             encoding="utf-8",
@@ -1352,10 +1393,10 @@ class Stage3PySideFlowTest(unittest.TestCase):
 
     def test_real_qwebengine_runs_declared_event_and_dispose(self) -> None:
         (self.source / "index.html").write_text(
-            """<!doctype html><html><body><section data-capsule-root>
+            """<!doctype html><html><body><main>
 <input data-ref="quantity" type="number" min="1" max="10" step="1" value="2">
 <button data-action="calculate" type="button">Calculate</button>
-</section><script type="module" src="./interaction.js"></script></body></html>""",
+</main><script type="module" src="./interaction.js"></script></body></html>""",
             encoding="utf-8",
         )
         (self.source / "interaction.js").write_text(

@@ -342,6 +342,38 @@ class CapsuleIntakeStage2Test(unittest.TestCase):
             self.assertEqual(connection.execute("SELECT count(*) FROM capsules").fetchone()[0], 0)
             self.assertEqual(connection.execute("SELECT count(*) FROM capsule_versions").fetchone()[0], 0)
 
+    def test_multiple_explicit_roots_reject_ui_but_not_computation(self) -> None:
+        self._write_complete_project(self.source)
+        entry = self.source / "index.html"
+        entry.write_text(
+            entry.read_text(encoding="utf-8").replace(
+                "</main>", "</main>\n<section data-capsule-root>extra</section>", 1
+            ),
+            encoding="utf-8",
+        )
+        project = self._bind_discover_confirm(self.source)
+
+        result = self.intake.run_intake(project["project_id"])
+        rows = self._review_rows(result["run_id"])
+
+        self.assertEqual(result["counts"]["extracted"], 1)
+        self.assertEqual(result["counts"]["rejected"], 2)
+        extracted = json.loads(
+            next(row for row in rows if row["candidate_status"] == "extracted")[
+                "sanitized_candidate_json"
+            ]
+        )
+        self.assertEqual(extracted["capability_kind"], "computation")
+        rejected = [
+            json.loads(row["redaction_summary_json"])["codes"]
+            for row in rows
+            if row["candidate_status"] == "rejected"
+        ]
+        self.assertEqual(rejected, [["html_capsule_root_invalid"]] * 2)
+        with self.store.read_connection() as connection:
+            self.assertEqual(connection.execute("SELECT count(*) FROM capsules").fetchone()[0], 0)
+            self.assertEqual(connection.execute("SELECT count(*) FROM capsule_versions").fetchone()[0], 0)
+
     def test_snapshot_and_javascript_total_byte_limits_fail_before_node(self) -> None:
         self._write_complete_project(self.source)
         project = self._bind_discover_confirm(self.source)

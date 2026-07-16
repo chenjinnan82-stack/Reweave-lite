@@ -56,7 +56,7 @@ _SAFE_TAGS = frozenset(
     {
         "article", "button", "div", "em", "fieldset", "footer", "form",
         "h1", "h2", "h3", "h4", "h5", "h6", "header", "img", "input",
-        "label", "legend", "li", "ol", "option", "p", "section", "select",
+        "label", "legend", "li", "main", "ol", "option", "p", "section", "select",
         "small", "span", "strong", "table", "tbody", "td", "template",
         "textarea", "th", "thead", "tr", "ul",
     }
@@ -246,23 +246,31 @@ def sanitize_html(
         raise Stage3Error("html_parse_failed") from exc
     if parser.failed:
         raise Stage3Error("html_parse_failed")
-    roots: list[dict[str, Any]] = []
+    explicit: list[dict[str, Any]] = []
+    mains: list[dict[str, Any]] = []
+    forms: list[dict[str, Any]] = []
 
     def find(node: dict[str, Any]) -> None:
         attrs = dict(node.get("attrs", []))
         if "data-capsule-root" in attrs:
-            roots.append(node)
+            explicit.append(node)
+        if node.get("tag") == "main":
+            mains.append(node)
+        if node.get("tag") == "form":
+            forms.append(node)
         for child in node.get("children", []):
             if isinstance(child, dict):
                 find(child)
 
     find(parser.root)
-    if len(roots) != 1:
+    if explicit:
+        root = explicit[0] if len(explicit) == 1 else None
+    elif len(mains) == 1:
+        root = mains[0]
+    else:
+        root = forms[0] if len(forms) == 1 else None
+    if root is None:
         raise Stage3Error("html_capsule_root_invalid")
-    root = roots[0]
-    for child in root["children"]:
-        if isinstance(child, dict) and _contains_capsule_root(child):
-            raise Stage3Error("nested_capsule_root_forbidden")
 
     selectors = set(str(item) for item in dom_scope.get("selectors", []))
     declared_attributes = set(str(item) for item in dom_scope.get("attributes", []))
@@ -380,16 +388,6 @@ def sanitize_html(
     if re.search(r"\sfor=\"(?!__CAPSULE_ID__-)", cleaned_html):
         raise Stage3Error("html_label_target_invalid")
     return cleaned_html.replace("\r\n", "\n").replace("\r", "\n")
-
-
-def _contains_capsule_root(node: dict[str, Any]) -> bool:
-    if "data-capsule-root" in dict(node.get("attrs", [])):
-        return True
-    return any(
-        _contains_capsule_root(child)
-        for child in node.get("children", [])
-        if isinstance(child, dict)
-    )
 
 
 def sanitize_css(source: str, *, redact_strings: list[str]) -> str:

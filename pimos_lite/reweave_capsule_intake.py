@@ -164,8 +164,8 @@ class _HtmlInventory(HTMLParser):
 
     def static_root(self) -> int | None:
         explicit = [index for index, node in enumerate(self.nodes) if "data-capsule-root" in node["attrs"]]
-        if len(explicit) == 1:
-            return explicit[0]
+        if explicit:
+            return explicit[0] if len(explicit) == 1 else None
         mains = [index for index, node in enumerate(self.nodes) if node["tag"] == "main"]
         if len(mains) == 1:
             return mains[0]
@@ -1045,6 +1045,27 @@ class ReweaveCapsuleIntake:
             if isinstance(item, dict)
         ):
             raise IntakeError("static_closure_outside_snapshot")
+        if inventory.static_root() is None:
+            candidates = result.get("candidates", [])
+            result["candidates"] = [
+                item for item in candidates if item.get("capability_kind") == "computation"
+            ]
+            result["rejections"] = [
+                {**item, "error_code": "html_capsule_root_invalid"}
+                if item.get("capability_kind") in {"presentation", "interaction"}
+                else item
+                for item in result.get("rejections", [])
+            ]
+            result["rejections"].extend(
+                {
+                    "entry_module": item.get("activation", {}).get("entry_module"),
+                    "entrypoint": item.get("activation", {}).get("entrypoint"),
+                    "capability_kind": item.get("capability_kind"),
+                    "error_code": "html_capsule_root_invalid",
+                }
+                for item in candidates
+                if item.get("capability_kind") != "computation"
+            )
         return result, inventory
 
     def _candidate_rows(
