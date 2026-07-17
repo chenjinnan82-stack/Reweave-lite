@@ -1,4 +1,4 @@
-"""Stage 1 tests for the non-active SQLite capsule warehouse foundation."""
+"""SQLite capsule warehouse schema, migration, backup, and recovery tests."""
 
 from __future__ import annotations
 
@@ -9,6 +9,7 @@ import os
 import shutil
 import sqlite3
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest.mock import patch
@@ -99,6 +100,71 @@ def compact_json(value: object) -> str:
         separators=(",", ":"),
         allow_nan=False,
     )
+
+
+def schema_fingerprint_sha256(
+    rows: tuple[tuple[str, str, str, str], ...]
+) -> str:
+    payload = json.dumps(
+        rows,
+        ensure_ascii=False,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
+
+
+def typed_database_snapshot(
+    path: Path,
+    tables: set[str] | frozenset[str],
+    columns_by_table: dict[str, tuple[str, ...]] | None = None,
+) -> dict[str, tuple[tuple[str, ...], list[tuple[object, ...]]]]:
+    connection = sqlite3.connect(path)
+    try:
+        result: dict[str, tuple[tuple[str, ...], list[tuple[object, ...]]]] = {}
+        for table in sorted(tables):
+            quoted_table = '"' + table.replace('"', '""') + '"'
+            info = connection.execute(f"PRAGMA table_info({quoted_table})").fetchall()
+            columns = (
+                columns_by_table[table]
+                if columns_by_table is not None
+                else tuple(str(row[1]) for row in info)
+            )
+            primary_key = tuple(
+                str(row[1])
+                for row in sorted(info, key=lambda item: int(item[5]))
+                if int(row[5]) > 0
+            )
+            projection = ", ".join(
+                f'"{column}", typeof("{column}")' for column in columns
+            )
+            order_by = ", ".join(f'"{column}"' for column in primary_key)
+            rows = [
+                tuple(row)
+                for row in connection.execute(
+                    f"SELECT {projection} FROM {quoted_table} ORDER BY {order_by}"
+                )
+            ]
+            result[table] = (columns, rows)
+        return result
+    finally:
+        connection.close()
+
+
+def scope_snapshot_sha256(
+    modules: list[dict[str, object]], symlinks: list[dict[str, str]]
+) -> str:
+    payload = json.dumps(
+        {
+            "version": "javascript_scope_snapshot.v1",
+            "javascript_modules": modules,
+            "symlinks": symlinks,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(payload).hexdigest()
 
 
 class CapsuleWarehouseStoreTest(unittest.TestCase):
@@ -1190,10 +1256,1089 @@ class CapsuleWarehouseStoreTest(unittest.TestCase):
         )
         self.assertTrue(all(Path(item["path"]).is_file() for item in manual))
 
-    def _seed_project_and_active_version(self) -> None:
+    def test_v1_fingerprint_is_frozen_and_v2_schema_is_exact(self) -> None:
+        self.assertEqual(
+            schema_fingerprint_sha256(store_module._expected_schema_rows(1)),
+            "31ca94b97ad9e6539f9d62f5938759232aa1a6f3cdac49950962f03555b48bd1",
+        )
+        self.assertEqual(
+            schema_fingerprint_sha256(store_module._expected_schema_rows(2)),
+            "061f95e5228cfbd297f975ea4ba1d2d971b36ae76e197cc673381aa5486d1ec2",
+        )
+
+        self.store.initialize()
+        v2_path = self.root / "fresh-v2.sqlite3"
+        connection = sqlite3.connect(v2_path)
+        connection.executescript(
+            "PRAGMA foreign_keys=ON;\n"
+            + store_module.SCHEMA_SQL_V2
+            + "\nPRAGMA user_version=2;"
+        )
+        connection.close()
+        store_module._prepare_database_file(v2_path)
+        info = store_module._verify_database(v2_path, expected_version=2)
+        self.assertEqual(info["user_version"], 2)
+
+        connection = sqlite3.connect(v2_path)
+        counts = dict(
+            connection.execute(
+                "SELECT type, count(*) FROM sqlite_master "
+                "WHERE name NOT LIKE 'sqlite_%' GROUP BY type"
+            )
+        )
+        self.assertEqual(counts, {"index": 11, "table": 15, "trigger": 34})
+        self.assertEqual(connection.execute("PRAGMA integrity_check").fetchone()[0], "ok")
+        self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+        with self.assertRaises(SchemaVersionError):
+            store_module._assert_schema_objects(connection, expected_version=1)
+        connection.close()
+        connection = sqlite3.connect(self.path)
+        with self.assertRaises(SchemaVersionError):
+            store_module._assert_schema_objects(connection, expected_version=2)
+        connection.close()
+
+        variants = {
+            "extra_table": "CREATE TABLE unexpected(value TEXT)",
+            "extra_view": "CREATE VIEW unexpected_view AS SELECT 1 AS value",
+            "missing_index": "DROP INDEX idx_projects_js_scope",
+            "forged_partial_index": (
+                "DROP INDEX idx_projects_js_scope;"
+                "CREATE UNIQUE INDEX idx_projects_js_scope "
+                "ON projects(source_root_id, project_relpath)"
+            ),
+            "missing_trigger": "DROP TRIGGER project_file_index_owner_insert",
+            "forged_trigger": (
+                "DROP TRIGGER project_file_index_owner_insert;"
+                "CREATE TRIGGER project_file_index_owner_insert "
+                "BEFORE INSERT ON project_file_index BEGIN SELECT 1; END"
+            ),
+            "forged_table": (
+                "DROP TABLE project_file_index;"
+                "CREATE TABLE project_file_index(value TEXT)"
+            ),
+        }
+        for variant, mutation_sql in variants.items():
+            with self.subTest(variant=variant):
+                tampered = self.root / f"v2-{variant}.sqlite3"
+                shutil.copy2(v2_path, tampered)
+                connection = sqlite3.connect(tampered)
+                connection.executescript(mutation_sql)
+                connection.commit()
+                connection.close()
+                with self.assertRaisesRegex(
+                    SchemaVersionError, "schema fingerprint|incomplete schema"
+                ):
+                    store_module._verify_database(tampered, expected_version=2)
+
+    def test_explicit_v1_to_v2_migration_preserves_complete_v1_data(self) -> None:
+        asset_content = b"\x89PNG\r\n\x1a\nlegacy-pixel"
+        self._seed_project_and_active_version(asset_content=asset_content)
+        with self.store.transaction() as connection:
+            canonical_hash = connection.execute(
+                "SELECT canonical_hash FROM capsule_versions WHERE version_id = 'version-1'"
+            ).fetchone()[0]
+            connection.execute(
+                "INSERT INTO app_settings VALUES (?, ?, ?)",
+                ("migration-marker", '"before"', NOW),
+            )
+            connection.execute(
+                "INSERT INTO review_items ("
+                "review_id, run_id, project_id, candidate_id, candidate_status, "
+                "source_relpath, source_location_json, source_hash, redaction_rules_version, "
+                "sanitized_candidate_json, redaction_summary_json, sensitivity_decision, "
+                "sensitivity_decided_at, created_at, updated_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "review-migration",
+                    "run-1",
+                    "project-1",
+                    "candidate-migration",
+                    "waiting_user",
+                    "main.js",
+                    "{}",
+                    "source-hash",
+                    "redaction.v1",
+                    "{}",
+                    "{}",
+                    "confirm_safe_redaction",
+                    NOW,
+                    NOW,
+                    NOW,
+                ),
+            )
+            connection.execute(
+                "INSERT INTO capsule_sources VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "source-migration",
+                    "version-1",
+                    "project-1",
+                    "project:project-1",
+                    "project",
+                    "main.js",
+                    "source-hash",
+                    canonical_hash,
+                    "exact",
+                    NOW,
+                ),
+            )
+            connection.execute(
+                "INSERT INTO capsule_status_events VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "event-migration",
+                    "capsule-1",
+                    "current_version_changed",
+                    "active",
+                    "active",
+                    "version-1",
+                    "migration_fixture",
+                    NOW,
+                ),
+            )
+            connection.execute(
+                "INSERT INTO product_capsule_usage VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "usage-migration",
+                    "product-migration",
+                    "manifest-migration",
+                    "capsule-1",
+                    "version-1",
+                    "quote_calculation",
+                    "total_price",
+                    "default",
+                    '{"kind":"general"}',
+                    "computation",
+                    NOW,
+                ),
+            )
+            connection.execute(
+                "INSERT INTO intake_runs ("
+                "run_id, run_kind, status, extraction_contract_version, "
+                "redaction_rules_version, security_rules_version, supervision_rules_version, "
+                "validation_contract_version, canonicalization_version, "
+                "legacy_source_file_hash, created_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "legacy-run-migration",
+                    "legacy_import",
+                    "completed",
+                    "extraction.v1",
+                    "redaction.v1",
+                    "security.v1",
+                    "supervision.v1",
+                    "validation.v1",
+                    1,
+                    "legacy-file-hash",
+                    NOW,
+                ),
+            )
+            connection.execute(
+                "INSERT INTO legacy_capsule_aliases VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "alias-migration",
+                    "legacy-run-migration",
+                    "legacy-file-hash",
+                    "legacy-capsule",
+                    "exact",
+                    "capsule-1",
+                    "version-1",
+                    "migration_fixture",
+                    NOW,
+                ),
+            )
+
+        before = typed_database_snapshot(self.path, store_module._TABLES)
+        before_columns = {table: value[0] for table, value in before.items()}
+        source_sha256 = store_module._sha256_file(self.path)
+        result = self.store.migrate_v1_to_v2()
+
+        self.assertTrue(result["migrated"])
+        self.assertEqual(result["from_version"], 1)
+        self.assertEqual(result["to_version"], 2)
+        self.assertEqual(result["source_sha256"], source_sha256)
+        self.assertNotEqual(result["target_sha256"], source_sha256)
+        after = typed_database_snapshot(
+            self.path, store_module._TABLES, before_columns
+        )
+        self.assertEqual(after, before)
+
+        upgrade_backup = Path(result["upgrade_backup_path"])
+        self.assertTrue(upgrade_backup.is_file())
+        self.assertEqual(
+            store_module._verify_database(
+                upgrade_backup, expected_version=1
+            )["user_version"],
+            1,
+        )
+        self.assertEqual(
+            store_module._sha256_file(upgrade_backup),
+            result["upgrade_backup_sha256"],
+        )
+        if os.name != "nt":
+            self.assertEqual(upgrade_backup.stat().st_mode & 0o777, 0o600)
+
+        with self.store.read_connection() as connection:
+            self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 2)
+            self.assertEqual(
+                [
+                    tuple(row)
+                    for row in connection.execute(
+                        "SELECT DISTINCT source_type FROM projects"
+                    )
+                ],
+                [("static_web",)],
+            )
+            self.assertEqual(
+                tuple(
+                    connection.execute(
+                        "SELECT enum_decision, enum_decision_binding_sha256, enum_decided_at "
+                        "FROM review_items WHERE review_id = 'review-migration'"
+                    ).fetchone()
+                ),
+                (None, None, None),
+            )
+            self.assertEqual(
+                connection.execute("SELECT count(*) FROM project_file_index").fetchone()[0],
+                0,
+            )
+            self.assertEqual(connection.execute("PRAGMA foreign_key_check").fetchall(), [])
+
+        with self.store.transaction() as connection:
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "capsule_version_immutable"):
+                connection.execute(
+                    "UPDATE capsule_versions SET extraction_summary_json = '{}' "
+                    "WHERE version_id = 'version-1'"
+                )
+            with self.assertRaisesRegex(sqlite3.IntegrityError, "capsule_delete_forbidden"):
+                connection.execute("DELETE FROM capsules WHERE capsule_id = 'capsule-1'")
+            append_only_rows = (
+                ("capsule_versions", "version_id", "version-1", "created_at"),
+                ("capsule_sources", "source_link_id", "source-migration", "read_at"),
+                ("capsule_assets", "asset_id", "asset-1", "width"),
+                ("capsule_status_events", "event_id", "event-migration", "reason_code"),
+                ("product_capsule_usage", "usage_id", "usage-migration", "generated_at"),
+                ("legacy_capsule_aliases", "alias_id", "alias-migration", "reason_code"),
+            )
+            for table, id_column, row_id, mutable_column in append_only_rows:
+                with self.subTest(table=table, operation="update"):
+                    with self.assertRaises(sqlite3.IntegrityError):
+                        connection.execute(
+                            f"UPDATE {table} SET {mutable_column} = ? "
+                            f"WHERE {id_column} = ?",
+                            (NOW, row_id),
+                        )
+                with self.subTest(table=table, operation="delete"):
+                    with self.assertRaises(sqlite3.IntegrityError):
+                        connection.execute(
+                            f"DELETE FROM {table} WHERE {id_column} = ?",
+                            (row_id,),
+                        )
+
+        target_sha256 = store_module._sha256_file(self.path)
+        backup_count = len(list((self.path.parent / "backups").glob("*.upgrade.*.sqlite3")))
+        second = self.store.migrate_v1_to_v2()
+        self.assertFalse(second["migrated"])
+        self.assertEqual(store_module._sha256_file(self.path), target_sha256)
+        self.assertEqual(
+            len(list((self.path.parent / "backups").glob("*.upgrade.*.sqlite3"))),
+            backup_count,
+        )
+        self.assertEqual(
+            list(self.path.parent.glob(".capsule_warehouse.sqlite3.v1-rollback.*")),
+            [],
+        )
+
+    def test_migration_faults_preserve_v1_bytes_and_cas_does_not_overwrite(self) -> None:
+        self._write_setting("phase", "v1")
+        source_bytes = self.path.read_bytes()
+
+        with patch.object(
+            store_module,
+            "_create_v2_candidate",
+            side_effect=CapsuleStoreError("forced candidate failure"),
+        ):
+            with self.assertRaisesRegex(CapsuleStoreError, "original database preserved"):
+                self.store.migrate_v1_to_v2()
+        self.assertEqual(self.path.read_bytes(), source_bytes)
+        self.assertEqual(
+            store_module._verify_database(
+                self.path, expected_version=1
+            )["user_version"],
+            1,
+        )
+
+        real_verify = store_module._verify_database
+        failed_after_replace = False
+
+        def fail_after_replace(
+            path: Path, *, expected_version: int | None = None
+        ) -> dict[str, object]:
+            nonlocal failed_after_replace
+            info = real_verify(path, expected_version=expected_version)
+            if (
+                Path(path).resolve() == self.path.resolve()
+                and info["user_version"] == 2
+                and not failed_after_replace
+            ):
+                failed_after_replace = True
+                raise CapsuleStoreError("forced post-replace migration failure")
+            return info
+
+        with patch.object(
+            store_module, "_verify_database", side_effect=fail_after_replace
+        ):
+            with self.assertRaisesRegex(CapsuleStoreError, "original database preserved"):
+                self.store.migrate_v1_to_v2()
+        self.assertTrue(failed_after_replace)
+        self.assertEqual(self.path.read_bytes(), source_bytes)
+        self.assertEqual(
+            list(self.path.parent.glob(".capsule_warehouse.sqlite3.v2-candidate.*")),
+            [],
+        )
+        self.assertEqual(
+            list(self.path.parent.glob(".capsule_warehouse.sqlite3.v1-rollback.*")),
+            [],
+        )
+
+        real_create_candidate = store_module._create_v2_candidate
+
+        def create_candidate_then_change_source(source: Path, target: Path) -> None:
+            real_create_candidate(source, target)
+            connection = sqlite3.connect(self.path)
+            connection.execute(
+                "INSERT INTO app_settings VALUES (?, ?, ?)",
+                ("external-change", '"kept"', NOW),
+            )
+            connection.commit()
+            connection.close()
+
+        with patch.object(
+            store_module,
+            "_create_v2_candidate",
+            side_effect=create_candidate_then_change_source,
+        ):
+            with self.assertRaisesRegex(CapsuleStoreError, "changed and was not replaced"):
+                self.store.migrate_v1_to_v2()
+        self.assertEqual(
+            store_module._verify_database(
+                self.path, expected_version=1
+            )["user_version"],
+            1,
+        )
+        self.assertEqual(self._read_setting("external-change"), "kept")
+
+        sidecar = Path(f"{self.path}-wal")
+        sidecar.write_bytes(b"unexpected")
+        bytes_before_sidecar_rejection = self.path.read_bytes()
+        try:
+            with self.assertRaisesRegex(CapsuleStoreError, "sidecar"):
+                self.store.migrate_v1_to_v2()
+        finally:
+            sidecar.unlink()
+        self.assertEqual(self.path.read_bytes(), bytes_before_sidecar_rejection)
+
+    def test_migration_barrier_rejects_reentrant_write_at_replace_boundary(self) -> None:
+        self._write_setting("phase", "before")
+        real_fsync_directory = store_module._fsync_directory
+        attempted = False
+
+        def probe_replace_boundary(path: Path) -> None:
+            nonlocal attempted
+            if Path(path).resolve() == self.path.parent.resolve() and not attempted:
+                attempted = True
+                with self.assertRaisesRegex(
+                    CapsuleStoreError, "exclusive warehouse operation"
+                ):
+                    with self.store.transaction() as connection:
+                        connection.execute(
+                            "INSERT INTO app_settings VALUES (?, ?, ?)",
+                            ("late-write", '"lost"', NOW),
+                        )
+            real_fsync_directory(path)
+
+        with patch.object(
+            store_module, "_fsync_directory", side_effect=probe_replace_boundary
+        ):
+            result = self.store.migrate_v1_to_v2()
+
+        self.assertTrue(attempted)
+        self.assertTrue(result["migrated"])
+        with self.store.read_connection() as connection:
+            self.assertIsNone(
+                connection.execute(
+                    "SELECT value_json FROM app_settings WHERE setting_key = 'late-write'"
+                ).fetchone()
+            )
+
+        errors: list[BaseException] = []
+        started = threading.Event()
+
+        def write_after_barrier() -> None:
+            started.set()
+            try:
+                with self.store.transaction() as connection:
+                    connection.execute(
+                        "INSERT INTO app_settings VALUES (?, ?, ?)",
+                        ("after-barrier", '"kept"', NOW),
+                    )
+            except BaseException as exc:  # pragma: no cover - asserted below
+                errors.append(exc)
+
+        thread = threading.Thread(target=write_after_barrier)
+        thread.start()
+        self.assertTrue(started.wait(1))
+        thread.join(5)
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(self._read_setting("after-barrier"), "kept")
+
+    def test_migration_fault_matrix_is_atomic_and_cleans_temporary_files(self) -> None:
+        real_copy_file_bytes = store_module._copy_file_bytes
+        real_fsync_file = store_module._fsync_file
+        real_replace = os.replace
+
+        def rollback_copy_failure(source: Path, target: Path) -> None:
+            if "v1-rollback" in Path(target).name:
+                raise OSError("forced rollback copy failure")
+            real_copy_file_bytes(source, target)
+
+        def candidate_fsync_failure(path: Path) -> None:
+            if "v2-candidate" in Path(path).name:
+                raise OSError("forced candidate fsync failure")
+            real_fsync_file(path)
+
+        def candidate_replace_failure(source: Path, target: Path) -> None:
+            if "v2-candidate" in Path(source).name:
+                raise OSError("forced candidate replace failure")
+            real_replace(source, target)
+
+        cases = {
+            "upgrade_backup": (
+                store_module.CapsuleWarehouseStore,
+                "_create_backup_locked",
+                CapsuleStoreError("forced upgrade backup failure"),
+            ),
+            "rollback_copy": (
+                store_module,
+                "_copy_file_bytes",
+                rollback_copy_failure,
+            ),
+            "candidate_sql": (
+                store_module,
+                "_create_v2_candidate",
+                sqlite3.OperationalError("forced candidate SQL failure"),
+            ),
+            "candidate_base_exception": (
+                store_module,
+                "_create_v2_candidate",
+                KeyboardInterrupt("forced candidate interruption"),
+            ),
+            "candidate_fsync": (
+                store_module,
+                "_fsync_file",
+                candidate_fsync_failure,
+            ),
+            "candidate_replace": (
+                os,
+                "replace",
+                candidate_replace_failure,
+            ),
+        }
+        for name, (target, attribute, effect) in cases.items():
+            with self.subTest(fault=name):
+                store = self._new_v1_store(f"migration-fault-{name}")
+                before = store.path.read_bytes()
+                with patch.object(target, attribute, side_effect=effect):
+                    with self.assertRaises(CapsuleStoreError):
+                        store.migrate_v1_to_v2()
+                self.assertEqual(store.path.read_bytes(), before)
+                self.assertEqual(
+                    store_module._verify_database(
+                        store.path, expected_version=1
+                    )["user_version"],
+                    1,
+                )
+                self.assertEqual(
+                    list(store.path.parent.glob(".*.v1-rollback.*")), []
+                )
+                self.assertEqual(
+                    list(store.path.parent.glob(".*.v2-candidate.*")), []
+                )
+
+    def test_migration_recovery_failure_preserves_verified_rollback_evidence(self) -> None:
+        store = self._new_v1_store("migration-recovery-failure")
+        source_sha256 = store_module._sha256_file(store.path)
+        real_verify = store_module._verify_database
+        real_replace = os.replace
+        failed_after_replace = False
+
+        def fail_post_replace(
+            path: Path, *, expected_version: int | None = None
+        ) -> dict[str, object]:
+            nonlocal failed_after_replace
+            info = real_verify(path, expected_version=expected_version)
+            if (
+                Path(path).resolve() == store.path.resolve()
+                and info["user_version"] == 2
+                and not failed_after_replace
+            ):
+                failed_after_replace = True
+                raise CapsuleStoreError("forced post-replace failure")
+            return info
+
+        def fail_recovery_replace(source: Path, target: Path) -> None:
+            if "migration-recovery" in Path(source).name:
+                raise OSError("forced recovery replace failure")
+            real_replace(source, target)
+
+        with patch.object(
+            store_module, "_verify_database", side_effect=fail_post_replace
+        ), patch.object(os, "replace", side_effect=fail_recovery_replace):
+            with self.assertRaisesRegex(
+                CapsuleStoreError, "rollback preserved"
+            ):
+                store.migrate_v1_to_v2()
+        self.assertTrue(failed_after_replace)
+        rollback_paths = list(store.path.parent.glob(".*.v1-rollback.*"))
+        self.assertEqual(len(rollback_paths), 1)
+        self.assertEqual(
+            store_module._sha256_file(rollback_paths[0]), source_sha256
+        )
+
+    def test_restore_uses_one_private_digest_bound_backup_snapshot(self) -> None:
+        self._write_setting("phase", "confirmed-a")
+        backup_a = self.store.create_backup("manual")
+        backup_a_path = Path(backup_a["path"])
+        backup_a_bytes = backup_a_path.read_bytes()
+        self._write_setting("phase", "other-b")
+        backup_b = self.store.create_backup("manual")
+        backup_b_path = Path(backup_b["path"])
+
+        real_copy_file_bytes = store_module._copy_file_bytes
+        copied = False
+
+        def mutate_live_backup_after_snapshot(source: Path, target: Path) -> None:
+            nonlocal copied
+            real_copy_file_bytes(source, target)
+            if (
+                Path(source).resolve() == backup_a_path.resolve()
+                and "confirmed-backup" in Path(target).name
+                and not copied
+            ):
+                copied = True
+                shutil.copy2(backup_b_path, backup_a_path)
+
+        try:
+            with patch.object(
+                store_module,
+                "_copy_file_bytes",
+                side_effect=mutate_live_backup_after_snapshot,
+            ):
+                result = self.store.restore_backup(
+                    backup_a_path, expected_sha256=backup_a["sha256"]
+                )
+        finally:
+            backup_a_path.write_bytes(backup_a_bytes)
+        self.assertTrue(copied)
+        self.assertTrue(result["restored"])
+        self.assertEqual(self._read_setting("phase"), "confirmed-a")
+
+        self._write_setting("phase", "still-current")
+
+        def substitute_before_snapshot(source: Path, target: Path) -> None:
+            if (
+                Path(source).resolve() == backup_a_path.resolve()
+                and "confirmed-backup" in Path(target).name
+            ):
+                real_copy_file_bytes(backup_b_path, target)
+            else:
+                real_copy_file_bytes(source, target)
+
+        with patch.object(
+            store_module,
+            "_copy_file_bytes",
+            side_effect=substitute_before_snapshot,
+        ):
+            with self.assertRaisesRegex(CapsuleStoreError, "digest"):
+                self.store.restore_backup(
+                    backup_a_path, expected_sha256=backup_a["sha256"]
+                )
+        self.assertEqual(self._read_setting("phase"), "still-current")
+
+    def test_v2_persistent_invariants_guard_commit_and_open(self) -> None:
+        store = self._new_v2_store("v2-invariant-commit")
+        with self.assertRaisesRegex(
+            CapsuleStoreError, "javascript_scope_snapshot"
+        ):
+            with store.transaction() as connection:
+                self._insert_unhashed_js_index(connection)
+
+        with store.read_connection() as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT count(*) FROM project_file_index"
+                ).fetchone()[0],
+                0,
+            )
+
+        connection = sqlite3.connect(store.path)
+        connection.execute("PRAGMA foreign_keys=ON")
+        self._insert_unhashed_js_index(connection)
+        connection.commit()
+        connection.close()
+        with self.assertRaisesRegex(
+            CapsuleStoreError, "javascript_scope_snapshot"
+        ):
+            store.initialize()
+
+    def test_v1_backup_is_migrated_only_in_v2_restore_candidate(self) -> None:
+        self._write_setting("phase", "v1-backup")
+        backup = self.store.create_backup("manual")
+        backup_path = Path(backup["path"])
+        backup_bytes = backup_path.read_bytes()
+
+        self.store.migrate_v1_to_v2()
+        self._write_setting("phase", "v2-current")
+        v2_backup = self.store.create_backup("manual")
+        listed = {
+            Path(item["path"]): item for item in self.store.list_backups()
+        }
+        self.assertEqual(listed[backup_path]["user_version"], 1)
+        self.assertEqual(listed[Path(v2_backup["path"])]["user_version"], 2)
+
+        preview = self.store.inspect_restore(backup_path)
+        self.assertEqual(preview["user_version"], 1)
+        self.assertEqual(preview["current_user_version"], 2)
+        result = self.store.restore_backup(
+            backup_path, expected_sha256=backup["sha256"]
+        )
+        self.assertTrue(result["restored"])
+        self.assertEqual(result["restored_user_version"], 2)
+        self.assertEqual(self._read_setting("phase"), "v1-backup")
+        self.assertEqual(backup_path.read_bytes(), backup_bytes)
+        self.assertEqual(
+            store_module._verify_database(
+                Path(result["pre_restore_backup_path"]), expected_version=2
+            )["user_version"],
+            2,
+        )
+
+        self._write_setting("phase", "v2-before-failed-restore")
+        current_snapshot = typed_database_snapshot(
+            self.path, set(store_module._TABLES) | {"project_file_index"}
+        )
+        real_verify = store_module._verify_database
+        failed_after_restore = False
+
+        def fail_restored_v1_candidate(
+            path: Path, *, expected_version: int | None = None
+        ) -> dict[str, object]:
+            nonlocal failed_after_restore
+            info = real_verify(path, expected_version=expected_version)
+            if Path(path).resolve() == self.path.resolve() and not failed_after_restore:
+                connection = sqlite3.connect(path)
+                value = connection.execute(
+                    "SELECT value_json FROM app_settings WHERE setting_key = 'phase'"
+                ).fetchone()[0]
+                connection.close()
+                if json.loads(value) == "v1-backup":
+                    failed_after_restore = True
+                    raise CapsuleStoreError("forced migrated restore failure")
+            return info
+
+        with patch.object(
+            store_module, "_verify_database", side_effect=fail_restored_v1_candidate
+        ):
+            with self.assertRaisesRegex(CapsuleStoreError, "original database preserved"):
+                self.store.restore_backup(
+                    backup_path, expected_sha256=backup["sha256"]
+                )
+        self.assertTrue(failed_after_restore)
+        self.assertEqual(
+            typed_database_snapshot(
+                self.path, set(store_module._TABLES) | {"project_file_index"}
+            ),
+            current_snapshot,
+        )
+        self.assertEqual(
+            store_module._verify_database(
+                self.path, expected_version=2
+            )["user_version"],
+            2,
+        )
+        self.assertEqual(backup_path.read_bytes(), backup_bytes)
+
+    def test_v2_source_index_and_enum_constraints_fail_closed(self) -> None:
+        self.store.initialize()
+        self.store.migrate_v1_to_v2()
+        module_hash = "a" * 64
+        snapshot_hash = scope_snapshot_sha256(
+            [{"path": "src/main.js", "size": 4, "sha256": module_hash}],
+            [{"path": "vendor/link.js"}],
+        )
+
+        with self.store.transaction() as connection:
+            connection.execute(
+                "INSERT INTO source_roots VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "root-v2",
+                    "project_collection",
+                    "/read/only/v2",
+                    "bound",
+                    None,
+                    None,
+                    None,
+                    0,
+                    NOW,
+                    NOW,
+                ),
+            )
+            project_sql = (
+                "INSERT INTO projects ("
+                "project_id, source_root_id, source_type, project_relpath, entry_relpath, "
+                "display_name, project_state, discovery_signature, last_snapshot_hash, "
+                "brand_mode, brand_profile_id, brand_profile_json, brand_profile_digest, "
+                "brand_profile_version, created_at, updated_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            )
+            connection.execute(
+                project_sql,
+                (
+                    "static-v2",
+                    "root-v2",
+                    "static_web",
+                    "web",
+                    "index.html",
+                    "Static",
+                    "ready",
+                    "static-signature",
+                    None,
+                    "inherit",
+                    None,
+                    None,
+                    None,
+                    0,
+                    NOW,
+                    NOW,
+                ),
+            )
+            connection.execute(
+                project_sql,
+                (
+                    "js-v2",
+                    "root-v2",
+                    "javascript_computation_source",
+                    "javascript",
+                    None,
+                    "JavaScript",
+                    "ready",
+                    "js-signature",
+                    None,
+                    "inherit",
+                    None,
+                    None,
+                    None,
+                    0,
+                    NOW,
+                    NOW,
+                ),
+            )
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute(
+                    project_sql,
+                    (
+                        "static-no-entry",
+                        "root-v2",
+                        "static_web",
+                        "bad-static",
+                        None,
+                        "Bad",
+                        "ready",
+                        "bad",
+                        None,
+                        "inherit",
+                        None,
+                        None,
+                        None,
+                        0,
+                        NOW,
+                        NOW,
+                    ),
+                )
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute(
+                    project_sql,
+                    (
+                        "duplicate-static-entry",
+                        "root-v2",
+                        "static_web",
+                        "web",
+                        "index.html",
+                        "Duplicate Static",
+                        "ready",
+                        "duplicate-static",
+                        None,
+                        "inherit",
+                        None,
+                        None,
+                        None,
+                        0,
+                        NOW,
+                        NOW,
+                    ),
+                )
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute(
+                    project_sql,
+                    (
+                        "duplicate-js-scope",
+                        "root-v2",
+                        "javascript_computation_source",
+                        "javascript",
+                        None,
+                        "Duplicate",
+                        "ready",
+                        "duplicate",
+                        None,
+                        "inherit",
+                        None,
+                        None,
+                        None,
+                        0,
+                        NOW,
+                        NOW,
+                    ),
+                )
+            with self.assertRaisesRegex(
+                sqlite3.IntegrityError, "project_source_identity_immutable"
+            ):
+                connection.execute(
+                    "UPDATE projects SET project_relpath = 'changed' "
+                    "WHERE project_id = 'js-v2'"
+                )
+            for assignment in (
+                "project_id = 'js-v2-renamed'",
+                "source_root_id = 'missing-root'",
+                "source_type = 'static_web'",
+                "entry_relpath = 'index.html'",
+            ):
+                with self.subTest(project_identity=assignment):
+                    with self.assertRaisesRegex(
+                        sqlite3.IntegrityError,
+                        "project_source_identity_immutable",
+                    ):
+                        connection.execute(
+                            f"UPDATE projects SET {assignment} "
+                            "WHERE project_id = 'js-v2'"
+                        )
+
+            index_sql = (
+                "INSERT INTO project_file_index "
+                "(project_id, logical_path, entry_kind, size_bytes, content_sha256) "
+                "VALUES (?, ?, ?, ?, ?)"
+            )
+            with self.assertRaisesRegex(
+                sqlite3.IntegrityError, "project_file_index_owner_mismatch"
+            ):
+                connection.execute(
+                    index_sql,
+                    ("static-v2", "main.js", "javascript_module", 4, module_hash),
+                )
+            for bad_row in (
+                ("js-v2", "null.js", "javascript_module", None, None),
+                ("js-v2", "uppercase.js", "javascript_module", 4, "A" * 64),
+                ("js-v2", "bad-link.js", "symlink", 4, module_hash),
+            ):
+                with self.assertRaises(sqlite3.IntegrityError):
+                    connection.execute(index_sql, bad_row)
+            connection.execute(
+                index_sql,
+                ("js-v2", "src/main.js", "javascript_module", 4, module_hash),
+            )
+            connection.execute(
+                index_sql,
+                ("js-v2", "vendor/link.js", "symlink", None, None),
+            )
+            with self.assertRaisesRegex(
+                sqlite3.IntegrityError, "project_file_index_owner_mismatch"
+            ):
+                connection.execute(
+                    "UPDATE project_file_index SET project_id = 'static-v2' "
+                    "WHERE project_id = 'js-v2' AND logical_path = 'src/main.js'"
+                )
+            connection.execute(
+                "UPDATE projects SET last_snapshot_hash = ? WHERE project_id = 'js-v2'",
+                (snapshot_hash,),
+            )
+
+            run_sql = (
+                "INSERT INTO intake_runs ("
+                "run_id, project_id, run_kind, status, extraction_contract_version, "
+                "redaction_rules_version, security_rules_version, supervision_rules_version, "
+                "validation_contract_version, canonicalization_version, created_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+            )
+            connection.execute(
+                run_sql,
+                (
+                    "scan-v2",
+                    "js-v2",
+                    "javascript_computation_scan",
+                    "completed",
+                    "extraction.v2",
+                    "redaction.v1",
+                    "security.v1",
+                    "supervision.v1",
+                    "validation.v1",
+                    1,
+                    NOW,
+                ),
+            )
+            connection.execute(
+                run_sql,
+                (
+                    "capture-v2",
+                    "js-v2",
+                    "javascript_computation_capture",
+                    "completed",
+                    "extraction.v2",
+                    "redaction.v1",
+                    "security.v1",
+                    "supervision.v1",
+                    "validation.v1",
+                    1,
+                    NOW,
+                ),
+            )
+            connection.execute(
+                "INSERT INTO review_items ("
+                "review_id, run_id, project_id, candidate_id, candidate_status, "
+                "source_relpath, source_location_json, source_hash, redaction_rules_version, "
+                "sanitized_candidate_json, redaction_summary_json, created_at, updated_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "enum-review-v2",
+                    "capture-v2",
+                    "js-v2",
+                    "enum-candidate-v2",
+                    "waiting_user",
+                    "src/main.js",
+                    "{}",
+                    module_hash,
+                    "redaction.v1",
+                    "{}",
+                    "{}",
+                    NOW,
+                    NOW,
+                ),
+            )
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute(
+                    "UPDATE review_items SET enum_decision = ? WHERE review_id = ?",
+                    ("confirm_selected_string_enumeration", "enum-review-v2"),
+                )
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute(
+                    "UPDATE review_items SET enum_decision = ?, "
+                    "enum_decision_binding_sha256 = ?, enum_decided_at = ? "
+                    "WHERE review_id = ?",
+                    (
+                        "confirm_selected_string_enumeration",
+                        "B" * 64,
+                        NOW,
+                        "enum-review-v2",
+                    ),
+                )
+            connection.execute(
+                "UPDATE review_items SET enum_decision = ?, "
+                "enum_decision_binding_sha256 = ?, enum_decided_at = ? "
+                "WHERE review_id = ?",
+                (
+                    "confirm_selected_string_enumeration",
+                    "b" * 64,
+                    NOW,
+                    "enum-review-v2",
+                ),
+            )
+            with self.assertRaisesRegex(
+                sqlite3.IntegrityError, "review_content_decision_immutable"
+            ):
+                connection.execute(
+                    "UPDATE review_items SET enum_decision_binding_sha256 = ? "
+                    "WHERE review_id = ?",
+                    ("c" * 64, "enum-review-v2"),
+                )
+            for assignment in (
+                "enum_decision = NULL",
+                "enum_decision_binding_sha256 = NULL",
+                "enum_decided_at = NULL",
+                "enum_decided_at = '2026-07-16T00:00:00Z'",
+            ):
+                with self.subTest(enum_identity=assignment):
+                    with self.assertRaisesRegex(
+                        sqlite3.IntegrityError,
+                        "review_content_decision_immutable",
+                    ):
+                        connection.execute(
+                            f"UPDATE review_items SET {assignment} "
+                            "WHERE review_id = 'enum-review-v2'"
+                        )
+
+        self.assertEqual(
+            store_module._verify_database(
+                self.path, expected_version=2
+            )["user_version"],
+            2,
+        )
+
+        for variant in ("path_collision", "invalid_path", "bad_snapshot"):
+            with self.subTest(variant=variant):
+                tampered = self.root / f"v2-invariant-{variant}.sqlite3"
+                shutil.copy2(self.path, tampered)
+                connection = sqlite3.connect(tampered)
+                if variant == "path_collision":
+                    connection.execute(
+                        "INSERT INTO project_file_index VALUES (?, ?, ?, ?, ?)",
+                        ("js-v2", "SRC/main.js", "javascript_module", 4, "d" * 64),
+                    )
+                    expected_error = "path_collision"
+                elif variant == "invalid_path":
+                    connection.execute(
+                        "INSERT INTO project_file_index VALUES (?, ?, ?, ?, ?)",
+                        ("js-v2", "../escape.js", "javascript_module", 4, "d" * 64),
+                    )
+                    expected_error = "project_file_index_path"
+                else:
+                    connection.execute(
+                        "UPDATE projects SET last_snapshot_hash = ? WHERE project_id = 'js-v2'",
+                        ("0" * 64,),
+                    )
+                    expected_error = "javascript_scope_snapshot"
+                connection.commit()
+                connection.close()
+                with self.assertRaisesRegex(CapsuleStoreError, expected_error):
+                    store_module._verify_database(tampered, expected_version=2)
+
+    def _seed_project_and_active_version(
+        self, *, asset_content: bytes | None = None
+    ) -> None:
         self.store.initialize()
         payload = canonical_payload()
-        payload["assets"] = []
+        asset_digest = (
+            hashlib.sha256(asset_content).hexdigest()
+            if asset_content is not None
+            else None
+        )
+        payload["assets"] = (
+            [
+                {
+                    "logical_path": "images/pixel.png",
+                    "media_type": "image/png",
+                    "sha256": asset_digest,
+                }
+            ]
+            if asset_digest is not None
+            else []
+        )
         canonical = canonicalize_capsule(payload)
         with self.store.transaction() as connection:
             connection.execute(
@@ -1304,10 +2449,106 @@ class CapsuleWarehouseStoreTest(unittest.TestCase):
                     NOW,
                 ),
             )
+            if asset_content is not None and asset_digest is not None:
+                connection.execute(
+                    "INSERT INTO capsule_assets VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        "asset-1",
+                        "version-1",
+                        "images/pixel.png",
+                        "image/png",
+                        asset_digest,
+                        len(asset_content),
+                        1,
+                        1,
+                        asset_content,
+                    ),
+                )
             connection.execute(
                 "UPDATE capsules SET current_version_id = ?, status = ? WHERE capsule_id = ?",
                 ("version-1", "active", "capsule-1"),
             )
+
+    def _new_v2_store(self, name: str) -> CapsuleWarehouseStore:
+        path = self.root / name / "capsule_warehouse.sqlite3"
+        path.parent.mkdir(parents=True)
+        connection = sqlite3.connect(path)
+        connection.executescript(
+            "PRAGMA foreign_keys=ON;\n"
+            + store_module.SCHEMA_SQL_V2
+            + "\nPRAGMA user_version=2;"
+        )
+        connection.close()
+        store_module._prepare_database_file(path)
+        return CapsuleWarehouseStore(path)
+
+    def _new_v1_store(self, name: str) -> CapsuleWarehouseStore:
+        path = self.root / name / "capsule_warehouse.sqlite3"
+        path.parent.mkdir(parents=True)
+        connection = sqlite3.connect(path)
+        connection.executescript(store_module.SCHEMA_SQL_V1)
+        connection.execute(
+            "INSERT INTO app_settings VALUES (?, ?, ?)",
+            ("phase", '"v1"', NOW),
+        )
+        connection.commit()
+        connection.close()
+        store_module._prepare_database_file(path)
+        return CapsuleWarehouseStore(path)
+
+    @staticmethod
+    def _insert_unhashed_js_index(connection: sqlite3.Connection) -> None:
+        connection.execute(
+            "INSERT INTO source_roots VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "root-js-invariant",
+                "single_project",
+                "/read/only/js-invariant",
+                "bound",
+                None,
+                None,
+                None,
+                0,
+                NOW,
+                NOW,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO projects ("
+            "project_id, source_root_id, source_type, project_relpath, entry_relpath, "
+            "display_name, project_state, discovery_signature, last_snapshot_hash, "
+            "brand_mode, brand_profile_id, brand_profile_json, brand_profile_digest, "
+            "brand_profile_version, created_at, updated_at"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "project-js-invariant",
+                "root-js-invariant",
+                "javascript_computation_source",
+                ".",
+                None,
+                "JS invariant",
+                "ready",
+                "signature",
+                None,
+                "inherit",
+                None,
+                None,
+                None,
+                0,
+                NOW,
+                NOW,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO project_file_index VALUES (?, ?, ?, ?, ?)",
+            (
+                "project-js-invariant",
+                "src/main.js",
+                "javascript_module",
+                4,
+                "a" * 64,
+            ),
+        )
 
     def _write_setting(self, key: str, value: str) -> None:
         with self.store.transaction() as connection:
