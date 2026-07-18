@@ -816,7 +816,7 @@
     bindBtn.textContent = t("bindSourceBox");
     bindBtn.disabled = !canBind;
     bindBtn.setAttribute("aria-disabled", canBind ? "false" : "true");
-    bindBtn.title = canBind ? "" : t("sourceBoxBindingDisabled");
+    setOptionalTitle(bindBtn, canBind ? "" : t("sourceBoxBindingDisabled"));
     if (note) {
       note.textContent = readOnly ? t("sourceBoxReadOnlyNote") : t("sourceBoxNote");
     }
@@ -1369,8 +1369,17 @@
     ].indexOf(key) >= 0;
   }
 
+  function setOptionalTitle(element, value) {
+    if (!element) return element;
+    var title = String(value || "").trim();
+    if (title) element.title = title;
+    else element.removeAttribute("title");
+    return element;
+  }
+
   function controlHelp(element, key) {
-    if (element && key) element.title = t(key);
+    var help = key && ((STR[locale] && STR[locale][key]) || STR.en[key]);
+    setOptionalTitle(element, help);
     return element;
   }
 
@@ -3963,7 +3972,7 @@
     });
     document.querySelectorAll("[data-i18n-title]").forEach(function (el) {
       var key = el.getAttribute("data-i18n-title");
-      if (key && t(key)) el.setAttribute("title", t(key));
+      controlHelp(el, key);
     });
     syncWarehouseMode();
     var input = $("task-input");

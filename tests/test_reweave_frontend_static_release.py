@@ -127,6 +127,10 @@ def test_capsule_warehouse_defaults_to_compact_simple_mode() -> None:
     assert 'id="warehouse-mode-help"' not in index
     assert 'data-i18n="modelTimeoutNote"' not in index
     assert 'data-i18n-title="modelTimeoutNote"' in index
+    assert 'setOptionalTitle(bindBtn, canBind ? "" : t("sourceBoxBindingDisabled"));' in app
+    assert 'else element.removeAttribute("title");' in app
+    assert 'controlHelp(el, key);' in app
+    assert 'bindBtn.title = canBind ? ""' not in app
     assert ".capsule-warehouse-popover:not(.developer-mode) .warehouse-developer-only" in styles
     v2 = app[
         app.index("  function renderJavascriptComputationOffers(") : app.index(
