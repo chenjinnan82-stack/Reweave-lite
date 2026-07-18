@@ -21,10 +21,12 @@ REQUIRED_SURFACE_FILES = (
     "pimos_lite/reweave_capsule_worker.py",
     "pimos_lite/reweave_data_contract.py",
     "pimos_lite/reweave_process_environment.py",
+    "pimos_lite/reweave_javascript_source.py",
     "pimos_lite/reweave_source_registry.py",
     "pimos_lite/reweave_source_scanner.py",
     "scripts/analyze_reweave_extraction.mjs",
     "scripts/analyze_reweave_security.mjs",
+    "scripts/analyze_reweave_source_graph.mjs",
     "scripts/validate_reweave_compute.mjs",
     "scripts/run_public_reweave_demo.py",
     "reweave_frontend/app.js",
@@ -229,6 +231,7 @@ def _role(relative: str) -> str:
     ):
         return "capsule_ingestion"
     if relative in {
+        "pimos_lite/reweave_javascript_source.py",
         "pimos_lite/reweave_source_registry.py",
         "pimos_lite/reweave_source_scanner.py",
     }:

@@ -13,7 +13,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from pimos_lite.reweave_app_service import ReweaveAppService
-from pimos_lite.reweave_capsule_intake import EXTRACTION_CONTRACT_VERSION
+from pimos_lite.reweave_capsule_intake import (
+    COMPUTATION_ADAPTER_CONTRACT_VERSION,
+    EXTRACTION_CONTRACT_VERSION,
+)
 from pimos_lite.reweave_capsule_store import CapsuleWarehouseStore
 from pimos_lite.reweave_engine.local import LocalReweaveEngine
 
@@ -65,6 +68,7 @@ class Phase4ManagementTest(unittest.TestCase):
         project_id: str,
         *,
         extraction_version: str = EXTRACTION_CONTRACT_VERSION,
+        extraction_summary: dict[str, object] | None = None,
     ) -> tuple[str, str]:
         capsule_id = "capsule-brand"
         version_id = "version-brand"
@@ -75,7 +79,9 @@ class Phase4ManagementTest(unittest.TestCase):
             "capsule_id": capsule_id,
             "version_number": 1,
             "extraction_contract_version": extraction_version,
-            "extraction_summary_json": "{}",
+            "extraction_summary_json": json.dumps(
+                extraction_summary or {}, sort_keys=True, separators=(",", ":")
+            ),
             "redaction_rules_version": "redaction_rules.v1",
             "canonicalization_version": 1,
             "canonical_hash": digest,
@@ -276,6 +282,347 @@ class Phase4ManagementTest(unittest.TestCase):
         task = self._wait(started["run_id"])
         self.assertEqual(task["status"], "completed")
         self.assertEqual(task["data"], {"committed": True})
+
+    def test_computation_adapter_inspection_is_async_and_read_only(self) -> None:
+        project_id = self._ready_project()
+        revision_before = self.store.current_revision()
+        with self.store.read_connection() as connection:
+            formal_before = tuple(
+                connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                for table in ("capsules", "capsule_versions", "product_capsule_usage")
+            )
+        inspection = {
+            "schema": "computation_adapter_offers.v1",
+            "project_id": project_id,
+            "snapshot_sha256": "a" * 64,
+            "git_commit": None,
+            "offers": [
+                {
+                    "offer_id": "offer-1",
+                    "module_relpath": "src/calculate.js",
+                    "export_name": "calculate",
+                    "parameters": ["quantity", "price"],
+                    "function_sha256": "b" * 64,
+                    "closure": [],
+                }
+            ],
+            "rejection_summary": [],
+        }
+        with patch.object(
+            self.service._capsule_intake,
+            "inspect_computation_adapters",
+            create=True,
+            return_value=inspection,
+        ) as inspect:
+            started = self.service.start_inspect_computation_adapters(
+                {"project_id": project_id}
+            )
+            task = self._wait(started["run_id"])
+
+        self.assertEqual(task["status"], "completed")
+        self.assertEqual(task["data"], inspection)
+        inspect.assert_called_once()
+        self.assertEqual(inspect.call_args.args, (project_id,))
+        self.assertTrue(callable(inspect.call_args.kwargs["cancel_check"]))
+        self.assertEqual(self.store.current_revision(), revision_before)
+        with self.store.read_connection() as connection:
+            formal_after = tuple(
+                connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                for table in ("capsules", "capsule_versions", "product_capsule_usage")
+            )
+        self.assertEqual(formal_after, formal_before)
+
+    def test_computation_adapter_create_strips_client_source_evidence(self) -> None:
+        project_id = self._ready_project()
+        intake_result = {
+            "run_id": "adapter-intake",
+            "status": "completed",
+            "counts": {"extracted": 0},
+            "review_ids": [],
+            "adapter": {"example_count": 1, "example_sha256": "c" * 64},
+        }
+        request = {
+            "project_id": project_id,
+            "offer_id": "offer-1",
+            "arguments": [
+                {
+                    "source_parameter": "quantity",
+                    "input_field": "quantity",
+                    "minimum": 0,
+                    "maximum": 10,
+                }
+            ],
+            "result_field": "total",
+            "examples": [{"input": {"quantity": 4}, "expected": 20}],
+            "module_relpath": "forged.js",
+            "function_sha256": "f" * 64,
+            "source_hash": "e" * 64,
+        }
+        with patch.object(
+            self.service._capsule_intake,
+            "create_computation_adapter_candidate",
+            create=True,
+            return_value=intake_result,
+        ) as create, patch.object(
+            self.service._capsule_stage3,
+            "preflight_computation_adapter",
+            create=True,
+        ) as validator:
+            started = self.service.start_create_computation_adapter(request)
+            task = self._wait(started["run_id"])
+
+        self.assertEqual(task["status"], "completed")
+        self.assertEqual(task["data"]["intake"], intake_result)
+        forwarded = create.call_args.args[0]
+        self.assertEqual(
+            set(forwarded),
+            {"project_id", "offer_id", "arguments", "result_field", "examples"},
+        )
+        self.assertNotIn("module_relpath", forwarded)
+        self.assertNotIn("function_sha256", forwarded)
+        self.assertNotIn("source_hash", forwarded)
+        self.assertIs(create.call_args.kwargs["validator"], validator)
+        self.assertTrue(callable(create.call_args.kwargs["cancel_check"]))
+
+    def _scan_v2_offer(self, project_id: str) -> tuple[str, dict[str, object]]:
+        source = self.root / "project" / "calculate.js"
+        source.write_text(
+            "export function calculate(quantity) { return quantity * 2; }\n",
+            encoding="utf-8",
+        )
+        offer = {
+            "offer_id": "a" * 64,
+            "module_relpath": "calculate.js",
+            "export_name": "calculate",
+            "target_binding_id": "b" * 64,
+            "parameters": [
+                {"parameter_binding_id": "c" * 64, "name": "quantity"}
+            ],
+            "dependency_count": 0,
+        }
+
+        def inspect(snapshot):
+            return {
+                "schema": "computation_capture_offers.v2",
+                "project_id": snapshot.project_id,
+                "source_identity_sha256": snapshot.source_identity_sha256,
+                "scope_snapshot_sha256": snapshot.scope_snapshot_sha256,
+                "offers": [offer],
+            }
+
+        with patch(
+            "pimos_lite.reweave_app_service.inspect_ephemeral_computation_offers_v2",
+            side_effect=inspect,
+        ):
+            started = self.service.start_scan_javascript_computations(
+                {"project_id": project_id}
+            )
+            task = self._wait(started["run_id"])
+        self.assertEqual(task["status"], "completed")
+        inspection = task["data"]
+        return str(inspection["project_id"]), offer
+
+    def test_javascript_source_registration_and_scan_use_one_owner_and_safe_offers(self) -> None:
+        static_id = self._ready_project()
+        with self.store.read_connection() as connection:
+            static = connection.execute(
+                "SELECT source_root_id FROM projects WHERE project_id = ?",
+                (static_id,),
+            ).fetchone()
+        registered = self.service.register_javascript_computation_source(
+            {
+                "source_root_id": static["source_root_id"],
+                "project_relpath": ".",
+                "display_name": "Pricing computations",
+            }
+        )
+        repeated = self.service.register_javascript_computation_source(
+            {
+                "source_root_id": static["source_root_id"],
+                "project_relpath": ".",
+                "display_name": "Pricing computations",
+            }
+        )
+        self.assertTrue(registered["ok"])
+        self.assertEqual(
+            registered["data"]["project_id"], repeated["data"]["project_id"]
+        )
+
+        owner_id, offer = self._scan_v2_offer(static_id)
+        self.assertEqual(owner_id, registered["data"]["project_id"])
+        with self.store.read_connection() as connection:
+            owners = connection.execute(
+                "SELECT COUNT(*) FROM projects WHERE source_type = "
+                "'javascript_computation_source'"
+            ).fetchone()[0]
+            formal = tuple(
+                connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                for table in ("capsules", "capsule_versions", "product_capsule_usage")
+            )
+        self.assertEqual(owners, 1)
+        self.assertEqual(formal, (0, 0, 0))
+        self.assertEqual(
+            self.service._javascript_capture_sessions[owner_id]["offers"][
+                offer["offer_id"]
+            ]["target_binding_id"],
+            "b" * 64,
+        )
+
+    def test_v2_create_uses_authoritative_offer_and_allows_bound_resubmission(self) -> None:
+        static_id = self._ready_project()
+        owner_id, offer = self._scan_v2_offer(static_id)
+        mapping = {
+            "project_id": owner_id,
+            "offer_id": offer["offer_id"],
+            "review_id": None,
+            "arguments": [
+                {
+                    "parameter_binding_id": "c" * 64,
+                    "input_field": "quantity",
+                    "kind": "integer",
+                    "minimum": 0,
+                    "maximum": 10,
+                }
+            ],
+            "result_field": "total",
+            "examples": [{"input": {"quantity": 4}, "expected": 8}],
+        }
+        waiting = {
+            "schema": "ephemeral_capture_outcome.v1",
+            "status": "waiting_user",
+            "review_id": "review-v2",
+            "resume_contract": "resubmit_ephemeral_capture.v1",
+        }
+        with patch.object(
+            self.service._capsule_stage3,
+            "prepare_ephemeral_computation_capture_v2",
+            return_value=waiting,
+        ) as prepare:
+            first = self.service.start_create_computation_adapter(mapping)
+            first_task = self._wait(first["run_id"])
+        self.assertEqual(first_task["data"], waiting)
+        self.assertEqual(
+            prepare.call_args.args[1],
+            {
+                "module_relpath": "calculate.js",
+                "export_name": "calculate",
+                "target_binding_id": "b" * 64,
+            },
+        )
+
+        resubmission = {**mapping, "review_id": "review-v2"}
+        with patch.object(
+            self.service._capsule_stage3,
+            "prepare_ephemeral_computation_capture_v2",
+            return_value=waiting,
+        ) as prepare_again:
+            second = self.service.start_create_computation_adapter(resubmission)
+            second_task = self._wait(second["run_id"])
+        self.assertEqual(second_task["status"], "completed")
+        self.assertEqual(prepare_again.call_args.kwargs["review_id"], "review-v2")
+        forged = self.service.start_create_computation_adapter(
+            {**resubmission, "module_relpath": "forged.js"}
+        )
+        self.assertFalse(forged["ok"])
+        self.assertEqual(forged["error"]["code"], "capture_request_invalid")
+
+    def test_v2_review_decision_uses_one_time_stage3_authorization(self) -> None:
+        binding = "d" * 64
+        item = {
+            "review_id": "review-v2",
+            "candidate_status": "waiting_user",
+            "candidate": {
+                "candidate_origin": "deterministic_computation_adapter",
+                "adapter_contract_version": "computation_adapter.v2",
+                "requires_reextract": True,
+                "resume_contract": "resubmit_ephemeral_capture.v1",
+            },
+            "redaction": {
+                "codes": ["enumeration_confirmation_required"],
+                "enum_decision_binding_sha256": binding,
+            },
+            "resume_contract": "resubmit_ephemeral_capture.v1",
+            "enum_decision": None,
+            "allowed_decisions": ["confirm_selected_string_enumeration"],
+        }
+        recorded = {"review_id": "review-v2", "enum_decision": "confirmed"}
+        with patch.object(
+            self.service,
+            "list_review_items",
+            return_value={"ok": True, "data": {"items": [item]}},
+        ), patch.object(
+            self.service._capsule_stage3,
+            "record_ephemeral_capture_decisions",
+            return_value=recorded,
+        ) as record:
+            result = self.service.decide_review_item(
+                {
+                    "review_id": "review-v2",
+                    "decision": "confirm_selected_string_enumeration",
+                }
+            )
+        self.assertTrue(result["ok"])
+        self.assertTrue(result["data"]["capture_resubmission_required"])
+        self.assertEqual(
+            result["data"]["resume_contract"],
+            "resubmit_ephemeral_capture.v1",
+        )
+        record.assert_called_once_with(
+            "review-v2",
+            binding,
+            enum_decision="confirm_selected_string_enumeration",
+        )
+
+    def test_v2_review_decisions_are_derived_from_safe_capture_evidence(self) -> None:
+        decisions = self.service._allowed_review_decisions(
+            {
+                "candidate_status": "waiting_user",
+                "candidate": {
+                    "candidate_origin": "deterministic_computation_adapter",
+                    "adapter_contract_version": "computation_adapter.v2",
+                    "requires_reextract": True,
+                    "resume_contract": "resubmit_ephemeral_capture.v1",
+                },
+                "redaction": {
+                    "codes": [
+                        "sensitivity_confirmation_required",
+                        "brand_confirmation_required",
+                        "enumeration_confirmation_required",
+                    ]
+                },
+                "sensitivity_decision": None,
+                "brand_decision": None,
+                "enum_decision": None,
+            }
+        )
+        self.assertEqual(
+            decisions,
+            [
+                "confirm_fictional_fixture",
+                "confirm_real_record_reject",
+                "retain_brand_limited",
+                "confirm_selected_string_enumeration",
+            ],
+        )
+        self.assertNotIn("process_candidate", decisions)
+        self.assertNotIn("confirm_safe_redaction", decisions)
+        self.assertNotIn("remove_brand", decisions)
+
+    def test_adapter_waiting_user_requires_explicit_recreation(self) -> None:
+        decisions = self.service._allowed_review_decisions(
+            {
+                "candidate_status": "waiting_user",
+                "candidate": {
+                    "candidate_origin": "deterministic_computation_adapter",
+                    "requires_reextract": True,
+                },
+                "redaction": {"codes": ["sensitivity_confirmation_required"]},
+                "sensitivity_decision": None,
+            }
+        )
+
+        self.assertNotIn("process_candidate", decisions)
+        self.assertIn("confirm_safe_redaction", decisions)
 
     def test_refresh_all_reports_cooperative_cancel(self) -> None:
         self.store.initialize()
@@ -736,6 +1083,118 @@ class Phase4ManagementTest(unittest.TestCase):
                 "rule_version_changed",
             ),
         )
+
+    def test_adapter_contract_upgrade_only_marks_adapter_version_for_revalidation(self) -> None:
+        project_id = self._ready_project()
+        capsule_id, version_id = self._seed_project_contribution(
+            project_id,
+            extraction_summary={
+                "candidate_origin": "deterministic_computation_adapter",
+                "adapter_contract_version": "computation_adapter.v0",
+            },
+        )
+
+        self.service.get_initial_state()
+
+        with self.store.read_connection() as connection:
+            capsule = connection.execute(
+                "SELECT status, current_version_id FROM capsules WHERE capsule_id = ?",
+                (capsule_id,),
+            ).fetchone()
+            event = connection.execute(
+                "SELECT event_type, reason_code FROM capsule_status_events "
+                "WHERE capsule_id = ? ORDER BY created_at DESC LIMIT 1",
+                (capsule_id,),
+            ).fetchone()
+        self.assertEqual(
+            (capsule["status"], capsule["current_version_id"]),
+            ("pending_revalidation", version_id),
+        )
+        self.assertEqual(
+            tuple(event),
+            ("revalidation_required", "adapter_contract_version_changed"),
+        )
+        self.assertEqual(COMPUTATION_ADAPTER_CONTRACT_VERSION, "computation_adapter.v1")
+
+    def test_v2_bundle_evidence_expiry_marks_only_active_current_adapter(self) -> None:
+        project_id = self._ready_project()
+        capsule_id, version_id = self._seed_project_contribution(
+            project_id,
+            extraction_summary={
+                "candidate_origin": "deterministic_computation_adapter",
+                "adapter_contract_version": "computation_adapter.v2",
+                "ephemeral_capture_payload": {
+                    "rule_versions": {
+                        "selected_bundle_options_sha256": "0" * 64,
+                        "execution_bundle_options_sha256": "1" * 64,
+                    }
+                },
+            },
+        )
+
+        with patch.object(
+            self.service._capsule_stage3,
+            "_stored_version_evidence_eligible",
+            return_value=False,
+        ) as eligible:
+            self.service.get_initial_state()
+
+        eligible.assert_called_once()
+        checked = eligible.call_args.args[0]
+        self.assertEqual(checked["capsule_id"], capsule_id)
+        self.assertEqual(checked["version_id"], version_id)
+        self.assertEqual(checked["current_version_id"], version_id)
+        with self.store.read_connection() as connection:
+            capsule = connection.execute(
+                "SELECT status, current_version_id FROM capsules WHERE capsule_id = ?",
+                (capsule_id,),
+            ).fetchone()
+            events = connection.execute(
+                "SELECT event_type, version_id, reason_code FROM capsule_status_events "
+                "WHERE capsule_id = ? ORDER BY created_at",
+                (capsule_id,),
+            ).fetchall()
+        self.assertEqual(
+            (capsule["status"], capsule["current_version_id"]),
+            ("pending_revalidation", version_id),
+        )
+        self.assertEqual(
+            [tuple(row) for row in events],
+            [
+                (
+                    "revalidation_required",
+                    version_id,
+                    "adapter_evidence_version_changed",
+                )
+            ],
+        )
+
+    def test_adapter_contract_rule_does_not_revalidate_ordinary_extraction(self) -> None:
+        project_id = self._ready_project()
+        capsule_id, version_id = self._seed_project_contribution(
+            project_id,
+            extraction_summary={
+                "candidate_origin": "source_extraction",
+                "extraction_contract_version": EXTRACTION_CONTRACT_VERSION,
+            },
+        )
+
+        self.service.get_initial_state()
+
+        with self.store.read_connection() as connection:
+            capsule = connection.execute(
+                "SELECT status, current_version_id FROM capsules WHERE capsule_id = ?",
+                (capsule_id,),
+            ).fetchone()
+            events = connection.execute(
+                "SELECT count(*) FROM capsule_status_events WHERE capsule_id = ?",
+                (capsule_id,),
+            ).fetchone()[0]
+        self.assertEqual(
+            (capsule["status"], capsule["current_version_id"]),
+            ("active", version_id),
+        )
+        self.assertEqual(events, 0)
 
     def test_brand_review_rejects_asset_confirmation_decision(self) -> None:
         project_id = self._ready_project()

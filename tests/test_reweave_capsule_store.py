@@ -726,6 +726,8 @@ class CapsuleWarehouseStoreTest(unittest.TestCase):
         self.assertEqual(self._read_setting_from(pre_restore, "phase"), "after")
 
     def test_restore_validation_failure_rolls_back_original_database(self) -> None:
+        self.store.initialize()
+        self.store.migrate_v1_to_v2()
         self._write_setting("phase", "backup")
         backup = self.store.create_backup("manual")
         self._write_setting("phase", "current")
@@ -789,7 +791,34 @@ class CapsuleWarehouseStoreTest(unittest.TestCase):
         )
         self.assertEqual(self._read_setting("phase"), "backup")
 
+    def test_list_backups_isolates_invalid_directory_entries(self) -> None:
+        backup = self.store.create_backup("manual")
+        backup_path = Path(backup["path"])
+        backup_root = backup_path.parent
+        directory = backup_root / "capsule_warehouse.manual.directory.sqlite3"
+        directory.mkdir()
+        invalid_paths = [directory]
+        if hasattr(os, "symlink"):
+            broken = backup_root / "capsule_warehouse.manual.broken.sqlite3"
+            alias = backup_root / "capsule_warehouse.manual.alias.sqlite3"
+            try:
+                broken.symlink_to(backup_root / "missing.sqlite3")
+                alias.symlink_to(backup_path)
+            except OSError:
+                pass
+            else:
+                invalid_paths.extend((broken, alias))
+
+        rows = {Path(row["path"]): row for row in self.store.list_backups()}
+
+        self.assertTrue(rows[backup_path]["valid"])
+        for path in invalid_paths:
+            self.assertFalse(rows[path]["valid"])
+            self.assertIn("error", rows[path])
+
     def test_corrupt_current_database_raw_bytes_are_restored_on_failure(self) -> None:
+        self.store.initialize()
+        self.store.migrate_v1_to_v2()
         self._write_setting("phase", "backup")
         backup = self.store.create_backup("manual")
         corrupt_bytes = b"broken active database\x00must survive"
@@ -819,6 +848,8 @@ class CapsuleWarehouseStoreTest(unittest.TestCase):
         self.assertEqual(self.path.read_bytes(), corrupt_bytes)
 
     def test_restore_rejects_candidate_that_does_not_match_confirmed_backup(self) -> None:
+        self.store.initialize()
+        self.store.migrate_v1_to_v2()
         self._write_setting("phase", "expected")
         expected = self.store.create_backup("manual")
         self._write_setting("phase", "substituted")
@@ -1256,6 +1287,26 @@ class CapsuleWarehouseStoreTest(unittest.TestCase):
         )
         self.assertTrue(all(Path(item["path"]).is_file() for item in manual))
 
+    def test_invalid_regular_backups_do_not_evict_valid_retention_set(self) -> None:
+        valid = [self.store.create_backup("upgrade") for _ in range(3)]
+        backup_root = Path(valid[0]["path"]).parent
+        invalid = []
+        for index in range(3):
+            path = backup_root / (
+                f"capsule_warehouse.upgrade.99999999T99999999999{index}Z."
+                f"invalid{index}.sqlite3"
+            )
+            path.write_bytes(b"not a sqlite database")
+            invalid.append(path)
+
+        self.store._apply_retention("upgrade")
+
+        self.assertTrue(all(Path(item["path"]).is_file() for item in valid))
+        self.assertTrue(all(path.is_file() for path in invalid))
+        rows = {Path(row["path"]): row for row in self.store.list_backups()}
+        self.assertTrue(all(rows[Path(item["path"])]["valid"] for item in valid))
+        self.assertTrue(all(not rows[path]["valid"] for path in invalid))
+
     def test_v1_fingerprint_is_frozen_and_v2_schema_is_exact(self) -> None:
         self.assertEqual(
             schema_fingerprint_sha256(store_module._expected_schema_rows(1)),
@@ -1263,7 +1314,7 @@ class CapsuleWarehouseStoreTest(unittest.TestCase):
         )
         self.assertEqual(
             schema_fingerprint_sha256(store_module._expected_schema_rows(2)),
-            "061f95e5228cfbd297f975ea4ba1d2d971b36ae76e197cc673381aa5486d1ec2",
+            "2f5c245eee172d57abc065d1c63ad76e11925aec6a021d586a9384c4cbde2ada",
         )
 
         self.store.initialize()
@@ -1967,6 +2018,33 @@ class CapsuleWarehouseStoreTest(unittest.TestCase):
         )
         self.assertEqual(backup_path.read_bytes(), backup_bytes)
 
+    def test_corrupt_v2_database_restores_v1_backup_as_v2(self) -> None:
+        self._write_setting("phase", "v1-backup")
+        backup = self.store.create_backup("manual")
+        self.store.migrate_v1_to_v2()
+        self.assertEqual(
+            store_module._verify_database(self.path, expected_version=2)["user_version"],
+            2,
+        )
+        corrupt_bytes = b"corrupt v2 database\x00must be retained"
+        self.path.write_bytes(corrupt_bytes)
+
+        result = self.store.restore_backup(
+            backup["path"], expected_sha256=backup["sha256"]
+        )
+
+        self.assertTrue(result["restored"])
+        self.assertEqual(result["restored_user_version"], 2)
+        self.assertEqual(self._read_setting("phase"), "v1-backup")
+        self.assertEqual(
+            store_module._verify_database(self.path, expected_version=2)["user_version"],
+            2,
+        )
+        self.assertTrue(result["pre_restore_backup_is_raw"])
+        self.assertEqual(
+            Path(result["pre_restore_backup_path"]).read_bytes(), corrupt_bytes
+        )
+
     def test_v2_source_index_and_enum_constraints_fail_closed(self) -> None:
         self.store.initialize()
         self.store.migrate_v1_to_v2()
@@ -2145,6 +2223,20 @@ class CapsuleWarehouseStoreTest(unittest.TestCase):
                 )
             for bad_row in (
                 ("js-v2", "null.js", "javascript_module", None, None),
+                (
+                    "js-v2",
+                    "blob-size.js",
+                    "javascript_module",
+                    sqlite3.Binary(b"4"),
+                    module_hash,
+                ),
+                (
+                    "js-v2",
+                    "blob-hash.js",
+                    "javascript_module",
+                    4,
+                    sqlite3.Binary(b"a" * 64),
+                ),
                 ("js-v2", "uppercase.js", "javascript_module", 4, "A" * 64),
                 ("js-v2", "bad-link.js", "symlink", 4, module_hash),
             ):
@@ -2248,6 +2340,18 @@ class CapsuleWarehouseStoreTest(unittest.TestCase):
                         "enum-review-v2",
                     ),
                 )
+            with self.assertRaises(sqlite3.IntegrityError):
+                connection.execute(
+                    "UPDATE review_items SET enum_decision = ?, "
+                    "enum_decision_binding_sha256 = ?, enum_decided_at = ? "
+                    "WHERE review_id = ?",
+                    (
+                        "confirm_selected_string_enumeration",
+                        sqlite3.Binary(b"b" * 64),
+                        NOW,
+                        "enum-review-v2",
+                    ),
+                )
             connection.execute(
                 "UPDATE review_items SET enum_decision = ?, "
                 "enum_decision_binding_sha256 = ?, enum_decided_at = ? "
@@ -2289,6 +2393,43 @@ class CapsuleWarehouseStoreTest(unittest.TestCase):
             )["user_version"],
             2,
         )
+
+        tampered_enum = self.root / "v2-invariant-enum-blob.sqlite3"
+        shutil.copy2(self.path, tampered_enum)
+        connection = sqlite3.connect(tampered_enum)
+        connection.execute("PRAGMA ignore_check_constraints=ON")
+        connection.execute(
+            "INSERT INTO review_items ("
+            "review_id, run_id, project_id, candidate_id, candidate_status, "
+            "source_relpath, source_location_json, source_hash, redaction_rules_version, "
+            "sanitized_candidate_json, redaction_summary_json, enum_decision, "
+            "enum_decision_binding_sha256, enum_decided_at, created_at, updated_at"
+            ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (
+                "enum-review-v2-blob",
+                "capture-v2",
+                "js-v2",
+                "enum-candidate-v2-blob",
+                "waiting_user",
+                "src/main.js",
+                "{}",
+                module_hash,
+                "redaction.v1",
+                "{}",
+                "{}",
+                "confirm_selected_string_enumeration",
+                sqlite3.Binary(b"b" * 64),
+                NOW,
+                NOW,
+                NOW,
+            ),
+        )
+        connection.commit()
+        connection.close()
+        with self.assertRaisesRegex(
+            CapsuleStoreError, "review_enum_decision_binding"
+        ):
+            store_module._verify_database(tampered_enum, expected_version=2)
 
         for variant in ("path_collision", "invalid_path", "bad_snapshot"):
             with self.subTest(variant=variant):

@@ -1,4 +1,8 @@
+import crypto from "node:crypto";
+import fs from "node:fs/promises";
+import path from "node:path";
 import process from "node:process";
+import { build, version as esbuildVersion } from "esbuild";
 import * as ts from "typescript";
 
 class Rejection extends Error {
@@ -58,6 +62,10 @@ const allowedDomMethods = new Set([
   "removeAttribute", "removeEventListener", "replaceChildren", "setAttribute",
 ]);
 const allowedEvents = new Set(["change", "click", "input", "reset", "select", "submit"]);
+const computationAdapterEntry = "__reweave_adapter__/compute.js";
+const computationCaptureEntry = "__reweave_capture__/selected.js";
+const computationAdapterV2 = "computation_adapter.v2";
+const deterministicAdapterOrigin = "deterministic_computation_adapter";
 
 function parseModule(path, source) {
   const tree = ts.createSourceFile(path, source, ts.ScriptTarget.Latest, true, ts.ScriptKind.JS);
@@ -141,6 +149,43 @@ function moduleVariableNames(tree) {
   return names;
 }
 
+function moduleStaticScalarNames(tree) {
+  const values = new Set();
+  function staticScalar(node) {
+    if (!node) return false;
+    if (ts.isStringLiteralLike(node) || ts.isNumericLiteral(node)
+        || node.kind === ts.SyntaxKind.TrueKeyword || node.kind === ts.SyntaxKind.FalseKeyword) {
+      return true;
+    }
+    if (ts.isIdentifier(node)) return values.has(node.text);
+    return ts.isPrefixUnaryExpression(node)
+      && [ts.SyntaxKind.PlusToken, ts.SyntaxKind.MinusToken].includes(node.operator)
+      && ts.isNumericLiteral(node.operand);
+  }
+  for (const statement of tree.statements) {
+    // esbuild lowers proven source const declarations to `var` in the selected
+    // bundle. Later writes are still rejected by the module-state checks.
+    if (!ts.isVariableStatement(statement)) continue;
+    for (const declaration of statement.declarationList.declarations) {
+      if (ts.isIdentifier(declaration.name) && staticScalar(declaration.initializer)) {
+        values.add(declaration.name.text);
+      }
+    }
+  }
+  return values;
+}
+
+function staticCaptureArgument(node, scalarNames) {
+  if (ts.isStringLiteralLike(node) || ts.isNumericLiteral(node)
+      || node.kind === ts.SyntaxKind.TrueKeyword || node.kind === ts.SyntaxKind.FalseKeyword) {
+    return true;
+  }
+  if (ts.isIdentifier(node)) return scalarNames.has(node.text);
+  return ts.isPrefixUnaryExpression(node)
+    && [ts.SyntaxKind.PlusToken, ts.SyntaxKind.MinusToken].includes(node.operator)
+    && ts.isNumericLiteral(node.operand);
+}
+
 function functionMap(trees) {
   const result = new Map();
   for (const [path, tree] of trees) {
@@ -157,6 +202,82 @@ function functionMap(trees) {
     }
   }
   return result;
+}
+
+function resolveRelativeModule(fromPath, specifier) {
+  if (!specifier.startsWith("./") && !specifier.startsWith("../")) return null;
+  const parts = fromPath.split("/").slice(0, -1);
+  for (const part of specifier.split("/")) {
+    if (!part || part === ".") continue;
+    if (part === "..") {
+      if (!parts.length) return null;
+      parts.pop();
+    } else {
+      parts.push(part);
+    }
+  }
+  const result = parts.join("/");
+  return result.endsWith(".js") || result.endsWith(".mjs") ? result : null;
+}
+
+function exportedFunction(tree, exportedName) {
+  const localFunctions = new Map();
+  for (const statement of tree.statements) {
+    if (ts.isFunctionDeclaration(statement) && statement.name) {
+      localFunctions.set(statement.name.text, statement);
+      if (statement.name.text === exportedName
+          && statement.modifiers?.some((item) => item.kind === ts.SyntaxKind.ExportKeyword)
+          && !statement.modifiers?.some((item) => item.kind === ts.SyntaxKind.DefaultKeyword)) {
+        return statement;
+      }
+    }
+  }
+  for (const statement of tree.statements) {
+    if (!ts.isExportDeclaration(statement) || statement.moduleSpecifier
+        || !statement.exportClause || !ts.isNamedExports(statement.exportClause)) continue;
+    for (const item of statement.exportClause.elements) {
+      if (item.name.text !== exportedName) continue;
+      return localFunctions.get(item.propertyName?.text || item.name.text) || null;
+    }
+  }
+  return null;
+}
+
+function hasOnlyNamedExport(tree, exportedName) {
+  const names = [];
+  for (const statement of tree.statements) {
+    const modifiers = statement.modifiers || [];
+    const isExported = modifiers.some((item) => item.kind === ts.SyntaxKind.ExportKeyword);
+    const isDefault = modifiers.some((item) => item.kind === ts.SyntaxKind.DefaultKeyword);
+    if (isExported) {
+      if (isDefault) names.push("default");
+      else if (ts.isFunctionDeclaration(statement) || ts.isClassDeclaration(statement)) {
+        if (statement.name) names.push(statement.name.text);
+      } else if (ts.isVariableStatement(statement)) {
+        for (const declaration of statement.declarationList.declarations) {
+          if (!ts.isIdentifier(declaration.name)) return false;
+          names.push(declaration.name.text);
+        }
+      }
+    }
+    if (ts.isExportAssignment(statement)) names.push("default");
+    if (ts.isExportDeclaration(statement)) {
+      if (statement.moduleSpecifier || !statement.exportClause || !ts.isNamedExports(statement.exportClause)) {
+        return false;
+      }
+      for (const element of statement.exportClause.elements) names.push(element.name.text);
+    }
+  }
+  return names.length === 1 && names[0] === exportedName;
+}
+
+function emptyDetailsContract(value) {
+  return value && typeof value === "object" && !Array.isArray(value)
+    && value.schema === "data_contract.v1" && value.type === "object"
+    && value.additional_properties === false
+    && Array.isArray(value.required) && value.required.length === 0
+    && value.properties && typeof value.properties === "object"
+    && !Array.isArray(value.properties) && Object.keys(value.properties).length === 0;
 }
 
 function hasForbiddenBundleNode(tree) {
@@ -216,6 +337,196 @@ function analyzeCandidate() {
   const functions = functionMap(trees);
   const entryTree = trees.get(entryPath);
   const entryFunctions = new Set();
+  let adapterAuthorization = null;
+  let adapterCallCount = 0;
+  const declaredAdapterV2 = input.candidate_origin === deterministicAdapterOrigin
+    && input.adapter_contract_version === computationAdapterV2;
+  if (declaredAdapterV2 && (!trees.has(computationCaptureEntry)
+      || !trees.has(computationAdapterEntry) || entryPath !== computationAdapterEntry)) {
+    throw new Rejection("computation_adapter_authorization_invalid", computationAdapterEntry);
+  }
+  if (trees.has(computationCaptureEntry) && !declaredAdapterV2) {
+    throw new Rejection("computation_adapter_authorization_invalid", computationCaptureEntry);
+  }
+
+  if (trees.has(computationAdapterEntry) || entryPath === computationAdapterEntry) {
+    const adapterV2 = declaredAdapterV2;
+    const inputContract = input.input_contract;
+    const outputContract = input.output_contract;
+    const errorContract = input.error_contract;
+    const properties = inputContract?.properties;
+    const inputFields = properties && typeof properties === "object" && !Array.isArray(properties)
+      ? Object.keys(properties).sort()
+      : [];
+    const outputProperties = outputContract?.properties;
+    const outputFields = outputProperties && typeof outputProperties === "object" && !Array.isArray(outputProperties)
+      ? Object.keys(outputProperties)
+      : [];
+    const errors = errorContract?.errors;
+    const errorCodes = errors && typeof errors === "object" && !Array.isArray(errors)
+      ? Object.keys(errors).sort()
+      : [];
+    if (kind !== "computation" || entryPath !== computationAdapterEntry || entrypoint !== "compute"
+        || input.activation?.mode !== "declared_input_compute"
+        || inputContract?.schema !== "data_contract.v1" || inputContract?.type !== "object"
+        || inputContract?.additional_properties !== false || !inputFields.length
+        || !Array.isArray(inputContract.required)
+        || JSON.stringify([...inputContract.required].sort()) !== JSON.stringify(inputFields)
+        || inputFields.some((field) => {
+          const contract = properties[field];
+          if (!contract || typeof contract !== "object" || Array.isArray(contract)) return true;
+          if (contract.type === "integer") {
+            return !Number.isSafeInteger(contract.minimum)
+              || !Number.isSafeInteger(contract.maximum) || contract.minimum > contract.maximum;
+          }
+          if (!adapterV2) return true;
+          if (contract.type === "boolean") return Object.keys(contract).some((key) => !["type"].includes(key));
+          return contract.type !== "string" || !Number.isSafeInteger(contract.min_length)
+            || !Number.isSafeInteger(contract.max_length) || contract.min_length < 0
+            || contract.min_length > contract.max_length || !Array.isArray(contract.enum)
+            || contract.enum.length === 0 || contract.enum.length > 32
+            || new Set(contract.enum).size !== contract.enum.length
+            || contract.enum.some((value) => typeof value !== "string"
+              || value.length < contract.min_length || value.length > contract.max_length);
+        })
+        || outputContract?.schema !== "data_contract.v1" || outputContract?.type !== "object"
+        || outputContract?.additional_properties !== false || outputFields.length !== 1
+        || !Array.isArray(outputContract.required) || outputContract.required.length !== 1
+        || outputContract.required[0] !== outputFields[0]
+        || outputProperties[outputFields[0]]?.type !== "integer"
+        || !Number.isSafeInteger(outputProperties[outputFields[0]]?.minimum)
+        || !Number.isSafeInteger(outputProperties[outputFields[0]]?.maximum)
+        || outputProperties[outputFields[0]].minimum > outputProperties[outputFields[0]].maximum
+        || errorContract?.schema !== "error_contract.v1"
+        || JSON.stringify(errorCodes) !== JSON.stringify([
+          "INPUT_CONTRACT_VIOLATION", "OUTPUT_CONTRACT_VIOLATION",
+        ])
+        || errorCodes.some((code) => errors[code]?.field !== null
+          || !emptyDetailsContract(errors[code]?.details))) {
+      throw new Rejection("computation_adapter_authorization_invalid", computationAdapterEntry);
+    }
+    if (adapterV2 && (trees.size !== 2 || !trees.has(computationCaptureEntry))) {
+      throw new Rejection("computation_adapter_authorization_invalid", computationAdapterEntry);
+    }
+    if (entryTree.statements.length !== 2) {
+      throw new Rejection("computation_adapter_authorization_invalid", computationAdapterEntry);
+    }
+    const importStatement = entryTree.statements[0];
+    const computeStatement = entryTree.statements[1];
+    const bindings = importStatement?.importClause?.namedBindings;
+    if (!ts.isImportDeclaration(importStatement) || importStatement.importClause?.name
+        || !bindings || !ts.isNamedImports(bindings) || bindings.elements.length !== 1
+        || !ts.isFunctionDeclaration(computeStatement) || computeStatement.name?.text !== "compute"
+        || !computeStatement.body || computeStatement.parameters.length !== 1
+        || !ts.isIdentifier(computeStatement.parameters[0].name)
+        || computeStatement.parameters[0].initializer || computeStatement.parameters[0].dotDotDotToken
+        || !computeStatement.modifiers?.some((item) => item.kind === ts.SyntaxKind.ExportKeyword)
+        || computeStatement.modifiers?.some((item) => item.kind === ts.SyntaxKind.DefaultKeyword)) {
+      throw new Rejection("computation_adapter_authorization_invalid", computationAdapterEntry);
+    }
+    const binding = bindings.elements[0];
+    const importedName = binding.propertyName?.text || binding.name.text;
+    const localName = binding.name.text;
+    const moduleSpecifier = staticString(importStatement.moduleSpecifier) || "";
+    const targetPath = resolveRelativeModule(computationAdapterEntry, staticString(importStatement.moduleSpecifier) || "");
+    const targetTree = targetPath ? trees.get(targetPath) : null;
+    const targetValid = adapterV2
+      ? targetPath === computationCaptureEntry && importedName === "__selected"
+        && targetTree && hasOnlyNamedExport(targetTree, "__selected")
+      : targetTree && exportedFunction(targetTree, importedName);
+    if (localName !== "__source" || !targetValid) {
+      throw new Rejection("computation_adapter_authorization_invalid", computationAdapterEntry);
+    }
+    const bodyStatements = computeStatement.body.statements;
+    const resultStatement = bodyStatements[2];
+    const resultDeclarations = ts.isVariableStatement(resultStatement)
+      ? resultStatement.declarationList.declarations
+      : [];
+    const resultDeclaration = resultDeclarations[0];
+    const sourceCall = resultDeclaration?.initializer;
+    if (bodyStatements.length !== 5 || !ts.isIfStatement(bodyStatements[0])
+        || !ts.isIfStatement(bodyStatements[1]) || !ts.isVariableStatement(resultStatement)
+        || !(resultStatement.declarationList.flags & ts.NodeFlags.Const)
+        || resultDeclarations.length !== 1 || !ts.isIdentifier(resultDeclaration?.name)
+        || resultDeclaration.name.text !== "result" || !ts.isCallExpression(sourceCall)
+        || !ts.isIdentifier(sourceCall.expression) || sourceCall.expression.text !== localName
+        || !ts.isIfStatement(bodyStatements[3]) || !ts.isReturnStatement(bodyStatements[4])) {
+      throw new Rejection("computation_adapter_authorization_invalid", computationAdapterEntry);
+    }
+    const mappedFields = [];
+    for (const argument of sourceCall.arguments) {
+      if (!ts.isPropertyAccessExpression(argument) || argument.questionDotToken
+          || !ts.isIdentifier(argument.expression)
+          || argument.expression.text !== computeStatement.parameters[0].name.text) {
+        throw new Rejection("computation_adapter_authorization_invalid", computationAdapterEntry);
+      }
+      mappedFields.push(argument.name.text);
+    }
+    if (mappedFields.length !== inputFields.length || new Set(mappedFields).size !== mappedFields.length
+        || [...mappedFields].sort().join("\0") !== inputFields.join("\0")) {
+      throw new Rejection("computation_adapter_authorization_invalid", computationAdapterEntry);
+    }
+    const inputName = computeStatement.parameters[0].name.text;
+    const inputShapeChecks = [
+      `${inputName} === null`,
+      `typeof ${inputName} !== "object"`,
+      `Array.isArray(${inputName})`,
+      `Object.keys(${inputName}).length !== ${inputFields.length}`,
+      ...mappedFields.map((field) => `!Object.hasOwn(${inputName}, ${JSON.stringify(field)})`),
+    ];
+    const inputValueChecks = mappedFields.flatMap((field) => {
+      const contract = properties[field];
+      if (contract.type === "integer") return [
+        `!Number.isSafeInteger(${inputName}.${field})`,
+        `${inputName}.${field} < ${contract.minimum}`,
+        `${inputName}.${field} > ${contract.maximum}`,
+      ];
+      if (contract.type === "boolean") return [`typeof ${inputName}.${field} !== "boolean"`];
+      return [
+        `typeof ${inputName}.${field} !== "string"`,
+        `(${contract.enum.map((value) => `${inputName}.${field} !== ${JSON.stringify(value)}`).join(" && ")})`,
+      ];
+    });
+    const outputField = outputFields[0];
+    const outputValue = outputProperties[outputField];
+    const inputError = '    return { ok: false, error: { code: "INPUT_CONTRACT_VIOLATION", field: null, details: {} } };';
+    const outputError = '    return { ok: false, error: { code: "OUTPUT_CONTRACT_VIOLATION", field: null, details: {} } };';
+    const expectedSource = [
+      `import { ${importedName} as __source } from ${JSON.stringify(moduleSpecifier)};`,
+      "",
+      `export function compute(${inputName}) {`,
+      "  if (",
+      `    ${inputShapeChecks.join("\n    || ")}`,
+      "  ) {",
+      inputError,
+      "  }",
+      "  if (",
+      `    ${inputValueChecks.join("\n    || ")}`,
+      "  ) {",
+      inputError,
+      "  }",
+      `  const result = __source(${mappedFields.map((field) => `${inputName}.${field}`).join(", ")});`,
+      "  if (",
+      "    !Number.isSafeInteger(result)",
+      `    || result < ${outputValue.minimum}`,
+      `    || result > ${outputValue.maximum}`,
+      "  ) {",
+      outputError,
+      "  }",
+      `  return { ok: true, value: { ${JSON.stringify(outputField)}: result } };`,
+      "}",
+      "",
+    ].join("\n");
+    if (sources.get(computationAdapterEntry) !== expectedSource) {
+      throw new Rejection("computation_adapter_authorization_invalid", computationAdapterEntry);
+    }
+    adapterAuthorization = {
+      fn: computeStatement,
+      inputName,
+      inputFields,
+      sourceBinding: localName,
+    };
+  }
   function addEntrypoint(name) {
     const target = functions.get(`${entryPath}:${name}`);
     if (target) entryFunctions.add(target);
@@ -336,6 +647,7 @@ function analyzeCandidate() {
     function protectedReferences(node) {
       if (!node) return new Set();
       if (ts.isParenthesizedExpression(node)) return protectedReferences(node.expression);
+      if (ts.isFunctionLike(node)) return new Set();
       if (ts.isIdentifier(node)) {
         if (opaqueEvent && node.text === opaqueEvent) return new Set(["event"]);
         if (domBindings.has(node.text)) return new Set(["dom"]);
@@ -343,6 +655,7 @@ function analyzeCandidate() {
         return protectedKind ? new Set([protectedKind]) : new Set();
       }
       if (ts.isCallExpression(node)) {
+        const result = new Set();
         if (ts.isPropertyAccessExpression(node.expression)
             || ts.isElementAccessExpression(node.expression)) {
           const receiverReferences = protectedReferences(node.expression.expression);
@@ -351,11 +664,12 @@ function analyzeCandidate() {
               && receiverReferences.has("root")) {
             return new Set(["dom"]);
           }
-          return new Set(
-            [...receiverReferences].map((base) => `${base}_derived`),
-          );
+          for (const base of receiverReferences) result.add(`${base}_derived`);
         }
-        return new Set();
+        for (const argument of node.arguments) {
+          for (const base of protectedReferences(argument)) result.add(base);
+        }
+        return result;
       }
       if (ts.isPropertyAccessExpression(node) || ts.isElementAccessExpression(node)) {
         const result = new Set();
@@ -397,18 +711,17 @@ function analyzeCandidate() {
           ...protectedReferences(node.whenFalse),
         ]);
       }
-      if (ts.isBinaryExpression(node) && [
-        ts.SyntaxKind.AmpersandAmpersandToken,
-        ts.SyntaxKind.BarBarToken,
-        ts.SyntaxKind.CommaToken,
-        ts.SyntaxKind.QuestionQuestionToken,
-      ].includes(node.operatorToken.kind)) {
+      if (ts.isBinaryExpression(node)) {
         return new Set([
           ...protectedReferences(node.left),
           ...protectedReferences(node.right),
         ]);
       }
-      return new Set();
+      const result = new Set();
+      ts.forEachChild(node, (child) => {
+        for (const item of protectedReferences(child)) result.add(item);
+      });
+      return result;
     }
 
     function rejectProtectedArguments(args, allowed = new Set()) {
@@ -503,6 +816,11 @@ function analyzeCandidate() {
             path,
           );
         }
+        if (ts.isIdentifier(node.name)
+            && initializerReferences.size
+            && [...initializerReferences].every((item) => item === "input_value")) {
+          protectedKinds.set(node.name.text, "input_value");
+        }
       }
       if (ts.isParameter(node) && node.initializer && protectedReferences(node.initializer).size) {
         throw new Rejection("protected_reference_argument_forbidden", path);
@@ -521,7 +839,12 @@ function analyzeCandidate() {
       }
       if (ts.isBinaryExpression(node) && node.operatorToken.kind >= ts.SyntaxKind.FirstAssignment
           && node.operatorToken.kind <= ts.SyntaxKind.LastAssignment) {
-        if ([...protectedReferences(node.right)].some((item) => item !== "input_value")) {
+        const rightReferences = protectedReferences(node.right);
+        if ([...rightReferences].some((item) => item !== "input_value")) {
+          throw new Rejection("protected_reference_alias_forbidden", path);
+        }
+        if (ts.isIdentifier(node.left) && rightReferences.has("input_value")
+            && !protectedKinds.has(node.left.text)) {
           throw new Rejection("protected_reference_alias_forbidden", path);
         }
         if (ts.isIdentifier(node.left)
@@ -588,6 +911,25 @@ function analyzeCandidate() {
           rejectProtectedArguments(call.arguments, new Set(["input_value"]));
           return;
         }
+        if (adapterAuthorization && pathValue === computationAdapterEntry
+            && fn === adapterAuthorization.fn && name === adapterAuthorization.sourceBinding) {
+          const fields = [];
+          for (const argument of call.arguments) {
+            if (!ts.isPropertyAccessExpression(argument) || argument.questionDotToken
+                || !ts.isIdentifier(argument.expression)
+                || argument.expression.text !== adapterAuthorization.inputName) {
+              throw new Rejection("computation_adapter_argument_forbidden", pathValue);
+            }
+            fields.push(argument.name.text);
+          }
+          if (fields.length !== adapterAuthorization.inputFields.length
+              || new Set(fields).size !== fields.length
+              || [...fields].sort().join("\0") !== adapterAuthorization.inputFields.join("\0")) {
+            throw new Rejection("computation_adapter_argument_forbidden", pathValue);
+          }
+          adapterCallCount += 1;
+          return;
+        }
         rejectProtectedArguments(call.arguments);
         if (!localNames.has(name)) {
           throw new Rejection("unknown_call_target", pathValue);
@@ -601,6 +943,29 @@ function analyzeCandidate() {
       const owner = rootIdentifier(ownerNode);
       const method = propertyName(call.expression);
       if (forbiddenProperties.has(method)) throw new Rejection("forbidden_call", pathValue);
+      const inAdapterEntrypoint = adapterAuthorization
+        && pathValue === computationAdapterEntry && fn === adapterAuthorization.fn;
+      if (inAdapterEntrypoint && ts.isIdentifier(ownerNode)
+          && ownerNode.text === "Array" && method === "isArray"
+          && call.arguments.length === 1 && ts.isIdentifier(call.arguments[0])
+          && call.arguments[0].text === adapterAuthorization.inputName) {
+        return;
+      }
+      if (inAdapterEntrypoint && ts.isIdentifier(ownerNode)
+          && ownerNode.text === "Object" && method === "hasOwn"
+          && call.arguments.length === 2 && ts.isIdentifier(call.arguments[0])
+          && call.arguments[0].text === adapterAuthorization.inputName) {
+        const field = staticString(call.arguments[1]);
+        if (!field || !adapterAuthorization.inputFields.includes(field)) {
+          throw new Rejection("computation_adapter_argument_forbidden", pathValue);
+        }
+        return;
+      }
+      if (inAdapterEntrypoint && ts.isIdentifier(ownerNode)
+          && ownerNode.text === "Number" && method === "isSafeInteger"
+          && call.arguments.length === 1) {
+        return;
+      }
       if (ts.isIdentifier(ownerNode) && ownerNode.text === "Math" && allowedMathMethods.has(method)) {
         rejectProtectedArguments(call.arguments, new Set(["input_value"]));
         return;
@@ -705,6 +1070,7 @@ function analyzeCandidate() {
   for (const [path, tree] of trees) {
     const names = moduleNames(tree);
     const moduleVariables = moduleVariableNames(tree);
+    const staticScalarNames = moduleStaticScalarNames(tree);
     for (const name of forbiddenIdentifiers) if (names.has(name)) throw new Rejection("forbidden_identifier_shadow", path);
     for (const statement of tree.statements) {
       if (ts.isImportDeclaration(statement)) {
@@ -741,7 +1107,19 @@ function analyzeCandidate() {
                 if (forbiddenIdentifiers.has(node.text)) throw new Rejection("forbidden_identifier", path);
                 if (!names.has(node.text) && !allowedGlobals.has(node.text)) throw new Rejection("unknown_global_identifier", path);
               }
-              if (ts.isCallExpression(node) || ts.isNewExpression(node) || ts.isAwaitExpression(node)) throw new Rejection("module_top_level_execution_forbidden", path);
+              if (ts.isCallExpression(node)) {
+                const allowedCaptureInitializer = declaredAdapterV2
+                  && path === computationCaptureEntry
+                  && node === declaration.initializer
+                  && ts.isIdentifier(node.expression)
+                  && functions.has(`${path}:${node.expression.text}`)
+                  && node.arguments.every((argument) => staticCaptureArgument(argument, staticScalarNames));
+                if (!allowedCaptureInitializer) {
+                  throw new Rejection("module_top_level_execution_forbidden", path);
+                }
+                return;
+              }
+              if (ts.isNewExpression(node) || ts.isAwaitExpression(node)) throw new Rejection("module_top_level_execution_forbidden", path);
               if (ts.isStringLiteralLike(node)) addReplacement(path, node, false);
               ts.forEachChild(node, inspectInitializer);
             }
@@ -777,6 +1155,9 @@ function analyzeCandidate() {
     }
   }
   if (!entryExportFound) throw new Rejection("entrypoint_export_missing", entryPath);
+  if (adapterAuthorization && adapterCallCount !== 1) {
+    throw new Rejection("computation_adapter_authorization_invalid", computationAdapterEntry);
+  }
 
   // Event handlers are analyzed again with their event parameter marked as opaque.
   for (const [path, tree] of trees) {
@@ -838,11 +1219,151 @@ function analyzeCandidate() {
   };
 }
 
+function canonicalValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalValue);
+  if (value && typeof value === "object") {
+    const result = {};
+    for (const key of Object.keys(value).sort()) result[key] = canonicalValue(value[key]);
+    return result;
+  }
+  return value;
+}
+
+function sha256(value) {
+  return crypto.createHash("sha256").update(value).digest("hex");
+}
+
+async function buildExecutionBundleV2() {
+  const modules = Array.isArray(input.javascript_modules) ? input.javascript_modules : [];
+  const sources = new Map();
+  for (const item of modules) {
+    const logicalPath = String(item?.path || "");
+    const source = String(item?.source || "");
+    if (!logicalPath || sources.has(logicalPath)) throw new Rejection("execution_bundle_input_invalid");
+    sources.set(logicalPath, source);
+  }
+  if (sources.size !== 2 || !sources.has(computationCaptureEntry) || !sources.has(computationAdapterEntry)) {
+    throw new Rejection("execution_bundle_input_invalid");
+  }
+  const plugin = {
+    name: "reweave-snapshot-only",
+    setup(buildApi) {
+      buildApi.onResolve({ filter: /.*/ }, (args) => {
+        if (args.kind === "entry-point") {
+          return args.path === computationAdapterEntry
+            ? { path: computationAdapterEntry, namespace: "reweave-snapshot" }
+            : { errors: [{ text: "execution_bundle_entry_invalid" }] };
+        }
+        if (args.namespace !== "reweave-snapshot" || (args.path !== "../__reweave_capture__/selected.js")) {
+          return { errors: [{ text: "execution_bundle_resolution_invalid" }] };
+        }
+        return { path: computationCaptureEntry, namespace: "reweave-snapshot" };
+      });
+      buildApi.onLoad({ filter: /.*/, namespace: "reweave-snapshot" }, (args) => {
+        if (!sources.has(args.path)) return { errors: [{ text: "execution_bundle_module_missing" }] };
+        return { contents: sources.get(args.path), loader: "js", resolveDir: "/__reweave_execution__" };
+      });
+    },
+  };
+  const options = {
+    bundle: true,
+    treeShaking: true,
+    format: "iife",
+    globalName: "ReweaveCandidate",
+    platform: "neutral",
+    target: "es2022",
+    write: false,
+    minify: false,
+    metafile: true,
+    sourcemap: false,
+    legalComments: "none",
+    external: [],
+    charset: "utf8",
+    logLevel: "silent",
+    resolveExtensions: [],
+    mainFields: [],
+    conditions: [],
+    packages: "bundle",
+    tsconfigRaw: { compilerOptions: {} },
+  };
+  const requestedRoot = typeof input.temporary_root === "string"
+    ? input.temporary_root
+    : "";
+  if (!path.isAbsolute(requestedRoot)) throw new Rejection("execution_bundle_failed");
+  let requestedStat;
+  let requestedReal;
+  try {
+    requestedStat = await fs.lstat(requestedRoot);
+    requestedReal = await fs.realpath(requestedRoot);
+  } catch {
+    throw new Rejection("execution_bundle_failed");
+  }
+  if (!requestedStat.isDirectory() || requestedStat.isSymbolicLink()
+      || requestedReal !== requestedRoot
+      || (typeof process.getuid === "function" && requestedStat.uid !== process.getuid())
+      || (process.platform !== "win32" && (requestedStat.mode & 0o077) !== 0)) {
+    throw new Rejection("execution_bundle_failed");
+  }
+  let marker;
+  try {
+    marker = await fs.readFile(path.join(requestedRoot, ".reweave-capture-job-v1"), "utf8");
+  } catch {
+    throw new Rejection("execution_bundle_failed");
+  }
+  if (marker !== "reweave-capture-private-job.v1\n") {
+    throw new Rejection("execution_bundle_failed");
+  }
+  const temporaryRoot = await fs.mkdtemp(path.join(requestedRoot, "bundle-"));
+  await fs.chmod(temporaryRoot, 0o700);
+  let built;
+  try {
+    built = await build({
+      entryPoints: [computationAdapterEntry],
+      absWorkingDir: temporaryRoot,
+      ...options,
+      plugins: [plugin],
+    });
+  } catch {
+    throw new Rejection("execution_bundle_failed");
+  } finally {
+    await fs.rm(temporaryRoot, { recursive: true, force: true });
+  }
+  if (built.warnings.length !== 0 || built.outputFiles.length !== 1) {
+    throw new Rejection("execution_bundle_failed");
+  }
+  const output = built.outputFiles[0].contents;
+  if (output.length > 1024 * 1024) throw new Rejection("execution_bundle_too_large");
+  const outputMeta = Object.values(built.metafile?.outputs || {});
+  if (outputMeta.length !== 1 || outputMeta[0].imports.length !== 0) {
+    throw new Rejection("execution_bundle_failed");
+  }
+  const inputPaths = Object.keys(built.metafile?.inputs || {}).map((value) => value.replace(/^reweave-snapshot:/u, ""));
+  if (inputPaths.length !== 2 || !inputPaths.includes(computationCaptureEntry)
+      || !inputPaths.includes(computationAdapterEntry)) {
+    throw new Rejection("execution_bundle_failed");
+  }
+  const source = Buffer.from(output).toString("utf8");
+  const tree = parseModule("execution-bundle.js", source);
+  hasForbiddenBundleNode(tree);
+  const optionsBytes = Buffer.from(JSON.stringify(canonicalValue(options)), "utf8");
+  return {
+    schema_version: "reweave_execution_bundle.v1",
+    status: "passed",
+    source_base64: Buffer.from(output).toString("base64"),
+    sha256: sha256(output),
+    size_bytes: output.length,
+    esbuild_version: esbuildVersion,
+    bundle_options_sha256: sha256(optionsBytes),
+  };
+}
+
 try {
   if (input.mode === "bundle") {
     const tree = parseModule("bundle.js", String(input.source || ""));
     hasForbiddenBundleNode(tree);
     process.stdout.write(JSON.stringify({ schema_version: "javascript_bundle_security.v1", status: "passed" }));
+  } else if (input.mode === "execution_bundle_v2") {
+    process.stdout.write(JSON.stringify(await buildExecutionBundleV2()));
   } else {
     process.stdout.write(JSON.stringify(analyzeCandidate()));
   }

@@ -50,8 +50,10 @@ def test_stage5_formal_and_historical_surfaces_are_separate() -> None:
         "pimos_lite/reweave_capsule_worker.py",
         "pimos_lite/reweave_data_contract.py",
         "pimos_lite/reweave_process_environment.py",
+        "pimos_lite/reweave_javascript_source.py",
         "scripts/analyze_reweave_extraction.mjs",
         "scripts/analyze_reweave_security.mjs",
+        "scripts/analyze_reweave_source_graph.mjs",
         "scripts/validate_reweave_compute.mjs",
         "scripts/run_public_reweave_demo.py",
         "reweave_frontend/app.js",
@@ -75,6 +77,14 @@ def test_stage5_formal_and_historical_surfaces_are_separate() -> None:
     assert dispositions["scripts/run_public_reweave_demo.py"] == "included"
     assert dispositions["scripts/run_public_stage4_demo.py"] == "historical_excluded"
     assert dispositions["pimos_lite/reweave_llm_pack.py"] == "historical_excluded"
+
+    javascript_source = next(
+        row
+        for row in audit["entrypoints"]
+        if row["path"] == "pimos_lite/reweave_javascript_source.py"
+    )
+    assert javascript_source["release_disposition"] == "included"
+    assert javascript_source["release_role"] == "read_only_source_intake"
 
 
 def test_stage5_contract_checks_are_explicit() -> None:

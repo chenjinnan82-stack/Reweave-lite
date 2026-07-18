@@ -1751,21 +1751,709 @@ function analyzeEntry(entry) {
   return { candidates, rejections };
 }
 
-try {
-  initializeModuleSnapshot();
-  const candidates = [];
-  const rejections = [];
-  for (const entry of [...new Set(entryModules)].sort()) {
-    try {
-      const result = analyzeEntry(entry);
-      candidates.push(...result.candidates);
-      rejections.push(...result.rejections);
-    } catch (error) {
-      if (!(error instanceof Rejection)) throw error;
-      rejections.push({ entry_module: String(entry), entrypoint: null, capability_kind: null, error_code: error.code, logical_path: error.logicalPath || null });
+const COMPUTATION_ADAPTER_VERSION = "computation_adapter.v1";
+const COMPUTATION_ADAPTER_PATH = "__reweave_adapter__/compute.js";
+const COMPUTATION_ADAPTER_PREFIX = "__reweave_adapter__/";
+const COMPUTATION_ADAPTER_MAX_STEPS = 10_000;
+const COMPUTATION_ADAPTER_MAX_DEPTH = 128;
+const computationAdapterFieldPattern = /^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/;
+const computationAdapterExportCache = new Map();
+
+function sha256Text(value) {
+  return crypto.createHash("sha256").update(value, "utf8").digest("hex");
+}
+
+function canonicalAdapterValue(value) {
+  if (Array.isArray(value)) return value.map(canonicalAdapterValue);
+  if (value && typeof value === "object") {
+    const result = Object.create(null);
+    for (const key of Object.keys(value).sort()) result[key] = canonicalAdapterValue(value[key]);
+    return result;
+  }
+  if (value === null || typeof value === "string" || typeof value === "boolean" || Number.isSafeInteger(value)) return value;
+  throw new Rejection("adapter_mapping_invalid");
+}
+
+function canonicalAdapterJson(value) {
+  return JSON.stringify(canonicalAdapterValue(value));
+}
+
+function assertNoReservedAdapterSourcePath() {
+  if ([...snapshotModules.keys()].some((item) => (
+    item.toLocaleLowerCase("en-US").startsWith(COMPUTATION_ADAPTER_PREFIX)
+  ))) {
+    throw new Rejection("adapter_source_unsupported_v1", COMPUTATION_ADAPTER_PREFIX);
+  }
+}
+
+function computationAdapterExports(record) {
+  if (computationAdapterExportCache.has(record.rel)) return computationAdapterExportCache.get(record.rel);
+  const exports = new Map();
+  const importNames = new Set();
+  function add(exposed, local) {
+    if (!exposed || !local || exports.has(exposed)) {
+      throw new Rejection("adapter_source_unsupported_v1", record.rel);
+    }
+    exports.set(exposed, local);
+  }
+  for (const statement of record.tree.statements) {
+    if (ts.isImportDeclaration(statement)) {
+      const clause = statement.importClause;
+      if (!clause
+          || clause.name
+          || !clause.namedBindings
+          || !ts.isNamedImports(clause.namedBindings)
+          || !clause.namedBindings.elements.length) {
+        throw new Rejection("adapter_source_unsupported_v1", record.rel);
+      }
+      for (const item of clause.namedBindings.elements) {
+        if (!ts.isIdentifier(item.name)
+            || (item.propertyName && !ts.isIdentifier(item.propertyName))
+            || importNames.has(item.name.text)
+            || record.symbols.has(item.name.text)) {
+          throw new Rejection("adapter_source_unsupported_v1", record.rel);
+        }
+        importNames.add(item.name.text);
+      }
+      continue;
+    }
+    if (ts.isFunctionDeclaration(statement)
+        && statement.name
+        && hasModifier(statement, ts.SyntaxKind.ExportKeyword)) {
+      add(hasModifier(statement, ts.SyntaxKind.DefaultKeyword) ? "default" : statement.name.text, statement.name.text);
+      continue;
+    }
+    if (ts.isVariableStatement(statement) && hasModifier(statement, ts.SyntaxKind.ExportKeyword)) {
+      if (hasModifier(statement, ts.SyntaxKind.DefaultKeyword)) {
+        throw new Rejection("adapter_source_unsupported_v1", record.rel);
+      }
+      for (const declaration of statement.declarationList.declarations) {
+        if (!ts.isIdentifier(declaration.name)) throw new Rejection("adapter_source_unsupported_v1", record.rel);
+        add(declaration.name.text, declaration.name.text);
+      }
+      continue;
+    }
+    if (ts.isExportDeclaration(statement)) {
+      if (statement.moduleSpecifier || !statement.exportClause || !ts.isNamedExports(statement.exportClause)) {
+        throw new Rejection("adapter_source_unsupported_v1", record.rel);
+      }
+      for (const item of statement.exportClause.elements) {
+        if (!ts.isIdentifier(item.name) || (item.propertyName && !ts.isIdentifier(item.propertyName))) {
+          throw new Rejection("adapter_source_unsupported_v1", record.rel);
+        }
+        add(item.name.text, item.propertyName?.text || item.name.text);
+      }
+      continue;
+    }
+    if (ts.isExportAssignment(statement)) {
+      if (statement.isExportEquals || !ts.isIdentifier(statement.expression)) {
+        throw new Rejection("adapter_source_unsupported_v1", record.rel);
+      }
+      add("default", statement.expression.text);
     }
   }
-  process.stdout.write(JSON.stringify({ schema_version: "extraction_ast.v1", status: "ok", candidates, rejections }));
-} catch {
-  process.stdout.write(JSON.stringify({ schema_version: "extraction_ast.v1", status: "failed", error_code: "extraction_analyzer_failed" }));
+  computationAdapterExportCache.set(record.rel, exports);
+  return exports;
+}
+
+function adapterFunctionParameters(node, requireParameter = false) {
+  if (!ts.isFunctionDeclaration(node)
+      || !node.name
+      || !node.body
+      || hasModifier(node, ts.SyntaxKind.AsyncKeyword)
+      || node.asteriskToken) {
+    throw new Rejection("adapter_source_unsupported_v1");
+  }
+  const names = [];
+  for (const parameter of node.parameters) {
+    if (!ts.isIdentifier(parameter.name)
+        || parameter.initializer
+        || parameter.dotDotDotToken
+        || parameter.questionToken
+        || names.includes(parameter.name.text)) {
+      throw new Rejection("adapter_source_unsupported_v1");
+    }
+    names.push(parameter.name.text);
+  }
+  if (requireParameter && !names.length) throw new Rejection("adapter_source_unsupported_v1");
+  return names;
+}
+
+function adapterFunctionBody(node, parameterNames) {
+  const statements = [...node.body.statements];
+  const returned = statements.pop();
+  if (!returned || !ts.isReturnStatement(returned) || !returned.expression) {
+    throw new Rejection("adapter_source_unsupported_v1");
+  }
+  const locals = new Map();
+  const localIndices = new Map();
+  let localIndex = 0;
+  for (const statement of statements) {
+    if (!ts.isVariableStatement(statement)
+        || (statement.declarationList.flags & ts.NodeFlags.Const) === 0) {
+      throw new Rejection("adapter_source_unsupported_v1");
+    }
+    for (const declaration of statement.declarationList.declarations) {
+      if (!ts.isIdentifier(declaration.name)
+          || !declaration.initializer
+          || parameterNames.includes(declaration.name.text)
+          || locals.has(declaration.name.text)) {
+        throw new Rejection("adapter_source_unsupported_v1");
+      }
+      locals.set(declaration.name.text, declaration.initializer);
+      localIndices.set(declaration.name.text, localIndex);
+      localIndex += 1;
+    }
+  }
+  return { locals, localIndices, returned: returned.expression };
+}
+
+function adapterImportedSymbol(record, localName, state) {
+  const binding = record.importBindings.get(localName);
+  if (!binding || binding.imported === "default") throw new Rejection("adapter_source_unsupported_v1", record.rel);
+  state.usedImports.add(`${record.rel}:${localName}`);
+  const target = moduleCache.get(binding.target);
+  const symbol = target ? computationAdapterExports(target).get(binding.imported) : null;
+  if (!target || !symbol || !target.symbols.has(symbol)) {
+    throw new Rejection("adapter_source_unsupported_v1", binding.target);
+  }
+  return { record: target, symbol, node: target.symbols.get(symbol) };
+}
+
+function adapterModuleSymbol(record, name, state) {
+  if (record.symbols.has(name)) return { record, symbol: name, node: record.symbols.get(name) };
+  if (record.importBindings.has(name)) return adapterImportedSymbol(record, name, state);
+  return null;
+}
+
+function adapterLiteral(value) {
+  if (!Number.isSafeInteger(value)) throw new Rejection("adapter_source_unsupported_v1");
+  return { op: "literal", value };
+}
+
+function adapterExpressionModel(node, context, state, depth = 0) {
+  state.steps += 1;
+  if (state.steps > COMPUTATION_ADAPTER_MAX_STEPS || depth > COMPUTATION_ADAPTER_MAX_DEPTH) {
+    throw new Rejection("adapter_source_unsupported_v1", context.record.rel);
+  }
+  if (ts.isParenthesizedExpression(node)) {
+    return adapterExpressionModel(node.expression, context, state, depth + 1);
+  }
+  if (ts.isNumericLiteral(node)) return adapterLiteral(Number(node.text));
+  if (ts.isPrefixUnaryExpression(node)
+      && [ts.SyntaxKind.PlusToken, ts.SyntaxKind.MinusToken].includes(node.operator)) {
+    const operand = adapterExpressionModel(node.operand, context, state, depth + 1);
+    return node.operator === ts.SyntaxKind.PlusToken ? operand : { op: "negate", operand };
+  }
+  if (ts.isIdentifier(node)) {
+    if (context.parameters.has(node.text)) return context.parameters.get(node.text);
+    if (context.locals.has(node.text)) {
+      const declarationIndex = context.localIndices.get(node.text);
+      if (declarationIndex >= context.localLimit) {
+        throw new Rejection("adapter_source_unsupported_v1", context.record.rel);
+      }
+      const localKey = `${context.functionKey}:local:${node.text}`;
+      if (context.activeLocals.has(localKey)) throw new Rejection("adapter_source_unsupported_v1", context.record.rel);
+      context.usedLocals.add(node.text);
+      if (context.localCache.has(node.text)) return context.localCache.get(node.text);
+      context.activeLocals.add(localKey);
+      const result = adapterExpressionModel(context.locals.get(node.text), {
+        ...context,
+        localLimit: declarationIndex,
+      }, state, depth + 1);
+      context.activeLocals.delete(localKey);
+      context.localCache.set(node.text, result);
+      return result;
+    }
+    const resolved = adapterModuleSymbol(context.record, node.text, state);
+    if (!resolved || ts.isFunctionLike(resolved.node)) {
+      throw new Rejection("adapter_source_unsupported_v1", context.record.rel);
+    }
+    const key = `${resolved.record.rel}:${resolved.symbol}`;
+    if (context.topLevelLimit !== null
+        && resolved.record === context.record
+        && resolved.node.getStart(resolved.record.tree) >= context.topLevelLimit) {
+      throw new Rejection("adapter_source_unsupported_v1", resolved.record.rel);
+    }
+    if (state.activeSymbols.has(key)) throw new Rejection("adapter_source_unsupported_v1", resolved.record.rel);
+    if (state.constantCache.has(key)) return state.constantCache.get(key);
+    state.visitedSymbols.add(key);
+    state.activeSymbols.add(key);
+    const result = adapterExpressionModel(resolved.node, {
+      record: resolved.record,
+      functionKey: `${key}:constant`,
+      parameters: new Map(),
+      locals: new Map(),
+      localIndices: new Map(),
+      localLimit: 0,
+      usedLocals: new Set(),
+      activeLocals: new Set(),
+      localCache: new Map(),
+      topLevelLimit: resolved.node.getStart(resolved.record.tree),
+    }, state, depth + 1);
+    state.activeSymbols.delete(key);
+    state.constantCache.set(key, result);
+    return result;
+  }
+  if (ts.isBinaryExpression(node)
+      && [ts.SyntaxKind.PlusToken, ts.SyntaxKind.MinusToken, ts.SyntaxKind.AsteriskToken].includes(node.operatorToken.kind)) {
+    const operations = new Map([
+      [ts.SyntaxKind.PlusToken, "add"],
+      [ts.SyntaxKind.MinusToken, "subtract"],
+      [ts.SyntaxKind.AsteriskToken, "multiply"],
+    ]);
+    return {
+      op: operations.get(node.operatorToken.kind),
+      left: adapterExpressionModel(node.left, context, state, depth + 1),
+      right: adapterExpressionModel(node.right, context, state, depth + 1),
+    };
+  }
+  if (ts.isCallExpression(node)
+      && !node.questionDotToken
+      && ts.isIdentifier(node.expression)
+      && node.arguments.every((argument) => !ts.isSpreadElement(argument))) {
+    const resolved = adapterModuleSymbol(context.record, node.expression.text, state);
+    if (!resolved || !ts.isFunctionDeclaration(resolved.node)) {
+      throw new Rejection("adapter_source_unsupported_v1", context.record.rel);
+    }
+    const argumentsModels = node.arguments.map((argument) => (
+      adapterExpressionModel(argument, context, state, depth + 1)
+    ));
+    return adapterFunctionModel(resolved.record, resolved.symbol, resolved.node, argumentsModels, state, false, depth + 1).model;
+  }
+  throw new Rejection("adapter_source_unsupported_v1", context.record.rel);
+}
+
+function adapterFunctionModel(record, symbol, node, argumentModels, state, requireParameter = false, depth = 0) {
+  const key = `${record.rel}:${symbol}`;
+  if (state.activeFunctions.has(key)) throw new Rejection("adapter_source_unsupported_v1", record.rel);
+  const parameterNames = adapterFunctionParameters(node, requireParameter);
+  if (parameterNames.length !== argumentModels.length) throw new Rejection("adapter_source_unsupported_v1", record.rel);
+  const { locals, localIndices, returned } = adapterFunctionBody(node, parameterNames);
+  state.visitedSymbols.add(key);
+  state.activeFunctions.add(key);
+  const context = {
+    record,
+    functionKey: key,
+    parameters: new Map(parameterNames.map((name, index) => [name, argumentModels[index]])),
+    locals,
+    localIndices,
+    localLimit: Number.POSITIVE_INFINITY,
+    usedLocals: new Set(),
+    activeLocals: new Set(),
+    localCache: new Map(),
+    topLevelLimit: null,
+  };
+  const model = adapterExpressionModel(returned, context, state, depth + 1);
+  state.activeFunctions.delete(key);
+  if ([...locals.keys()].some((name) => !context.usedLocals.has(name))) {
+    throw new Rejection("adapter_source_unsupported_v1", record.rel);
+  }
+  return { model, parameterNames };
+}
+
+function computationAdapterProof(entryModule, exportName) {
+  const entry = normalizeRel(entryModule);
+  if (entry.toLocaleLowerCase("en-US").startsWith(COMPUTATION_ADAPTER_PREFIX)
+      || exportName === "default"
+      || !/^[$A-Z_a-z][$\w]*$/.test(String(exportName || ""))) {
+    throw new Rejection("adapter_source_unsupported_v1", entry);
+  }
+  const modules = moduleClosure(entry);
+  const record = moduleCache.get(entry);
+  const entryExports = computationAdapterExports(record);
+  const local = entryExports.get(exportName);
+  const node = local ? record.symbols.get(local) : null;
+  if (!local || !ts.isFunctionDeclaration(node)) throw new Rejection("adapter_source_unsupported_v1", entry);
+  const state = {
+    steps: 0,
+    visitedSymbols: new Set(),
+    usedImports: new Set(),
+    activeFunctions: new Set(),
+    activeSymbols: new Set(),
+    constantCache: new Map(),
+  };
+  const sourceParameters = adapterFunctionParameters(node, true);
+  const argumentModels = sourceParameters.map((name) => ({ op: "parameter", name }));
+  const { model } = adapterFunctionModel(record, local, node, argumentModels, state, true);
+  for (const relative of modules) {
+    const current = moduleCache.get(relative);
+    const currentExports = computationAdapterExports(current);
+    if (currentExports.has("default")) throw new Rejection("adapter_source_unsupported_v1", relative);
+    for (const symbol of current.symbols.keys()) {
+      if (!state.visitedSymbols.has(`${relative}:${symbol}`)) {
+        throw new Rejection("adapter_source_unsupported_v1", relative);
+      }
+    }
+    for (const binding of current.importBindings.keys()) {
+      if (!state.usedImports.has(`${relative}:${binding}`)) {
+        throw new Rejection("adapter_source_unsupported_v1", relative);
+      }
+    }
+    for (const [exposed, symbol] of currentExports) {
+      if (exposed === "default"
+          || !/^[$A-Z_a-z][$\w]*$/.test(exposed)
+          || !state.visitedSymbols.has(`${relative}:${symbol}`)) {
+        throw new Rejection("adapter_source_unsupported_v1", relative);
+      }
+    }
+  }
+  return { entry, exportName, local, node, record, modules, sourceParameters, model };
+}
+
+function adapterClosureEvidence(modules) {
+  return [...modules].sort().map((logicalPath) => ({
+    logical_path: logicalPath,
+    sha256: snapshotModules.get(logicalPath).sha256,
+  }));
+}
+
+function computationAdapterOffer(entryModule, exportName) {
+  const proof = computationAdapterProof(entryModule, exportName);
+  const declaration = proof.record.source.slice(
+    proof.node.getStart(proof.record.tree),
+    proof.node.getEnd(),
+  );
+  return {
+    proof,
+    offer: {
+      module_relpath: proof.entry,
+      export_name: proof.exportName,
+      parameters: proof.sourceParameters,
+      function_sha256: sha256Text(declaration),
+      closure: adapterClosureEvidence(proof.modules),
+      interval_model_sha256: sha256Text(canonicalAdapterJson(proof.model)),
+    },
+  };
+}
+
+function inspectComputationAdapters() {
+  assertNoReservedAdapterSourcePath();
+  const offers = [];
+  const rejections = [];
+  for (const moduleRelpath of [...snapshotModules.keys()].sort()) {
+    let record;
+    let exported;
+    try {
+      record = loadModule(moduleRelpath);
+      exported = [...computationAdapterExports(record)].sort(([left], [right]) => left.localeCompare(right));
+    } catch (error) {
+      if (!(error instanceof Rejection)) throw error;
+      rejections.push({ module_relpath: moduleRelpath, export_name: null, error_code: "adapter_source_unsupported_v1", reason_code: error.code });
+      continue;
+    }
+    for (const [exportName, local] of exported) {
+      const node = record.symbols.get(local);
+      if (!record.functions.has(local)) continue;
+      try {
+        offers.push(computationAdapterOffer(moduleRelpath, exportName).offer);
+      } catch (error) {
+        if (!(error instanceof Rejection)) throw error;
+        rejections.push({ module_relpath: moduleRelpath, export_name: exportName, error_code: "adapter_source_unsupported_v1", reason_code: error.code });
+      }
+    }
+  }
+  return {
+    schema_version: "computation_adapter_offers.v1",
+    status: "ok",
+    adapter_contract_version: COMPUTATION_ADAPTER_VERSION,
+    offers,
+    rejections,
+  };
+}
+
+function validateComputationAdapterOffer(expected, actual) {
+  if (!expected || typeof expected !== "object") throw new Rejection("adapter_offer_stale");
+  const supplied = {
+    module_relpath: String(expected.module_relpath || ""),
+    export_name: String(expected.export_name || ""),
+    parameters: Array.isArray(expected.parameters) ? expected.parameters.map(String) : [],
+    function_sha256: String(expected.function_sha256 || ""),
+    closure: Array.isArray(expected.closure) ? expected.closure.map((item) => ({
+      logical_path: String(item?.logical_path || ""),
+      sha256: String(item?.sha256 || ""),
+    })) : [],
+    interval_model_sha256: String(expected.interval_model_sha256 || actual.interval_model_sha256),
+  };
+  if (canonicalAdapterJson(supplied) !== canonicalAdapterJson(actual)) throw new Rejection("adapter_offer_stale");
+}
+
+function validateComputationAdapterMapping(proof, rowsValue, resultFieldValue) {
+  if (!Array.isArray(rowsValue) || rowsValue.length !== proof.sourceParameters.length) {
+    throw new Rejection("adapter_mapping_invalid");
+  }
+  const sourceRows = new Map();
+  const inputFields = new Set();
+  for (const item of rowsValue) {
+    if (!item || typeof item !== "object") throw new Rejection("adapter_mapping_invalid");
+    const sourceParameter = String(item.source_parameter || "");
+    const inputField = String(item.input_field || "");
+    const minimum = item.minimum;
+    const maximum = item.maximum;
+    if (!proof.sourceParameters.includes(sourceParameter)
+        || sourceRows.has(sourceParameter)
+        || !computationAdapterFieldPattern.test(inputField)
+        || forbiddenContractNames.has(inputField)
+        || inputFields.has(inputField)
+        || !Number.isSafeInteger(minimum)
+        || !Number.isSafeInteger(maximum)
+        || minimum > maximum) {
+      throw new Rejection("adapter_mapping_invalid");
+    }
+    sourceRows.set(sourceParameter, { source_parameter: sourceParameter, input_field: inputField, minimum, maximum });
+    inputFields.add(inputField);
+  }
+  const resultField = String(resultFieldValue || "");
+  if (!computationAdapterFieldPattern.test(resultField)
+      || forbiddenContractNames.has(resultField)
+      || inputFields.has(resultField)) {
+    throw new Rejection("adapter_mapping_invalid");
+  }
+  return {
+    arguments: proof.sourceParameters.map((name) => sourceRows.get(name)),
+    resultField,
+  };
+}
+
+function computationAdapterInterval(model, ranges, state = { steps: 0 }, depth = 0) {
+  state.steps += 1;
+  if (state.steps > COMPUTATION_ADAPTER_MAX_STEPS || depth > COMPUTATION_ADAPTER_MAX_DEPTH) {
+    throw new Rejection("adapter_interval_unproven");
+  }
+  if (model.op === "literal") return { minimum: model.value, maximum: model.value };
+  if (model.op === "parameter") {
+    const range = ranges.get(model.name);
+    if (!range) throw new Rejection("adapter_interval_unproven");
+    return range;
+  }
+  if (model.op === "negate") {
+    const operand = computationAdapterInterval(model.operand, ranges, state, depth + 1);
+    const values = [-operand.maximum, -operand.minimum];
+    if (values.some((value) => !Number.isSafeInteger(value))) throw new Rejection("adapter_interval_unproven");
+    return { minimum: values[0], maximum: values[1] };
+  }
+  if (["add", "subtract", "multiply"].includes(model.op)) {
+    const left = computationAdapterInterval(model.left, ranges, state, depth + 1);
+    const right = computationAdapterInterval(model.right, ranges, state, depth + 1);
+    let values;
+    if (model.op === "add") values = [left.minimum + right.minimum, left.maximum + right.maximum];
+    if (model.op === "subtract") values = [left.minimum - right.maximum, left.maximum - right.minimum];
+    if (model.op === "multiply") {
+      values = [
+        left.minimum * right.minimum,
+        left.minimum * right.maximum,
+        left.maximum * right.minimum,
+        left.maximum * right.maximum,
+      ];
+    }
+    if (values.some((value) => !Number.isSafeInteger(value))) throw new Rejection("adapter_interval_unproven");
+    return { minimum: Math.min(...values), maximum: Math.max(...values) };
+  }
+  throw new Rejection("adapter_interval_unproven");
+}
+
+function computationAdapterError(code) {
+  return `    return { ok: false, error: { code: ${JSON.stringify(code)}, field: null, details: {} } };`;
+}
+
+function generatedComputationAdapter(proof, mapping, outputRange) {
+  let importPath = path.posix.relative(path.posix.dirname(COMPUTATION_ADAPTER_PATH), proof.entry);
+  if (!importPath.startsWith(".")) importPath = `./${importPath}`;
+  const shapeTerms = [
+    "input === null",
+    "typeof input !== \"object\"",
+    "Array.isArray(input)",
+    `Object.keys(input).length !== ${mapping.arguments.length}`,
+    ...mapping.arguments.map((item) => `!Object.hasOwn(input, ${JSON.stringify(item.input_field)})`),
+  ];
+  const rangeTerms = mapping.arguments.flatMap((item) => [
+    `!Number.isSafeInteger(input.${item.input_field})`,
+    `input.${item.input_field} < ${item.minimum}`,
+    `input.${item.input_field} > ${item.maximum}`,
+  ]);
+  const lines = [
+    `import { ${proof.exportName} as __source } from ${JSON.stringify(importPath)};`,
+    "",
+    "export function compute(input) {",
+    "  if (",
+    `    ${shapeTerms.join("\n    || ")}`,
+    "  ) {",
+    computationAdapterError("INPUT_CONTRACT_VIOLATION"),
+    "  }",
+    "  if (",
+    `    ${rangeTerms.join("\n    || ")}`,
+    "  ) {",
+    computationAdapterError("INPUT_CONTRACT_VIOLATION"),
+    "  }",
+    `  const result = __source(${mapping.arguments.map((item) => `input.${item.input_field}`).join(", ")});`,
+    "  if (",
+    "    !Number.isSafeInteger(result)",
+    `    || result < ${outputRange.minimum}`,
+    `    || result > ${outputRange.maximum}`,
+    "  ) {",
+    computationAdapterError("OUTPUT_CONTRACT_VIOLATION"),
+    "  }",
+    `  return { ok: true, value: { ${JSON.stringify(mapping.resultField)}: result } };`,
+    "}",
+    "",
+  ];
+  return lines.join("\n");
+}
+
+function computationAdapterErrorContract() {
+  const details = {
+    schema: "data_contract.v1",
+    type: "object",
+    properties: {},
+    required: [],
+    additional_properties: false,
+  };
+  return {
+    schema: "error_contract.v1",
+    errors: {
+      INPUT_CONTRACT_VIOLATION: { field: null, details },
+      OUTPUT_CONTRACT_VIOLATION: { field: null, details },
+    },
+  };
+}
+
+function buildComputationAdapter() {
+  assertNoReservedAdapterSourcePath();
+  if (payload.adapter_contract_version
+      && payload.adapter_contract_version !== COMPUTATION_ADAPTER_VERSION) {
+    throw new Rejection("adapter_contract_version_expired");
+  }
+  const expectedOffer = payload.offer;
+  const moduleRelpath = String(expectedOffer?.module_relpath || "");
+  const exportName = String(expectedOffer?.export_name || "");
+  let analyzed;
+  try {
+    analyzed = computationAdapterOffer(moduleRelpath, exportName);
+  } catch (error) {
+    if (!(error instanceof Rejection)) throw error;
+    throw new Rejection("adapter_offer_stale");
+  }
+  validateComputationAdapterOffer(expectedOffer, analyzed.offer);
+  const mapping = validateComputationAdapterMapping(analyzed.proof, payload.arguments, payload.result_field);
+  const ranges = new Map(mapping.arguments.map((item) => [item.source_parameter, {
+    minimum: item.minimum,
+    maximum: item.maximum,
+  }]));
+  const outputRange = computationAdapterInterval(analyzed.proof.model, ranges);
+  const source = generatedComputationAdapter(analyzed.proof, mapping, outputRange);
+  const mappingEvidence = { arguments: mapping.arguments, result_field: mapping.resultField };
+  const adapterEvidence = {
+    schema: "computation_adapter_evidence.v1",
+    candidate_origin: "deterministic_computation_adapter",
+    adapter_contract_version: COMPUTATION_ADAPTER_VERSION,
+    source: {
+      module_relpath: analyzed.offer.module_relpath,
+      export_name: analyzed.offer.export_name,
+      function_sha256: analyzed.offer.function_sha256,
+    },
+    closure: analyzed.offer.closure,
+    mapping: {
+      arguments: mapping.arguments,
+      result_field: mapping.resultField,
+      mapping_sha256: sha256Text(canonicalAdapterJson(mappingEvidence)),
+    },
+    generated_adapter: {
+      logical_path: COMPUTATION_ADAPTER_PATH,
+      sha256: sha256Text(source),
+    },
+    interval_model_sha256: analyzed.offer.interval_model_sha256,
+    output_range: outputRange,
+  };
+  const properties = Object.create(null);
+  for (const item of [...mapping.arguments].sort((left, right) => left.input_field.localeCompare(right.input_field))) {
+    properties[item.input_field] = { type: "integer", minimum: item.minimum, maximum: item.maximum };
+  }
+  const outputProperties = Object.create(null);
+  outputProperties[mapping.resultField] = { type: "integer", minimum: outputRange.minimum, maximum: outputRange.maximum };
+  const sourceModules = analyzed.proof.modules.map((logicalPath) => ({
+    path: logicalPath,
+    source: snapshotModules.get(logicalPath).source,
+  }));
+  const candidate = {
+    capability_kind: "computation",
+    candidate_origin: "deterministic_computation_adapter",
+    adapter_contract_version: COMPUTATION_ADAPTER_VERSION,
+    adapter_evidence: adapterEvidence,
+    activation: { mode: "declared_input_compute", entry_module: COMPUTATION_ADAPTER_PATH, entrypoint: "compute" },
+    input_contract: {
+      schema: "data_contract.v1",
+      type: "object",
+      properties,
+      required: Object.keys(properties).sort(),
+      additional_properties: false,
+    },
+    output_contract: {
+      schema: "data_contract.v1",
+      type: "object",
+      properties: outputProperties,
+      required: [mapping.resultField],
+      additional_properties: false,
+    },
+    error_contract: computationAdapterErrorContract(),
+    dom_scope: emptyDomScope(),
+    dependencies: [
+      ...moduleDependencies(analyzed.proof.modules),
+      { type: "static_import", from_module: COMPUTATION_ADAPTER_PATH, to_module: analyzed.proof.entry },
+      {
+        type: "static_call",
+        from_module: COMPUTATION_ADAPTER_PATH,
+        from_symbol: "__source",
+        to_module: analyzed.proof.entry,
+        to_symbol: analyzed.proof.local,
+      },
+    ],
+    javascript_modules: [
+      ...sourceModules,
+      { path: COMPUTATION_ADAPTER_PATH, source },
+    ].sort((left, right) => left.path.localeCompare(right.path)),
+    literal_values: ["INPUT_CONTRACT_VIOLATION", "OUTPUT_CONTRACT_VIOLATION"],
+    composed_literal_values: [],
+  };
+  return {
+    schema_version: "computation_adapter_build.v1",
+    status: "ok",
+    adapter_contract_version: COMPUTATION_ADAPTER_VERSION,
+    candidate,
+    output_range: outputRange,
+  };
+}
+
+try {
+  initializeModuleSnapshot();
+  if (payload.mode === "inspect_computation_adapters") {
+    process.stdout.write(JSON.stringify(inspectComputationAdapters()));
+  } else if (payload.mode === "build_computation_adapter") {
+    process.stdout.write(JSON.stringify(buildComputationAdapter()));
+  } else {
+    const candidates = [];
+    const rejections = [];
+    for (const entry of [...new Set(entryModules)].sort()) {
+      try {
+        const result = analyzeEntry(entry);
+        candidates.push(...result.candidates);
+        rejections.push(...result.rejections);
+      } catch (error) {
+        if (!(error instanceof Rejection)) throw error;
+        rejections.push({ entry_module: String(entry), entrypoint: null, capability_kind: null, error_code: error.code, logical_path: error.logicalPath || null });
+      }
+    }
+    process.stdout.write(JSON.stringify({ schema_version: "extraction_ast.v1", status: "ok", candidates, rejections }));
+  }
+} catch (error) {
+  if (["inspect_computation_adapters", "build_computation_adapter"].includes(payload.mode)) {
+    process.stdout.write(JSON.stringify({
+      schema_version: payload.mode === "inspect_computation_adapters"
+        ? "computation_adapter_offers.v1"
+        : "computation_adapter_build.v1",
+      status: "rejected",
+      error_code: error instanceof Rejection ? error.code : "adapter_source_unsupported_v1",
+    }));
+  } else {
+    process.stdout.write(JSON.stringify({ schema_version: "extraction_ast.v1", status: "failed", error_code: "extraction_analyzer_failed" }));
+  }
 }

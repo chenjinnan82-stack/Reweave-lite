@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import shutil
@@ -508,6 +509,52 @@ class CapsuleIntakeStage2Test(unittest.TestCase):
             self.intake.confirm_project(child_project["project_id"])["project_state"],
             "ready",
         )
+
+    def test_v2_discovery_inserts_static_and_preserves_javascript_owner(self) -> None:
+        self._write_complete_project(self.source)
+        source_root = self.intake.bind_source_root(
+            self.source, root_kind="single_project"
+        )
+        static_project = self.intake.discover_projects(source_root["root_id"])[0]
+        self.store.migrate_v1_to_v2()
+        javascript_project_id = str(uuid.uuid4())
+        with self.store.transaction() as connection:
+            connection.execute(
+                "INSERT INTO projects ("
+                "project_id, source_root_id, source_type, project_relpath, entry_relpath, "
+                "display_name, project_state, discovery_signature, last_snapshot_hash, "
+                "brand_mode, brand_profile_id, brand_profile_json, brand_profile_digest, "
+                "brand_profile_version, created_at, updated_at"
+                ") VALUES (?, ?, 'javascript_computation_source', '.', NULL, ?, 'ready', "
+                "?, NULL, 'inherit', NULL, NULL, NULL, 0, ?, ?)",
+                (
+                    javascript_project_id,
+                    source_root["root_id"],
+                    "JavaScript source",
+                    "javascript-owner-signature",
+                    "2026-07-18T00:00:00+00:00",
+                    "2026-07-18T00:00:00+00:00",
+                ),
+            )
+
+        rediscovered = self.intake.discover_projects(source_root["root_id"])
+        self.assertEqual(
+            [row["project_id"] for row in rediscovered],
+            [static_project["project_id"]],
+        )
+        self.assertEqual(rediscovered[0]["source_type"], "static_web")
+        self.assertEqual(
+            self.intake.get_project(javascript_project_id)["project_state"], "ready"
+        )
+
+        second_source = self.root / "second-source"
+        second_source.mkdir()
+        self._write_complete_project(second_source)
+        second_root = self.intake.bind_source_root(
+            second_source, root_kind="single_project"
+        )
+        inserted = self.intake.discover_projects(second_root["root_id"])[0]
+        self.assertEqual(inserted["source_type"], "static_web")
 
     def test_explicit_project_reconnect_preserves_id_and_absorbs_empty_discovery(self) -> None:
         original = self.source / "original"
@@ -1684,6 +1731,422 @@ export function compute(input) {
             },
         )
 
+    def test_computation_adapter_offer_is_read_only_and_candidate_is_deterministic(self) -> None:
+        self._write_adapter_project(self.source)
+        project = self._bind_discover_confirm(self.source)
+        with self.store.read_connection() as connection:
+            before_counts = tuple(
+                connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+                for table in ("intake_runs", "review_items", "capsules", "capsule_versions")
+            )
+
+        inspected = self.intake.inspect_computation_adapters(project["project_id"])
+
+        self.assertEqual(inspected["schema"], "computation_adapter_offers.v1")
+        self.assertEqual(len(inspected["offers"]), 1, inspected)
+        offer = inspected["offers"][0]
+        self.assertEqual(offer["module_relpath"], "calculate.js")
+        self.assertEqual(offer["export_name"], "calculate")
+        self.assertEqual(offer["parameters"], ["quantity", "price"])
+        self.assertNotIn("source", json.dumps(inspected))
+        with self.store.read_connection() as connection:
+            self.assertEqual(
+                tuple(
+                    connection.execute(f"SELECT count(*) FROM {table}").fetchone()[0]
+                    for table in ("intake_runs", "review_items", "capsules", "capsule_versions")
+                ),
+                before_counts,
+            )
+
+        payload = {
+            "project_id": project["project_id"],
+            "offer_id": offer["offer_id"],
+            "arguments": [
+                {
+                    "source_parameter": "quantity",
+                    "input_field": "quantity",
+                    "minimum": 0,
+                    "maximum": 10,
+                },
+                {
+                    "source_parameter": "price",
+                    "input_field": "unit_price",
+                    "minimum": 0,
+                    "maximum": 100,
+                },
+            ],
+            "result_field": "total",
+            "examples": [{"input": {"quantity": 4, "unit_price": 5}, "expected": 20}],
+        }
+        generated: list[str] = []
+
+        def validate(candidate, examples, result_field):
+            self.assertEqual(examples, payload["examples"])
+            self.assertIn(result_field, {"total", "grand_total"})
+            adapter = next(
+                item
+                for item in candidate["javascript_modules"]
+                if item["path"] == "__reweave_adapter__/compute.js"
+            )
+            generated.append(adapter["source"])
+            return {
+                "schema_version": "computation_adapter_preflight.v1",
+                "status": "passed",
+                "acceptance_scope": "isolated_node_vm_computation",
+                "example_count": len(examples),
+                "example_set_sha256": hashlib.sha256(
+                    json.dumps(
+                        examples,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                ).hexdigest(),
+            }
+
+        first = self.intake.create_computation_adapter_candidate(
+            payload, validator=validate
+        )
+        reordered = {**payload, "arguments": list(reversed(payload["arguments"]))}
+        second = self.intake.create_computation_adapter_candidate(
+            reordered, validator=validate
+        )
+        renamed = {**payload, "result_field": "grand_total"}
+        third = self.intake.create_computation_adapter_candidate(
+            renamed, validator=validate
+        )
+        wider = {
+            **payload,
+            "arguments": [
+                {**payload["arguments"][0], "maximum": 11},
+                payload["arguments"][1],
+            ],
+        }
+        fourth = self.intake.create_computation_adapter_candidate(
+            wider, validator=validate
+        )
+
+        self.assertEqual(generated[0], generated[1])
+        self.assertEqual(
+            first["adapter"]["adapter_sha256"], second["adapter"]["adapter_sha256"]
+        )
+        self.assertNotEqual(
+            first["adapter"]["adapter_sha256"], third["adapter"]["adapter_sha256"]
+        )
+        self.assertNotEqual(
+            first["adapter"]["adapter_sha256"], fourth["adapter"]["adapter_sha256"]
+        )
+        self.assertEqual(first["counts"]["extracted"], 1)
+        self.assertTrue(first["counts"]["adapter_only"])
+        rows = self._review_rows(first["run_id"])
+        self.assertEqual(len(rows), 1)
+        summary = json.loads(rows[0]["sanitized_candidate_json"])
+        self.assertEqual(
+            summary["candidate_origin"], "deterministic_computation_adapter"
+        )
+        self.assertEqual(
+            summary["adapter_contract_version"], "computation_adapter.v1"
+        )
+        self.assertEqual(summary["adapter_evidence"]["examples"]["count"], 1)
+        self.assertNotIn("expected", json.dumps(summary))
+        self.assertNotIn("export function", json.dumps(summary))
+        with self.store.read_connection() as connection:
+            self.assertIsNone(
+                connection.execute(
+                    "SELECT last_snapshot_hash FROM projects WHERE project_id = ?",
+                    (project["project_id"],),
+                ).fetchone()[0]
+            )
+            self.assertEqual(connection.execute("SELECT count(*) FROM capsules").fetchone()[0], 0)
+            self.assertEqual(
+                connection.execute("SELECT count(*) FROM capsule_versions").fetchone()[0], 0
+            )
+
+    def test_computation_adapter_pure_helper_and_rejection_matrix(self) -> None:
+        positive_cases = {
+            "same_file_helper": {
+                "calculate.js": (
+                    "function multiply(left, right) { return left * right; }\n"
+                    "export function calculate(quantity, price) { return multiply(quantity, price); }\n"
+                )
+            },
+            "cross_module_helper": {
+                "math.js": "export function multiply(left, right) { return left * right; }\n",
+                "calculate.js": (
+                    'import { multiply } from "./math.js";\n'
+                    "export function calculate(quantity, price) { return multiply(quantity, price); }\n"
+                ),
+            },
+            "imported_integer_constant": {
+                "constants.js": "export const fee = 3;\n",
+                "calculate.js": (
+                    'import { fee } from "./constants.js";\n'
+                    "export function calculate(quantity) { return quantity + fee; }\n"
+                ),
+            },
+            "unary_and_local_const": {
+                "calculate.js": (
+                    "export function calculate(value) {\n"
+                    "  const offset = -2;\n"
+                    "  return +value - offset;\n"
+                    "}\n"
+                )
+            },
+        }
+        rejected_cases = {
+            "async": "export async function calculate(value) { return value; }\n",
+            "generator": "export function* calculate(value) { return value; }\n",
+            "rest": "export function calculate(...values) { return values[0]; }\n",
+            "destructure": "export function calculate({value}) { return value; }\n",
+            "default_parameter": "export function calculate(value = 1) { return value; }\n",
+            "branch": "export function calculate(value) { if (value) return 1; return 0; }\n",
+            "loop": "export function calculate(value) { for (;;) { return value; } }\n",
+            "recursion": "export function calculate(value) { return calculate(value); }\n",
+            "try_catch": (
+                "export function calculate(value) { "
+                "try { return value; } catch (error) { return 0; } }\n"
+            ),
+            "throw": "export function calculate(value) { throw new Error(); }\n",
+            "assignment": "export function calculate(value) { value = 1; return value; }\n",
+            "division": "export function calculate(value) { return value / 2; }\n",
+            "modulo": "export function calculate(value) { return value % 2; }\n",
+            "exponent": "export function calculate(value) { return value ** 2; }\n",
+            "dynamic_import": (
+                'export function calculate(value) { return import("./other.js"); }\n'
+            ),
+            "dom": "export function calculate(value) { return value + document.body.childElementCount; }\n",
+            "network": "export function calculate(value) { return fetch(String(value)); }\n",
+            "storage": "export function calculate(value) { return value + localStorage.length; }\n",
+            "timer": "export function calculate(value) { return setTimeout(() => value, 1); }\n",
+            "random": "export function calculate(value) { return value + Math.random(); }\n",
+            "module_state": "let offset = 1;\nexport function calculate(value) { return value + offset; }\n",
+            "top_level_effect": "console.log(1);\nexport function calculate(value) { return value; }\n",
+            "default_export": "export default function calculate(value) { return value; }\n",
+            "commonjs": (
+                "function calculate(value) { return value; }\n"
+                "module.exports = {calculate};\n"
+            ),
+            "jsx": (
+                "export function calculate(value) { return <span>{value}</span>; }\n"
+            ),
+            "reexport": 'export { calculate } from "./other.js";\n',
+            "namespace_import": (
+                'import * as math from "./other.js";\n'
+                "export function calculate(value) { return math.calculate(value); }\n"
+            ),
+            "side_effect_import": (
+                'import "./other.js";\n'
+                "export function calculate(value) { return value; }\n"
+            ),
+            "unused_export": (
+                "export function calculate(value) { return value; }\n"
+                "export function unrelated(value) { return value + 1; }\n"
+            ),
+        }
+
+        for name, files in positive_cases.items():
+            with self.subTest(name=name):
+                project_root = self.root / f"positive-{name}"
+                project_root.mkdir()
+                (project_root / "index.html").write_text(
+                    "<!doctype html><html><body><main>Calculator</main></body></html>\n",
+                    encoding="utf-8",
+                )
+                for relative, source in files.items():
+                    (project_root / relative).write_text(source, encoding="utf-8")
+                project = self._bind_discover_confirm(project_root)
+                inspected = self.intake.inspect_computation_adapters(
+                    project["project_id"]
+                )
+                self.assertTrue(
+                    any(
+                        offer["module_relpath"] == "calculate.js"
+                        and offer["export_name"] == "calculate"
+                        for offer in inspected["offers"]
+                    ),
+                    inspected,
+                )
+
+        for name, source in rejected_cases.items():
+            with self.subTest(name=name):
+                project_root = self.root / f"rejected-{name}"
+                project_root.mkdir()
+                (project_root / "index.html").write_text(
+                    "<!doctype html><html><body><main>Calculator</main></body></html>\n",
+                    encoding="utf-8",
+                )
+                (project_root / "calculate.js").write_text(source, encoding="utf-8")
+                if name in {
+                    "dynamic_import",
+                    "reexport",
+                    "namespace_import",
+                    "side_effect_import",
+                }:
+                    (project_root / "other.js").write_text(
+                        "export function helper(value) { return value; }\n",
+                        encoding="utf-8",
+                    )
+                project = self._bind_discover_confirm(project_root)
+                inspected = self.intake.inspect_computation_adapters(
+                    project["project_id"]
+                )
+                self.assertFalse(
+                    any(
+                        offer["module_relpath"] == "calculate.js"
+                        and offer["export_name"] == "calculate"
+                        for offer in inspected["offers"]
+                    ),
+                    inspected,
+                )
+                self.assertTrue(inspected["rejection_summary"], inspected)
+
+        typescript_root = self.root / "rejected-typescript"
+        typescript_root.mkdir()
+        (typescript_root / "index.html").write_text(
+            "<!doctype html><html><body><main>Calculator</main></body></html>\n",
+            encoding="utf-8",
+        )
+        (typescript_root / "calculate.ts").write_text(
+            "export function calculate(value: number): number { return value; }\n",
+            encoding="utf-8",
+        )
+        project = self._bind_discover_confirm(typescript_root)
+        inspected = self.intake.inspect_computation_adapters(project["project_id"])
+        self.assertEqual(inspected["offers"], [])
+
+    def test_computation_adapter_stale_offer_and_invalid_mapping_write_no_review(self) -> None:
+        self._write_adapter_project(self.source)
+        project = self._bind_discover_confirm(self.source)
+        offer = self.intake.inspect_computation_adapters(project["project_id"])["offers"][0]
+        invalid = {
+            "project_id": project["project_id"],
+            "offer_id": offer["offer_id"],
+            "arguments": [
+                {
+                    "source_parameter": "quantity",
+                    "input_field": "value",
+                    "minimum": 0,
+                    "maximum": 10,
+                },
+                {
+                    "source_parameter": "price",
+                    "input_field": "value",
+                    "minimum": 0,
+                    "maximum": 100,
+                },
+            ],
+            "result_field": "total",
+            "examples": [{"input": {"value": 4}, "expected": 20}],
+        }
+        with self.assertRaisesRegex(IntakeError, "adapter_mapping_invalid"):
+            self.intake.create_computation_adapter_candidate(
+                invalid, validator=lambda *_args: {"status": "passed"}
+            )
+
+        valid_arguments = [
+            {
+                "source_parameter": "quantity",
+                "input_field": "quantity",
+                "minimum": 0,
+                "maximum": 10,
+            },
+            {
+                "source_parameter": "price",
+                "input_field": "unit_price",
+                "minimum": 0,
+                "maximum": 100,
+            },
+        ]
+        invalid_mappings = {
+            "missing_parameter": [valid_arguments[0]],
+            "illegal_field_name": [
+                valid_arguments[0],
+                {**valid_arguments[1], "input_field": "UnitPrice"},
+            ],
+            "reversed_range": [
+                {**valid_arguments[0], "minimum": 11, "maximum": 10},
+                valid_arguments[1],
+            ],
+        }
+        for name, arguments in invalid_mappings.items():
+            with self.subTest(name=name), self.assertRaisesRegex(
+                IntakeError, "adapter_mapping_invalid"
+            ):
+                self.intake.create_computation_adapter_candidate(
+                    {
+                        **invalid,
+                        "arguments": arguments,
+                        "examples": [
+                            {
+                                "input": {"quantity": 4, "unit_price": 5},
+                                "expected": 20,
+                            }
+                        ],
+                    },
+                    validator=lambda *_args: {"status": "passed"},
+                )
+
+        overflow = {
+            **invalid,
+            "arguments": [
+                {
+                    "source_parameter": "quantity",
+                    "input_field": "quantity",
+                    "minimum": 0,
+                    "maximum": 100_000_000,
+                },
+                {
+                    "source_parameter": "price",
+                    "input_field": "unit_price",
+                    "minimum": 0,
+                    "maximum": 100_000_000,
+                },
+            ],
+            "examples": [
+                {"input": {"quantity": 4, "unit_price": 5}, "expected": 20}
+            ],
+        }
+        with self.assertRaisesRegex(IntakeError, "adapter_interval_unproven"):
+            self.intake.create_computation_adapter_candidate(
+                overflow, validator=lambda *_args: {"status": "passed"}
+            )
+
+        calculate = self.source / "calculate.js"
+        calculate.write_text(
+            calculate.read_text(encoding="utf-8").replace(
+                "quantity * price", "quantity * price + 1"
+            ),
+            encoding="utf-8",
+        )
+        valid_shape = dict(invalid)
+        valid_shape["arguments"] = [
+            {"source_parameter": "quantity", "input_field": "quantity", "minimum": 0, "maximum": 10},
+            {"source_parameter": "price", "input_field": "unit_price", "minimum": 0, "maximum": 100},
+        ]
+        valid_shape["examples"] = [
+            {"input": {"quantity": 4, "unit_price": 5}, "expected": 20}
+        ]
+        with self.assertRaisesRegex(IntakeError, "adapter_offer_stale"):
+            self.intake.create_computation_adapter_candidate(
+                valid_shape, validator=lambda *_args: {"status": "passed"}
+            )
+        with self.store.read_connection() as connection:
+            self.assertEqual(connection.execute("SELECT count(*) FROM intake_runs").fetchone()[0], 0)
+            self.assertEqual(connection.execute("SELECT count(*) FROM review_items").fetchone()[0], 0)
+
+    def test_computation_adapter_reserved_source_path_is_rejected(self) -> None:
+        self._write_adapter_project(self.source)
+        reserved = self.source / "__reweave_adapter__"
+        reserved.mkdir()
+        (reserved / "compute.js").write_text(
+            "export function calculate(value) { return value; }\n",
+            encoding="utf-8",
+        )
+        project = self._bind_discover_confirm(self.source)
+
+        with self.assertRaisesRegex(IntakeError, "adapter_source_unsupported_v1"):
+            self.intake.inspect_computation_adapters(project["project_id"])
+
     def test_cancel_and_restart_recovery_leave_no_half_candidate(self) -> None:
         self._write_complete_project(self.source)
         project = self._bind_discover_confirm(self.source)
@@ -1778,6 +2241,17 @@ export function compute(input) {
   return {ok: true, value: {total: multiply(input.unit_price, input.quantity)}};
 }
 """,
+            encoding="utf-8",
+        )
+
+    @staticmethod
+    def _write_adapter_project(root: Path) -> None:
+        (root / "index.html").write_text(
+            "<!doctype html><html><body><main>Calculator</main></body></html>\n",
+            encoding="utf-8",
+        )
+        (root / "calculate.js").write_text(
+            "export function calculate(quantity, price) { return quantity * price; }\n",
             encoding="utf-8",
         )
 

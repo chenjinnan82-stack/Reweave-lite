@@ -7,6 +7,7 @@ import hashlib
 import json
 import os
 import re
+import secrets
 import shutil
 import stat
 import subprocess
@@ -24,9 +25,11 @@ from urllib.parse import urlsplit
 from pimos_lite.reweave_capsule_store import (
     BACKUP_DIRECTORY,
     CANONICALIZATION_VERSION,
+    TARGET_SCHEMA_VERSION,
     CapsuleWarehouseStore,
 )
 from pimos_lite.reweave_data_contract import (
+    MAX_SAFE_INTEGER,
     DataContractError,
     generate_synthetic_fixtures,
     normalize_capsule_contracts,
@@ -36,6 +39,8 @@ from pimos_lite.reweave_source_registry import state_dir
 
 
 EXTRACTION_CONTRACT_VERSION = "extraction_contract.v2"
+COMPUTATION_ADAPTER_CONTRACT_VERSION = "computation_adapter.v1"
+COMPUTATION_ADAPTER_ENTRY = "__reweave_adapter__/compute.js"
 REDACTION_RULES_VERSION = "redaction_rules.v1"
 SECURITY_RULES_VERSION = "not_run.stage2"
 SUPERVISION_RULES_VERSION = "not_run.stage2"
@@ -72,6 +77,7 @@ _SENSITIVITY_DECISIONS = frozenset(
 )
 _BRAND_DECISIONS = frozenset({"remove_brand", "retain_brand_limited"})
 _ASSET_DECISIONS = frozenset({"confirm_assets_contain_no_real_records"})
+_ENUM_DECISIONS = frozenset({"confirm_selected_string_enumeration"})
 _SECRET = re.compile(
     r"(?is)(?:api[_-]?key|secret|password|access[_-]?key|secret[_-]?key)\s*['\"]?\s*[:=]\s*"
     r"(?:['\"][^'\"]+['\"]|[^\s<;]+)|Bearer\s+[A-Za-z0-9\-._~+/]+=*|"
@@ -86,6 +92,7 @@ _RECORD = re.compile(
 )
 _ACTIVE_PROJECTS: set[str] = set()
 _ACTIVE_PROJECTS_LOCK = threading.Lock()
+_ADAPTER_MEMBER = re.compile(r"[a-z][a-z0-9]*(?:_[a-z0-9]+)*\Z")
 
 
 class IntakeError(RuntimeError):
@@ -303,6 +310,25 @@ class ReweaveCapsuleIntake:
 
     def __init__(self, store: CapsuleWarehouseStore | None = None) -> None:
         self.store = store or CapsuleWarehouseStore()
+        self._capture_decision_lock = threading.RLock()
+        self._capture_decision_authorizations: dict[str, tuple[str, str]] = {}
+
+    def _authorize_capture_review_decision(
+        self, review_id: str, decision_binding_sha256: str
+    ) -> str:
+        if (
+            type(review_id) is not str
+            or not review_id
+            or re.fullmatch(r"[0-9a-f]{64}", decision_binding_sha256 or "") is None
+        ):
+            raise IntakeError("capture_decision_rebuild_required")
+        token = secrets.token_hex(32)
+        with self._capture_decision_lock:
+            self._capture_decision_authorizations[review_id] = (
+                decision_binding_sha256,
+                token,
+            )
+        return token
 
     def bind_source_root(
         self,
@@ -492,8 +518,14 @@ class ReweaveCapsuleIntake:
         now = _now()
         discovered: list[dict[str, Any]] = []
         with self.store.transaction() as connection:
+            schema_version = int(
+                connection.execute("PRAGMA user_version").fetchone()[0]
+            )
+            is_v2 = schema_version == TARGET_SCHEMA_VERSION
             existing_rows = connection.execute(
-                "SELECT * FROM projects WHERE source_root_id = ?", (root_id,)
+                "SELECT * FROM projects WHERE source_root_id = ?"
+                + (" AND source_type = 'static_web'" if is_v2 else ""),
+                (root_id,),
             ).fetchall()
             existing = {
                 (str(row["project_relpath"]), str(row["entry_relpath"])): row
@@ -505,26 +537,56 @@ class ReweaveCapsuleIntake:
                 current = existing.get(key)
                 if current is None:
                     project_id = _uuid()
-                    connection.execute(
-                        "INSERT INTO projects VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'inherit', "
-                        "NULL, NULL, NULL, 0, ?, ?)",
-                        (
-                            project_id,
-                            root_id,
-                            candidate["project_relpath"],
-                            candidate["entry_relpath"],
-                            candidate["display_name"],
-                            candidate["project_state"],
-                            candidate["discovery_signature"],
-                            now,
-                            now,
-                        ),
-                    )
+                    if is_v2:
+                        connection.execute(
+                            "INSERT INTO projects ("
+                            "project_id, source_root_id, source_type, project_relpath, "
+                            "entry_relpath, display_name, project_state, discovery_signature, "
+                            "last_snapshot_hash, brand_mode, brand_profile_id, "
+                            "brand_profile_json, brand_profile_digest, brand_profile_version, "
+                            "created_at, updated_at"
+                            ") VALUES (?, ?, 'static_web', ?, ?, ?, ?, ?, NULL, 'inherit', "
+                            "NULL, NULL, NULL, 0, ?, ?)",
+                            (
+                                project_id,
+                                root_id,
+                                candidate["project_relpath"],
+                                candidate["entry_relpath"],
+                                candidate["display_name"],
+                                candidate["project_state"],
+                                candidate["discovery_signature"],
+                                now,
+                                now,
+                            ),
+                        )
+                    else:
+                        connection.execute(
+                            "INSERT INTO projects ("
+                            "project_id, source_root_id, project_relpath, entry_relpath, "
+                            "display_name, project_state, discovery_signature, "
+                            "last_snapshot_hash, brand_mode, brand_profile_id, "
+                            "brand_profile_json, brand_profile_digest, brand_profile_version, "
+                            "created_at, updated_at"
+                            ") VALUES (?, ?, ?, ?, ?, ?, ?, NULL, 'inherit', "
+                            "NULL, NULL, NULL, 0, ?, ?)",
+                            (
+                                project_id,
+                                root_id,
+                                candidate["project_relpath"],
+                                candidate["entry_relpath"],
+                                candidate["display_name"],
+                                candidate["project_state"],
+                                candidate["discovery_signature"],
+                                now,
+                                now,
+                            ),
+                        )
                 else:
                     project_id = str(current["project_id"])
                     connection.execute(
                         "UPDATE projects SET discovery_signature = ?, display_name = ?, updated_at = ? "
-                        "WHERE project_id = ?",
+                        "WHERE project_id = ?"
+                        + (" AND source_type = 'static_web'" if is_v2 else ""),
                         (
                             candidate["discovery_signature"],
                             candidate["display_name"],
@@ -534,7 +596,9 @@ class ReweaveCapsuleIntake:
                     )
                 seen_ids.add(project_id)
                 row = connection.execute(
-                    "SELECT * FROM projects WHERE project_id = ?", (project_id,)
+                    "SELECT * FROM projects WHERE project_id = ?"
+                    + (" AND source_type = 'static_web'" if is_v2 else ""),
+                    (project_id,),
                 ).fetchone()
                 item = dict(row)
                 item["discovery_reasons"] = candidate["discovery_reasons"]
@@ -543,7 +607,8 @@ class ReweaveCapsuleIntake:
                 if str(row["project_id"]) not in seen_ids:
                     connection.execute(
                         "UPDATE projects SET project_state = 'source_missing', updated_at = ? "
-                        "WHERE project_id = ?",
+                        "WHERE project_id = ?"
+                        + (" AND source_type = 'static_web'" if is_v2 else ""),
                         (now, row["project_id"]),
                     )
             self.store.bump_revision(connection)
@@ -747,6 +812,613 @@ class ReweaveCapsuleIntake:
         ).encode("utf-8")
         return ProjectSnapshot(hashlib.sha256(payload).hexdigest(), tuple(entries), text)
 
+    def inspect_computation_adapters(
+        self,
+        project_id: str,
+        *,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
+        """Return source-free adapter offers from one consistent project snapshot."""
+        with _project_guard(project_id):
+            context = self._project_context(project_id)
+            before = self.snapshot_project(project_id)
+            if cancel_check and cancel_check():
+                raise IntakeError("intake_cancelled")
+            if any(
+                item.path == COMPUTATION_ADAPTER_ENTRY
+                or item.path.startswith("__reweave_adapter__/")
+                for item in before.entries
+            ):
+                raise IntakeError("adapter_source_unsupported_v1")
+            git_before = self._adapter_git_evidence(context.path)
+            result = self._run_extraction_analyzer(
+                before, {"mode": "inspect_computation_adapters"}
+            )
+            offers = [
+                self._adapter_public_offer(project_id, before.digest, git_before, item)
+                for item in result.get("offers", [])
+                if type(item) is dict
+            ]
+            offers.sort(
+                key=lambda item: (
+                    item["module_relpath"], item["export_name"], item["offer_id"]
+                )
+            )
+            if len({item["offer_id"] for item in offers}) != len(offers):
+                raise IntakeError("adapter_source_unsupported_v1")
+            after = self.snapshot_project(project_id)
+            git_after = self._adapter_git_evidence(context.path)
+            if before.digest != after.digest or git_before != git_after:
+                raise IntakeError("source_changed_during_scan")
+            if cancel_check and cancel_check():
+                raise IntakeError("intake_cancelled")
+            rejected = sum(
+                1 for item in result.get("rejections", []) if type(item) is dict
+            )
+            return {
+                "schema": "computation_adapter_offers.v1",
+                "project_id": project_id,
+                "snapshot_sha256": before.digest,
+                "git_commit": git_before["commit"],
+                "git_state": git_before["state"],
+                "offers": offers,
+                "rejection_summary": (
+                    [{"code": "adapter_source_unsupported_v1", "count": rejected}]
+                    if rejected
+                    else []
+                ),
+            }
+
+    @staticmethod
+    def _adapter_git_evidence(project_path: Path) -> dict[str, str | None]:
+        git = shutil.which("git")
+        if not git:
+            return {"state": "dirty_or_non_git", "commit": None, "status_sha256": None}
+        environment = restricted_subprocess_environment()
+        try:
+            status = subprocess.run(
+                [git, "-C", str(project_path), "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+                capture_output=True,
+                timeout=5,
+                check=False,
+                env=environment,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return {"state": "dirty_or_non_git", "commit": None, "status_sha256": None}
+        if status.returncode:
+            return {"state": "dirty_or_non_git", "commit": None, "status_sha256": None}
+        status_digest = hashlib.sha256(status.stdout).hexdigest()
+        if status.stdout:
+            return {
+                "state": "dirty_or_non_git",
+                "commit": None,
+                "status_sha256": status_digest,
+            }
+        try:
+            head = subprocess.run(
+                [git, "-C", str(project_path), "rev-parse", "--verify", "HEAD"],
+                capture_output=True,
+                timeout=5,
+                check=False,
+                env=environment,
+            )
+        except (OSError, subprocess.TimeoutExpired):
+            return {"state": "dirty_or_non_git", "commit": None, "status_sha256": status_digest}
+        commit = head.stdout.decode("ascii", errors="ignore").strip().lower()
+        if head.returncode or re.fullmatch(r"[0-9a-f]{40,64}", commit) is None:
+            return {"state": "dirty_or_non_git", "commit": None, "status_sha256": status_digest}
+        return {"state": "clean", "commit": commit, "status_sha256": status_digest}
+
+    @staticmethod
+    def _adapter_offer_id(
+        project_id: str,
+        snapshot_digest: str,
+        git_evidence: dict[str, str | None],
+        offer: dict[str, Any],
+    ) -> str:
+        identity = {
+            "adapter_contract_version": COMPUTATION_ADAPTER_CONTRACT_VERSION,
+            "project_id": project_id,
+            "snapshot_sha256": snapshot_digest,
+            "git_state": git_evidence["state"],
+            "git_commit": git_evidence["commit"],
+            "git_status_sha256": git_evidence["status_sha256"],
+            "module_relpath": offer.get("module_relpath"),
+            "export_name": offer.get("export_name"),
+            "parameters": offer.get("parameters"),
+            "function_sha256": offer.get("function_sha256"),
+            "closure": offer.get("closure"),
+        }
+        return "adapter_offer_" + hashlib.sha256(_json(identity).encode("utf-8")).hexdigest()
+
+    def _adapter_public_offer(
+        self,
+        project_id: str,
+        snapshot_digest: str,
+        git_evidence: dict[str, str | None],
+        offer: dict[str, Any],
+    ) -> dict[str, Any]:
+        module_relpath = _safe_relative(str(offer.get("module_relpath") or ""))
+        export_name = offer.get("export_name")
+        parameters = offer.get("parameters")
+        function_sha256 = offer.get("function_sha256")
+        closure = offer.get("closure")
+        if (
+            PurePosixPath(module_relpath).suffix.lower() not in {".js", ".mjs"}
+            or type(export_name) is not str
+            or re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", export_name) is None
+            or type(parameters) is not list
+            or not parameters
+            or any(
+                type(item) is not str
+                or re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", item) is None
+                for item in parameters
+            )
+            or len(parameters) != len(set(parameters))
+            or type(function_sha256) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", function_sha256) is None
+            or type(closure) is not list
+            or not closure
+        ):
+            raise IntakeError("adapter_source_unsupported_v1")
+        safe_closure: list[dict[str, str]] = []
+        for row in closure:
+            if type(row) is not dict or set(row) != {"logical_path", "sha256"}:
+                raise IntakeError("adapter_source_unsupported_v1")
+            logical = _safe_relative(str(row.get("logical_path") or ""))
+            digest = row.get("sha256")
+            if (
+                PurePosixPath(logical).suffix.lower() not in {".js", ".mjs"}
+                or type(digest) is not str
+                or re.fullmatch(r"[0-9a-f]{64}", digest) is None
+            ):
+                raise IntakeError("adapter_source_unsupported_v1")
+            safe_closure.append({"logical_path": logical, "sha256": digest})
+        if safe_closure != sorted(safe_closure, key=lambda row: row["logical_path"]):
+            raise IntakeError("adapter_source_unsupported_v1")
+        normalized = {
+            "module_relpath": module_relpath,
+            "export_name": export_name,
+            "parameters": list(parameters),
+            "function_sha256": function_sha256,
+            "closure": safe_closure,
+        }
+        return {
+            "offer_id": self._adapter_offer_id(
+                project_id, snapshot_digest, git_evidence, normalized
+            ),
+            **normalized,
+        }
+
+    @staticmethod
+    def _validate_adapter_mapping(
+        payload: dict[str, Any], offer: dict[str, Any]
+    ) -> tuple[list[dict[str, Any]], str, list[dict[str, Any]], str, str]:
+        if set(payload) - {
+            "project_id",
+            "offer_id",
+            "arguments",
+            "result_field",
+            "examples",
+        }:
+            raise IntakeError("adapter_mapping_invalid")
+        raw_arguments = payload.get("arguments")
+        result_field = payload.get("result_field")
+        raw_examples = payload.get("examples")
+        if (
+            type(raw_arguments) is not list
+            or type(result_field) is not str
+            or _ADAPTER_MEMBER.fullmatch(result_field) is None
+            or type(raw_examples) is not list
+            or not 1 <= len(raw_examples) <= 64
+        ):
+            raise IntakeError("adapter_mapping_invalid")
+        source_parameters = offer["parameters"]
+        if len(raw_arguments) != len(source_parameters):
+            raise IntakeError("adapter_mapping_invalid")
+        by_source: dict[str, dict[str, Any]] = {}
+        input_fields: set[str] = set()
+        for row in raw_arguments:
+            if type(row) is not dict or set(row) != {
+                "source_parameter",
+                "input_field",
+                "minimum",
+                "maximum",
+            }:
+                raise IntakeError("adapter_mapping_invalid")
+            source_parameter = row.get("source_parameter")
+            input_field = row.get("input_field")
+            minimum = row.get("minimum")
+            maximum = row.get("maximum")
+            if (
+                type(source_parameter) is not str
+                or source_parameter not in source_parameters
+                or source_parameter in by_source
+                or type(input_field) is not str
+                or _ADAPTER_MEMBER.fullmatch(input_field) is None
+                or input_field in input_fields
+                or input_field == result_field
+                or type(minimum) is not int
+                or type(maximum) is not int
+                or not -MAX_SAFE_INTEGER <= minimum <= maximum <= MAX_SAFE_INTEGER
+            ):
+                raise IntakeError("adapter_mapping_invalid")
+            normalized = {
+                "source_parameter": source_parameter,
+                "input_field": input_field,
+                "minimum": minimum,
+                "maximum": maximum,
+            }
+            by_source[source_parameter] = normalized
+            input_fields.add(input_field)
+        if set(by_source) != set(source_parameters):
+            raise IntakeError("adapter_mapping_invalid")
+        arguments = [by_source[name] for name in source_parameters]
+        examples: list[dict[str, Any]] = []
+        for row in raw_examples:
+            if type(row) is not dict or set(row) != {"input", "expected"}:
+                raise IntakeError("adapter_mapping_invalid")
+            value = row.get("input")
+            expected = row.get("expected")
+            if (
+                type(value) is not dict
+                or set(value) != input_fields
+                or type(expected) is not int
+                or not -MAX_SAFE_INTEGER <= expected <= MAX_SAFE_INTEGER
+            ):
+                raise IntakeError("adapter_mapping_invalid")
+            normalized_input: dict[str, int] = {}
+            for argument in arguments:
+                field = argument["input_field"]
+                item = value.get(field)
+                if (
+                    type(item) is not int
+                    or not argument["minimum"] <= item <= argument["maximum"]
+                ):
+                    raise IntakeError("adapter_mapping_invalid")
+                normalized_input[field] = item
+            examples.append({"input": normalized_input, "expected": expected})
+        mapping = {"arguments": arguments, "result_field": result_field}
+        mapping_hash = hashlib.sha256(_json(mapping).encode("utf-8")).hexdigest()
+        examples_hash = hashlib.sha256(_json(examples).encode("utf-8")).hexdigest()
+        return arguments, result_field, examples, mapping_hash, examples_hash
+
+    def create_computation_adapter_candidate(
+        self,
+        payload: dict[str, Any],
+        *,
+        cancel_check: Callable[[], bool] | None = None,
+        validator: Callable[[dict[str, Any], list[dict[str, Any]], str], dict[str, Any]]
+        | None = None,
+    ) -> dict[str, Any]:
+        """Rebuild one offer, preflight it in memory, then persist one safe review row."""
+        if type(payload) is not dict:
+            raise IntakeError("adapter_mapping_invalid")
+        project_id = payload.get("project_id")
+        offer_id = payload.get("offer_id")
+        if type(project_id) is not str or not project_id or type(offer_id) is not str:
+            raise IntakeError("adapter_mapping_invalid")
+        if validator is None:
+            raise IntakeError("adapter_security_rejected")
+        with _project_guard(project_id):
+            context = self._project_context(project_id)
+            before = self.snapshot_project(project_id)
+            git_before = self._adapter_git_evidence(context.path)
+            if cancel_check and cancel_check():
+                raise IntakeError("intake_cancelled")
+            if any(
+                item.path == COMPUTATION_ADAPTER_ENTRY
+                or item.path.startswith("__reweave_adapter__/")
+                for item in before.entries
+            ):
+                raise IntakeError("adapter_source_unsupported_v1")
+            inspected = self._run_extraction_analyzer(
+                before, {"mode": "inspect_computation_adapters"}
+            )
+            matching: list[tuple[dict[str, Any], dict[str, Any]]] = []
+            for raw_offer in inspected.get("offers", []):
+                if type(raw_offer) is not dict:
+                    continue
+                public = self._adapter_public_offer(
+                    project_id, before.digest, git_before, raw_offer
+                )
+                if public["offer_id"] == offer_id:
+                    matching.append((raw_offer, public))
+            if len(matching) != 1:
+                raise IntakeError("adapter_offer_stale")
+            _raw_offer, offer = matching[0]
+            arguments, result_field, examples, mapping_hash, examples_hash = (
+                self._validate_adapter_mapping(payload, offer)
+            )
+            if cancel_check and cancel_check():
+                raise IntakeError("intake_cancelled")
+            built = self._run_extraction_analyzer(
+                before,
+                {
+                    "mode": "build_computation_adapter",
+                    "offer": {
+                        key: offer[key]
+                        for key in (
+                            "module_relpath",
+                            "export_name",
+                            "parameters",
+                            "function_sha256",
+                            "closure",
+                        )
+                    },
+                    "arguments": arguments,
+                    "result_field": result_field,
+                },
+            )
+            candidate = built.get("candidate")
+            output_range = built.get("output_range")
+            if (
+                type(candidate) is not dict
+                or candidate.get("capability_kind") != "computation"
+                or candidate.get("activation")
+                != {
+                    "mode": "declared_input_compute",
+                    "entry_module": COMPUTATION_ADAPTER_ENTRY,
+                    "entrypoint": "compute",
+                }
+                or type(output_range) is not dict
+                or set(output_range) != {"minimum", "maximum"}
+                or type(output_range.get("minimum")) is not int
+                or type(output_range.get("maximum")) is not int
+            ):
+                raise IntakeError("adapter_source_unsupported_v1")
+            try:
+                (
+                    candidate["input_contract"],
+                    candidate["output_contract"],
+                    candidate["error_contract"],
+                ) = normalize_capsule_contracts(
+                    "computation",
+                    candidate["input_contract"],
+                    candidate["output_contract"],
+                    candidate["error_contract"],
+                )
+                fixtures = generate_synthetic_fixtures(candidate["input_contract"])
+            except (DataContractError, KeyError, TypeError) as exc:
+                raise IntakeError("adapter_mapping_invalid") from exc
+            output_property = candidate["output_contract"].get("properties", {}).get(
+                result_field
+            )
+            if (
+                candidate["output_contract"].get("required") != [result_field]
+                or type(output_property) is not dict
+                or output_property.get("type") != "integer"
+                or output_property.get("minimum") != output_range["minimum"]
+                or output_property.get("maximum") != output_range["maximum"]
+            ):
+                raise IntakeError("adapter_interval_unproven")
+            try:
+                preflight = validator(candidate, examples, result_field)
+            except Exception as exc:
+                code = getattr(exc, "code", None)
+                if code not in {
+                    "adapter_example_mismatch",
+                    "adapter_source_exception",
+                    "adapter_security_rejected",
+                }:
+                    code = "adapter_security_rejected"
+                raise IntakeError(code) from exc
+            if (
+                type(preflight) is not dict
+                or preflight.get("schema_version")
+                != "computation_adapter_preflight.v1"
+                or preflight.get("status") != "passed"
+                or preflight.get("acceptance_scope")
+                != "isolated_node_vm_computation"
+                or preflight.get("example_count") != len(examples)
+                or preflight.get("example_set_sha256") != examples_hash
+            ):
+                raise IntakeError("adapter_security_rejected")
+            after = self.snapshot_project(project_id)
+            git_after = self._adapter_git_evidence(context.path)
+            if before.digest != after.digest or git_before != git_after:
+                raise IntakeError("source_changed_during_scan")
+            if cancel_check and cancel_check():
+                raise IntakeError("intake_cancelled")
+
+            module_by_path = {
+                str(item.get("path") or ""): item
+                for item in candidate.get("javascript_modules", [])
+                if type(item) is dict
+            }
+            adapter_module = module_by_path.get(COMPUTATION_ADAPTER_ENTRY)
+            if type(adapter_module) is not dict or type(adapter_module.get("source")) is not str:
+                raise IntakeError("adapter_source_unsupported_v1")
+            evidence = {
+                "candidate_origin": "deterministic_computation_adapter",
+                "adapter_contract_version": COMPUTATION_ADAPTER_CONTRACT_VERSION,
+                "source": {
+                    "module_relpath": offer["module_relpath"],
+                    "export_name": offer["export_name"],
+                    "function_sha256": offer["function_sha256"],
+                    "snapshot_sha256": before.digest,
+                    "git_commit": git_before["commit"],
+                    "git_state": git_before["state"],
+                },
+                "closure": offer["closure"],
+                "mapping": {
+                    "arguments": arguments,
+                    "result_field": result_field,
+                    "mapping_sha256": mapping_hash,
+                },
+                "generated_adapter": {
+                    "logical_path": COMPUTATION_ADAPTER_ENTRY,
+                    "sha256": hashlib.sha256(
+                        adapter_module["source"].encode("utf-8")
+                    ).hexdigest(),
+                },
+                "examples": {
+                    "count": len(examples),
+                    "canonical_sha256": examples_hash,
+                    "passed": True,
+                },
+            }
+            profile = self._effective_brand_profile(context.project, context.source_root)
+            run_id = self._create_run(project_id)
+            self._set_run(run_id, "running", started_at=_now())
+            row = self._adapter_candidate_row(
+                project_id,
+                run_id,
+                candidate,
+                fixtures,
+                evidence,
+                profile,
+            )
+            counts = {
+                "adapter_only": True,
+                "candidate_origin": "deterministic_computation_adapter",
+                "adapter_contract_version": COMPUTATION_ADAPTER_CONTRACT_VERSION,
+                "candidates": 1,
+                "waiting_user": int(row["candidate_status"] == "waiting_user"),
+                "rejected": int(row["candidate_status"] == "rejected"),
+                "extracted": int(row["candidate_status"] == "extracted"),
+                "effective_brand_profile_id": profile.get("id"),
+                "effective_brand_profile_digest": profile.get("digest"),
+            }
+            status = "completed_with_pending"
+            review_ids = self._commit_candidate_rows(
+                run_id,
+                project_id,
+                before.digest,
+                after.digest,
+                status,
+                counts,
+                [row],
+                update_project_snapshot=False,
+            )
+            return {
+                "run_id": run_id,
+                "status": status,
+                "counts": counts,
+                "review_ids": review_ids,
+                "adapter": {
+                    "offer_id": offer_id,
+                    "candidate_status": row["candidate_status"],
+                    "example_count": len(examples),
+                    "mapping_sha256": mapping_hash,
+                    "adapter_sha256": evidence["generated_adapter"]["sha256"],
+                },
+            }
+
+    def rebuild_computation_adapter_candidate(
+        self,
+        project_id: str,
+        summary: dict[str, Any],
+        *,
+        snapshot: ProjectSnapshot | None = None,
+    ) -> dict[str, Any]:
+        """Deterministically replay a persisted adapter boundary for Stage 3."""
+        if (
+            type(summary) is not dict
+            or summary.get("candidate_origin") != "deterministic_computation_adapter"
+            or summary.get("adapter_contract_version")
+            != COMPUTATION_ADAPTER_CONTRACT_VERSION
+        ):
+            raise IntakeError("adapter_contract_version_expired")
+        evidence = summary.get("adapter_evidence")
+        if type(evidence) is not dict or set(evidence) != {
+            "candidate_origin",
+            "adapter_contract_version",
+            "source",
+            "closure",
+            "mapping",
+            "generated_adapter",
+            "examples",
+        }:
+            raise IntakeError("candidate_boundary_changed")
+        source = evidence.get("source")
+        mapping = evidence.get("mapping")
+        generated = evidence.get("generated_adapter")
+        if (
+            evidence.get("candidate_origin") != "deterministic_computation_adapter"
+            or evidence.get("adapter_contract_version")
+            != COMPUTATION_ADAPTER_CONTRACT_VERSION
+            or type(source) is not dict
+            or type(mapping) is not dict
+            or type(generated) is not dict
+        ):
+            raise IntakeError("candidate_boundary_changed")
+        current = snapshot or self.snapshot_project(project_id)
+        if source.get("snapshot_sha256") != current.digest:
+            raise IntakeError("candidate_boundary_changed")
+        context = self._project_context(project_id)
+        git_evidence = self._adapter_git_evidence(context.path)
+        if (
+            source.get("git_state") != git_evidence["state"]
+            or source.get("git_commit") != git_evidence["commit"]
+        ):
+            raise IntakeError("candidate_boundary_changed")
+        inspected = self._run_extraction_analyzer(
+            current, {"mode": "inspect_computation_adapters"}
+        )
+        expected_offer = {
+            "module_relpath": source.get("module_relpath"),
+            "export_name": source.get("export_name"),
+            "function_sha256": source.get("function_sha256"),
+            "closure": evidence.get("closure"),
+        }
+        offers = [
+            item
+            for item in inspected.get("offers", [])
+            if type(item) is dict
+            and all(item.get(key) == value for key, value in expected_offer.items())
+        ]
+        if len(offers) != 1:
+            raise IntakeError("candidate_boundary_changed")
+        offer = offers[0]
+        arguments = mapping.get("arguments")
+        result_field = mapping.get("result_field")
+        if type(arguments) is not list or type(result_field) is not str:
+            raise IntakeError("candidate_boundary_changed")
+        mapping_payload = {
+            "arguments": arguments,
+            "result_field": result_field,
+        }
+        if mapping.get("mapping_sha256") != hashlib.sha256(
+            _json(mapping_payload).encode("utf-8")
+        ).hexdigest():
+            raise IntakeError("candidate_boundary_changed")
+        rebuilt = self._run_extraction_analyzer(
+            current,
+            {
+                "mode": "build_computation_adapter",
+                "offer": {
+                    key: offer[key]
+                    for key in (
+                        "module_relpath",
+                        "export_name",
+                        "parameters",
+                        "function_sha256",
+                        "closure",
+                    )
+                },
+                "arguments": arguments,
+                "result_field": result_field,
+            },
+        )
+        candidate = rebuilt.get("candidate")
+        if type(candidate) is not dict:
+            raise IntakeError("candidate_boundary_changed")
+        adapter_modules = [
+            item
+            for item in candidate.get("javascript_modules", [])
+            if type(item) is dict and item.get("path") == COMPUTATION_ADAPTER_ENTRY
+        ]
+        if (
+            len(adapter_modules) != 1
+            or type(adapter_modules[0].get("source")) is not str
+            or generated.get("logical_path") != COMPUTATION_ADAPTER_ENTRY
+            or generated.get("sha256")
+            != hashlib.sha256(adapter_modules[0]["source"].encode("utf-8")).hexdigest()
+        ):
+            raise IntakeError("candidate_boundary_changed")
+        return candidate
+
     def run_intake(
         self,
         project_id: str,
@@ -827,8 +1499,16 @@ class ReweaveCapsuleIntake:
         sensitivity_decision: str | None = None,
         brand_decision: str | None = None,
         asset_decision: str | None = None,
+        enum_decision: str | None = None,
+        enum_decision_binding_sha256: str | None = None,
+        _capture_decision_token: str | None = None,
     ) -> dict[str, Any]:
-        if sensitivity_decision is None and brand_decision is None and asset_decision is None:
+        if (
+            sensitivity_decision is None
+            and brand_decision is None
+            and asset_decision is None
+            and enum_decision is None
+        ):
             raise IntakeError("review_decision_required")
         if sensitivity_decision is not None and sensitivity_decision not in _SENSITIVITY_DECISIONS:
             raise IntakeError("sensitivity_decision_invalid")
@@ -836,6 +1516,13 @@ class ReweaveCapsuleIntake:
             raise IntakeError("brand_decision_invalid")
         if asset_decision is not None and asset_decision not in _ASSET_DECISIONS:
             raise IntakeError("asset_decision_invalid")
+        if enum_decision is not None and enum_decision not in _ENUM_DECISIONS:
+            raise IntakeError("enum_decision_invalid")
+        if (enum_decision is None) != (enum_decision_binding_sha256 is None) or (
+            enum_decision_binding_sha256 is not None
+            and re.fullmatch(r"[0-9a-f]{64}", enum_decision_binding_sha256) is None
+        ):
+            raise IntakeError("enum_decision_binding_invalid")
         with self.store.transaction() as connection:
             row = connection.execute(
                 "SELECT * FROM review_items WHERE review_id = ?", (review_id,)
@@ -843,9 +1530,36 @@ class ReweaveCapsuleIntake:
             if row is None or row["candidate_status"] != "waiting_user":
                 raise IntakeError("review_item_not_waiting_user")
             allowed = self._allowed_review_decisions(row)
+            try:
+                candidate = json.loads(row["sanitized_candidate_json"])
+            except (json.JSONDecodeError, TypeError) as exc:
+                raise IntakeError("review_decision_not_allowed") from exc
+            capture_v2 = (
+                type(candidate) is dict
+                and candidate.get("candidate_origin")
+                == "deterministic_computation_adapter"
+                and candidate.get("adapter_contract_version")
+                == "computation_adapter.v2"
+            )
+            if capture_v2:
+                with self._capture_decision_lock:
+                    authorization = self._capture_decision_authorizations.get(review_id)
+                if (
+                    authorization is None
+                    or authorization[0] != row["source_hash"]
+                    or not secrets.compare_digest(
+                        authorization[1], _capture_decision_token or ""
+                    )
+                ):
+                    raise IntakeError("capture_decision_rebuild_required")
             if any(
                 decision is not None and decision not in allowed
-                for decision in (sensitivity_decision, brand_decision, asset_decision)
+                for decision in (
+                    sensitivity_decision,
+                    brand_decision,
+                    asset_decision,
+                    enum_decision,
+                )
             ):
                 raise IntakeError("review_decision_not_allowed")
             if sensitivity_decision and row["sensitivity_decision"] is not None:
@@ -854,6 +1568,19 @@ class ReweaveCapsuleIntake:
                 raise IntakeError("brand_decision_already_set")
             if asset_decision and row["asset_decision"] is not None:
                 raise IntakeError("asset_decision_already_set")
+            if enum_decision and row["enum_decision"] is not None:
+                raise IntakeError("enum_decision_already_set")
+            if enum_decision is not None:
+                try:
+                    enum_summary = json.loads(row["redaction_summary_json"])
+                except (json.JSONDecodeError, TypeError) as exc:
+                    raise IntakeError("enum_decision_binding_invalid") from exc
+                if (
+                    type(enum_summary) is not dict
+                    or enum_summary.get("enum_decision_binding_sha256")
+                    != enum_decision_binding_sha256
+                ):
+                    raise IntakeError("enum_decision_binding_invalid")
             candidate_brand = self._review_brand_binding(row["redaction_summary_json"])
             current_brand: tuple[str | None, str | None] | None = None
             if brand_decision is not None:
@@ -929,6 +1656,17 @@ class ReweaveCapsuleIntake:
             if asset_decision:
                 updates.extend(["asset_decision = ?", "asset_decided_at = ?"])
                 values.extend([asset_decision, now])
+            if enum_decision:
+                updates.extend(
+                    [
+                        "enum_decision = ?",
+                        "enum_decision_binding_sha256 = ?",
+                        "enum_decided_at = ?",
+                    ]
+                )
+                values.extend(
+                    [enum_decision, enum_decision_binding_sha256, now]
+                )
             values.append(review_id)
             connection.execute(
                 f"UPDATE review_items SET {', '.join(updates)} WHERE review_id = ?",
@@ -938,6 +1676,13 @@ class ReweaveCapsuleIntake:
             updated = connection.execute(
                 "SELECT * FROM review_items WHERE review_id = ?", (review_id,)
             ).fetchone()
+        if capture_v2:
+            with self._capture_decision_lock:
+                current = self._capture_decision_authorizations.get(review_id)
+                if current is not None and secrets.compare_digest(
+                    current[1], _capture_decision_token or ""
+                ):
+                    self._capture_decision_authorizations.pop(review_id, None)
         return dict(updated)
 
     def recover_interrupted_runs(self) -> int:
@@ -988,52 +1733,12 @@ class ReweaveCapsuleIntake:
                     }
                 ],
             }, inventory
-        node = os.environ.get("REWEAVE_NODE") or shutil.which("node")
-        if not node:
-            raise IntakeError("node_unavailable")
-        script = Path(__file__).resolve().parents[1] / "scripts/analyze_reweave_extraction.mjs"
-        snapshot_by_path = {item.path: item for item in snapshot.entries}
-        javascript_paths = [
-            relative
-            for relative in sorted(snapshot.text)
-            if PurePosixPath(relative).suffix.lower() in {".js", ".mjs"}
-        ]
-        if sum(snapshot_by_path[relative].size for relative in javascript_paths) > MAX_JAVASCRIPT_SNAPSHOT_BYTES:
-            raise IntakeError("javascript_snapshot_size_exceeded")
         request = {
             "entry_modules": entry_modules,
-            "module_snapshot": [
-                {
-                    "path": relative,
-                    "source": source,
-                    "sha256": snapshot_by_path[relative].sha256,
-                }
-                for relative in javascript_paths
-                for source in (snapshot.text[relative],)
-            ],
             "html_selectors": selectors,
             "html_controls": controls,
         }
-        try:
-            process = subprocess.run(
-                [node, "--max-old-space-size=256", str(script)],
-                input=_json(request),
-                capture_output=True,
-                text=True,
-                timeout=15,
-                check=False,
-                env=restricted_subprocess_environment(),
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise IntakeError("extraction_analyzer_timeout") from exc
-        if process.returncode or process.stderr or len(process.stdout.encode("utf-8")) > 40 * 1024 * 1024:
-            raise IntakeError("extraction_analyzer_failed")
-        try:
-            result = json.loads(process.stdout)
-        except json.JSONDecodeError as exc:
-            raise IntakeError("extraction_analyzer_failed") from exc
-        if result.get("status") != "ok":
-            raise IntakeError(str(result.get("error_code") or "extraction_analyzer_failed"))
+        result = self._run_extraction_analyzer(snapshot, request)
         snapshot_boundary_codes = {
             "module_not_found",
             "module_path_excluded",
@@ -1067,6 +1772,54 @@ class ReweaveCapsuleIntake:
                 if item.get("capability_kind") != "computation"
             )
         return result, inventory
+
+    def _run_extraction_analyzer(
+        self, snapshot: ProjectSnapshot, request: dict[str, Any]
+    ) -> dict[str, Any]:
+        node = os.environ.get("REWEAVE_NODE") or shutil.which("node")
+        if not node:
+            raise IntakeError("node_unavailable")
+        script = Path(__file__).resolve().parents[1] / "scripts/analyze_reweave_extraction.mjs"
+        snapshot_by_path = {item.path: item for item in snapshot.entries}
+        javascript_paths = [
+            relative
+            for relative in sorted(snapshot.text)
+            if PurePosixPath(relative).suffix.lower() in {".js", ".mjs"}
+        ]
+        if sum(snapshot_by_path[relative].size for relative in javascript_paths) > MAX_JAVASCRIPT_SNAPSHOT_BYTES:
+            raise IntakeError("javascript_snapshot_size_exceeded")
+        analyzer_request = {
+            **request,
+            "module_snapshot": [
+                {
+                    "path": relative,
+                    "source": snapshot.text[relative],
+                    "sha256": snapshot_by_path[relative].sha256,
+                }
+                for relative in javascript_paths
+            ],
+        }
+        try:
+            process = subprocess.run(
+                [node, "--max-old-space-size=256", str(script)],
+                input=_json(analyzer_request),
+                capture_output=True,
+                text=True,
+                timeout=15,
+                check=False,
+                env=restricted_subprocess_environment(),
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise IntakeError("extraction_analyzer_timeout") from exc
+        if process.returncode or process.stderr or len(process.stdout.encode("utf-8")) > 40 * 1024 * 1024:
+            raise IntakeError("extraction_analyzer_failed")
+        try:
+            result = json.loads(process.stdout)
+        except json.JSONDecodeError as exc:
+            raise IntakeError("extraction_analyzer_failed") from exc
+        if result.get("status") != "ok":
+            raise IntakeError(str(result.get("error_code") or "extraction_analyzer_failed"))
+        return result
 
     def _candidate_rows(
         self,
@@ -1244,6 +1997,139 @@ class ReweaveCapsuleIntake:
             )
         return rows
 
+    def _adapter_candidate_row(
+        self,
+        project_id: str,
+        run_id: str,
+        candidate: dict[str, Any],
+        fixtures: dict[str, Any],
+        evidence: dict[str, Any],
+        profile: dict[str, Any],
+    ) -> dict[str, Any]:
+        modules = candidate.get("javascript_modules", [])
+        source_relpath = str(evidence["source"]["module_relpath"])
+        source_hash = self._candidate_source_hash([], modules)
+        raw = "\n".join(
+            [str(item.get("source") or "") for item in modules]
+            + [str(item) for item in candidate.get("literal_values", [])]
+        )
+        sensitivity = self._sensitivity(raw, profile)
+        decisions = self._bound_decisions(
+            project_id,
+            source_relpath,
+            source_hash,
+            profile=profile,
+        )
+        status = "extracted"
+        reason_codes = list(sensitivity["codes"])
+        if sensitivity["secret_count"]:
+            status = "rejected"
+            reason_codes.append("secret_literal_rejected")
+        elif sensitivity["ambiguous_count"]:
+            decision = decisions.get("sensitivity")
+            if decision == "confirm_real_record_reject":
+                status = "rejected"
+                reason_codes.append("confirmed_real_record_rejected")
+            elif decision not in {"confirm_fictional_fixture", "confirm_safe_redaction"}:
+                status = "waiting_user"
+                reason_codes.append("sensitivity_confirmation_required")
+            else:
+                reason_codes.append("sensitivity_decision_reused")
+        usage_scope: dict[str, Any] = {"kind": "general"}
+        if sensitivity["brand_count"]:
+            brand = decisions.get("brand")
+            if brand == "retain_brand_limited" and profile.get("id"):
+                usage_scope = {
+                    "kind": "brand_limited",
+                    "brand_profile_id": profile["id"],
+                    "brand_profile_digest": profile["digest"],
+                }
+                reason_codes.append("brand_retention_decision_reused")
+            elif brand == "remove_brand":
+                reason_codes.append("brand_removal_decision_reused")
+            elif status != "rejected":
+                status = "waiting_user"
+                reason_codes.append("brand_confirmation_required")
+        contract_sensitivity = self._sensitivity(
+            _json(
+                {
+                    "input": candidate["input_contract"],
+                    "output": candidate["output_contract"],
+                    "error": candidate["error_contract"],
+                }
+            ),
+            profile,
+        )
+        if status == "extracted" and any(
+            contract_sensitivity[key]
+            for key in ("secret_count", "ambiguous_count", "brand_count")
+        ):
+            status = "rejected"
+            reason_codes.append("sensitive_contract_identifier_unsupported")
+        static_evidence = [
+            {
+                "path": row["logical_path"],
+                "file_type": "text",
+                "sha256": row["sha256"],
+            }
+            for row in evidence["closure"]
+        ]
+        if status == "extracted":
+            sanitized = self._sanitize_candidate(
+                candidate, fixtures, usage_scope, static_evidence
+            )
+            sanitized.update(
+                {
+                    "candidate_origin": "deterministic_computation_adapter",
+                    "adapter_contract_version": COMPUTATION_ADAPTER_CONTRACT_VERSION,
+                    "adapter_evidence": evidence,
+                }
+            )
+        else:
+            sanitized = {
+                "schema": "sanitized_candidate.v1",
+                "extraction_contract_version": EXTRACTION_CONTRACT_VERSION,
+                "candidate_origin": "deterministic_computation_adapter",
+                "adapter_contract_version": COMPUTATION_ADAPTER_CONTRACT_VERSION,
+                "capability_kind": "computation",
+                "requires_reextract": True,
+            }
+        return {
+            "review_id": _uuid(),
+            "run_id": run_id,
+            "project_id": project_id,
+            "candidate_id": self._candidate_id(project_id, candidate, source_hash),
+            "candidate_status": status,
+            "source_relpath": source_relpath,
+            "source_location_json": _json(
+                {
+                    "entry": source_relpath,
+                    **(
+                        {
+                            "module_paths": sorted(
+                                str(item.get("path") or "") for item in modules
+                            )
+                        }
+                        if status == "extracted"
+                        else {"module_count": len(modules)}
+                    ),
+                }
+            ),
+            "source_hash": source_hash,
+            "sanitized_candidate_json": _json(sanitized),
+            "redaction_summary_json": _json(
+                {
+                    "schema": "redaction_summary.v1",
+                    "codes": sorted(set(reason_codes)),
+                    "secret_count": sensitivity["secret_count"],
+                    "ambiguous_count": sensitivity["ambiguous_count"],
+                    "brand_count": sensitivity["brand_count"],
+                    "brand_profile_id": profile.get("id"),
+                    "brand_profile_digest": profile.get("digest"),
+                }
+            ),
+        }
+
     def _sanitize_candidate(
         self,
         candidate: dict[str, Any],
@@ -1334,6 +2220,8 @@ class ReweaveCapsuleIntake:
         status: str,
         counts: dict[str, Any],
         rows: list[dict[str, Any]],
+        *,
+        update_project_snapshot: bool = True,
     ) -> list[str]:
         now = _now()
         with self.store.transaction() as connection:
@@ -1359,10 +2247,11 @@ class ReweaveCapsuleIntake:
                         now,
                     ),
                 )
-            connection.execute(
-                "UPDATE projects SET last_snapshot_hash = ?, updated_at = ? WHERE project_id = ?",
-                (snapshot_after, now, project_id),
-            )
+            if update_project_snapshot:
+                connection.execute(
+                    "UPDATE projects SET last_snapshot_hash = ?, updated_at = ? WHERE project_id = ?",
+                    (snapshot_after, now, project_id),
+                )
             connection.execute(
                 "UPDATE intake_runs SET status = ?, snapshot_before = ?, snapshot_after = ?, "
                 "counts_json = ?, completed_at = ? WHERE run_id = ?",
@@ -1450,19 +2339,33 @@ class ReweaveCapsuleIntake:
         codes = set(raw_codes)
         failure = candidate.get("stage3_failure")
         failure_code = failure.get("error_code") if type(failure) is dict else None
+        capture_v2 = (
+            candidate.get("candidate_origin")
+            == "deterministic_computation_adapter"
+            and candidate.get("adapter_contract_version")
+            == "computation_adapter.v2"
+        )
         allowed: set[str] = set()
         if (
             "sensitivity_confirmation_required" in codes
             or failure_code == "sensitivity_confirmation_required_stage3"
         ):
-            allowed.update(_SENSITIVITY_DECISIONS)
+            allowed.update(
+                {"confirm_fictional_fixture", "confirm_real_record_reject"}
+                if capture_v2
+                else _SENSITIVITY_DECISIONS
+            )
         if (
             "brand_confirmation_required" in codes
             or failure_code == "brand_confirmation_required"
         ):
-            allowed.update(_BRAND_DECISIONS)
+            allowed.update(
+                {"retain_brand_limited"} if capture_v2 else _BRAND_DECISIONS
+            )
         if failure_code == "asset_content_confirmation_required_stage3":
             allowed.update(_ASSET_DECISIONS)
+        if "enumeration_confirmation_required" in codes:
+            allowed.update(_ENUM_DECISIONS)
         return frozenset(allowed)
 
     @staticmethod

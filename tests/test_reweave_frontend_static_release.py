@@ -297,6 +297,25 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert 'bridgeCall("get_capsule_detail", JSON.stringify({ capsule_id: capsule.capsule_id }))' in app
     assert 'bridgeCall("list_backups", JSON.stringify({}))' in app
     assert 'bridgeCall("get_intake_run", JSON.stringify({ run_id: runId }))' in app
+    assert '"start_inspect_computation_adapters"' in app
+    assert '"start_create_computation_adapter"' in app
+    assert '"start_scan_javascript_computations"' in app
+    assert 'bridgeCall("register_javascript_computation_source"' in app
+    assert 'data-action", "inspect-computation-adapters"' in app
+    assert 'data-action", "create-computation-adapter"' in app
+    assert 'data-action", "scan-javascript-computations"' in app
+    assert 'data-action", "create-javascript-computation-capture"' in app
+    assert "parameter_binding_id: control.parameter_binding_id" in app
+    assert 'kindName === "boolean"' in app
+    assert 'kindName === "enum"' in app
+    assert 'resume_contract === "resubmit_ephemeral_capture.v1"' in app
+    assert 'review_id: String(resumeReview.value || "") || null' in app
+    assert 'item.project_id === inspection.project_id' in app
+    assert "module_relpath: offer.module_relpath" not in app
+    assert "target_binding_id: offer.target_binding_id" not in app
+    assert "module_relpath: offer.module_relpath" not in app
+    assert "function_sha256: offer.function_sha256" not in app
+    assert "source_hash: offer.source_hash" not in app
     assert 'bridgeCall("decide_review_item"' in app
     assert 'function managementReviewDecisionPayload(reviewId, decision, controls)' in app
     assert '["capability_key", "role_key", "variant_key", "display_name"]' in app

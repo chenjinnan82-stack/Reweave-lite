@@ -16,7 +16,10 @@ from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
 
-from pimos_lite.composer.module_native import compose_capsule_product
+from pimos_lite.composer.module_native import (
+    _bundle_formal_capsule,
+    compose_capsule_product,
+)
 from pimos_lite.reweave_app_service import (
     ProductGenerationError,
     ReweaveAppService,
@@ -30,6 +33,7 @@ from pimos_lite.reweave_capsule_stage3 import (
     SECURITY_RULES_VERSION,
     SUPERVISION_RULES_VERSION,
     VALIDATION_CONTRACT_VERSION,
+    generate_computation_adapter_v2,
 )
 from pimos_lite.reweave_capsule_store import (
     CANONICALIZATION_VERSION,
@@ -80,6 +84,17 @@ QUOTE_HTML = (
     "</section>"
 )
 QUOTE_CSS = "__CAPSULE_ROOT__ .quote { display: grid; gap: 0.5rem; }\n"
+
+
+def _adapter_errors() -> dict[str, object]:
+    details = _object_contract({})
+    return {
+        "schema": "error_contract.v1",
+        "errors": {
+            "INPUT_CONTRACT_VIOLATION": {"field": None, "details": details},
+            "OUTPUT_CONTRACT_VIOLATION": {"field": None, "details": details},
+        },
+    }
 
 
 def _capsule_payload(kind: str) -> dict[str, object]:
@@ -228,6 +243,8 @@ def _composer_capsules() -> list[dict[str, object]]:
             capability_key="quote_calculation",
             role_key=role,
             variant_key="default",
+            candidate_origin=None,
+            adapter_contract_version=None,
         )
         result.append(row)
     return result
@@ -714,6 +731,241 @@ for name in sys.modules:
         )
         self.assertEqual(first, second)
         self.assertNotIn("reweave-formal-compose-", first["files"]["app.js"])
+
+    def test_formal_composer_rechecks_fixed_computation_adapter(self) -> None:
+        if not (ROOT / "node_modules" / "esbuild" / "package.json").is_file():
+            self.skipTest("npm ci is required for the formal composer")
+        input_contract = _object_contract(
+            {
+                "quantity": {"type": "integer", "minimum": 0, "maximum": 100},
+                "unit_price": {"type": "integer", "minimum": 0, "maximum": 1000},
+            }
+        )
+        output_contract = _object_contract(
+            {"total": {"type": "integer", "minimum": 0, "maximum": 100000}}
+        )
+        details = _object_contract({})
+        adapter_source = """import { calculate as __source } from "../calculate.js";
+
+export function compute(input) {
+  if (
+    input === null
+    || typeof input !== "object"
+    || Array.isArray(input)
+    || Object.keys(input).length !== 2
+    || !Object.hasOwn(input, "quantity")
+    || !Object.hasOwn(input, "unit_price")
+  ) {
+    return { ok: false, error: { code: "INPUT_CONTRACT_VIOLATION", field: null, details: {} } };
+  }
+  if (
+    !Number.isSafeInteger(input.quantity)
+    || input.quantity < 0
+    || input.quantity > 100
+    || !Number.isSafeInteger(input.unit_price)
+    || input.unit_price < 0
+    || input.unit_price > 1000
+  ) {
+    return { ok: false, error: { code: "INPUT_CONTRACT_VIOLATION", field: null, details: {} } };
+  }
+  const result = __source(input.quantity, input.unit_price);
+  if (
+    !Number.isSafeInteger(result)
+    || result < 0
+    || result > 100000
+  ) {
+    return { ok: false, error: { code: "OUTPUT_CONTRACT_VIOLATION", field: null, details: {} } };
+  }
+  return { ok: true, value: { "total": result } };
+}
+"""
+        capsule = {
+            "candidate_origin": "deterministic_computation_adapter",
+            "adapter_contract_version": "computation_adapter.v1",
+            "capability_kind": "computation",
+            "activation": {
+                "mode": "declared_input_compute",
+                "entry_module": "__reweave_adapter__/compute.js",
+                "entrypoint": "compute",
+            },
+            "input_contract": input_contract,
+            "output_contract": output_contract,
+            "error_contract": {
+                "schema": "error_contract.v1",
+                "errors": {
+                    "INPUT_CONTRACT_VIOLATION": {"field": None, "details": details},
+                    "OUTPUT_CONTRACT_VIOLATION": {"field": None, "details": details},
+                },
+            },
+            "runtime_allowlist": ["local_computation"],
+            "dom_scope": {
+                "root_contract": "capsule_root",
+                "selectors": [],
+                "classes": [],
+                "attributes": [],
+                "events": [],
+            },
+            "usage_scope": {"kind": "general"},
+            "html": "",
+            "css": "",
+            "javascript_modules": [
+                {
+                    "path": "calculate.js",
+                    "source": "export function calculate(quantity, price) { return quantity * price; }\n",
+                },
+                {
+                    "path": "__reweave_adapter__/compute.js",
+                    "source": adapter_source,
+                },
+            ],
+            "assets": [],
+        }
+
+        bundle = _bundle_formal_capsule(capsule, "ReweaveAdapterTest")
+
+        self.assertIn("ReweaveAdapterTest", bundle)
+        mutated = json.loads(json.dumps(capsule))
+        mutated["javascript_modules"][1]["source"] = adapter_source.replace(
+            "export function compute", "\nexport function compute", 1
+        )
+        with self.assertRaisesRegex(
+            ValueError, "computation_adapter_authorization_invalid"
+        ):
+            _bundle_formal_capsule(mutated, "ReweaveAdapterTest")
+
+    def test_formal_composer_accepts_and_rechecks_computation_adapter_v2(self) -> None:
+        if not (ROOT / "node_modules" / "esbuild" / "package.json").is_file():
+            self.skipTest("npm ci is required for the formal composer")
+        capsules = _composer_capsules()
+        computation = next(
+            row for row in capsules if row["capability_kind"] == "computation"
+        )
+        computation["candidate_origin"] = "deterministic_computation_adapter"
+        computation["adapter_contract_version"] = "computation_adapter.v2"
+        computation["error_contract"] = _adapter_errors()
+        computation["activation"] = {
+            "mode": "declared_input_compute",
+            "entry_module": "__reweave_adapter__/compute.js",
+            "entrypoint": "compute",
+        }
+        computation["javascript_modules"] = [
+            {
+                "path": "__reweave_adapter__/compute.js",
+                "source": generate_computation_adapter_v2(
+                    ["quantity"],
+                    computation["input_contract"],
+                    computation["output_contract"],
+                ),
+            },
+            {
+                "path": "__reweave_capture__/selected.js",
+                "source": (
+                    "export function __selected(quantity) { "
+                    "return quantity * 2; }\n"
+                ),
+            },
+        ]
+
+        composition = compose_capsule_product(
+            task="Build a quote calculator",
+            product_id="product_1234567890abcdef",
+            generated_at=NOW,
+            capsules=capsules,
+        )
+
+        self.assertEqual(composition["status"], "composed")
+        self.assertIn("ReweaveFormalCapsule", composition["files"]["app.js"])
+
+    def test_formal_composer_rejects_invalid_computation_adapter_v2_modules(self) -> None:
+        base = _capsule_payload("computation")
+        base.update(
+            candidate_origin="deterministic_computation_adapter",
+            adapter_contract_version="computation_adapter.v2",
+        )
+        base["error_contract"] = _adapter_errors()
+        base["activation"] = {
+            "mode": "declared_input_compute",
+            "entry_module": "__reweave_adapter__/compute.js",
+            "entrypoint": "compute",
+        }
+        base["javascript_modules"] = [
+            {
+                "path": "__reweave_adapter__/compute.js",
+                "source": generate_computation_adapter_v2(
+                    ["quantity"], base["input_contract"], base["output_contract"]
+                ),
+            },
+            {
+                "path": "__reweave_capture__/selected.js",
+                "source": "export function __selected(quantity) { return quantity * 2; }\n",
+            },
+        ]
+        missing = json.loads(json.dumps(base))
+        missing["javascript_modules"] = missing["javascript_modules"][:1]
+        extra = json.loads(json.dumps(base))
+        extra["javascript_modules"].append(
+            {"path": "extra.js", "source": "export const extra = 1;\n"}
+        )
+        for label, capsule in (("missing", missing), ("extra", extra)):
+            with self.subTest(label=label), self.assertRaisesRegex(
+                ValueError, "formal_computation_adapter_v2_modules_invalid"
+            ):
+                _bundle_formal_capsule(capsule, "ReweaveAdapterV2Invalid")
+
+    def test_formal_composer_rejects_tampered_computation_adapter_v2(self) -> None:
+        capsule = _capsule_payload("computation")
+        capsule.update(
+            candidate_origin="deterministic_computation_adapter",
+            adapter_contract_version="computation_adapter.v2",
+        )
+        capsule["error_contract"] = _adapter_errors()
+        capsule["activation"] = {
+            "mode": "declared_input_compute",
+            "entry_module": "__reweave_adapter__/compute.js",
+            "entrypoint": "compute",
+        }
+        adapter = generate_computation_adapter_v2(
+            ["quantity"], capsule["input_contract"], capsule["output_contract"]
+        )
+        capsule["javascript_modules"] = [
+            {
+                "path": "__reweave_adapter__/compute.js",
+                "source": adapter.replace(
+                    "const result = __source(input.quantity);",
+                    "const result = __source(input.quantity) + 1;",
+                ),
+            },
+            {
+                "path": "__reweave_capture__/selected.js",
+                "source": "export function __selected(quantity) { return quantity * 2; }\n",
+            },
+        ]
+        with self.assertRaisesRegex(
+            ValueError, "computation_adapter_authorization_invalid"
+        ):
+            _bundle_formal_capsule(capsule, "ReweaveAdapterV2Tampered")
+
+    def test_formal_composer_does_not_apply_v2_module_rule_to_plain_computation(self) -> None:
+        capsule = _capsule_payload("computation")
+        capsule["javascript_modules"] = [
+            {
+                "path": "computation.js",
+                "source": (
+                    'import { factor } from "./helper.js";\n'
+                    "export function compute(input) {\n"
+                    "  return {ok: true, value: {total: input.quantity * factor}};\n"
+                    "}\n"
+                ),
+            },
+            {
+                "path": "helper.js",
+                "source": "export const factor = 2;\n",
+            },
+        ]
+
+        bundle = _bundle_formal_capsule(capsule, "ReweavePlainComputation")
+
+        self.assertIn("ReweavePlainComputation", bundle)
 
     def test_formal_runtime_rejects_values_outside_data_contract(self) -> None:
         if not (ROOT / "node_modules" / "esbuild" / "package.json").is_file():

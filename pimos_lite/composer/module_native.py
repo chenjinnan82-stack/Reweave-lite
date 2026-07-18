@@ -81,6 +81,13 @@ REGION_MERGE_CONTRACT_VERSION = "module_native_region_merge_contract.v1"
 WIRING_RECEIPT_VERSION = "module_native_wiring_receipt.v1"
 FORMAL_PRODUCT_COMPOSER_VERSION = "module_native_formal_product.v1"
 FORMAL_PRODUCT_MANIFEST_VERSION = "module_native_product_composition.v1"
+DETERMINISTIC_COMPUTATION_ADAPTER = "deterministic_computation_adapter"
+COMPUTATION_ADAPTER_V1 = "computation_adapter.v1"
+COMPUTATION_ADAPTER_V2 = "computation_adapter.v2"
+COMPUTATION_ADAPTER_V2_MODULES = {
+    "__reweave_adapter__/compute.js",
+    "__reweave_capture__/selected.js",
+}
 FORMAL_PRODUCT_CSP = (
     "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; "
     "font-src 'none'; connect-src 'none'; object-src 'none'; frame-src 'none'; "
@@ -237,9 +244,15 @@ def _normalize_formal_capsule(value: Any) -> dict[str, Any]:
         "error_contract", "runtime_allowlist", "dom_scope", "usage_scope", "html",
         "css", "javascript_modules", "assets",
     }
-    if type(value) is not dict or set(value) != required:
+    origin_fields = {"candidate_origin", "adapter_contract_version"}
+    if type(value) is not dict or set(value) not in {
+        frozenset(required),
+        frozenset(required | origin_fields),
+    }:
         raise ValueError("formal_capsule_object_invalid")
     row = dict(value)
+    row.setdefault("candidate_origin", None)
+    row.setdefault("adapter_contract_version", None)
     for key in ("capsule_id", "version_id"):
         if type(row[key]) is not str or not re.fullmatch(r"[A-Za-z0-9_-]{3,128}", row[key]):
             raise ValueError("formal_capsule_identity_invalid")
@@ -249,6 +262,14 @@ def _normalize_formal_capsule(value: Any) -> dict[str, Any]:
     kind = row["capability_kind"]
     if kind not in {"presentation", "interaction", "computation"}:
         raise ValueError("formal_capsule_kind_invalid")
+    origin = row["candidate_origin"]
+    adapter_version = row["adapter_contract_version"]
+    if (origin, adapter_version) != (None, None) and not (
+        kind == "computation"
+        and origin == DETERMINISTIC_COMPUTATION_ADAPTER
+        and adapter_version in {COMPUTATION_ADAPTER_V1, COMPUTATION_ADAPTER_V2}
+    ):
+        raise ValueError("formal_capsule_origin_invalid")
     try:
         input_contract, output_contract, error_contract = normalize_capsule_contracts(
             kind, row["input_contract"], row["output_contract"], row["error_contract"]
@@ -263,6 +284,7 @@ def _normalize_formal_capsule(value: Any) -> dict[str, Any]:
         raise ValueError("interaction_single_event_required_v1")
     activation = _normalize_activation(kind, row["activation"])
     modules = _normalize_modules(row["javascript_modules"], activation)
+    _assert_computation_adapter_v2_modules(row, modules)
     assets = _normalize_assets(row["assets"])
     runtime = _normalize_runtime_allowlist(kind, row["runtime_allowlist"], bool(assets))
     dom_scope = _normalize_dom_scope(kind, row["dom_scope"])
@@ -331,6 +353,21 @@ def _normalize_modules(value: Any, activation: dict[str, str]) -> list[dict[str,
     if activation["entry_module"] not in paths or result != sorted(result, key=lambda item: item["path"]):
         raise ValueError("formal_capsule_modules_not_normalized")
     return result
+
+
+def _assert_computation_adapter_v2_modules(
+    capsule: dict[str, Any], modules: list[dict[str, str]]
+) -> None:
+    if (
+        capsule.get("candidate_origin") == DETERMINISTIC_COMPUTATION_ADAPTER
+        and capsule.get("adapter_contract_version") == COMPUTATION_ADAPTER_V2
+        and (
+            len(modules) != len(COMPUTATION_ADAPTER_V2_MODULES)
+            or {item["path"] for item in modules}
+            != COMPUTATION_ADAPTER_V2_MODULES
+        )
+    ):
+        raise ValueError("formal_computation_adapter_v2_modules_invalid")
 
 
 def _normalize_assets(value: Any) -> list[dict[str, Any]]:
@@ -511,12 +548,19 @@ def _run_formal_analyzer(payload: dict[str, Any]) -> None:
 
 def _bundle_formal_capsule(capsule: dict[str, Any], global_name: str) -> str:
     root = Path(__file__).resolve().parents[2]
+    _assert_computation_adapter_v2_modules(
+        capsule, capsule["javascript_modules"]
+    )
     _run_formal_analyzer({
         "mode": "candidate",
         "capability_kind": capsule["capability_kind"],
+        "candidate_origin": capsule.get("candidate_origin"),
+        "adapter_contract_version": capsule.get("adapter_contract_version"),
         "activation": capsule["activation"],
         "dom_scope": capsule["dom_scope"],
+        "input_contract": capsule["input_contract"],
         "output_contract": capsule["output_contract"],
+        "error_contract": capsule["error_contract"],
         "javascript_modules": capsule["javascript_modules"],
         "redact_strings": [],
     })

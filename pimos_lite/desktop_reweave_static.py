@@ -208,6 +208,34 @@ class ReweaveBridge:
                 return self._phase4_call("confirm_projects", payload_json)
 
             @Slot(str, result=str)
+            def register_javascript_computation_source(
+                self, payload_json: str = ""
+            ) -> str:
+                return self._phase4_call(
+                    "register_javascript_computation_source", payload_json
+                )
+
+            @Slot(str, result=str)
+            def start_scan_javascript_computations(
+                self, payload_json: str = ""
+            ) -> str:
+                return self._phase4_call(
+                    "start_scan_javascript_computations", payload_json
+                )
+
+            @Slot(str, result=str)
+            def start_inspect_computation_adapters(self, payload_json: str = "") -> str:
+                return self._phase4_call(
+                    "start_inspect_computation_adapters", payload_json
+                )
+
+            @Slot(str, result=str)
+            def start_create_computation_adapter(self, payload_json: str = "") -> str:
+                return self._phase4_call(
+                    "start_create_computation_adapter", payload_json
+                )
+
+            @Slot(str, result=str)
             def start_refresh_project(self, payload_json: str = "") -> str:
                 return self._phase4_call("start_refresh_project", payload_json)
 

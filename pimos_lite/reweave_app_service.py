@@ -23,18 +23,21 @@ from typing import Any
 
 from pimos_lite.composer.module_native import compose_capsule_product
 from pimos_lite.reweave_capsule_intake import (
+    COMPUTATION_ADAPTER_CONTRACT_VERSION,
     EXTRACTION_CONTRACT_VERSION,
     REDACTION_RULES_VERSION,
     IntakeError,
     ReweaveCapsuleIntake,
 )
 from pimos_lite.reweave_capsule_stage3 import (
+    COMPUTATION_ADAPTER_V2,
     OllamaSupervisor,
     ReweaveCapsuleStage3,
     SECURITY_RULES_VERSION,
     Stage3Error,
     SUPERVISION_RULES_VERSION,
     VALIDATION_CONTRACT_VERSION,
+    inspect_ephemeral_computation_offers_v2,
 )
 from pimos_lite.reweave_capsule_store import (
     BACKUP_DIRECTORY,
@@ -44,6 +47,12 @@ from pimos_lite.reweave_capsule_store import (
     canonicalize_capsule,
 )
 from pimos_lite.reweave_process_environment import restricted_subprocess_environment
+from pimos_lite.reweave_javascript_source import (
+    JAVASCRIPT_SOURCE_TYPE,
+    JavascriptScopeSnapshot,
+    JavascriptSourceError,
+    JavascriptSourceService,
+)
 from pimos_lite.reweave_source_registry import state_dir
 
 APP_SERVICE_VERSION = "v2"
@@ -82,6 +91,10 @@ CAPSULE_MANAGEMENT_ACTIONS = frozenset(
     {
         "discover_source_root",
         "confirm_projects",
+        "register_javascript_computation_source",
+        "start_scan_javascript_computations",
+        "start_inspect_computation_adapters",
+        "start_create_computation_adapter",
         "start_refresh_project",
         "start_refresh_all",
         "get_intake_run",
@@ -653,6 +666,7 @@ class ReweaveAppService:
             intake=self._capsule_intake,
             supervisor=self._capsule_supervisor,
         )
+        self._javascript_sources = JavascriptSourceService(self._capsule_store)
         self._ollama_base_url = ollama_base_url
         self._management_lock = threading.RLock()
         self._capsule_operation_lock = threading.RLock()
@@ -662,6 +676,8 @@ class ReweaveAppService:
         self._management_closed = False
         self._management_recovered = False
         self._management_rules_checked = False
+        # Process-local by contract: source bytes, graphs, and offers never enter SQLite.
+        self._javascript_capture_sessions: dict[str, dict[str, Any]] = {}
 
     @property
     def engine(self) -> Any:
@@ -817,6 +833,7 @@ class ReweaveAppService:
             self._management_closed = True
             for task in self._management_tasks.values():
                 task["cancel_event"].set()
+            self._javascript_capture_sessions.clear()
             executor = self._management_executor
         if executor is not None:
             executor.shutdown(wait=True, cancel_futures=False)
@@ -990,7 +1007,17 @@ class ReweaveAppService:
         comparison = item.get("comparison") or {}
         current_status = str(item.get("candidate_status") or "")
         allowed: list[str] = []
-        if current_status in {
+        requires_reextract = (
+            candidate.get("candidate_origin")
+            == "deterministic_computation_adapter"
+            and candidate.get("requires_reextract") is True
+        )
+        ephemeral_capture = (
+            requires_reextract
+            and candidate.get("adapter_contract_version") == COMPUTATION_ADAPTER_V2
+            and candidate.get("resume_contract") == "resubmit_ephemeral_capture.v1"
+        )
+        if not requires_reextract and current_status in {
             "extracted",
             "waiting_user",
             "waiting_model",
@@ -1005,7 +1032,9 @@ class ReweaveAppService:
                 or failure_code == "sensitivity_confirmation_required_stage3"
             ):
                 allowed.extend(
-                    [
+                    ["confirm_fictional_fixture", "confirm_real_record_reject"]
+                    if ephemeral_capture
+                    else [
                         "confirm_fictional_fixture",
                         "confirm_safe_redaction",
                         "confirm_real_record_reject",
@@ -1015,7 +1044,17 @@ class ReweaveAppService:
                 "brand_confirmation_required" in codes
                 or failure_code == "brand_confirmation_required"
             ):
-                allowed.extend(["remove_brand", "retain_brand_limited"])
+                allowed.extend(
+                    ["retain_brand_limited"]
+                    if ephemeral_capture
+                    else ["remove_brand", "retain_brand_limited"]
+                )
+            if (
+                ephemeral_capture
+                and item.get("enum_decision") is None
+                and "enumeration_confirmation_required" in codes
+            ):
+                allowed.append("confirm_selected_string_enumeration")
             if item.get("asset_decision") is None and (
                 failure_code == "asset_content_confirmation_required_stage3"
             ):
@@ -1104,24 +1143,66 @@ class ReweaveAppService:
                     VALIDATION_CONTRACT_VERSION,
                 ),
             ).fetchall()
-            for row in rows:
-                connection.execute(
+            stale = {
+                str(row["capsule_id"]): (str(row["current_version_id"]), "rule_version_changed")
+                for row in rows
+            }
+            adapter_rows = connection.execute(
+                "SELECT c.status, c.current_version_id, c.capability_kind, cv.* "
+                "FROM capsules c JOIN capsule_versions cv "
+                "ON cv.version_id = c.current_version_id WHERE c.status = 'active'"
+            ).fetchall()
+            for row in adapter_rows:
+                try:
+                    summary = json.loads(row["extraction_summary_json"])
+                except (TypeError, json.JSONDecodeError):
+                    continue
+                if type(summary) is not dict or summary.get(
+                    "candidate_origin"
+                ) != "deterministic_computation_adapter":
+                    continue
+                adapter_version = summary.get("adapter_contract_version")
+                if adapter_version not in {
+                    COMPUTATION_ADAPTER_CONTRACT_VERSION,
+                    COMPUTATION_ADAPTER_V2,
+                }:
+                    stale[str(row["capsule_id"])] = (
+                        str(row["current_version_id"]),
+                        "adapter_contract_version_changed",
+                    )
+                elif (
+                    adapter_version == COMPUTATION_ADAPTER_V2
+                    and not self._capsule_stage3._stored_version_evidence_eligible(
+                        dict(row)
+                    )
+                ):
+                    stale[str(row["capsule_id"])] = (
+                        str(row["current_version_id"]),
+                        "adapter_evidence_version_changed",
+                    )
+            status_changes = 0
+            for capsule_id, (version_id, reason_code) in stale.items():
+                changed = connection.execute(
                     "UPDATE capsules SET status = 'pending_revalidation' "
-                    "WHERE capsule_id = ? AND status = 'active'",
-                    (row["capsule_id"],),
-                )
+                    "WHERE capsule_id = ? AND current_version_id = ? "
+                    "AND status = 'active'",
+                    (capsule_id, version_id),
+                ).rowcount
+                if changed != 1:
+                    continue
+                status_changes += 1
                 connection.execute(
                     "INSERT INTO capsule_status_events VALUES (?, ?, "
                     "'revalidation_required', 'active', 'pending_revalidation', ?, ?, ?)",
                     (
                         f"evt_{uuid.uuid4().hex}",
-                        row["capsule_id"],
-                        row["current_version_id"],
-                        "rule_version_changed",
+                        capsule_id,
+                        version_id,
+                        reason_code,
                         now,
                     ),
                 )
-            if rows:
+            if status_changes:
                 self._capsule_store.bump_revision(connection)
 
     def _executor(self) -> ThreadPoolExecutor:
@@ -1497,6 +1578,311 @@ class ReweaveAppService:
         except ValueError as exc:
             return self._exception_error(exc, "refresh_project_invalid")
 
+    def _javascript_owner_for_project(self, project_id: str) -> str:
+        """Resolve a static or JavaScript row to the one computation owner."""
+
+        self._ensure_javascript_schema()
+        with self._capsule_store.read_connection() as connection:
+            row = connection.execute(
+                "SELECT project_id, source_root_id, source_type, project_relpath "
+                "FROM projects WHERE project_id = ?",
+                (project_id,),
+            ).fetchone()
+        if row is None:
+            raise JavascriptSourceError("project_not_found")
+        if row["source_type"] == JAVASCRIPT_SOURCE_TYPE:
+            return str(row["project_id"])
+        if row["source_type"] != "static_web":
+            raise JavascriptSourceError("source_type_unsupported_v1")
+        owner = self._javascript_sources.ensure_owner(
+            str(row["source_root_id"]), str(row["project_relpath"])
+        )
+        return str(owner["project_id"])
+
+    def _ensure_javascript_schema(self) -> None:
+        """Enter the already-tested v2 schema only when the user invokes capture."""
+
+        self._ensure_capsule_management()
+        with self._capsule_store.read_connection() as connection:
+            version = int(connection.execute("PRAGMA user_version").fetchone()[0])
+        if version == 1:
+            self._capsule_store.migrate_v1_to_v2()
+            with self._management_lock:
+                self._management_recovered = False
+                self._management_rules_checked = False
+            self._ensure_capsule_management()
+        elif version != 2:
+            raise JavascriptSourceError("javascript_source_schema_unsupported")
+        self._javascript_sources.check_unique_owners()
+
+    @_serialized_management
+    def register_javascript_computation_source(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            self._ensure_javascript_schema()
+            request = self._payload(payload)
+            if set(request) - {"source_root_id", "project_relpath", "display_name"}:
+                return self._error("javascript_source_registration_invalid")
+            root_id = str(request.get("source_root_id") or "").strip()
+            project_relpath = str(request.get("project_relpath") or ".").strip()
+            display_name = str(request.get("display_name") or "").strip()
+            if not root_id or not display_name or len(display_name) > 200:
+                return self._error("javascript_source_registration_invalid")
+            owner = self._javascript_sources.ensure_owner(root_id, project_relpath)
+            project_id = str(owner["project_id"])
+            with self._capsule_store.transaction() as connection:
+                changed = connection.execute(
+                    "UPDATE projects SET display_name = ?, updated_at = ? "
+                    "WHERE project_id = ? AND source_type = ?",
+                    (display_name, _now(), project_id, JAVASCRIPT_SOURCE_TYPE),
+                ).rowcount
+                if changed != 1:
+                    raise JavascriptSourceError("javascript_source_registration_failed")
+                self._capsule_store.bump_revision(connection)
+            result = {**owner, "display_name": display_name}
+            return self._ok(result)
+        except (
+            CapsuleStoreError,
+            JavascriptSourceError,
+            OSError,
+            ValueError,
+            sqlite3.Error,
+        ) as exc:
+            return self._exception_error(exc, "javascript_source_registration_failed")
+
+    def start_scan_javascript_computations(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if set(request) != {"project_id"}:
+                return self._error("javascript_computation_scan_invalid")
+            project_id = str(request.get("project_id") or "").strip()
+            if not project_id:
+                return self._error("project_id_required")
+
+            def action(cancel: threading.Event) -> dict[str, Any]:
+                owner_id = self._javascript_owner_for_project(project_id)
+                snapshot = self._javascript_sources.scan(
+                    owner_id, cancel_event=cancel
+                )
+                inspection = inspect_ephemeral_computation_offers_v2(snapshot)
+                offers = inspection.get("offers")
+                if (
+                    inspection.get("schema") != "computation_capture_offers.v2"
+                    or inspection.get("project_id") != owner_id
+                    or type(offers) is not list
+                    or any(
+                        type(item) is not dict
+                        or type(item.get("offer_id")) is not str
+                        or not item["offer_id"]
+                        for item in offers
+                    )
+                ):
+                    raise Stage3Error("unclassified_internal_result")
+                by_offer = {str(item["offer_id"]): dict(item) for item in offers}
+                if len(by_offer) != len(offers):
+                    raise Stage3Error("unclassified_internal_result")
+                with self._management_lock:
+                    self._javascript_capture_sessions[owner_id] = {
+                        "snapshot": snapshot,
+                        "offers": by_offer,
+                        "consumed": {},
+                    }
+                return inspection
+
+            return self._submit_management_task(
+                "scan_javascript_computations", action, cancellable=True
+            )
+        except ValueError as exc:
+            return self._exception_error(exc, "javascript_computation_scan_invalid")
+
+    def _ephemeral_capture_request(
+        self, request: dict[str, Any], cancel: threading.Event
+    ) -> dict[str, Any]:
+        project_id = str(request.get("project_id") or "").strip()
+        offer_id = str(request.get("offer_id") or "").strip()
+        review_id_value = request.get("review_id")
+        review_id = (
+            str(review_id_value).strip() if review_id_value is not None else None
+        )
+        with self._management_lock:
+            session = self._javascript_capture_sessions.get(project_id)
+            if session is None:
+                raise Stage3Error("offer_stale")
+            offer = session["offers"].get(offer_id)
+            consumed_by = session["consumed"].get(offer_id)
+            if offer is None or (
+                consumed_by is not None and consumed_by != review_id
+            ):
+                raise Stage3Error("offer_stale")
+            snapshot = session["snapshot"]
+        if not isinstance(snapshot, JavascriptScopeSnapshot):
+            raise Stage3Error("offer_stale")
+        if cancel.is_set():
+            raise Stage3Error("scan_cancelled")
+        mapping = {
+            "arguments": request.get("arguments"),
+            "result_field": request.get("result_field"),
+            "examples": request.get("examples"),
+        }
+        selection = {
+            "module_relpath": offer.get("module_relpath"),
+            "export_name": offer.get("export_name"),
+            "target_binding_id": offer.get("target_binding_id"),
+        }
+        prepared = self._capsule_stage3.prepare_ephemeral_computation_capture_v2(
+            snapshot,
+            selection,
+            mapping,
+            review_id=review_id,
+        )
+        if type(prepared) is dict:
+            status = str(prepared.get("status") or "")
+            returned_review = prepared.get("review_id")
+            with self._management_lock:
+                current = self._javascript_capture_sessions.get(project_id)
+                if current is session and status == "waiting_user":
+                    current["consumed"][offer_id] = returned_review
+                elif current is session and status == "rejected":
+                    current["offers"].pop(offer_id, None)
+            return prepared
+        outcome = self._capsule_stage3.process_ephemeral_capture(prepared)
+        with self._management_lock:
+            current = self._javascript_capture_sessions.get(project_id)
+            if current is session:
+                current["offers"].pop(offer_id, None)
+                current["consumed"].pop(offer_id, None)
+        return outcome
+
+    def start_inspect_computation_adapters(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            project_id = str(request.get("project_id") or "").strip()
+            if not project_id:
+                return self._error("project_id_required")
+            return self._submit_management_task(
+                "inspect_computation_adapters",
+                lambda cancel: self._capsule_intake.inspect_computation_adapters(
+                    project_id,
+                    cancel_check=cancel.is_set,
+                ),
+                cancellable=True,
+            )
+        except ValueError as exc:
+            return self._exception_error(exc, "inspect_computation_adapters_invalid")
+
+    def start_create_computation_adapter(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            project_id = str(request.get("project_id") or "").strip()
+            offer_id = str(request.get("offer_id") or "").strip()
+            if not project_id:
+                return self._error("project_id_required")
+            if not offer_id:
+                return self._error("adapter_mapping_invalid")
+
+            with self._management_lock:
+                is_ephemeral_v2 = project_id in self._javascript_capture_sessions
+            if is_ephemeral_v2:
+                allowed_keys = {
+                    "project_id",
+                    "offer_id",
+                    "review_id",
+                    "arguments",
+                    "result_field",
+                    "examples",
+                }
+                if set(request) - allowed_keys:
+                    return self._error("capture_request_invalid")
+                return self._submit_management_task(
+                    "create_javascript_computation_capture",
+                    lambda cancel: self._ephemeral_capture_request(request, cancel),
+                    cancellable=True,
+                )
+            if request.get("review_id") is not None:
+                return self._error("capture_resubmission_required")
+            if self._capsule_store.path.is_file():
+                with self._capsule_store.read_connection() as connection:
+                    version = int(
+                        connection.execute("PRAGMA user_version").fetchone()[0]
+                    )
+                    project_row = (
+                        connection.execute(
+                            "SELECT source_type FROM projects WHERE project_id = ?",
+                            (project_id,),
+                        ).fetchone()
+                        if version == 2
+                        else None
+                    )
+                if (
+                    project_row is not None
+                    and project_row["source_type"] == JAVASCRIPT_SOURCE_TYPE
+                ):
+                    return self._error("offer_stale")
+            # Client-supplied source paths and hashes are deliberately discarded.
+            adapter_request = {
+                "project_id": project_id,
+                "offer_id": offer_id,
+                "arguments": request.get("arguments"),
+                "result_field": request.get("result_field"),
+                "examples": request.get("examples"),
+            }
+
+            def action(cancel: threading.Event) -> dict[str, Any]:
+                intake_result = (
+                    self._capsule_intake.create_computation_adapter_candidate(
+                        adapter_request,
+                        cancel_check=cancel.is_set,
+                        validator=self._capsule_stage3.preflight_computation_adapter,
+                    )
+                )
+                gate_results: list[dict[str, Any]] = []
+                cancelled_before_completion = False
+                for review_id in intake_result.get("review_ids", []):
+                    with self._capsule_store.read_connection() as connection:
+                        row = connection.execute(
+                            "SELECT candidate_status FROM review_items WHERE review_id = ?",
+                            (review_id,),
+                        ).fetchone()
+                    if row is None or row["candidate_status"] != "extracted":
+                        continue
+                    if cancel.is_set():
+                        cancelled_before_completion = True
+                        break
+                    try:
+                        gate_results.append(
+                            self._capsule_stage3.process_review(str(review_id))
+                        )
+                    except Stage3Error as exc:
+                        gate_results.append(
+                            {
+                                "review_id": str(review_id),
+                                "status": "failed",
+                                "error_code": exc.code,
+                            }
+                        )
+                return {
+                    "status": (
+                        "cancelled" if cancelled_before_completion else "completed"
+                    ),
+                    "intake": intake_result,
+                    "gate_results": gate_results,
+                }
+
+            return self._submit_management_task(
+                "create_computation_adapter",
+                action,
+                cancellable=True,
+            )
+        except ValueError as exc:
+            return self._exception_error(exc, "create_computation_adapter_invalid")
+
     def start_refresh_all(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         try:
             self._payload(payload)
@@ -1645,6 +2031,8 @@ class ReweaveAppService:
                         "sensitivity_decision",
                         "brand_decision",
                         "asset_decision",
+                        "enum_decision",
+                        "enum_decision_binding_sha256",
                         "decision",
                         "retained_version_id",
                         "created_at",
@@ -1663,6 +2051,19 @@ class ReweaveAppService:
                     except (TypeError, json.JSONDecodeError):
                         item[target] = None
                 item["allowed_decisions"] = self._allowed_review_decisions(item)
+                candidate = item.get("candidate") or {}
+                item["resume_contract"] = candidate.get("resume_contract")
+                if item["resume_contract"] == "resubmit_ephemeral_capture.v1":
+                    redaction = item.get("redaction") or {}
+                    item["capture_summary"] = {
+                        key: redaction.get(key)
+                        for key in (
+                            "ambiguous_count",
+                            "brand_count",
+                            "enumeration_parameter_count",
+                            "enumeration_value_count",
+                        )
+                    }
                 if not status and not item["allowed_decisions"]:
                     continue
                 items.append(item)
@@ -1694,6 +2095,51 @@ class ReweaveAppService:
                 return self._error("review_item_not_found")
             if decision not in item["allowed_decisions"]:
                 return self._error("review_decision_not_allowed")
+            candidate = item.get("candidate") or {}
+            ephemeral_capture = (
+                candidate.get("candidate_origin")
+                == "deterministic_computation_adapter"
+                and candidate.get("adapter_contract_version")
+                == COMPUTATION_ADAPTER_V2
+                and item.get("resume_contract")
+                == "resubmit_ephemeral_capture.v1"
+            )
+            if ephemeral_capture and decision in {
+                "confirm_fictional_fixture",
+                "confirm_real_record_reject",
+                "retain_brand_limited",
+                "confirm_selected_string_enumeration",
+            }:
+                binding = str(
+                    (item.get("redaction") or {}).get(
+                        "enum_decision_binding_sha256"
+                    )
+                    or ""
+                )
+                if not re.fullmatch(r"[0-9a-f]{64}", binding):
+                    return self._error("capture_decision_rebuild_required")
+                kwargs: dict[str, str] = {}
+                if decision in {
+                    "confirm_fictional_fixture",
+                    "confirm_real_record_reject",
+                }:
+                    kwargs["sensitivity_decision"] = decision
+                elif decision == "retain_brand_limited":
+                    kwargs["brand_decision"] = decision
+                else:
+                    kwargs["enum_decision"] = decision
+                recorded = self._capsule_stage3.record_ephemeral_capture_decisions(
+                    review_id,
+                    binding,
+                    **kwargs,
+                )
+                return self._ok(
+                    {
+                        **recorded,
+                        "capture_resubmission_required": True,
+                        "resume_contract": "resubmit_ephemeral_capture.v1",
+                    }
+                )
             if decision in {
                 "confirm_fictional_fixture",
                 "confirm_safe_redaction",
@@ -2754,6 +3200,27 @@ class ReweaveAppService:
                 row = by_id[capsule_id]
                 if not self._capsule_stage3._eligible_exact(row):
                     raise ProductGenerationError("formal_capsule_not_generation_eligible")
+                try:
+                    extraction_summary = _strict_json_bytes(
+                        str(row["extraction_summary_json"]).encode("utf-8")
+                    )
+                except (UnicodeError, ValueError, json.JSONDecodeError) as exc:
+                    raise ProductGenerationError(
+                        "formal_capsule_contract_invalid"
+                    ) from exc
+                if type(extraction_summary) is not dict:
+                    raise ProductGenerationError("formal_capsule_contract_invalid")
+                candidate_origin = extraction_summary.get("candidate_origin")
+                adapter_contract_version = extraction_summary.get(
+                    "adapter_contract_version"
+                )
+                if candidate_origin is not None and type(candidate_origin) is not str:
+                    raise ProductGenerationError("formal_capsule_contract_invalid")
+                if (
+                    adapter_contract_version is not None
+                    and type(adapter_contract_version) is not str
+                ):
+                    raise ProductGenerationError("formal_capsule_contract_invalid")
                 values: dict[str, Any] = {}
                 for source, target in (
                     ("activation_json", "activation"),
@@ -2834,6 +3301,8 @@ class ReweaveAppService:
                         "role_key": str(row["role_key"]),
                         "variant_key": str(row["variant_key"]),
                         "capability_kind": str(row["capability_kind"]),
+                        "candidate_origin": candidate_origin,
+                        "adapter_contract_version": adapter_contract_version,
                         "activation": values["activation"],
                         "input_contract": values["input_contract"],
                         "output_contract": values["output_contract"],

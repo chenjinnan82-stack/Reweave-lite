@@ -41,6 +41,10 @@ def test_phase4_bridge_forwards_json_payloads_to_app_service() -> None:
     methods = (
         "discover_source_root",
         "confirm_projects",
+        "register_javascript_computation_source",
+        "start_scan_javascript_computations",
+        "start_inspect_computation_adapters",
+        "start_create_computation_adapter",
         "start_refresh_project",
         "start_refresh_all",
         "get_intake_run",

@@ -1,8 +1,4 @@
-"""Non-active SQLite foundation for the Reweave capsule warehouse.
-
-Phase 1 only: this module is intentionally not imported by the current app,
-CLI, frontend, composer, or legacy JSON warehouse.
-"""
+"""SQLite store for the Reweave capsule warehouse."""
 
 from __future__ import annotations
 
@@ -11,6 +7,7 @@ import json
 import os
 import shutil
 import sqlite3
+import stat
 import tempfile
 import threading
 import unicodedata
@@ -42,7 +39,7 @@ _STORE_OPERATION_LOCK = threading.RLock()
 _EXCLUSIVE_DATABASES: set[str] = set()
 _SCHEMA_FINGERPRINT_SHA256 = {
     1: "31ca94b97ad9e6539f9d62f5938759232aa1a6f3cdac49950962f03555b48bd1",
-    2: "061f95e5228cfbd297f975ea4ba1d2d971b36ae76e197cc673381aa5486d1ec2",
+    2: "2f5c245eee172d57abc065d1c63ad76e11925aec6a021d586a9384c4cbde2ada",
 }
 _CANONICAL_FIELDS = frozenset(
     {
@@ -974,8 +971,10 @@ CREATE TABLE project_file_index (
         (
             entry_kind = 'javascript_module'
             AND size_bytes IS NOT NULL
+            AND typeof(size_bytes) = 'integer'
             AND size_bytes >= 0
             AND content_sha256 IS NOT NULL
+            AND typeof(content_sha256) = 'text'
             AND length(content_sha256) = 64
             AND content_sha256 NOT GLOB '*[^0-9a-f]*'
         )
@@ -1086,7 +1085,8 @@ CREATE TABLE review_items (
     enum_decision_binding_sha256 TEXT CHECK (
         enum_decision_binding_sha256 IS NULL
         OR (
-            length(enum_decision_binding_sha256) = 64
+            typeof(enum_decision_binding_sha256) = 'text'
+            AND length(enum_decision_binding_sha256) = 64
             AND enum_decision_binding_sha256 NOT GLOB '*[^0-9a-f]*'
         )
     ),
@@ -2377,18 +2377,20 @@ class CapsuleWarehouseStore:
         result: list[dict[str, Any]] = []
         for path in sorted(
             backup_root.glob("capsule_warehouse.*.sqlite3"),
-            key=lambda item: item.stat().st_mtime_ns,
+            key=_backup_mtime_ns,
             reverse=True,
         ):
             row: dict[str, Any] = {
                 "path": str(path),
-                "sha256": _sha256_file(path),
-                "valid": True,
+                "sha256": None,
+                "valid": False,
             }
             try:
-                row.update(_verify_database(path))
-            except (OSError, sqlite3.Error, CapsuleStoreError) as exc:
-                row["valid"] = False
+                resolved = _resolve_backup_path(path, self.path)
+                row["sha256"] = _sha256_file(resolved)
+                row.update(_verify_database(resolved))
+                row["valid"] = True
+            except (OSError, RuntimeError, sqlite3.Error, CapsuleStoreError) as exc:
                 row["error"] = str(exc)
             result.append(row)
         return result
@@ -2489,11 +2491,7 @@ class CapsuleWarehouseStore:
         preview: dict[str, Any],
         expected_sha256: str,
     ) -> dict[str, Any]:
-        target_version = (
-            int(preview["current_user_version"])
-            if preview["current_user_version"] is not None
-            else int(preview["user_version"])
-        )
+        target_version = TARGET_SCHEMA_VERSION
         backup_version = int(preview["user_version"])
         if backup_version > target_version:
             raise SchemaVersionError(
@@ -2623,13 +2621,51 @@ class CapsuleWarehouseStore:
         if keep is None:
             return
         backup_root = self.path.parent / BACKUP_DIRECTORY
-        matches = sorted(
-            backup_root.glob(f"capsule_warehouse.{kind}.*.sqlite3"),
-            key=lambda item: item.stat().st_mtime_ns,
-            reverse=True,
-        )
-        for path in matches[keep:]:
-            path.unlink()
+        matches: list[tuple[Path, tuple[int, int, int, int, int]]] = []
+        for path in backup_root.glob(f"capsule_warehouse.{kind}.*.sqlite3"):
+            try:
+                resolved = _resolve_backup_path(path, self.path)
+                before = resolved.lstat()
+                if not stat.S_ISREG(before.st_mode):
+                    continue
+                _verify_database(resolved)
+                after = resolved.lstat()
+                identity = (
+                    int(before.st_dev),
+                    int(before.st_ino),
+                    int(before.st_size),
+                    int(before.st_mtime_ns),
+                    int(before.st_ctime_ns),
+                )
+                if identity != (
+                    int(after.st_dev),
+                    int(after.st_ino),
+                    int(after.st_size),
+                    int(after.st_mtime_ns),
+                    int(after.st_ctime_ns),
+                ):
+                    continue
+                matches.append((path, identity))
+            except (OSError, RuntimeError, sqlite3.Error, CapsuleStoreError):
+                continue
+        matches.sort(key=lambda item: item[1][3], reverse=True)
+        for path, expected in matches[keep:]:
+            try:
+                current = path.lstat()
+                if (
+                    stat.S_ISREG(current.st_mode)
+                    and (
+                        int(current.st_dev),
+                        int(current.st_ino),
+                        int(current.st_size),
+                        int(current.st_mtime_ns),
+                        int(current.st_ctime_ns),
+                    )
+                    == expected
+                ):
+                    path.unlink()
+            except OSError:
+                continue
 
 
 def _object_names(connection: sqlite3.Connection, object_type: str) -> set[str]:
@@ -2905,6 +2941,16 @@ def _assert_persistent_data_invariants(connection: sqlite3.Connection) -> None:
         if connection.execute(query).fetchone() is not None:
             raise CapsuleStoreError(f"persistent data invariant failed: {name}")
     if int(connection.execute("PRAGMA user_version").fetchone()[0]) == TARGET_SCHEMA_VERSION:
+        if connection.execute(
+            "SELECT 1 FROM review_items "
+            "WHERE enum_decision_binding_sha256 IS NOT NULL AND ("
+            "typeof(enum_decision_binding_sha256) <> 'text' "
+            "OR length(enum_decision_binding_sha256) <> 64 "
+            "OR enum_decision_binding_sha256 GLOB '*[^0-9a-f]*') LIMIT 1"
+        ).fetchone() is not None:
+            raise CapsuleStoreError(
+                "persistent data invariant failed: review_enum_decision_binding"
+            )
         _assert_project_file_index_invariants(connection)
     _assert_canonical_versions(connection)
 
@@ -3173,6 +3219,13 @@ def _resolve_backup_path(path: str | Path, database_path: Path) -> Path:
     if not resolved.is_file():
         raise CapsuleStoreError(f"backup not found: {resolved}")
     return resolved
+
+
+def _backup_mtime_ns(path: Path) -> int:
+    try:
+        return int(path.lstat().st_mtime_ns)
+    except OSError:
+        return -1
 
 
 def _assert_no_database_sidecars(path: Path) -> None:

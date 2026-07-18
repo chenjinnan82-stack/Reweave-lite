@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import hashlib
 import html
 import json
@@ -13,8 +14,10 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import uuid
-from dataclasses import dataclass
+from contextlib import contextmanager
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path, PurePosixPath
@@ -24,6 +27,8 @@ from urllib.parse import urlparse
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from pimos_lite.reweave_capsule_intake import (
+    COMPUTATION_ADAPTER_CONTRACT_VERSION,
+    COMPUTATION_ADAPTER_ENTRY,
     EXTRACTION_CONTRACT_VERSION,
     IntakeError,
     REDACTION_RULES_VERSION,
@@ -36,10 +41,17 @@ from pimos_lite.reweave_capsule_store import (
     canonicalize_capsule,
 )
 from pimos_lite.reweave_data_contract import (
+    MAX_SAFE_INTEGER,
     DataContractError,
+    _utf16_length,
     data_contract_accepts,
     generate_synthetic_fixtures,
     normalize_capsule_contracts,
+)
+from pimos_lite.reweave_javascript_source import (
+    JavascriptScopeSnapshot,
+    JavascriptSourceError,
+    JavascriptSourceService,
 )
 from pimos_lite.reweave_process_environment import restricted_subprocess_environment
 
@@ -47,6 +59,100 @@ from pimos_lite.reweave_process_environment import restricted_subprocess_environ
 SECURITY_RULES_VERSION = "security_rules.v1"
 SUPERVISION_RULES_VERSION = "supervision_rules.v1"
 VALIDATION_CONTRACT_VERSION = "validation_contract.v1"
+COMPUTATION_ADAPTER_V2 = "computation_adapter.v2"
+CAPTURE_BUNDLE_CONTRACT_VERSION = "reweave_capture_bundle.v1"
+CAPTURE_SELECTED_ENTRY = "__reweave_capture__/selected.js"
+CAPTURE_EXECUTION_BUNDLE_VERSION = "reweave_execution_bundle.v1"
+CAPTURE_TYPESCRIPT_VERSION = "5.9.3"
+CAPTURE_ESBUILD_VERSION = "0.28.1"
+CAPTURE_SELECTED_BUNDLE_OPTIONS_SHA256 = (
+    "7f7202577cabc6512a4fc7b0d44e11395edad2ec8d107936593f4306685d9dd3"
+)
+CAPTURE_EXECUTION_BUNDLE_OPTIONS_SHA256 = (
+    "31df8afa5f9f2b6060601b74a1cf499f7b5a04219929168036e6df09ba6e88fb"
+)
+COMPUTE_WORKER_CONTRACT_VERSION = "compute_validation.v1"
+_CAPTURE_TEMP_MARKER = b"reweave-capture-private-root.v1\n"
+_CAPTURE_JOB_MARKER = b"reweave-capture-private-job.v1\n"
+_CAPTURE_TEMP_LOCK = threading.RLock()
+_CAPTURE_TEMP_INITIALIZED = False
+
+
+def _capture_process_alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _capture_private_temp_root() -> Path:
+    global _CAPTURE_TEMP_INITIALIZED
+    uid = os.getuid() if hasattr(os, "getuid") else 0
+    root = Path(tempfile.gettempdir()).resolve() / f"reweave-capture-private-{uid}"
+    with _CAPTURE_TEMP_LOCK:
+        if root.is_symlink():
+            raise Stage3Error("capture_temporary_root_invalid")
+        root.mkdir(mode=0o700, parents=False, exist_ok=True)
+        root_stat = root.stat()
+        if not root.is_dir() or (
+            hasattr(os, "getuid") and root_stat.st_uid != os.getuid()
+        ):
+            raise Stage3Error("capture_temporary_root_invalid")
+        os.chmod(root, 0o700)
+        marker = root / ".reweave-capture-root-v1"
+        if marker.exists() and marker.is_symlink():
+            raise Stage3Error("capture_temporary_root_invalid")
+        if not marker.exists():
+            marker.write_bytes(_CAPTURE_TEMP_MARKER)
+            os.chmod(marker, 0o600)
+        if marker.read_bytes() != _CAPTURE_TEMP_MARKER:
+            raise Stage3Error("capture_temporary_root_invalid")
+        if not _CAPTURE_TEMP_INITIALIZED:
+            for child in root.iterdir():
+                match = re.fullmatch(r"job-(\d+)-[0-9a-f]{32}", child.name)
+                if match is None or child.is_symlink() or not child.is_dir():
+                    continue
+                child_stat = child.stat()
+                if hasattr(os, "getuid") and child_stat.st_uid != os.getuid():
+                    continue
+                child_marker = child / ".reweave-capture-job-v1"
+                if (
+                    not child_marker.is_file()
+                    or child_marker.is_symlink()
+                    or child_marker.read_bytes() != _CAPTURE_JOB_MARKER
+                ):
+                    continue
+                if not _capture_process_alive(int(match.group(1))):
+                    shutil.rmtree(child)
+            _CAPTURE_TEMP_INITIALIZED = True
+    return root
+
+
+@contextmanager
+def _capture_temp_workspace() -> Any:
+    root = _capture_private_temp_root()
+    workspace = root / f"job-{os.getpid()}-{uuid.uuid4().hex}"
+    workspace.mkdir(mode=0o700)
+    marker = workspace / ".reweave-capture-job-v1"
+    marker.write_bytes(_CAPTURE_JOB_MARKER)
+    os.chmod(marker, 0o600)
+    try:
+        yield workspace
+    finally:
+        if (
+            workspace.parent == root
+            and not workspace.is_symlink()
+            and workspace.exists()
+            and marker.is_file()
+            and not marker.is_symlink()
+            and marker.read_bytes() == _CAPTURE_JOB_MARKER
+        ):
+            shutil.rmtree(workspace)
 MAX_HTTP_BYTES = 1024 * 1024
 MAX_ASSET_BYTES = 1024 * 1024
 MAX_ASSET_TOTAL_BYTES = 5 * 1024 * 1024
@@ -157,6 +263,30 @@ class Stage3Artifact:
     model_digest: str | None = None
     supervised_at: str | None = None
     validation: dict[str, Any] | None = None
+
+
+@dataclass(frozen=True)
+class CaptureStaticGateResult:
+    """Immutable Stage-E bytes; never serialize this object to SQLite or a bridge."""
+
+    candidate_payload_json: bytes = field(repr=False)
+    execution_bundle_sha256: str
+    execution_bundle: bytes = field(repr=False)
+
+
+@dataclass(frozen=True)
+class PreparedReview:
+    """Canonical immutable handoff prepared by Stage E for the future shared gate."""
+
+    run_id: str
+    review_id: str | None
+    candidate_id: str
+    project_id: str
+    source_identity_sha256: str
+    decision_binding_sha256: str | None
+    candidate_payload_json: bytes = field(repr=False)
+    rule_versions_json: bytes = field(repr=False)
+    preflight_receipt_json: bytes = field(repr=False)
 
 
 class _HtmlTreeParser(HTMLParser):
@@ -1041,10 +1171,14 @@ def _analyze_javascript(candidate: dict[str, Any], redact_strings: list[str]) ->
         [_node_binary(), str(root / "scripts" / "analyze_reweave_security.mjs")],
         {
             "mode": "candidate",
+            "candidate_origin": candidate.get("candidate_origin"),
+            "adapter_contract_version": candidate.get("adapter_contract_version"),
             "capability_kind": candidate["capability_kind"],
             "activation": candidate["activation"],
             "dom_scope": candidate["dom_scope"],
+            "input_contract": candidate["input_contract"],
             "output_contract": candidate["output_contract"],
+            "error_contract": candidate["error_contract"],
             "javascript_modules": candidate["javascript_modules"],
             "redact_strings": redact_strings,
         },
@@ -1055,6 +1189,1484 @@ def _analyze_javascript(candidate: dict[str, Any], redact_strings: list[str]) ->
     if result.get("status") != "passed":
         raise Stage3Error(str(result.get("error_code") or "javascript_security_rejected"))
     return result
+
+
+def _canonical_json_bytes(value: Any) -> bytes:
+    try:
+        return _json(value).encode("utf-8")
+    except (TypeError, UnicodeEncodeError, ValueError) as exc:
+        raise Stage3Error("capture_payload_invalid") from exc
+
+
+def _parse_canonical_json_bytes(value: bytes, error_code: str) -> Any:
+    if type(value) is not bytes:
+        raise Stage3Error(error_code)
+    try:
+        parsed = json.loads(value.decode("utf-8"))
+    except (UnicodeDecodeError, json.JSONDecodeError) as exc:
+        raise Stage3Error(error_code) from exc
+    if _canonical_json_bytes(parsed) != value:
+        raise Stage3Error(error_code)
+    return parsed
+
+
+def _capture_bundle_options_current(rule_versions: Any) -> bool:
+    return bool(
+        type(rule_versions) is dict
+        and rule_versions.get("selected_bundle_options_sha256")
+        == CAPTURE_SELECTED_BUNDLE_OPTIONS_SHA256
+        and rule_versions.get("execution_bundle_options_sha256")
+        == CAPTURE_EXECUTION_BUNDLE_OPTIONS_SHA256
+    )
+
+
+def _execution_bundle_v2(modules: list[dict[str, str]]) -> tuple[bytes, dict[str, Any]]:
+    root = Path(__file__).resolve().parents[1]
+    with _capture_temp_workspace() as worker_workspace:
+        try:
+            result = _run_json_command(
+                [_node_binary(), str(root / "scripts" / "analyze_reweave_security.mjs")],
+                {
+                    "mode": "execution_bundle_v2",
+                    "javascript_modules": modules,
+                    "temporary_root": str(worker_workspace),
+                },
+                cwd=root,
+                timeout=30,
+                error_code="execution_bundle_failed",
+                env=restricted_subprocess_environment(),
+            )
+        except Stage3Error as exc:
+            if exc.code == "execution_bundle_failed_timeout":
+                raise Stage3Error("worker_timeout") from exc
+            raise
+    if (
+        result.get("schema_version") != CAPTURE_EXECUTION_BUNDLE_VERSION
+        or result.get("status") != "passed"
+        or type(result.get("source_base64")) is not str
+        or type(result.get("sha256")) is not str
+        or re.fullmatch(r"[0-9a-f]{64}", result["sha256"]) is None
+        or type(result.get("size_bytes")) is not int
+        or not 0 < result["size_bytes"] <= 1024 * 1024
+        or type(result.get("esbuild_version")) is not str
+        or type(result.get("bundle_options_sha256")) is not str
+        or result.get("bundle_options_sha256")
+        != CAPTURE_EXECUTION_BUNDLE_OPTIONS_SHA256
+    ):
+        raise Stage3Error(str(result.get("error_code") or "execution_bundle_failed"))
+    try:
+        bundle = base64.b64decode(result["source_base64"], validate=True)
+    except (ValueError, TypeError) as exc:
+        raise Stage3Error("execution_bundle_failed") from exc
+    if (
+        len(bundle) != result["size_bytes"]
+        or hashlib.sha256(bundle).hexdigest() != result["sha256"]
+    ):
+        raise Stage3Error("execution_bundle_hash_mismatch")
+    with _capture_temp_workspace() as directory:
+        bundle_path = directory / "bundle.js"
+        bundle_path.write_bytes(bundle)
+        os.chmod(bundle_path, 0o600)
+        if hashlib.sha256(bundle_path.read_bytes()).hexdigest() != result["sha256"]:
+            raise Stage3Error("execution_bundle_hash_mismatch")
+        checked = subprocess.run(
+            [_node_binary(), "--check", str(bundle_path)],
+            capture_output=True,
+            text=True,
+            cwd=directory,
+            timeout=10,
+            check=False,
+            env=restricted_subprocess_environment(),
+        )
+        if checked.returncode or checked.stderr:
+            raise Stage3Error("bundle_syntax_invalid")
+    return bundle, result
+
+
+def capture_static_gate(
+    candidate_payload_json: bytes,
+    *,
+    snapshot: JavascriptScopeSnapshot,
+    expected_source_identity_sha256: str,
+) -> CaptureStaticGateResult:
+    """Run Stage-E deterministic gates before any candidate code is executed."""
+
+    payload = _parse_canonical_json_bytes(candidate_payload_json, "capture_payload_invalid")
+    payload_keys = {
+        "schema",
+        "candidate_origin",
+        "adapter_contract_version",
+        "source_graph_version",
+        "bundle_contract_version",
+        "project_id",
+        "source_identity_sha256",
+        "scope_snapshot_sha256",
+        "selected_function",
+        "dependency_closure",
+        "mapping",
+        "mapping_sha256",
+        "enumerations_digest",
+        "examples",
+        "execution_bundle_sha256",
+        "rule_versions",
+        "canonical_candidate",
+    }
+    if (
+        type(payload) is not dict
+        or set(payload) != payload_keys
+        or payload.get("schema") != "ephemeral_capture_candidate.v1"
+        or payload.get("candidate_origin") != "deterministic_computation_adapter"
+        or payload.get("adapter_contract_version") != COMPUTATION_ADAPTER_V2
+        or payload.get("source_graph_version") != "source_graph.v1"
+        or payload.get("bundle_contract_version") != CAPTURE_BUNDLE_CONTRACT_VERSION
+        or type(payload.get("project_id")) is not str
+        or not payload["project_id"]
+        or not isinstance(snapshot, JavascriptScopeSnapshot)
+        or snapshot.project_id != payload.get("project_id")
+        or snapshot.source_identity_sha256 != expected_source_identity_sha256
+        or payload.get("source_identity_sha256") != expected_source_identity_sha256
+        or payload.get("scope_snapshot_sha256") != snapshot.scope_snapshot_sha256
+        or re.fullmatch(r"[0-9a-f]{64}", expected_source_identity_sha256 or "") is None
+        or type(payload.get("canonical_candidate")) is not dict
+    ):
+        raise Stage3Error("capture_payload_invalid")
+    candidate = json.loads(_json(payload["canonical_candidate"]))
+    candidate["candidate_origin"] = payload["candidate_origin"]
+    candidate["adapter_contract_version"] = payload["adapter_contract_version"]
+    modules = candidate.get("javascript_modules")
+    if (
+        type(modules) is not list
+        or any(
+            type(item) is not dict
+            or set(item) != {"path", "source"}
+            or type(item.get("source")) is not str
+            for item in modules
+        )
+        or [item["path"] for item in modules]
+        != sorted([CAPTURE_SELECTED_ENTRY, COMPUTATION_ADAPTER_ENTRY])
+    ):
+        raise Stage3Error("capture_module_contract_invalid")
+    selected_source = next(
+        item["source"] for item in modules if item["path"] == CAPTURE_SELECTED_ENTRY
+    )
+    selected_function = payload.get("selected_function")
+    dependency_closure = payload.get("dependency_closure")
+    mapping = payload.get("mapping")
+    examples = payload.get("examples")
+    rule_versions = payload.get("rule_versions")
+    if (
+        type(selected_function) is not dict
+        or set(selected_function)
+        != {
+            "module_relpath",
+            "export_name",
+            "target_binding_id",
+            "selected_bundle_sha256",
+            "capture_entry_sha256",
+        }
+        or type(selected_function.get("module_relpath")) is not str
+        or not selected_function["module_relpath"]
+        or type(selected_function.get("export_name")) is not str
+        or not selected_function["export_name"]
+        or re.fullmatch(r"[0-9a-f]{64}", selected_function.get("target_binding_id") or "")
+        is None
+        or hashlib.sha256(selected_source.encode("utf-8")).hexdigest()
+        != selected_function.get("selected_bundle_sha256")
+        or re.fullmatch(
+            r"[0-9a-f]{64}", selected_function.get("capture_entry_sha256") or ""
+        )
+        is None
+        or type(dependency_closure) is not dict
+        or set(dependency_closure)
+        != {
+            "module_paths",
+            "binding_ids",
+            "closure_sha256",
+            "dependency_evidence_sha256",
+            "module_evidence_sha256",
+            "top_level_evidence_sha256",
+            "module_evaluation_paths",
+            "symbol_closure_paths",
+            "metafile_inputs",
+        }
+        or type(dependency_closure.get("module_paths")) is not list
+        or not dependency_closure["module_paths"]
+        or any(type(item) is not str or not item for item in dependency_closure["module_paths"])
+        or type(dependency_closure.get("binding_ids")) is not list
+        or not dependency_closure["binding_ids"]
+        or any(
+            re.fullmatch(r"[0-9a-f]{64}", item or "") is None
+            for item in dependency_closure["binding_ids"]
+        )
+        or hashlib.sha256(
+            _canonical_json_bytes(
+                {
+                    "module_paths": dependency_closure["module_paths"],
+                    "binding_ids": dependency_closure["binding_ids"],
+                }
+            )
+        ).hexdigest()
+        != dependency_closure.get("closure_sha256")
+        or any(
+            re.fullmatch(r"[0-9a-f]{64}", dependency_closure.get(key) or "")
+            is None
+            for key in (
+                "dependency_evidence_sha256",
+                "module_evidence_sha256",
+                "top_level_evidence_sha256",
+            )
+        )
+        or any(
+            type(dependency_closure.get(key)) is not list
+            or any(type(item) is not str or not item for item in dependency_closure[key])
+            for key in (
+                "module_evaluation_paths",
+                "symbol_closure_paths",
+                "metafile_inputs",
+            )
+        )
+        or type(mapping) is not dict
+        or set(mapping) != {"arguments", "result_field"}
+        or type(mapping.get("arguments")) is not list
+        or not mapping["arguments"]
+        or type(mapping.get("result_field")) is not str
+        or _SNAKE.fullmatch(mapping["result_field"]) is None
+        or hashlib.sha256(_canonical_json_bytes(mapping)).hexdigest()
+        != payload.get("mapping_sha256")
+        or type(examples) is not dict
+        or set(examples) != {"count", "canonical_sha256"}
+        or type(examples.get("count")) is not int
+        or not 1 <= examples["count"] <= 64
+        or re.fullmatch(r"[0-9a-f]{64}", examples.get("canonical_sha256") or "")
+        is None
+        or re.fullmatch(r"[0-9a-f]{64}", payload.get("execution_bundle_sha256") or "")
+        is None
+    ):
+        raise Stage3Error("capture_evidence_invalid")
+    enum_rows = [
+        {
+            "parameter_binding_id": item.get("parameter_binding_id"),
+            "values": item.get("values"),
+        }
+        for item in mapping["arguments"]
+        if type(item) is dict and item.get("kind") == "enum"
+    ]
+    if (
+        hashlib.sha256(
+            _canonical_json_bytes(
+                sorted(enum_rows, key=lambda item: str(item["parameter_binding_id"]))
+            )
+        ).hexdigest()
+        != payload.get("enumerations_digest")
+    ):
+        raise Stage3Error("capture_evidence_invalid")
+    expected_rule_keys = {
+        "source_graph_version",
+        "adapter_contract_version",
+        "bundle_contract_version",
+        "typescript_version",
+        "esbuild_version",
+        "selected_bundle_options_sha256",
+        "execution_bundle_options_sha256",
+        "redaction_rules_version",
+        "security_rules_version",
+        "validation_contract_version",
+        "canonicalization_version",
+        "brand_profile_id",
+        "brand_profile_digest",
+    }
+    if (
+        type(rule_versions) is not dict
+        or set(rule_versions) != expected_rule_keys
+        or rule_versions.get("source_graph_version") != "source_graph.v1"
+        or rule_versions.get("adapter_contract_version") != COMPUTATION_ADAPTER_V2
+        or rule_versions.get("bundle_contract_version")
+        != CAPTURE_BUNDLE_CONTRACT_VERSION
+        or rule_versions.get("typescript_version") != CAPTURE_TYPESCRIPT_VERSION
+        or rule_versions.get("esbuild_version") != CAPTURE_ESBUILD_VERSION
+        or not _capture_bundle_options_current(rule_versions)
+        or rule_versions.get("redaction_rules_version") != REDACTION_RULES_VERSION
+        or rule_versions.get("security_rules_version") != SECURITY_RULES_VERSION
+        or rule_versions.get("validation_contract_version")
+        != VALIDATION_CONTRACT_VERSION
+        or rule_versions.get("canonicalization_version") != CANONICALIZATION_VERSION
+        or (rule_versions.get("brand_profile_id") is None)
+        != (rule_versions.get("brand_profile_digest") is None)
+        or (
+            rule_versions.get("brand_profile_id") is not None
+            and (
+                type(rule_versions["brand_profile_id"]) is not str
+                or not rule_versions["brand_profile_id"]
+                or re.fullmatch(
+                    r"[0-9a-f]{64}", rule_versions.get("brand_profile_digest") or ""
+                )
+                is None
+            )
+        )
+    ):
+        raise Stage3Error("capture_rule_versions_invalid")
+    try:
+        normalized = normalize_capsule_contracts(
+            "computation",
+            candidate.get("input_contract"),
+            candidate.get("output_contract"),
+            candidate.get("error_contract"),
+        )
+    except (DataContractError, TypeError) as exc:
+        raise Stage3Error("adapter_mapping_invalid") from exc
+    input_properties = candidate.get("input_contract", {}).get("properties", {})
+    output_properties = candidate.get("output_contract", {}).get("properties", {})
+    argument_fields: set[str] = set()
+    parameter_bindings: set[str] = set()
+    parameter_domains: list[dict[str, Any]] = []
+    for argument in mapping["arguments"]:
+        if type(argument) is not dict:
+            raise Stage3Error("capture_evidence_invalid")
+        kind = argument.get("kind")
+        expected_keys = {
+            "integer": {
+                "parameter_binding_id",
+                "input_field",
+                "kind",
+                "minimum",
+                "maximum",
+            },
+            "boolean": {"parameter_binding_id", "input_field", "kind"},
+            "enum": {"parameter_binding_id", "input_field", "kind", "values"},
+        }.get(kind)
+        field_name = argument.get("input_field")
+        binding_id = argument.get("parameter_binding_id")
+        if (
+            expected_keys is None
+            or set(argument) != expected_keys
+            or type(field_name) is not str
+            or field_name in argument_fields
+            or re.fullmatch(r"[0-9a-f]{64}", binding_id or "") is None
+            or binding_id in parameter_bindings
+            or field_name not in input_properties
+        ):
+            raise Stage3Error("capture_evidence_invalid")
+        if kind == "integer":
+            domain = {
+                "kind": "integer",
+                "intervals": [[argument["minimum"], argument["maximum"]]],
+            }
+        elif kind == "boolean":
+            domain = {"kind": "boolean", "values": [False, True]}
+        else:
+            domain = {"kind": "enum", "values": argument["values"]}
+        parameter_domains.append(
+            {"parameter_binding_id": binding_id, "domain": domain}
+        )
+        argument_fields.add(field_name)
+        parameter_bindings.add(binding_id)
+        contract = input_properties[field_name]
+        if (
+            kind == "integer"
+            and (
+                contract.get("type") != "integer"
+                or contract.get("minimum") != argument.get("minimum")
+                or contract.get("maximum") != argument.get("maximum")
+            )
+        ) or (
+            kind == "boolean" and contract != {"type": "boolean"}
+        ) or (
+            kind == "enum"
+            and (
+                contract.get("type") != "string"
+                or contract.get("enum") != argument.get("values")
+            )
+        ):
+            raise Stage3Error("capture_evidence_invalid")
+    if (
+        argument_fields != set(input_properties)
+        or len(output_properties) != 1
+        or mapping["result_field"] not in output_properties
+    ):
+        raise Stage3Error("capture_evidence_invalid")
+    if list(normalized) != [
+        candidate.get("input_contract"),
+        candidate.get("output_contract"),
+        candidate.get("error_contract"),
+    ]:
+        raise Stage3Error("capture_contract_not_canonical")
+    rebuilt = _run_source_graph_capture(
+        snapshot,
+        {
+            "module_relpath": selected_function["module_relpath"],
+            "export_name": selected_function["export_name"],
+            "target_binding_id": selected_function["target_binding_id"],
+        },
+        parameter_domains,
+    )
+    rebuilt_proof = rebuilt["proof"]
+    rebuilt_capture = rebuilt["capture"]
+    result_intervals = rebuilt_proof.get("result_domain", {}).get("intervals")
+    output_contract = output_properties[mapping["result_field"]]
+    if (
+        rebuilt_proof.get("target_binding_id")
+        != selected_function["target_binding_id"]
+        or [
+            item.get("parameter_binding_id")
+            for item in rebuilt_proof.get("parameter_domains", [])
+        ]
+        != [item["parameter_binding_id"] for item in mapping["arguments"]]
+        or type(result_intervals) is not list
+        or not result_intervals
+        or min(item[0] for item in result_intervals) != output_contract.get("minimum")
+        or max(item[1] for item in result_intervals) != output_contract.get("maximum")
+        or rebuilt_proof.get("closure")
+        != {
+            "module_paths": dependency_closure["module_paths"],
+            "binding_ids": dependency_closure["binding_ids"],
+        }
+        or any(
+            rebuilt_proof.get(key) != dependency_closure[key]
+            for key in (
+                "closure_sha256",
+                "dependency_evidence_sha256",
+                "module_evidence_sha256",
+                "top_level_evidence_sha256",
+            )
+        )
+        or rebuilt_capture.get("source") != selected_source
+        or rebuilt_capture.get("selected_bundle_sha256")
+        != selected_function["selected_bundle_sha256"]
+        or rebuilt_capture.get("capture_entry_sha256")
+        != selected_function["capture_entry_sha256"]
+        or rebuilt_capture.get("typescript_version")
+        != rule_versions["typescript_version"]
+        or rebuilt_capture.get("esbuild_version") != rule_versions["esbuild_version"]
+        or rebuilt_capture.get("bundle_options_sha256")
+        != rule_versions["selected_bundle_options_sha256"]
+        or any(
+            rebuilt_capture.get(key) != dependency_closure[key]
+            for key in (
+                "module_evaluation_paths",
+                "symbol_closure_paths",
+                "metafile_inputs",
+            )
+        )
+    ):
+        raise Stage3Error("candidate_boundary_changed")
+    try:
+        canonicalized = canonicalize_capsule(payload["canonical_candidate"]).payload
+    except (TypeError, ValueError) as exc:
+        raise Stage3Error("capture_payload_invalid") from exc
+    if (
+        canonicalized != payload["canonical_candidate"]
+        or candidate.get("capability_kind") != "computation"
+        or candidate.get("activation")
+        != {
+            "mode": "declared_input_compute",
+            "entry_module": COMPUTATION_ADAPTER_ENTRY,
+            "entrypoint": "compute",
+        }
+        or candidate.get("runtime_allowlist") != ["local_computation"]
+        or candidate.get("html") != ""
+        or candidate.get("css") != ""
+        or candidate.get("assets") != []
+    ):
+        raise Stage3Error("capture_payload_invalid")
+    usage_scope = candidate.get("usage_scope")
+    if (
+        type(usage_scope) is not dict
+        or usage_scope.get("kind") not in {"general", "brand_limited"}
+        or (
+            usage_scope.get("kind") == "general"
+            and set(usage_scope) != {"kind"}
+        )
+        or (
+            usage_scope.get("kind") == "brand_limited"
+            and (
+                set(usage_scope)
+                != {"kind", "brand_profile_id", "brand_profile_digest"}
+                or usage_scope.get("brand_profile_id")
+                != rule_versions.get("brand_profile_id")
+                or usage_scope.get("brand_profile_digest")
+                != rule_versions.get("brand_profile_digest")
+            )
+        )
+    ):
+        raise Stage3Error("capture_payload_invalid")
+    security = _analyze_javascript(candidate, [])
+    if security.get("javascript_modules") != modules:
+        raise Stage3Error("capture_source_rewrite_forbidden")
+    execution_bundle, evidence = _execution_bundle_v2(modules)
+    expected_execution_hash = payload.get("execution_bundle_sha256")
+    if (
+        expected_execution_hash != evidence["sha256"]
+        or rule_versions["execution_bundle_options_sha256"]
+        != evidence["bundle_options_sha256"]
+        or rule_versions["esbuild_version"] != evidence["esbuild_version"]
+    ):
+        raise Stage3Error("execution_bundle_hash_mismatch")
+    return CaptureStaticGateResult(
+        candidate_payload_json=bytes(candidate_payload_json),
+        execution_bundle_sha256=evidence["sha256"],
+        execution_bundle=execution_bundle,
+    )
+
+
+def generate_computation_adapter_v2(
+    argument_fields: list[str],
+    input_contract: dict[str, Any],
+    output_contract: dict[str, Any],
+) -> str:
+    """Generate the only adapter.v2 source accepted by the JS safety analyzer."""
+
+    properties = input_contract.get("properties")
+    output_properties = output_contract.get("properties")
+    if (
+        type(argument_fields) is not list
+        or not argument_fields
+        or any(type(item) is not str or _SNAKE.fullmatch(item) is None for item in argument_fields)
+        or len(set(argument_fields)) != len(argument_fields)
+        or type(properties) is not dict
+        or set(argument_fields) != set(properties)
+        or type(output_properties) is not dict
+        or len(output_properties) != 1
+    ):
+        raise Stage3Error("adapter_mapping_invalid")
+    output_field, output_value = next(iter(output_properties.items()))
+    if (
+        type(output_field) is not str
+        or _SNAKE.fullmatch(output_field) is None
+        or type(output_value) is not dict
+        or output_value.get("type") != "integer"
+        or type(output_value.get("minimum")) is not int
+        or type(output_value.get("maximum")) is not int
+    ):
+        raise Stage3Error("adapter_mapping_invalid")
+    input_shape_checks = [
+        "input === null",
+        'typeof input !== "object"',
+        "Array.isArray(input)",
+        f"Object.keys(input).length !== {len(argument_fields)}",
+        *[
+            f"!Object.hasOwn(input, {_json(field)})"
+            for field in argument_fields
+        ],
+    ]
+    input_value_checks: list[str] = []
+    for field_name in argument_fields:
+        contract = properties[field_name]
+        if type(contract) is not dict:
+            raise Stage3Error("adapter_mapping_invalid")
+        if contract.get("type") == "integer":
+            minimum = contract.get("minimum")
+            maximum = contract.get("maximum")
+            if (
+                type(minimum) is not int
+                or type(maximum) is not int
+                or minimum > maximum
+            ):
+                raise Stage3Error("adapter_mapping_invalid")
+            input_value_checks.extend(
+                [
+                    f"!Number.isSafeInteger(input.{field_name})",
+                    f"input.{field_name} < {minimum}",
+                    f"input.{field_name} > {maximum}",
+                ]
+            )
+        elif contract.get("type") == "boolean" and set(contract) == {"type"}:
+            input_value_checks.append(f'typeof input.{field_name} !== "boolean"')
+        elif contract.get("type") == "string":
+            values = contract.get("enum")
+            if (
+                type(values) is not list
+                or not values
+                or len(values) > 32
+                or len(set(values)) != len(values)
+                or any(type(item) is not str for item in values)
+            ):
+                raise Stage3Error("adapter_mapping_invalid")
+            input_value_checks.extend(
+                [
+                    f'typeof input.{field_name} !== "string"',
+                    "(" + " && ".join(
+                        f"input.{field_name} !== {_json(item)}" for item in values
+                    ) + ")",
+                ]
+            )
+        else:
+            raise Stage3Error("adapter_mapping_invalid")
+    input_error = (
+        '    return { ok: false, error: { code: "INPUT_CONTRACT_VIOLATION", '
+        "field: null, details: {} } };"
+    )
+    output_error = (
+        '    return { ok: false, error: { code: "OUTPUT_CONTRACT_VIOLATION", '
+        "field: null, details: {} } };"
+    )
+    return "\n".join(
+        [
+            'import { __selected as __source } from "../__reweave_capture__/selected.js";',
+            "",
+            "export function compute(input) {",
+            "  if (",
+            "    " + "\n    || ".join(input_shape_checks),
+            "  ) {",
+            input_error,
+            "  }",
+            "  if (",
+            "    " + "\n    || ".join(input_value_checks),
+            "  ) {",
+            input_error,
+            "  }",
+            "  const result = __source("
+            + ", ".join(f"input.{field_name}" for field_name in argument_fields)
+            + ");",
+            "  if (",
+            "    !Number.isSafeInteger(result)",
+            f"    || result < {output_value['minimum']}",
+            f"    || result > {output_value['maximum']}",
+            "  ) {",
+            output_error,
+            "  }",
+            f"  return {{ ok: true, value: {{ {_json(output_field)}: result }} }};",
+            "}",
+            "",
+        ]
+    )
+
+
+def preflight_computation_capture_v2(
+    candidate_payload_json: bytes,
+    examples: list[dict[str, Any]],
+    *,
+    snapshot: JavascriptScopeSnapshot,
+    expected_source_identity_sha256: str,
+) -> tuple[CaptureStaticGateResult, bytes]:
+    """Run the non-formal example worker only after the complete static gate."""
+
+    gate = capture_static_gate(
+        candidate_payload_json,
+        snapshot=snapshot,
+        expected_source_identity_sha256=expected_source_identity_sha256,
+    )
+    payload = _parse_canonical_json_bytes(candidate_payload_json, "capture_payload_invalid")
+    candidate = payload["canonical_candidate"]
+    output_properties = candidate["output_contract"].get("properties", {})
+    if type(examples) is not list or not 1 <= len(examples) <= 64 or len(output_properties) != 1:
+        raise Stage3Error("adapter_mapping_invalid")
+    result_field = next(iter(output_properties))
+    inputs: list[dict[str, Any]] = []
+    expected_values: list[dict[str, Any]] = []
+    canonical_examples: list[dict[str, Any]] = []
+    for item in examples:
+        if type(item) is not dict or set(item) != {"input", "expected"}:
+            raise Stage3Error("adapter_mapping_invalid")
+        input_value = item["input"]
+        expected = item["expected"]
+        if (
+            type(input_value) is not dict
+            or type(expected) is not int
+            or type(expected) is bool
+            or not data_contract_accepts(candidate["input_contract"], input_value)
+            or not data_contract_accepts(
+                candidate["output_contract"], {result_field: expected}
+            )
+        ):
+            raise Stage3Error("adapter_mapping_invalid")
+        cloned = json.loads(_json(input_value))
+        inputs.append(cloned)
+        expected_values.append({"ok": True, "value": {result_field: expected}})
+        canonical_examples.append({"input": cloned, "expected": expected})
+    examples_sha256 = hashlib.sha256(
+        _canonical_json_bytes(canonical_examples)
+    ).hexdigest()
+    try:
+        _validate_computation(
+            candidate,
+            {
+                "schema": "synthetic_fixtures.v1",
+                "normal": inputs,
+                "boundary": [],
+                "invalid": [],
+            },
+            expected_values=expected_values,
+            execution_bundle=gate.execution_bundle,
+            execution_bundle_sha256=gate.execution_bundle_sha256,
+        )
+    except Stage3Error as exc:
+        if exc.code == "compute_worker_failed":
+            raise Stage3Error("adapter_source_exception") from exc
+        if exc.code == "compute_worker_failed_timeout":
+            raise Stage3Error("worker_timeout") from exc
+        raise
+    receipt = {
+        "validation_scope": "adapter_example_preflight",
+        "formal_runtime_evidence": False,
+        "candidate_payload_sha256": hashlib.sha256(candidate_payload_json).hexdigest(),
+        "execution_bundle_sha256": gate.execution_bundle_sha256,
+        "examples_sha256": examples_sha256,
+        "worker_contract_version": COMPUTE_WORKER_CONTRACT_VERSION,
+        "passed": True,
+    }
+    return gate, _canonical_json_bytes(receipt)
+
+
+def make_prepared_review(
+    *,
+    run_id: str,
+    review_id: str | None,
+    candidate_id: str,
+    project_id: str,
+    source_identity_sha256: str,
+    decision_binding_sha256: str | None,
+    candidate_payload_json: bytes,
+    rule_versions: dict[str, Any],
+    preflight_receipt_json: bytes,
+    snapshot: JavascriptScopeSnapshot,
+) -> PreparedReview:
+    """Freeze canonical byte payloads after Stage-E preflight succeeds."""
+
+    if (
+        not all(type(item) is str and item for item in (run_id, candidate_id, project_id))
+        or (review_id is not None and (type(review_id) is not str or not review_id))
+        or re.fullmatch(r"[0-9a-f]{64}", source_identity_sha256 or "") is None
+        or (
+            decision_binding_sha256 is not None
+            and re.fullmatch(r"[0-9a-f]{64}", decision_binding_sha256) is None
+        )
+    ):
+        raise Stage3Error("prepared_review_invalid")
+    candidate = _parse_canonical_json_bytes(
+        candidate_payload_json, "prepared_review_invalid"
+    )
+    receipt = _parse_canonical_json_bytes(
+        preflight_receipt_json, "prepared_review_invalid"
+    )
+    if (
+        type(candidate) is not dict
+        or candidate.get("source_identity_sha256") != source_identity_sha256
+        or candidate.get("project_id") != project_id
+        or candidate_id
+        != "candidate_" + hashlib.sha256(candidate_payload_json).hexdigest()[:24]
+        or type(receipt) is not dict
+        or set(receipt)
+        != {
+            "validation_scope",
+            "formal_runtime_evidence",
+            "candidate_payload_sha256",
+            "execution_bundle_sha256",
+            "examples_sha256",
+            "worker_contract_version",
+            "passed",
+        }
+        or receipt.get("validation_scope") != "adapter_example_preflight"
+        or receipt.get("formal_runtime_evidence") is not False
+        or receipt.get("passed") is not True
+        or receipt.get("candidate_payload_sha256")
+        != hashlib.sha256(candidate_payload_json).hexdigest()
+        or receipt.get("execution_bundle_sha256")
+        != candidate.get("execution_bundle_sha256")
+        or receipt.get("examples_sha256")
+        != candidate.get("examples", {}).get("canonical_sha256")
+        or receipt.get("worker_contract_version") != COMPUTE_WORKER_CONTRACT_VERSION
+        or type(rule_versions) is not dict
+        or rule_versions != candidate.get("rule_versions")
+    ):
+        raise Stage3Error("prepared_review_invalid")
+    gate = capture_static_gate(
+        candidate_payload_json,
+        snapshot=snapshot,
+        expected_source_identity_sha256=source_identity_sha256,
+    )
+    if gate.execution_bundle_sha256 != receipt["execution_bundle_sha256"]:
+        raise Stage3Error("prepared_review_invalid")
+    rule_versions_json = _canonical_json_bytes(rule_versions)
+    if type(_parse_canonical_json_bytes(rule_versions_json, "prepared_review_invalid")) is not dict:
+        raise Stage3Error("prepared_review_invalid")
+    return PreparedReview(
+        run_id=run_id,
+        review_id=review_id,
+        candidate_id=candidate_id,
+        project_id=project_id,
+        source_identity_sha256=source_identity_sha256,
+        decision_binding_sha256=decision_binding_sha256,
+        candidate_payload_json=bytes(candidate_payload_json),
+        rule_versions_json=rule_versions_json,
+        preflight_receipt_json=bytes(preflight_receipt_json),
+    )
+
+
+def _run_source_graph_capture(
+    snapshot: JavascriptScopeSnapshot,
+    selection: dict[str, str],
+    parameter_domains: list[dict[str, Any]],
+) -> dict[str, Any]:
+    root = Path(__file__).resolve().parents[1]
+    module_snapshot = [
+        {
+            "path": module.logical_path,
+            "source_base64": base64.b64encode(module.content).decode("ascii"),
+            "sha256": module.content_sha256,
+        }
+        for module in snapshot.modules
+    ]
+    request = {
+        "schema": "source_graph_request.v1",
+        "mode": "capture",
+        "project_id": snapshot.project_id,
+        "scope_snapshot_sha256": snapshot.scope_snapshot_sha256,
+        "source_identity_sha256": snapshot.source_identity_sha256,
+        "entry_modules": [selection["module_relpath"]],
+        "module_snapshot": module_snapshot,
+        "symlinks": [{"path": item} for item in snapshot.symlinks],
+        "target": {
+            "module_relpath": selection["module_relpath"],
+            "export_name": selection["export_name"],
+        },
+        "parameter_domains": parameter_domains,
+    }
+    with _capture_temp_workspace() as worker_workspace:
+        request["temporary_root"] = str(worker_workspace)
+        try:
+            completed = subprocess.run(
+                [
+                    _node_binary(),
+                    "--max-old-space-size=512",
+                    str(root / "scripts" / "analyze_reweave_source_graph.mjs"),
+                ],
+                input=_json(request),
+                capture_output=True,
+                text=True,
+                cwd=root,
+                timeout=45,
+                check=False,
+                env=restricted_subprocess_environment(),
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise Stage3Error("worker_timeout") from exc
+        except OSError as exc:
+            raise Stage3Error("bundle_security_rejected") from exc
+    if (
+        completed.returncode
+        or completed.stderr
+        or len(completed.stdout.encode("utf-8")) > 8 * 1024 * 1024
+    ):
+        raise Stage3Error("bundle_security_rejected")
+    try:
+        result = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise Stage3Error("bundle_security_rejected") from exc
+    if type(result) is not dict or result.get("status") != "ok":
+        allowed = {
+            "source_changed",
+            "source_utf8_invalid",
+            "source_span_invalid",
+            "source_path_normalization_conflict",
+            "import_path_spelling_mismatch",
+            "closure_unproven",
+            "closure_symlink_forbidden",
+            "mutable_capture",
+            "top_level_side_effect",
+            "top_level_initializer_unproven",
+            "dynamic_dependency",
+            "unsupported_control_flow",
+            "invalid_export_identifier",
+            "interval_unproven",
+            "bundle_security_rejected",
+        }
+        code = str(result.get("error_code") or "bundle_security_rejected")
+        raise Stage3Error(code if code in allowed else "bundle_security_rejected")
+    proof = result.get("proof")
+    capture = result.get("capture")
+    if (
+        type(proof) is not dict
+        or type(capture) is not dict
+        or capture.get("schema") != "selected_bundle.v1"
+        or capture.get("bundle_contract_version") != CAPTURE_BUNDLE_CONTRACT_VERSION
+        or capture.get("logical_path") != CAPTURE_SELECTED_ENTRY
+        or capture.get("source_graph_version") != "source_graph.v1"
+        or capture.get("typescript_version") != CAPTURE_TYPESCRIPT_VERSION
+        or capture.get("esbuild_version") != CAPTURE_ESBUILD_VERSION
+        or capture.get("bundle_options_sha256")
+        != CAPTURE_SELECTED_BUNDLE_OPTIONS_SHA256
+        or type(capture.get("source_base64")) is not str
+        or type(capture.get("selected_bundle_sha256")) is not str
+        or re.fullmatch(r"[0-9a-f]{64}", capture["selected_bundle_sha256"]) is None
+        or type(capture.get("size_bytes")) is not int
+        or not 0 < capture["size_bytes"] <= 1024 * 1024
+        or capture.get("target_binding_id") != proof.get("target_binding_id")
+        or capture.get("closure_sha256") != proof.get("closure_sha256")
+        or any(
+            re.fullmatch(r"[0-9a-f]{64}", proof.get(key) or "") is None
+            for key in (
+                "dependency_evidence_sha256",
+                "module_evidence_sha256",
+                "top_level_evidence_sha256",
+            )
+        )
+    ):
+        raise Stage3Error("bundle_security_rejected")
+    try:
+        selected_bytes = base64.b64decode(capture["source_base64"], validate=True)
+        selected_source = selected_bytes.decode("utf-8")
+    except (ValueError, UnicodeDecodeError) as exc:
+        raise Stage3Error("bundle_security_rejected") from exc
+    if (
+        len(selected_bytes) != capture["size_bytes"]
+        or hashlib.sha256(selected_bytes).hexdigest()
+        != capture["selected_bundle_sha256"]
+    ):
+        raise Stage3Error("bundle_security_rejected")
+    return {
+        "proof": proof,
+        "capture": {
+            **{key: value for key, value in capture.items() if key != "source_base64"},
+            "source": selected_source,
+        },
+    }
+
+
+def inspect_ephemeral_computation_offers_v2(
+    snapshot: JavascriptScopeSnapshot,
+) -> dict[str, Any]:
+    """Return source-graph function offers without persisting source or graph data."""
+
+    if not isinstance(snapshot, JavascriptScopeSnapshot) or not snapshot.modules:
+        raise Stage3Error("capture_request_invalid")
+    root = Path(__file__).resolve().parents[1]
+    request = {
+        "schema": "source_graph_request.v1",
+        "mode": "graph",
+        "project_id": snapshot.project_id,
+        "scope_snapshot_sha256": snapshot.scope_snapshot_sha256,
+        "source_identity_sha256": snapshot.source_identity_sha256,
+        "entry_modules": [item.logical_path for item in snapshot.modules],
+        "module_snapshot": [
+            {
+                "path": item.logical_path,
+                "source_base64": base64.b64encode(item.content).decode("ascii"),
+                "sha256": item.content_sha256,
+            }
+            for item in snapshot.modules
+        ],
+        "symlinks": [{"path": item} for item in snapshot.symlinks],
+    }
+    try:
+        completed = subprocess.run(
+            [
+                _node_binary(),
+                "--max-old-space-size=512",
+                str(root / "scripts" / "analyze_reweave_source_graph.mjs"),
+            ],
+            input=_json(request),
+            capture_output=True,
+            text=True,
+            cwd=root,
+            timeout=60,
+            check=False,
+            env=restricted_subprocess_environment(),
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise Stage3Error("worker_timeout") from exc
+    except OSError as exc:
+        raise Stage3Error("bundle_security_rejected") from exc
+    if (
+        completed.returncode
+        or completed.stderr
+        or len(completed.stdout.encode("utf-8")) > 16 * 1024 * 1024
+    ):
+        raise Stage3Error("bundle_security_rejected")
+    try:
+        graph = json.loads(completed.stdout)
+    except json.JSONDecodeError as exc:
+        raise Stage3Error("bundle_security_rejected") from exc
+    if type(graph) is not dict or graph.get("status") != "ok":
+        code = str(graph.get("error_code") or "bundle_security_rejected")
+        raise Stage3Error(code)
+    modules = graph.get("modules")
+    if type(modules) is not list:
+        raise Stage3Error("bundle_security_rejected")
+    bindings: dict[str, dict[str, Any]] = {}
+    for module in modules:
+        if type(module) is not dict or type(module.get("bindings")) is not list:
+            raise Stage3Error("bundle_security_rejected")
+        for binding in module["bindings"]:
+            binding_id = binding.get("binding_id") if type(binding) is dict else None
+            if (
+                type(binding_id) is not str
+                or re.fullmatch(r"[0-9a-f]{64}", binding_id) is None
+                or binding_id in bindings
+            ):
+                raise Stage3Error("bundle_security_rejected")
+            bindings[binding_id] = binding
+    offers: list[dict[str, Any]] = []
+    for module in modules:
+        logical_path = module.get("logical_path")
+        exports = module.get("exports")
+        if type(logical_path) is not str or type(exports) is not list:
+            raise Stage3Error("bundle_security_rejected")
+        for exported in exports:
+            if type(exported) is not dict:
+                raise Stage3Error("bundle_security_rejected")
+            export_name = exported.get("public_name")
+            binding_id = exported.get("binding_id")
+            if type(export_name) is not str or type(binding_id) is not str:
+                raise Stage3Error("bundle_security_rejected")
+            seen: set[str] = set()
+            leaf = bindings.get(binding_id)
+            while type(leaf) is dict and leaf.get("kind") != "function":
+                if binding_id in seen:
+                    leaf = None
+                    break
+                seen.add(binding_id)
+                target = leaf.get("target_binding_id")
+                if type(target) is not str:
+                    leaf = None
+                    break
+                binding_id = target
+                leaf = bindings.get(binding_id)
+            if type(leaf) is not dict or leaf.get("kind") != "function":
+                continue
+            parameters = leaf.get("parameters")
+            if type(parameters) is not list or not parameters:
+                continue
+            safe_parameters: list[dict[str, str]] = []
+            for parameter in parameters:
+                if (
+                    type(parameter) is not dict
+                    or type(parameter.get("binding_id")) is not str
+                    or re.fullmatch(r"[0-9a-f]{64}", parameter["binding_id"])
+                    is None
+                    or type(parameter.get("display_name")) is not str
+                    or not parameter["display_name"]
+                ):
+                    raise Stage3Error("bundle_security_rejected")
+                safe_parameters.append(
+                    {
+                        "parameter_binding_id": parameter["binding_id"],
+                        "name": parameter["display_name"],
+                    }
+                )
+            target_binding_id = str(leaf["binding_id"])
+            offer_identity = {
+                "schema": "computation_capture_offer_identity.v1",
+                "project_id": snapshot.project_id,
+                "source_identity_sha256": snapshot.source_identity_sha256,
+                "module_relpath": logical_path,
+                "export_name": export_name,
+                "target_binding_id": target_binding_id,
+            }
+            offers.append(
+                {
+                    "offer_id": hashlib.sha256(
+                        _canonical_json_bytes(offer_identity)
+                    ).hexdigest(),
+                    "module_relpath": logical_path,
+                    "export_name": export_name,
+                    "target_binding_id": target_binding_id,
+                    "parameters": safe_parameters,
+                    "dependency_count": len(
+                        set(leaf.get("calls", []))
+                        | set(leaf.get("reads", []))
+                        | set(leaf.get("captures", []))
+                    ),
+                }
+            )
+    offers.sort(
+        key=lambda item: (
+            item["module_relpath"].encode("utf-8"),
+            item["export_name"].encode("utf-8"),
+            item["target_binding_id"],
+        )
+    )
+    return {
+        "schema": "computation_capture_offers.v2",
+        "project_id": snapshot.project_id,
+        "source_identity_sha256": snapshot.source_identity_sha256,
+        "scope_snapshot_sha256": snapshot.scope_snapshot_sha256,
+        "offers": offers,
+    }
+
+
+def _normalize_capture_mapping(
+    mapping: dict[str, Any],
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    str,
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
+    if type(mapping) is not dict or set(mapping) != {"arguments", "result_field", "examples"}:
+        raise Stage3Error("adapter_mapping_invalid")
+    raw_arguments = mapping.get("arguments")
+    result_field = mapping.get("result_field")
+    examples = mapping.get("examples")
+    if (
+        type(raw_arguments) is not list
+        or not raw_arguments
+        or type(result_field) is not str
+        or _SNAKE.fullmatch(result_field) is None
+        or type(examples) is not list
+        or not 1 <= len(examples) <= 64
+    ):
+        raise Stage3Error("adapter_mapping_invalid")
+    normalized: list[dict[str, Any]] = []
+    domains: list[dict[str, Any]] = []
+    fields: set[str] = set()
+    bindings: set[str] = set()
+    enumerations: list[dict[str, Any]] = []
+    for item in raw_arguments:
+        if type(item) is not dict:
+            raise Stage3Error("adapter_mapping_invalid")
+        binding = item.get("parameter_binding_id")
+        field_name = item.get("input_field")
+        kind = item.get("kind")
+        if (
+            type(binding) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", binding) is None
+            or binding in bindings
+            or type(field_name) is not str
+            or _SNAKE.fullmatch(field_name) is None
+            or field_name in fields
+            or field_name == result_field
+            or kind not in {"integer", "boolean", "enum"}
+        ):
+            raise Stage3Error("adapter_mapping_invalid")
+        bindings.add(binding)
+        fields.add(field_name)
+        if kind == "integer":
+            if set(item) != {
+                "parameter_binding_id", "input_field", "kind", "minimum", "maximum"
+            }:
+                raise Stage3Error("adapter_mapping_invalid")
+            minimum = item.get("minimum")
+            maximum = item.get("maximum")
+            if (
+                type(minimum) is not int
+                or type(maximum) is not int
+                or not -MAX_SAFE_INTEGER <= minimum <= maximum <= MAX_SAFE_INTEGER
+            ):
+                raise Stage3Error("adapter_mapping_invalid")
+            argument = {
+                "parameter_binding_id": binding,
+                "input_field": field_name,
+                "kind": kind,
+                "minimum": minimum,
+                "maximum": maximum,
+            }
+            domain = {"kind": "integer", "intervals": [[minimum, maximum]]}
+        elif kind == "boolean":
+            if set(item) != {"parameter_binding_id", "input_field", "kind"}:
+                raise Stage3Error("adapter_mapping_invalid")
+            argument = {
+                "parameter_binding_id": binding,
+                "input_field": field_name,
+                "kind": kind,
+            }
+            domain = {"kind": "boolean", "values": [False, True]}
+        else:
+            if set(item) != {"parameter_binding_id", "input_field", "kind", "values"}:
+                raise Stage3Error("adapter_mapping_invalid")
+            values = item.get("values")
+            if (
+                type(values) is not list
+                or not values
+                or len(values) > 32
+                or any(type(value) is not str for value in values)
+                or len(set(values)) != len(values)
+            ):
+                raise Stage3Error("adapter_mapping_invalid")
+            try:
+                ordered_values = sorted(
+                    values, key=lambda value: value.encode("utf-8")
+                )
+            except UnicodeEncodeError as exc:
+                raise Stage3Error("adapter_mapping_invalid") from exc
+            argument = {
+                "parameter_binding_id": binding,
+                "input_field": field_name,
+                "kind": kind,
+                "values": ordered_values,
+            }
+            domain = {"kind": "enum", "values": ordered_values}
+            enumerations.append(
+                {"parameter_binding_id": binding, "values": ordered_values}
+            )
+        normalized.append(argument)
+        domains.append({"parameter_binding_id": binding, "domain": domain})
+    normalized_examples = json.loads(_json(examples))
+    return normalized, domains, result_field, normalized_examples, enumerations
+
+
+def _capture_error_contract() -> dict[str, Any]:
+    details = {
+        "schema": "data_contract.v1",
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additional_properties": False,
+    }
+    return {
+        "schema": "error_contract.v1",
+        "errors": {
+            "INPUT_CONTRACT_VIOLATION": {"field": None, "details": details},
+            "OUTPUT_CONTRACT_VIOLATION": {"field": None, "details": details},
+        },
+    }
+
+
+def _capture_contracts(
+    arguments: list[dict[str, Any]],
+    result_field: str,
+    result_domain: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    properties: dict[str, Any] = {}
+    for argument in arguments:
+        field_name = argument["input_field"]
+        if argument["kind"] == "integer":
+            properties[field_name] = {
+                "type": "integer",
+                "minimum": argument["minimum"],
+                "maximum": argument["maximum"],
+            }
+        elif argument["kind"] == "boolean":
+            properties[field_name] = {"type": "boolean"}
+        else:
+            values = argument["values"]
+            lengths = [_utf16_length(value) for value in values]
+            properties[field_name] = {
+                "type": "string",
+                "min_length": min(lengths),
+                "max_length": max(lengths),
+                "enum": values,
+            }
+    intervals = result_domain.get("intervals") if type(result_domain) is dict else None
+    if (
+        result_domain.get("kind") != "integer"
+        or type(intervals) is not list
+        or not intervals
+        or any(
+            type(item) is not list
+            or len(item) != 2
+            or type(item[0]) is not int
+            or type(item[1]) is not int
+            for item in intervals
+        )
+    ):
+        raise Stage3Error("interval_unproven")
+    input_contract = {
+        "schema": "data_contract.v1",
+        "type": "object",
+        "properties": properties,
+        "required": sorted(properties),
+        "additional_properties": False,
+    }
+    output_contract = {
+        "schema": "data_contract.v1",
+        "type": "object",
+        "properties": {
+            result_field: {
+                "type": "integer",
+                "minimum": min(item[0] for item in intervals),
+                "maximum": max(item[1] for item in intervals),
+            }
+        },
+        "required": [result_field],
+        "additional_properties": False,
+    }
+    try:
+        return normalize_capsule_contracts(
+            "computation", input_contract, output_contract, _capture_error_contract()
+        )
+    except DataContractError as exc:
+        raise Stage3Error("adapter_mapping_invalid") from exc
+
+
+def _same_capture_snapshot(
+    expected: JavascriptScopeSnapshot, actual: JavascriptScopeSnapshot
+) -> bool:
+    return (
+        expected.project_id == actual.project_id
+        and expected.scope_snapshot_sha256 == actual.scope_snapshot_sha256
+        and expected.source_identity_sha256 == actual.source_identity_sha256
+        and expected.git_state == actual.git_state
+        and expected.git_commit == actual.git_commit
+        and expected.git_status_sha256 == actual.git_status_sha256
+        and expected.symlinks == actual.symlinks
+        and [
+            (item.logical_path, item.content_sha256)
+            for item in expected.modules
+        ]
+        == [
+            (item.logical_path, item.content_sha256)
+            for item in actual.modules
+        ]
+    )
+
+
+def _persist_capture_waiting_review(
+    store: CapsuleWarehouseStore,
+    *,
+    project_id: str,
+    source_identity_sha256: str,
+    decision_binding_sha256: str,
+    sensitivity: dict[str, Any],
+    profile: dict[str, Any],
+    enumerations_digest: str,
+    enumeration_parameter_count: int,
+    enumeration_value_count: int,
+    module_count: int,
+    binding_count: int,
+) -> str:
+    candidate_id = "capture_waiting_" + decision_binding_sha256[:24]
+    with store.transaction() as connection:
+        current_profile = connection.execute(
+            "SELECT CASE WHEN p.brand_mode = 'inherit' THEN r.brand_profile_id "
+            "WHEN p.brand_mode = 'clear' THEN NULL ELSE p.brand_profile_id END, "
+            "CASE WHEN p.brand_mode = 'inherit' THEN r.brand_profile_digest "
+            "WHEN p.brand_mode = 'clear' THEN NULL ELSE p.brand_profile_digest END "
+            "FROM projects p JOIN source_roots r ON r.root_id = p.source_root_id "
+            "WHERE p.project_id = ? AND p.source_type = 'javascript_computation_source'",
+            (project_id,),
+        ).fetchone()
+        if current_profile is None or tuple(current_profile) != (
+            profile.get("id"),
+            profile.get("digest"),
+        ):
+            raise Stage3Error("brand_profile_changed")
+        existing = connection.execute(
+            "SELECT review_id FROM review_items WHERE project_id = ? "
+            "AND candidate_id = ? AND source_hash = ? "
+            "AND candidate_status = 'waiting_user' ORDER BY created_at LIMIT 1",
+            (project_id, candidate_id, decision_binding_sha256),
+        ).fetchone()
+        if existing is not None:
+            return str(existing["review_id"])
+        run_id = _uuid()
+        review_id = _uuid()
+        now = _now()
+        codes: list[str] = []
+        if sensitivity["ambiguous_count"]:
+            codes.append("sensitivity_confirmation_required")
+        if sensitivity["brand_count"]:
+            codes.append("brand_confirmation_required")
+        if enumeration_parameter_count:
+            codes.append("enumeration_confirmation_required")
+        connection.execute(
+            "INSERT INTO intake_runs ("
+            "run_id, project_id, run_kind, status, snapshot_before, snapshot_after, "
+            "extraction_contract_version, redaction_rules_version, security_rules_version, "
+            "supervision_rules_version, validation_contract_version, canonicalization_version, "
+            "counts_json, started_at, completed_at, created_at"
+            ") VALUES (?, ?, 'javascript_computation_capture', 'completed_with_pending', "
+            "?, ?, 'javascript_computation_capture.v1', ?, ?, 'not_run.stage_e', "
+            "'not_run.stage_e', ?, ?, ?, ?, ?)",
+            (
+                run_id,
+                project_id,
+                source_identity_sha256,
+                source_identity_sha256,
+                REDACTION_RULES_VERSION,
+                SECURITY_RULES_VERSION,
+                CANONICALIZATION_VERSION,
+                _json(
+                    {
+                        "candidates": 1,
+                        "waiting_user": 1,
+                        "candidate_origin": "deterministic_computation_adapter",
+                        "adapter_contract_version": COMPUTATION_ADAPTER_V2,
+                    }
+                ),
+                now,
+                now,
+                now,
+            ),
+        )
+        connection.execute(
+            "INSERT INTO review_items ("
+            "review_id, run_id, project_id, candidate_id, candidate_status, "
+            "source_relpath, source_location_json, source_hash, redaction_rules_version, "
+            "sanitized_candidate_json, redaction_summary_json, created_at, updated_at"
+            ") VALUES (?, ?, ?, ?, 'waiting_user', '__reweave_capture__/waiting', "
+            "?, ?, ?, ?, ?, ?, ?)",
+            (
+                review_id,
+                run_id,
+                project_id,
+                candidate_id,
+                _json(
+                    {
+                        "schema": "capture_location_summary.v1",
+                        "module_count": module_count,
+                        "binding_count": binding_count,
+                    }
+                ),
+                decision_binding_sha256,
+                REDACTION_RULES_VERSION,
+                _json(
+                    {
+                        "schema": "sanitized_candidate.v1",
+                        "candidate_origin": "deterministic_computation_adapter",
+                        "adapter_contract_version": COMPUTATION_ADAPTER_V2,
+                        "requires_reextract": True,
+                        "resume_contract": "resubmit_ephemeral_capture.v1",
+                    }
+                ),
+                _json(
+                    {
+                        "schema": "capture_redaction_summary.v1",
+                        "codes": sorted(codes),
+                        "secret_count": 0,
+                        "ambiguous_count": int(sensitivity["ambiguous_count"]),
+                        "brand_count": int(sensitivity["brand_count"]),
+                        "brand_profile_id": profile.get("id"),
+                        "brand_profile_digest": profile.get("digest"),
+                        "enumeration_parameter_count": enumeration_parameter_count,
+                        "enumeration_value_count": enumeration_value_count,
+                        "enumerations_digest": enumerations_digest,
+                        "enum_decision_binding_sha256": decision_binding_sha256,
+                    }
+                ),
+                now,
+                now,
+            ),
+        )
+        store.bump_revision(connection)
+    return review_id
+
+
+def _capture_review_decisions(
+    store: CapsuleWarehouseStore,
+    *,
+    review_id: str,
+    project_id: str,
+    decision_binding_sha256: str,
+) -> dict[str, Any]:
+    with store.read_connection() as connection:
+        row = connection.execute(
+            "SELECT * FROM review_items WHERE review_id = ?",
+            (review_id,),
+        ).fetchone()
+    if (
+        row is None
+        or row["project_id"] != project_id
+        or row["candidate_status"] != "waiting_user"
+        or row["source_hash"] != decision_binding_sha256
+    ):
+        raise Stage3Error("capture_resubmission_required")
+    try:
+        summary = json.loads(row["redaction_summary_json"])
+    except (json.JSONDecodeError, TypeError) as exc:
+        raise Stage3Error("capture_resubmission_required") from exc
+    if (
+        type(summary) is not dict
+        or summary.get("enum_decision_binding_sha256")
+        != decision_binding_sha256
+    ):
+        raise Stage3Error("capture_resubmission_required")
+    return {
+        "sensitivity_decision": row["sensitivity_decision"],
+        "brand_decision": row["brand_decision"],
+        "enum_decision": row["enum_decision"],
+        "enum_decision_binding_sha256": row["enum_decision_binding_sha256"],
+    }
 
 
 def _bundle_javascript(
@@ -1236,20 +2848,44 @@ def _compute_result_valid(
 
 
 def _validate_computation(
-    payload: dict[str, Any], fixtures: dict[str, Any]
+    payload: dict[str, Any],
+    fixtures: dict[str, Any],
+    *,
+    expected_values: list[dict[str, Any]] | None = None,
+    execution_bundle: bytes | None = None,
+    execution_bundle_sha256: str | None = None,
 ) -> dict[str, Any]:
     normal = list(fixtures["normal"])
     boundary = list(fixtures["boundary"])
     invalid = [item["value"] for item in fixtures["invalid"]]
+    if expected_values is not None and (
+        type(expected_values) is not list
+        or len(expected_values) != len(normal)
+        or any(type(item) is not dict for item in expected_values)
+    ):
+        raise Stage3Error("adapter_example_expectation_invalid")
     values = normal + boundary + invalid
     if not values:
         raise Stage3Error("compute_fixture_missing")
     root = Path(__file__).resolve().parents[1]
-    with tempfile.TemporaryDirectory(prefix="reweave-compute-") as temporary:
-        directory = Path(temporary)
-        _bundle_javascript(
-            payload["javascript_modules"], payload["activation"], directory
-        )
+    with _capture_temp_workspace() as directory:
+        if execution_bundle is None:
+            _bundle_javascript(
+                payload["javascript_modules"], payload["activation"], directory
+            )
+        else:
+            if (
+                type(execution_bundle) is not bytes
+                or re.fullmatch(r"[0-9a-f]{64}", execution_bundle_sha256 or "") is None
+                or hashlib.sha256(execution_bundle).hexdigest()
+                != execution_bundle_sha256
+            ):
+                raise Stage3Error("execution_bundle_hash_mismatch")
+            bundle_path = directory / "bundle.js"
+            bundle_path.write_bytes(execution_bundle)
+            os.chmod(bundle_path, 0o600)
+            if hashlib.sha256(bundle_path.read_bytes()).hexdigest() != execution_bundle_sha256:
+                raise Stage3Error("execution_bundle_hash_mismatch")
         result = _run_json_command(
             [
                 _node_binary(),
@@ -1265,7 +2901,12 @@ def _validate_computation(
             error_code="compute_worker_failed",
             env=restricted_subprocess_environment(),
         )
-    if result.get("status") != "passed" or type(result.get("cases")) is not list:
+    if (
+        result.get("schema_version") != COMPUTE_WORKER_CONTRACT_VERSION
+        or result.get("status") != "passed"
+        or set(result) != {"schema_version", "status", "cases"}
+        or type(result.get("cases")) is not list
+    ):
         raise Stage3Error(str(result.get("error_code") or "compute_validation_failed"))
     cases = result["cases"]
     if len(cases) != len(values):
@@ -1280,6 +2921,11 @@ def _validate_computation(
         raise Stage3Error("compute_valid_fixture_failed")
     if any(item.get("ok") is not False for item in cases[valid_count:]):
         raise Stage3Error("compute_invalid_fixture_failed")
+    if expected_values is not None and any(
+        _json(actual) != _json(expected)
+        for actual, expected in zip(cases[: len(normal)], expected_values, strict=True)
+    ):
+        raise Stage3Error("adapter_example_mismatch")
     return {
         "schema_version": "runtime_validation.v1",
         "status": "passed",
@@ -1635,6 +3281,26 @@ class _PreparedReview:
     fixtures: dict[str, Any]
     snapshot_digest: str
     listener_bindings: list[dict[str, str]]
+    capture_snapshot: JavascriptScopeSnapshot | None = field(
+        default=None, repr=False
+    )
+    execution_bundle: bytes | None = field(default=None, repr=False)
+    execution_bundle_sha256: str | None = None
+    capture_brand_profile_id: str | None = None
+    capture_brand_profile_digest: str | None = None
+
+
+@dataclass(frozen=True)
+class _Stage3GateOutcome:
+    kind: str
+    prepared: _PreparedReview
+    version: dict[str, Any] | None = None
+    comparison: dict[str, Any] | None = None
+    error_code: str | None = None
+    error_details: dict[str, Any] | None = None
+    supervision: dict[str, Any] | None = None
+    response_hash: str | None = None
+    model: dict[str, str] | None = None
 
 
 class ReweaveCapsuleStage3:
@@ -1650,9 +3316,900 @@ class ReweaveCapsuleStage3:
         self.store = store
         self.intake = intake or ReweaveCapsuleIntake(store)
         self.supervisor = supervisor or OllamaSupervisor(store)
+        _capture_private_temp_root()
+        self._capture_decision_lock = threading.RLock()
+        self._capture_decision_tokens: dict[str, tuple[str, str]] = {}
+
+    def _authorize_ephemeral_capture_decision(
+        self, review_id: str, decision_binding_sha256: str
+    ) -> None:
+        token = self.intake._authorize_capture_review_decision(
+            review_id, decision_binding_sha256
+        )
+        with self._capture_decision_lock:
+            self._capture_decision_tokens[review_id] = (
+                decision_binding_sha256,
+                token,
+            )
+
+    def record_ephemeral_capture_decisions(
+        self,
+        review_id: str,
+        decision_binding_sha256: str,
+        *,
+        sensitivity_decision: str | None = None,
+        brand_decision: str | None = None,
+        enum_decision: str | None = None,
+    ) -> dict[str, Any]:
+        """Record a capture decision only after an in-process rebuild authorized it."""
+
+        with self._capture_decision_lock:
+            authorization = self._capture_decision_tokens.get(review_id)
+        if (
+            authorization is None
+            or authorization[0] != decision_binding_sha256
+        ):
+            raise Stage3Error("capture_decision_rebuild_required")
+        try:
+            result = self.intake.record_review_decisions(
+                review_id,
+                sensitivity_decision=sensitivity_decision,
+                brand_decision=brand_decision,
+                enum_decision=enum_decision,
+                enum_decision_binding_sha256=(
+                    decision_binding_sha256 if enum_decision is not None else None
+                ),
+                _capture_decision_token=authorization[1],
+            )
+        except IntakeError as exc:
+            raise Stage3Error(exc.code) from exc
+        with self._capture_decision_lock:
+            self._capture_decision_tokens.pop(review_id, None)
+        return result
+
+    def prepare_ephemeral_computation_capture_v2(
+        self,
+        snapshot: JavascriptScopeSnapshot,
+        selection: dict[str, str],
+        mapping: dict[str, Any],
+        *,
+        review_id: str | None = None,
+    ) -> PreparedReview | dict[str, Any]:
+        """Complete Stage E in memory; no candidate or module is persisted here."""
+
+        if (
+            not isinstance(snapshot, JavascriptScopeSnapshot)
+            or type(selection) is not dict
+            or set(selection) != {"module_relpath", "export_name", "target_binding_id"}
+            or type(selection.get("module_relpath")) is not str
+            or type(selection.get("export_name")) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", selection.get("target_binding_id") or "") is None
+            or (review_id is not None and (type(review_id) is not str or not review_id))
+        ):
+            raise Stage3Error("capture_request_invalid")
+        arguments, parameter_domains, result_field, examples, enumerations = (
+            _normalize_capture_mapping(mapping)
+        )
+        first = _run_source_graph_capture(snapshot, selection, parameter_domains)
+        proof = first["proof"]
+        capture = first["capture"]
+        if (
+            proof.get("target_binding_id") != selection["target_binding_id"]
+            or [item.get("parameter_binding_id") for item in proof.get("parameter_domains", [])]
+            != [item["parameter_binding_id"] for item in arguments]
+            or capture.get("target_binding_id") != selection["target_binding_id"]
+        ):
+            raise Stage3Error("offer_stale")
+        second = _run_source_graph_capture(snapshot, selection, parameter_domains)
+        if _canonical_json_bytes(first) != _canonical_json_bytes(second):
+            raise Stage3Error("bundle_not_deterministic")
+
+        def require_fresh_snapshot() -> None:
+            try:
+                fresh = JavascriptSourceService(self.store).scan(snapshot.project_id)
+            except JavascriptSourceError as exc:
+                raise Stage3Error("source_changed") from exc
+            if not _same_capture_snapshot(snapshot, fresh):
+                raise Stage3Error("source_changed")
+
+        require_fresh_snapshot()
+
+        input_contract, output_contract, error_contract = _capture_contracts(
+            arguments, result_field, proof.get("result_domain")
+        )
+        adapter_source = generate_computation_adapter_v2(
+            [item["input_field"] for item in arguments],
+            input_contract,
+            output_contract,
+        )
+        modules = [
+            {"path": CAPTURE_SELECTED_ENTRY, "source": capture["source"]},
+            {"path": COMPUTATION_ADAPTER_ENTRY, "source": adapter_source},
+        ]
+        modules = sorted(modules, key=lambda item: item["path"])
+        execution_bundle, execution_evidence = _execution_bundle_v2(modules)
+        del execution_bundle
+        mapping_evidence = {
+            "arguments": arguments,
+            "result_field": result_field,
+        }
+        mapping_sha256 = hashlib.sha256(
+            _canonical_json_bytes(mapping_evidence)
+        ).hexdigest()
+        examples_sha256 = hashlib.sha256(_canonical_json_bytes(examples)).hexdigest()
+        enumerations_digest = hashlib.sha256(
+            _canonical_json_bytes(
+                sorted(
+                    enumerations,
+                    key=lambda item: item["parameter_binding_id"],
+                )
+            )
+        ).hexdigest()
+        with self.store.read_connection() as connection:
+            row = connection.execute(
+                "SELECT p.*, r.brand_profile_id AS root_brand_profile_id, "
+                "r.brand_profile_json AS root_brand_profile_json, "
+                "r.brand_profile_digest AS root_brand_profile_digest, "
+                "r.brand_profile_version AS root_brand_profile_version "
+                "FROM projects p JOIN source_roots r ON r.root_id = p.source_root_id "
+                "WHERE p.project_id = ? AND p.source_type = 'javascript_computation_source'",
+                (snapshot.project_id,),
+            ).fetchone()
+        if row is None:
+            raise Stage3Error("capture_project_unavailable")
+        project = dict(row)
+        source_root = {
+            "brand_profile_id": row["root_brand_profile_id"],
+            "brand_profile_json": row["root_brand_profile_json"],
+            "brand_profile_digest": row["root_brand_profile_digest"],
+            "brand_profile_version": row["root_brand_profile_version"],
+        }
+        try:
+            profile = self.intake._effective_brand_profile(project, source_root)
+        except IntakeError as exc:
+            raise Stage3Error(exc.code) from exc
+        expected_profile_binding = (profile.get("id"), profile.get("digest"))
+
+        def require_fresh_evidence() -> None:
+            require_fresh_snapshot()
+            with self.store.read_connection() as connection:
+                current = connection.execute(
+                    "SELECT p.*, r.brand_profile_id AS root_brand_profile_id, "
+                    "r.brand_profile_json AS root_brand_profile_json, "
+                    "r.brand_profile_digest AS root_brand_profile_digest, "
+                    "r.brand_profile_version AS root_brand_profile_version "
+                    "FROM projects p JOIN source_roots r ON r.root_id = p.source_root_id "
+                    "WHERE p.project_id = ? "
+                    "AND p.source_type = 'javascript_computation_source'",
+                    (snapshot.project_id,),
+                ).fetchone()
+            if current is None:
+                raise Stage3Error("brand_profile_changed")
+            try:
+                current_profile = self.intake._effective_brand_profile(
+                    dict(current),
+                    {
+                        "brand_profile_id": current["root_brand_profile_id"],
+                        "brand_profile_json": current["root_brand_profile_json"],
+                        "brand_profile_digest": current["root_brand_profile_digest"],
+                        "brand_profile_version": current["root_brand_profile_version"],
+                    },
+                )
+            except IntakeError as exc:
+                raise Stage3Error("brand_profile_changed") from exc
+            if (
+                current_profile.get("id"),
+                current_profile.get("digest"),
+            ) != expected_profile_binding:
+                raise Stage3Error("brand_profile_changed")
+
+        selected_bundle_options = capture.get("bundle_options_sha256")
+        execution_bundle_options = execution_evidence.get("bundle_options_sha256")
+        usage_scope: dict[str, Any] = {"kind": "general"}
+        rule_versions = {
+            "source_graph_version": "source_graph.v1",
+            "adapter_contract_version": COMPUTATION_ADAPTER_V2,
+            "bundle_contract_version": CAPTURE_BUNDLE_CONTRACT_VERSION,
+            "typescript_version": capture.get("typescript_version"),
+            "esbuild_version": capture.get("esbuild_version"),
+            "selected_bundle_options_sha256": selected_bundle_options,
+            "execution_bundle_options_sha256": execution_bundle_options,
+            "redaction_rules_version": REDACTION_RULES_VERSION,
+            "security_rules_version": SECURITY_RULES_VERSION,
+            "validation_contract_version": VALIDATION_CONTRACT_VERSION,
+            "canonicalization_version": CANONICALIZATION_VERSION,
+            "brand_profile_id": profile.get("id"),
+            "brand_profile_digest": profile.get("digest"),
+        }
+
+        def candidate_payload(current_usage_scope: dict[str, Any]) -> tuple[dict[str, Any], bytes]:
+            canonical = canonicalize_capsule(
+                {
+                    "capability_kind": "computation",
+                    "activation": {
+                        "mode": "declared_input_compute",
+                        "entry_module": COMPUTATION_ADAPTER_ENTRY,
+                        "entrypoint": "compute",
+                    },
+                    "input_contract": input_contract,
+                    "output_contract": output_contract,
+                    "error_contract": error_contract,
+                    "runtime_allowlist": ["local_computation"],
+                    "dom_scope": {
+                        "root_contract": "capsule_root",
+                        "selectors": [],
+                        "classes": [],
+                        "attributes": [],
+                        "events": [],
+                    },
+                    "usage_scope": current_usage_scope,
+                    "html": "",
+                    "css": "",
+                    "javascript_modules": modules,
+                    "assets": [],
+                }
+            ).payload
+            value = {
+                "schema": "ephemeral_capture_candidate.v1",
+                "candidate_origin": "deterministic_computation_adapter",
+                "adapter_contract_version": COMPUTATION_ADAPTER_V2,
+                "source_graph_version": "source_graph.v1",
+                "bundle_contract_version": CAPTURE_BUNDLE_CONTRACT_VERSION,
+                "project_id": snapshot.project_id,
+                "source_identity_sha256": snapshot.source_identity_sha256,
+                "scope_snapshot_sha256": snapshot.scope_snapshot_sha256,
+                "selected_function": {
+                    **selection,
+                    "selected_bundle_sha256": capture["selected_bundle_sha256"],
+                    "capture_entry_sha256": capture["capture_entry_sha256"],
+                },
+                "dependency_closure": {
+                    "module_paths": proof["closure"]["module_paths"],
+                    "binding_ids": proof["closure"]["binding_ids"],
+                    "closure_sha256": proof["closure_sha256"],
+                    "dependency_evidence_sha256": proof[
+                        "dependency_evidence_sha256"
+                    ],
+                    "module_evidence_sha256": proof["module_evidence_sha256"],
+                    "top_level_evidence_sha256": proof[
+                        "top_level_evidence_sha256"
+                    ],
+                    "module_evaluation_paths": capture[
+                        "module_evaluation_paths"
+                    ],
+                    "symbol_closure_paths": capture["symbol_closure_paths"],
+                    "metafile_inputs": capture["metafile_inputs"],
+                },
+                "mapping": mapping_evidence,
+                "mapping_sha256": mapping_sha256,
+                "enumerations_digest": enumerations_digest,
+                "examples": {
+                    "count": len(examples),
+                    "canonical_sha256": examples_sha256,
+                },
+                "execution_bundle_sha256": execution_evidence["sha256"],
+                "rule_versions": rule_versions,
+                "canonical_candidate": canonical,
+            }
+            return value, _canonical_json_bytes(value)
+
+        payload, payload_json = candidate_payload(usage_scope)
+        capture_static_gate(
+            payload_json,
+            snapshot=snapshot,
+            expected_source_identity_sha256=snapshot.source_identity_sha256,
+        )
+        scan_text = "\n".join(
+            [
+                capture["source"],
+                adapter_source,
+                _json(
+                    {
+                        "input": input_contract,
+                        "output": output_contract,
+                        "error": error_contract,
+                        "examples": examples,
+                    }
+                ),
+            ]
+        )
+        sensitivity = self.intake._sensitivity(scan_text, profile)
+        if sensitivity["secret_count"]:
+            require_fresh_evidence()
+            return {
+                "schema": "ephemeral_capture_outcome.v1",
+                "status": "rejected",
+                "error_code": "secret_literal_rejected",
+                "source_identity_sha256": snapshot.source_identity_sha256,
+                "safe_summary": {
+                    "secret_count": sensitivity["secret_count"],
+                    "ambiguous_count": sensitivity["ambiguous_count"],
+                    "brand_count": sensitivity["brand_count"],
+                    "enumeration_parameter_count": len(enumerations),
+                    "enumeration_value_count": sum(len(item["values"]) for item in enumerations),
+                },
+            }
+        decision_binding = {
+            "schema": "capture_decision_binding.v1",
+            "source_identity_sha256": snapshot.source_identity_sha256,
+            "selected_function": selection,
+            "selected_bundle_sha256": capture["selected_bundle_sha256"],
+            "mapping_sha256": mapping_sha256,
+            "examples_sha256": examples_sha256,
+            "enumerations_digest": enumerations_digest,
+            "source_graph_version": "source_graph.v1",
+            "adapter_contract_version": COMPUTATION_ADAPTER_V2,
+            "bundle_contract_version": CAPTURE_BUNDLE_CONTRACT_VERSION,
+            "typescript_version": capture.get("typescript_version"),
+            "esbuild_version": capture.get("esbuild_version"),
+            "bundle_options_sha256": hashlib.sha256(
+                _canonical_json_bytes(
+                    [selected_bundle_options, execution_bundle_options]
+                )
+            ).hexdigest(),
+            "redaction_rules_version": REDACTION_RULES_VERSION,
+            "brand_profile_id": profile.get("id"),
+            "brand_profile_digest": profile.get("digest"),
+        }
+        decision_binding_sha256 = hashlib.sha256(
+            _canonical_json_bytes(decision_binding)
+        ).hexdigest()
+        required_decisions: list[str] = []
+        allowed_decisions: list[str] = []
+        if sensitivity["ambiguous_count"]:
+            required_decisions.append("confirm_fictional_fixture")
+            allowed_decisions.extend(
+                ["confirm_fictional_fixture", "confirm_real_record_reject"]
+            )
+        if sensitivity["brand_count"]:
+            required_decisions.append("retain_brand_limited")
+            allowed_decisions.append("retain_brand_limited")
+        if enumerations:
+            required_decisions.append("confirm_selected_string_enumeration")
+            allowed_decisions.append("confirm_selected_string_enumeration")
+        if required_decisions:
+            if review_id is None:
+                require_fresh_evidence()
+                review_id = _persist_capture_waiting_review(
+                    self.store,
+                    project_id=snapshot.project_id,
+                    source_identity_sha256=snapshot.source_identity_sha256,
+                    decision_binding_sha256=decision_binding_sha256,
+                    sensitivity=sensitivity,
+                    profile=profile,
+                    enumerations_digest=enumerations_digest,
+                    enumeration_parameter_count=len(enumerations),
+                    enumeration_value_count=sum(
+                        len(item["values"]) for item in enumerations
+                    ),
+                    module_count=len(proof["closure"]["module_paths"]),
+                    binding_count=len(proof["closure"]["binding_ids"]),
+                )
+                self._authorize_ephemeral_capture_decision(
+                    review_id, decision_binding_sha256
+                )
+                return {
+                    "schema": "ephemeral_capture_outcome.v1",
+                    "status": "waiting_user",
+                    "candidate_status": "waiting_user",
+                    "resume_contract": "resubmit_ephemeral_capture.v1",
+                    "review_id": review_id,
+                    "source_identity_sha256": snapshot.source_identity_sha256,
+                    "decision_binding_sha256": decision_binding_sha256,
+                    "allowed_decisions": allowed_decisions,
+                    "safe_summary": {
+                        "secret_count": 0,
+                        "ambiguous_count": sensitivity["ambiguous_count"],
+                        "brand_count": sensitivity["brand_count"],
+                        "enumeration_parameter_count": len(enumerations),
+                        "enumeration_value_count": sum(len(item["values"]) for item in enumerations),
+                    },
+                }
+            stored_decisions = _capture_review_decisions(
+                self.store,
+                review_id=review_id,
+                project_id=snapshot.project_id,
+                decision_binding_sha256=decision_binding_sha256,
+            )
+            if (
+                stored_decisions.get("sensitivity_decision")
+                == "confirm_real_record_reject"
+            ):
+                require_fresh_evidence()
+                return {
+                    "schema": "ephemeral_capture_outcome.v1",
+                    "status": "rejected",
+                    "candidate_status": "rejected",
+                    "error_code": "confirmed_real_record_rejected",
+                    "review_id": review_id,
+                    "source_identity_sha256": snapshot.source_identity_sha256,
+                    "decision_binding_sha256": decision_binding_sha256,
+                    "safe_summary": {
+                        "secret_count": 0,
+                        "ambiguous_count": sensitivity["ambiguous_count"],
+                        "brand_count": sensitivity["brand_count"],
+                        "enumeration_parameter_count": len(enumerations),
+                        "enumeration_value_count": sum(
+                            len(item["values"]) for item in enumerations
+                        ),
+                    },
+                }
+            valid_decision = (
+                (
+                    not sensitivity["ambiguous_count"]
+                    or stored_decisions.get("sensitivity_decision")
+                    == "confirm_fictional_fixture"
+                )
+                and (
+                    bool(sensitivity["ambiguous_count"])
+                    or stored_decisions.get("sensitivity_decision") is None
+                )
+                and (
+                    not sensitivity["brand_count"]
+                    or stored_decisions.get("brand_decision") == "retain_brand_limited"
+                )
+                and (
+                    bool(sensitivity["brand_count"])
+                    or stored_decisions.get("brand_decision") is None
+                )
+                and (
+                    not enumerations
+                    or stored_decisions.get("enum_decision")
+                    == "confirm_selected_string_enumeration"
+                )
+                and (
+                    not enumerations
+                    or stored_decisions.get("enum_decision_binding_sha256")
+                    == decision_binding_sha256
+                )
+                and (bool(enumerations) or stored_decisions.get("enum_decision") is None)
+            )
+            if not valid_decision:
+                require_fresh_evidence()
+                self._authorize_ephemeral_capture_decision(
+                    review_id, decision_binding_sha256
+                )
+                return {
+                    "schema": "ephemeral_capture_outcome.v1",
+                    "status": "waiting_user",
+                    "candidate_status": "waiting_user",
+                    "resume_contract": "resubmit_ephemeral_capture.v1",
+                    "review_id": review_id,
+                    "source_identity_sha256": snapshot.source_identity_sha256,
+                    "decision_binding_sha256": decision_binding_sha256,
+                    "allowed_decisions": allowed_decisions,
+                    "safe_summary": {
+                        "secret_count": 0,
+                        "ambiguous_count": sensitivity["ambiguous_count"],
+                        "brand_count": sensitivity["brand_count"],
+                        "enumeration_parameter_count": len(enumerations),
+                        "enumeration_value_count": sum(len(item["values"]) for item in enumerations),
+                    },
+                }
+            if sensitivity["brand_count"]:
+                if not profile.get("id") or not profile.get("digest"):
+                    raise Stage3Error("brand_profile_required_for_retention")
+                usage_scope = {
+                    "kind": "brand_limited",
+                    "brand_profile_id": profile["id"],
+                    "brand_profile_digest": profile["digest"],
+                }
+                payload, payload_json = candidate_payload(usage_scope)
+                capture_static_gate(
+                    payload_json,
+                    snapshot=snapshot,
+                    expected_source_identity_sha256=snapshot.source_identity_sha256,
+                )
+        elif review_id is not None:
+            raise Stage3Error("capture_decision_unexpected")
+
+        gate, receipt_json = preflight_computation_capture_v2(
+            payload_json,
+            examples,
+            snapshot=snapshot,
+            expected_source_identity_sha256=snapshot.source_identity_sha256,
+        )
+        if gate.execution_bundle_sha256 != payload["execution_bundle_sha256"]:
+            raise Stage3Error("execution_bundle_hash_mismatch")
+        require_fresh_evidence()
+        candidate_id = "candidate_" + hashlib.sha256(payload_json).hexdigest()[:24]
+        prepared = make_prepared_review(
+            run_id=f"ephemeral_{uuid.uuid4().hex}",
+            review_id=review_id,
+            candidate_id=candidate_id,
+            project_id=snapshot.project_id,
+            source_identity_sha256=snapshot.source_identity_sha256,
+            decision_binding_sha256=(
+                decision_binding_sha256 if required_decisions else None
+            ),
+            candidate_payload_json=payload_json,
+            rule_versions=rule_versions,
+            preflight_receipt_json=receipt_json,
+            snapshot=snapshot,
+        )
+        require_fresh_evidence()
+        return prepared
+
+    def preflight_computation_adapter(
+        self,
+        candidate: dict[str, Any],
+        examples: list[dict[str, Any]],
+        result_field: str,
+    ) -> dict[str, Any]:
+        """Run fixed security and Node checks without persisting example values."""
+
+        if (
+            type(candidate) is not dict
+            or candidate.get("capability_kind") != "computation"
+            or type(examples) is not list
+            or not 1 <= len(examples) <= 64
+            or type(result_field) is not str
+            or _SNAKE.fullmatch(result_field) is None
+        ):
+            raise Stage3Error("adapter_mapping_invalid")
+        prepared = json.loads(_json(candidate))
+        try:
+            input_contract, output_contract, error_contract = normalize_capsule_contracts(
+                "computation",
+                prepared.get("input_contract"),
+                prepared.get("output_contract"),
+                prepared.get("error_contract"),
+            )
+        except (DataContractError, TypeError) as exc:
+            raise Stage3Error("adapter_mapping_invalid") from exc
+        output_properties = output_contract.get("properties", {})
+        if (
+            set(output_properties) != {result_field}
+            or output_contract.get("required") != [result_field]
+        ):
+            raise Stage3Error("adapter_mapping_invalid")
+        prepared["input_contract"] = input_contract
+        prepared["output_contract"] = output_contract
+        prepared["error_contract"] = error_contract
+
+        inputs: list[dict[str, Any]] = []
+        expected: list[dict[str, Any]] = []
+        canonical_examples: list[dict[str, Any]] = []
+        for item in examples:
+            if type(item) is not dict or set(item) != {"input", "expected"}:
+                raise Stage3Error("adapter_mapping_invalid")
+            input_value = item["input"]
+            expected_value = item["expected"]
+            if (
+                type(input_value) is not dict
+                or type(expected_value) is not int
+                or type(expected_value) is bool
+                or not data_contract_accepts(input_contract, input_value)
+                or not data_contract_accepts(
+                    output_contract, {result_field: expected_value}
+                )
+            ):
+                raise Stage3Error("adapter_mapping_invalid")
+            cloned_input = json.loads(_json(input_value))
+            inputs.append(cloned_input)
+            expected.append(
+                {"ok": True, "value": {result_field: expected_value}}
+            )
+            canonical_examples.append(
+                {"input": cloned_input, "expected": expected_value}
+            )
+
+        try:
+            security = _analyze_javascript(prepared, [])
+        except Stage3Error as exc:
+            raise Stage3Error(
+                "adapter_security_rejected", {"reason_code": exc.code}
+            ) from exc
+        prepared["javascript_modules"] = security["javascript_modules"]
+        try:
+            validation = _validate_computation(
+                prepared,
+                {
+                    "schema": "synthetic_fixtures.v1",
+                    "normal": inputs,
+                    "boundary": [],
+                    "invalid": [],
+                },
+                expected_values=expected,
+            )
+        except Stage3Error as exc:
+            if exc.code == "compute_worker_failed":
+                raise Stage3Error("adapter_source_exception") from exc
+            raise
+        return {
+            "schema_version": "computation_adapter_preflight.v1",
+            "status": "passed",
+            "acceptance_scope": validation["acceptance_scope"],
+            "example_count": len(inputs),
+            "example_set_sha256": hashlib.sha256(
+                _json(canonical_examples).encode("utf-8")
+            ).hexdigest(),
+        }
+
+    def _prepare_ephemeral_for_stage3(
+        self, frozen: PreparedReview
+    ) -> _PreparedReview:
+        if not isinstance(frozen, PreparedReview):
+            raise Stage3Error("prepared_review_invalid")
+        payload = _parse_canonical_json_bytes(
+            frozen.candidate_payload_json, "prepared_review_invalid"
+        )
+        rules = _parse_canonical_json_bytes(
+            frozen.rule_versions_json, "prepared_review_invalid"
+        )
+        receipt = _parse_canonical_json_bytes(
+            frozen.preflight_receipt_json, "prepared_review_invalid"
+        )
+        if (
+            type(payload) is not dict
+            or type(rules) is not dict
+            or type(receipt) is not dict
+            or set(receipt)
+            != {
+                "validation_scope",
+                "formal_runtime_evidence",
+                "candidate_payload_sha256",
+                "execution_bundle_sha256",
+                "examples_sha256",
+                "worker_contract_version",
+                "passed",
+            }
+            or payload.get("project_id") != frozen.project_id
+            or payload.get("source_identity_sha256")
+            != frozen.source_identity_sha256
+            or payload.get("rule_versions") != rules
+            or frozen.candidate_id
+            != "candidate_"
+            + hashlib.sha256(frozen.candidate_payload_json).hexdigest()[:24]
+            or receipt.get("validation_scope")
+            != "adapter_example_preflight"
+            or receipt.get("formal_runtime_evidence") is not False
+            or receipt.get("passed") is not True
+            or receipt.get("candidate_payload_sha256")
+            != hashlib.sha256(frozen.candidate_payload_json).hexdigest()
+            or receipt.get("execution_bundle_sha256")
+            != payload.get("execution_bundle_sha256")
+            or receipt.get("examples_sha256")
+            != payload.get("examples", {}).get("canonical_sha256")
+            or receipt.get("worker_contract_version")
+            != COMPUTE_WORKER_CONTRACT_VERSION
+        ):
+            raise Stage3Error("prepared_review_invalid")
+        try:
+            snapshot = JavascriptSourceService(self.store).scan(frozen.project_id)
+        except JavascriptSourceError as exc:
+            raise Stage3Error("source_changed") from exc
+        if snapshot.source_identity_sha256 != frozen.source_identity_sha256:
+            raise Stage3Error("source_changed")
+        gate = capture_static_gate(
+            frozen.candidate_payload_json,
+            snapshot=snapshot,
+            expected_source_identity_sha256=frozen.source_identity_sha256,
+        )
+        if gate.execution_bundle_sha256 != receipt.get("execution_bundle_sha256"):
+            raise Stage3Error("prepared_review_invalid")
+        with self.store.read_connection() as connection:
+            row = connection.execute(
+                "SELECT p.*, r.brand_profile_id AS root_brand_profile_id, "
+                "r.brand_profile_json AS root_brand_profile_json, "
+                "r.brand_profile_digest AS root_brand_profile_digest, "
+                "r.brand_profile_version AS root_brand_profile_version "
+                "FROM projects p JOIN source_roots r ON r.root_id = p.source_root_id "
+                "WHERE p.project_id = ? "
+                "AND p.source_type = 'javascript_computation_source'",
+                (frozen.project_id,),
+            ).fetchone()
+        if row is None:
+            raise Stage3Error("capture_project_unavailable")
+        try:
+            profile = self.intake._effective_brand_profile(
+                dict(row),
+                {
+                    "brand_profile_id": row["root_brand_profile_id"],
+                    "brand_profile_json": row["root_brand_profile_json"],
+                    "brand_profile_digest": row["root_brand_profile_digest"],
+                    "brand_profile_version": row["root_brand_profile_version"],
+                },
+            )
+        except IntakeError as exc:
+            raise Stage3Error("brand_profile_changed") from exc
+        if (profile.get("id"), profile.get("digest")) != (
+            rules.get("brand_profile_id"),
+            rules.get("brand_profile_digest"),
+        ):
+            raise Stage3Error("brand_profile_changed")
+        if frozen.review_id is not None:
+            if frozen.decision_binding_sha256 is None:
+                raise Stage3Error("prepared_review_invalid")
+            decisions = _capture_review_decisions(
+                self.store,
+                review_id=frozen.review_id,
+                project_id=frozen.project_id,
+                decision_binding_sha256=frozen.decision_binding_sha256,
+            )
+            stored_review = self._review(frozen.review_id)
+            try:
+                redaction = json.loads(stored_review["redaction_summary_json"])
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise Stage3Error("capture_resubmission_required") from exc
+            if (
+                type(redaction) is not dict
+                or redaction.get("schema") != "capture_redaction_summary.v1"
+                or redaction.get("enum_decision_binding_sha256")
+                != frozen.decision_binding_sha256
+                or redaction.get("enumerations_digest")
+                != payload.get("enumerations_digest")
+            ):
+                raise Stage3Error("capture_resubmission_required")
+            ambiguous_required = bool(redaction.get("ambiguous_count"))
+            brand_required = bool(redaction.get("brand_count"))
+            enum_required = bool(redaction.get("enumeration_parameter_count"))
+            if not (
+                decisions.get("sensitivity_decision")
+                == ("confirm_fictional_fixture" if ambiguous_required else None)
+                and decisions.get("brand_decision")
+                == ("retain_brand_limited" if brand_required else None)
+                and decisions.get("enum_decision")
+                == (
+                    "confirm_selected_string_enumeration"
+                    if enum_required
+                    else None
+                )
+                and decisions.get("enum_decision_binding_sha256")
+                == (frozen.decision_binding_sha256 if enum_required else None)
+            ):
+                raise Stage3Error("capture_resubmission_required")
+        elif frozen.decision_binding_sha256 is not None:
+            raise Stage3Error("prepared_review_invalid")
+        candidate = json.loads(_json(payload.get("canonical_candidate")))
+        try:
+            (
+                candidate["input_contract"],
+                candidate["output_contract"],
+                candidate["error_contract"],
+            ) = normalize_capsule_contracts(
+                "computation",
+                candidate.get("input_contract"),
+                candidate.get("output_contract"),
+                candidate.get("error_contract"),
+            )
+            fixtures = generate_synthetic_fixtures(candidate["input_contract"])
+        except (DataContractError, TypeError, KeyError) as exc:
+            raise Stage3Error(getattr(exc, "code", "data_contract_invalid")) from exc
+        candidate_for_security = json.loads(_json(candidate))
+        candidate_for_security["candidate_origin"] = payload["candidate_origin"]
+        candidate_for_security["adapter_contract_version"] = payload[
+            "adapter_contract_version"
+        ]
+        security = _analyze_javascript(candidate_for_security, [])
+        if security.get("javascript_modules") != candidate["javascript_modules"]:
+            raise Stage3Error("capture_module_contract_invalid")
+        canonical = canonicalize_capsule(candidate)
+        selection = payload.get("selected_function") or {}
+        source_relpath = selection.get("module_relpath")
+        if type(source_relpath) is not str or not source_relpath:
+            raise Stage3Error("capture_evidence_invalid")
+        summary = {
+            "schema": "sanitized_candidate.v1",
+            "candidate_origin": "deterministic_computation_adapter",
+            "adapter_contract_version": COMPUTATION_ADAPTER_V2,
+            "source_graph_version": payload["source_graph_version"],
+            "bundle_contract_version": payload["bundle_contract_version"],
+            "input_contract": candidate["input_contract"],
+            "output_contract": candidate["output_contract"],
+            "error_contract": candidate["error_contract"],
+            "usage_scope": candidate["usage_scope"],
+            "decision_binding_sha256": frozen.decision_binding_sha256,
+            "ephemeral_capture_payload": payload,
+        }
+        review = {
+            "review_id": frozen.review_id or f"review_{uuid.uuid4().hex}",
+            "run_id": frozen.run_id,
+            "project_id": frozen.project_id,
+            "candidate_id": frozen.candidate_id,
+            "candidate_status": (
+                "waiting_user" if frozen.review_id is not None else "extracted"
+            ),
+            "source_relpath": source_relpath,
+            "source_location_json": _json(
+                {
+                    "schema": "capture_location_summary.v1",
+                    "module_relpath": source_relpath,
+                }
+            ),
+            "source_hash": frozen.source_identity_sha256,
+            "sanitized_candidate_json": _json(summary),
+            "redaction_summary_json": _json(
+                {
+                    "schema": "capture_redaction_summary.v1",
+                    "codes": [],
+                    "source_identity_sha256": frozen.source_identity_sha256,
+                }
+            ),
+            "decision": None,
+        }
+        if frozen.review_id is not None:
+            stored = self._review(frozen.review_id)
+            if stored["candidate_status"] != "waiting_user":
+                raise Stage3Error("capture_resubmission_required")
+            review["run_id"] = stored["run_id"]
+            review["review_id"] = stored["review_id"]
+            review["redaction_summary_json"] = stored[
+                "redaction_summary_json"
+            ]
+        return _PreparedReview(
+            review=review,
+            artifact=Stage3Artifact(
+                canonical_payload=canonical.payload,
+                canonical_hash=canonical.sha256,
+                assets=(),
+                cleaning_summary={
+                    "schema_version": "capsule_cleaning.v1",
+                    "status": "passed",
+                    "redaction_count": 0,
+                    "html_cleaned": False,
+                    "css_cleaned": False,
+                    "asset_count": 0,
+                },
+                security_result={
+                    "schema_version": "fixed_security.v1",
+                    "status": "passed",
+                    "security_rules_version": SECURITY_RULES_VERSION,
+                    "listener_bindings": [],
+                },
+            ),
+            fixtures=fixtures,
+            snapshot_digest=snapshot.source_identity_sha256,
+            listener_bindings=[],
+            capture_snapshot=snapshot,
+            execution_bundle=gate.execution_bundle,
+            execution_bundle_sha256=gate.execution_bundle_sha256,
+            capture_brand_profile_id=profile.get("id"),
+            capture_brand_profile_digest=profile.get("digest"),
+        )
+
+    def process_ephemeral_capture(self, frozen: PreparedReview) -> dict[str, Any]:
+        """Run one ephemeral capture through the same Stage-3 core as stored reviews."""
+
+        prepared = self._prepare_ephemeral_for_stage3(frozen)
+        outcome = self.shared_stage3_gate(prepared)
+        if outcome.kind == "same_run":
+            raise Stage3Error("stage3_outcome_invalid")
+        if outcome.kind == "exact_duplicate" and outcome.version is not None:
+            return self._persist_ephemeral_duplicate(outcome.prepared, outcome.version)
+        if outcome.kind == "failure" and outcome.error_code is not None:
+            return self._persist_ephemeral_failure(outcome)
+        if outcome.kind == "rules_revalidated":
+            comparison = self._equivalence_comparison(
+                outcome.prepared,
+                self._hash_matches(outcome.prepared.artifact.canonical_hash),
+            )
+            comparison["reason_codes"] = [
+                "manual_rules_revalidation_required",
+            ]
+            outcome = _Stage3GateOutcome(
+                "review_required", outcome.prepared, comparison=comparison
+            )
+        if outcome.kind != "review_required" or outcome.comparison is None:
+            raise Stage3Error("stage3_outcome_invalid")
+        return self._persist_ephemeral_review_required(outcome)
 
     def process_review(self, review_id: str) -> dict[str, Any]:
         review = self._review(review_id)
+        try:
+            summary = json.loads(review["sanitized_candidate_json"])
+        except json.JSONDecodeError as exc:
+            raise Stage3Error("sanitized_candidate_invalid") from exc
+        if (
+            review["candidate_status"] in {
+                "waiting_user",
+                "waiting_model",
+                "waiting_validation",
+                "rejected",
+            }
+            and summary.get("resume_contract") == "resubmit_ephemeral_capture.v1"
+        ):
+            raise Stage3Error("capture_resubmission_required")
         if review["candidate_status"] != "extracted":
             raise Stage3Error("review_item_not_extracted")
         try:
@@ -1662,39 +4219,78 @@ class ReweaveCapsuleStage3:
                 raise
             return self._record_gate_failure(review, exc.code, details=exc.details)
 
+        outcome = self.shared_stage3_gate(prepared)
+        if outcome.kind == "same_run" and outcome.version is not None:
+            return self._copy_representative(prepared.review, outcome.version)
+        if outcome.kind == "exact_duplicate" and outcome.version is not None:
+            return self._attach_exact_duplicate(outcome.prepared, outcome.version)
+        if outcome.kind == "failure" and outcome.error_code is not None:
+            return self._record_gate_failure(
+                outcome.prepared.review,
+                outcome.error_code,
+                canonical_hash=outcome.prepared.artifact.canonical_hash,
+                supervision=outcome.supervision,
+                response_hash=outcome.response_hash,
+                model=outcome.model,
+                details=outcome.error_details,
+            )
+        if outcome.kind == "rules_revalidated" and outcome.version is not None:
+            return self._publish_version(
+                outcome.prepared,
+                existing_capsule=outcome.version,
+                reason_code="rules_revalidated",
+            )
+        if outcome.kind != "review_required" or outcome.comparison is None:
+            raise Stage3Error("stage3_outcome_invalid")
+        return self._record_evidence(
+            outcome.prepared, outcome.comparison, "review_required"
+        )
+
+    def shared_stage3_gate(self, prepared: _PreparedReview) -> _Stage3GateOutcome:
+        """The single non-persisting Stage-3 decision core for stored and ephemeral input."""
+
         representative = self._same_run_representative(prepared)
         if representative is not None:
-            return self._copy_representative(prepared.review, representative)
-
+            return _Stage3GateOutcome("same_run", prepared, version=representative)
         matches = self._hash_matches(prepared.artifact.canonical_hash)
-        eligible = [row for row in matches if self._eligible_exact(row)]
+        eligible = [
+            row
+            for row in matches
+            if self._eligible_exact(row)
+            and self._exact_origin_compatible(prepared.review, row)
+            and self._exact_model_current(row)
+        ]
         identities = {str(row["capsule_id"]) for row in eligible}
         if len(identities) == 1:
-            return self._attach_exact_duplicate(prepared, eligible[0])
-
+            target = dict(eligible[0])
+            target["target_evidence_fingerprint"] = self._exact_evidence_fingerprint(
+                target
+            )
+            return _Stage3GateOutcome(
+                "exact_duplicate", prepared, version=target
+            )
         try:
             summary = self._supervision_summary(prepared)
             supervision, response_hash, model = self.supervisor.supervise(
                 summary, prepared.artifact.canonical_payload["capability_kind"]
             )
             if supervision["verdict"] == "reject":
-                return self._record_gate_failure(
-                    prepared.review,
-                    "supervision_rejected",
-                    canonical_hash=prepared.artifact.canonical_hash,
+                return _Stage3GateOutcome(
+                    "failure",
+                    prepared,
+                    error_code="supervision_rejected",
                     supervision=supervision,
                     response_hash=response_hash,
                     model=model,
                 )
             validation = self._runtime_validation(prepared)
         except Stage3Error as exc:
-            return self._record_gate_failure(
-                prepared.review,
-                exc.code,
-                canonical_hash=prepared.artifact.canonical_hash,
-                details=exc.details,
+            return _Stage3GateOutcome(
+                "failure",
+                prepared,
+                error_code=exc.code,
+                error_details=exc.details,
             )
-
         artifact = Stage3Artifact(
             canonical_payload=prepared.artifact.canonical_payload,
             canonical_hash=prepared.artifact.canonical_hash,
@@ -1714,12 +4310,18 @@ class ReweaveCapsuleStage3:
             fixtures=prepared.fixtures,
             snapshot_digest=prepared.snapshot_digest,
             listener_bindings=prepared.listener_bindings,
+            capture_snapshot=prepared.capture_snapshot,
+            execution_bundle=prepared.execution_bundle,
+            execution_bundle_sha256=prepared.execution_bundle_sha256,
+            capture_brand_profile_id=prepared.capture_brand_profile_id,
+            capture_brand_profile_digest=prepared.capture_brand_profile_digest,
         )
         stale_current = {
             str(row["capsule_id"]): row
             for row in matches
             if row["version_id"] == row["current_version_id"]
             and row["status"] in {"active", "pending_revalidation"}
+            and self._exact_origin_compatible(prepared.review, row)
         }
         model_requires_review = bool(
             supervision["verdict"] == "review"
@@ -1729,12 +4331,11 @@ class ReweaveCapsuleStage3:
             or supervision["hidden_dependency_codes"]
         )
         if len(stale_current) == 1 and len(identities) <= 1 and not model_requires_review:
-            return self._publish_version(
+            return _Stage3GateOutcome(
+                "rules_revalidated",
                 prepared,
-                existing_capsule=next(iter(stale_current.values())),
-                reason_code="rules_revalidated",
+                version=next(iter(stale_current.values())),
             )
-
         comparison = self._equivalence_comparison(prepared, matches)
         reasons = ["identity_assignment_required"]
         if len(identities) > 1:
@@ -1744,7 +4345,357 @@ class ReweaveCapsuleStage3:
         if comparison["candidates"]:
             reasons.append("manual_equivalence_review_required")
         comparison["reason_codes"] = sorted(set(reasons))
-        return self._record_evidence(prepared, comparison, "review_required")
+        return _Stage3GateOutcome(
+            "review_required", prepared, comparison=comparison
+        )
+
+    @staticmethod
+    def _ephemeral_run_values(
+        prepared: _PreparedReview, status: str
+    ) -> tuple[Any, ...]:
+        now = _now()
+        return (
+            prepared.review["run_id"],
+            prepared.review["project_id"],
+            status,
+            prepared.snapshot_digest,
+            prepared.snapshot_digest,
+            REDACTION_RULES_VERSION,
+            SECURITY_RULES_VERSION,
+            SUPERVISION_RULES_VERSION,
+            VALIDATION_CONTRACT_VERSION,
+            CANONICALIZATION_VERSION,
+            _json(
+                {
+                    "candidates": 1,
+                    "candidate_origin": "deterministic_computation_adapter",
+                    "adapter_contract_version": COMPUTATION_ADAPTER_V2,
+                    "adapter_only": True,
+                }
+            ),
+            now,
+            now,
+            now,
+        )
+
+    def _ensure_ephemeral_run(
+        self,
+        connection: sqlite3.Connection,
+        prepared: _PreparedReview,
+        status: str,
+    ) -> None:
+        existing = connection.execute(
+            "SELECT run_id, counts_json FROM intake_runs WHERE run_id = ?",
+            (prepared.review["run_id"],),
+        ).fetchone()
+        if existing is not None:
+            try:
+                counts = json.loads(existing["counts_json"])
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise Stage3Error("intake_run_invalid") from exc
+            if type(counts) is not dict:
+                raise Stage3Error("intake_run_invalid")
+            if counts.get("adapter_only") is not True:
+                counts["adapter_only"] = True
+                connection.execute(
+                    "UPDATE intake_runs SET counts_json = ? WHERE run_id = ?",
+                    (_json(counts), prepared.review["run_id"]),
+                )
+            return
+        connection.execute(
+            "INSERT INTO intake_runs ("
+            "run_id, project_id, run_kind, status, snapshot_before, snapshot_after, "
+            "extraction_contract_version, redaction_rules_version, security_rules_version, "
+            "supervision_rules_version, validation_contract_version, canonicalization_version, "
+            "counts_json, started_at, completed_at, created_at"
+            ") VALUES (?, ?, 'javascript_computation_capture', ?, ?, ?, "
+            "'javascript_computation_capture.v2', ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            self._ephemeral_run_values(prepared, status),
+        )
+
+    def _write_ephemeral_review(
+        self,
+        connection: sqlite3.Connection,
+        prepared: _PreparedReview,
+        *,
+        status: str,
+        sanitized: dict[str, Any],
+        canonical_hash: str | None,
+        supervision: dict[str, Any] | None,
+        response_hash: str | None,
+        comparison: dict[str, Any],
+    ) -> None:
+        self._assert_capture_brand_profile(prepared, connection)
+        now = _now()
+        review_id = str(prepared.review["review_id"])
+        existing = connection.execute(
+            "SELECT candidate_status FROM review_items WHERE review_id = ?",
+            (review_id,),
+        ).fetchone()
+        if existing is None:
+            connection.execute(
+                "INSERT INTO review_items ("
+                "review_id, run_id, project_id, candidate_id, candidate_status, "
+                "source_relpath, source_location_json, source_hash, "
+                "redaction_rules_version, candidate_canonical_hash, "
+                "sanitized_candidate_json, redaction_summary_json, "
+                "supervision_result_json, supervision_response_hash, "
+                "equivalence_comparison_json, created_at, updated_at"
+                ") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    review_id,
+                    prepared.review["run_id"],
+                    prepared.review["project_id"],
+                    prepared.review["candidate_id"],
+                    status,
+                    prepared.review["source_relpath"],
+                    prepared.review["source_location_json"],
+                    prepared.review["source_hash"],
+                    REDACTION_RULES_VERSION,
+                    canonical_hash,
+                    _json(sanitized),
+                    prepared.review["redaction_summary_json"],
+                    _json(supervision) if supervision is not None else None,
+                    response_hash,
+                    _json(comparison),
+                    now,
+                    now,
+                ),
+            )
+            return
+        if existing["candidate_status"] != "waiting_user":
+            raise Stage3Error("review_decision_conflict")
+        updated = connection.execute(
+            "UPDATE review_items SET candidate_id = ?, candidate_status = ?, "
+            "source_relpath = ?, source_location_json = ?, source_hash = ?, "
+            "candidate_canonical_hash = ?, sanitized_candidate_json = ?, "
+            "redaction_summary_json = ?, supervision_result_json = ?, "
+            "supervision_response_hash = ?, equivalence_comparison_json = ?, updated_at = ? "
+            "WHERE review_id = ? AND candidate_status = 'waiting_user' AND decision IS NULL",
+            (
+                prepared.review["candidate_id"],
+                status,
+                prepared.review["source_relpath"],
+                prepared.review["source_location_json"],
+                prepared.review["source_hash"],
+                canonical_hash,
+                _json(sanitized),
+                prepared.review["redaction_summary_json"],
+                _json(supervision) if supervision is not None else None,
+                response_hash,
+                _json(comparison),
+                now,
+                review_id,
+            ),
+        )
+        if updated.rowcount != 1:
+            raise Stage3Error("review_decision_conflict")
+
+    def _persist_ephemeral_failure(
+        self, outcome: _Stage3GateOutcome
+    ) -> dict[str, Any]:
+        prepared = outcome.prepared
+        code = str(outcome.error_code)
+        if code.startswith("ollama_"):
+            status = "waiting_model"
+        elif code in {
+            "node_unavailable",
+            "compute_worker_failed",
+            "compute_worker_failed_timeout",
+            "worker_timeout",
+        }:
+            status = "waiting_validation"
+        else:
+            status = "rejected"
+        self._assert_snapshot(prepared)
+        safe = {
+            "schema": "sanitized_candidate.v1",
+            "candidate_origin": "deterministic_computation_adapter",
+            "adapter_contract_version": COMPUTATION_ADAPTER_V2,
+            "requires_reextract": True,
+            "resume_contract": "resubmit_ephemeral_capture.v1",
+            "stage3_failure": {
+                "schema_version": "stage3_failure.v1",
+                "error_code": code,
+            },
+        }
+        comparison = {
+            "schema_version": "equivalence_comparison.v1",
+            "reason_codes": [code],
+            "candidates": [],
+        }
+        with self.store.transaction() as connection:
+            self._ensure_ephemeral_run(connection, prepared, "completed_with_pending")
+            self._write_ephemeral_review(
+                connection,
+                prepared,
+                status=status,
+                sanitized=safe,
+                canonical_hash=prepared.artifact.canonical_hash,
+                supervision=outcome.supervision,
+                response_hash=outcome.response_hash,
+                comparison=comparison,
+            )
+            self._sync_run_evidence(connection, str(prepared.review["run_id"]))
+            self.store.bump_revision(connection)
+        return {
+            "review_id": prepared.review["review_id"],
+            "status": status,
+            "error_code": code,
+            "canonical_hash": prepared.artifact.canonical_hash,
+        }
+
+    def _persist_ephemeral_review_required(
+        self, outcome: _Stage3GateOutcome
+    ) -> dict[str, Any]:
+        prepared = outcome.prepared
+        artifact = prepared.artifact
+        if (
+            artifact.supervision is None
+            or artifact.supervision_response_hash is None
+            or artifact.model_name is None
+            or artifact.model_digest is None
+            or artifact.supervised_at is None
+            or artifact.validation is None
+            or outcome.comparison is None
+        ):
+            raise Stage3Error("stage3_evidence_missing")
+        self._assert_snapshot(prepared)
+        sanitized = json.loads(prepared.review["sanitized_candidate_json"])
+        sanitized["stage3_evidence"] = {
+            "schema_version": "stage3_evidence.v1",
+            "extraction_contract_version": EXTRACTION_CONTRACT_VERSION,
+            "redaction_rules_version": REDACTION_RULES_VERSION,
+            "canonicalization_version": CANONICALIZATION_VERSION,
+            "security_rules_version": SECURITY_RULES_VERSION,
+            "supervision_rules_version": SUPERVISION_RULES_VERSION,
+            "validation_contract_version": VALIDATION_CONTRACT_VERSION,
+            "model_name": artifact.model_name,
+            "model_digest": artifact.model_digest,
+            "supervised_at": artifact.supervised_at,
+            "cleaning_summary": artifact.cleaning_summary,
+            "security_result": artifact.security_result,
+            "validation": artifact.validation,
+        }
+        with self.store.transaction() as connection:
+            self._ensure_ephemeral_run(connection, prepared, "completed_with_pending")
+            self._write_ephemeral_review(
+                connection,
+                prepared,
+                status="review_required",
+                sanitized=sanitized,
+                canonical_hash=artifact.canonical_hash,
+                supervision=artifact.supervision,
+                response_hash=artifact.supervision_response_hash,
+                comparison=outcome.comparison,
+            )
+            self._sync_run_evidence(connection, str(prepared.review["run_id"]))
+            self.store.bump_revision(connection)
+        return {
+            "review_id": prepared.review["review_id"],
+            "status": "review_required",
+            "canonical_hash": artifact.canonical_hash,
+            "validation_scope": artifact.validation.get("acceptance_scope"),
+        }
+
+    def _persist_ephemeral_duplicate(
+        self, prepared: _PreparedReview, version: dict[str, Any]
+    ) -> dict[str, Any]:
+        self._assert_snapshot(prepared)
+        safe = {
+            "schema": "sanitized_candidate.v1",
+            "candidate_origin": "deterministic_computation_adapter",
+            "adapter_contract_version": COMPUTATION_ADAPTER_V2,
+            "source_brand_profile": {
+                "brand_profile_id": prepared.capture_brand_profile_id,
+                "brand_profile_digest": prepared.capture_brand_profile_digest,
+            },
+            "stage3_evidence": {
+                "schema_version": "stage3_evidence.v1",
+                "result": "eligible_active_current_exact_duplicate",
+                "version_id": version["version_id"],
+                "security_rules_version": SECURITY_RULES_VERSION,
+                "supervision_rules_version": SUPERVISION_RULES_VERSION,
+                "validation_contract_version": VALIDATION_CONTRACT_VERSION,
+            },
+        }
+        comparison = {
+            "schema_version": "equivalence_comparison.v1",
+            "reason_codes": ["eligible_active_current_exact_duplicate"],
+            "candidates": [
+                {
+                    "capsule_id": version["capsule_id"],
+                    "version_id": version["version_id"],
+                    "canonical_hash_equal": True,
+                }
+            ],
+        }
+        with self.store.transaction() as connection:
+            current = connection.execute(
+                "SELECT cv.*, c.status, c.current_version_id, c.capability_key, "
+                "c.role_key, c.variant_key, c.capability_kind FROM capsule_versions cv "
+                "JOIN capsules c ON c.capsule_id = cv.capsule_id "
+                "WHERE cv.version_id = ? AND cv.capsule_id = ?",
+                (version["version_id"], version["capsule_id"]),
+            ).fetchone()
+            if (
+                current is None
+                or current["canonical_hash"] != prepared.artifact.canonical_hash
+                or not self._eligible_exact(dict(current))
+                or not self._exact_origin_compatible(prepared.review, dict(current))
+                or not self._exact_model_current(dict(current), connection)
+                or self._exact_evidence_fingerprint(dict(current))
+                != version.get("target_evidence_fingerprint")
+            ):
+                raise Stage3Error("exact_duplicate_target_expired")
+            self._ensure_ephemeral_run(connection, prepared, "completed")
+            self._write_ephemeral_review(
+                connection,
+                prepared,
+                status="duplicate",
+                sanitized=safe,
+                canonical_hash=prepared.artifact.canonical_hash,
+                supervision=None,
+                response_hash=None,
+                comparison=comparison,
+            )
+            bound = connection.execute(
+                "UPDATE review_items SET retained_version_id = ? "
+                "WHERE review_id = ? AND candidate_status = 'duplicate' "
+                "AND candidate_canonical_hash = ? AND retained_version_id IS NULL",
+                (
+                    version["version_id"],
+                    prepared.review["review_id"],
+                    prepared.artifact.canonical_hash,
+                ),
+            )
+            if bound.rowcount != 1:
+                raise Stage3Error("review_decision_conflict")
+            connection.execute(
+                "INSERT INTO capsule_sources ("
+                "source_link_id, version_id, project_id, source_identity, source_kind, "
+                "source_relpath, source_hash, candidate_canonical_hash, relationship, read_at"
+                ") VALUES (?, ?, ?, ?, 'project', ?, ?, ?, 'exact', ?)",
+                (
+                    f"src_{uuid.uuid4().hex}",
+                    version["version_id"],
+                    prepared.review["project_id"],
+                    f"project:{prepared.review['project_id']}",
+                    prepared.review["source_relpath"],
+                    prepared.review["source_hash"],
+                    prepared.artifact.canonical_hash,
+                    _now(),
+                ),
+            )
+            self._sync_run_evidence(connection, str(prepared.review["run_id"]))
+            self.store.bump_revision(connection)
+        return {
+            "review_id": prepared.review["review_id"],
+            "status": "duplicate",
+            "capsule_id": version["capsule_id"],
+            "version_id": version["version_id"],
+            "canonical_hash": prepared.artifact.canonical_hash,
+        }
 
     def publish_review(
         self,
@@ -1760,13 +4711,32 @@ class ReweaveCapsuleStage3:
     ) -> dict[str, Any]:
         review = self._review(review_id)
         if review["project_id"] is not None:
-            try:
-                context = self.intake._project_context(str(review["project_id"]))
-                self.intake._effective_brand_profile(
-                    context.project, context.source_root
+            with self.store.read_connection() as connection:
+                schema_version = int(
+                    connection.execute("PRAGMA user_version").fetchone()[0]
                 )
-            except IntakeError as exc:
-                raise Stage3Error(exc.code) from exc
+                project = (
+                    connection.execute(
+                        "SELECT source_type FROM projects WHERE project_id = ?",
+                        (review["project_id"],),
+                    ).fetchone()
+                    if schema_version >= 2
+                    else None
+                )
+            javascript_capture = bool(
+                project is not None
+                and project["source_type"] == "javascript_computation_source"
+            )
+            if schema_version >= 2 and project is None:
+                raise Stage3Error("project_not_found")
+            if not javascript_capture:
+                try:
+                    context = self.intake._project_context(str(review["project_id"]))
+                    self.intake._effective_brand_profile(
+                        context.project, context.source_root
+                    )
+                except IntakeError as exc:
+                    raise Stage3Error(exc.code) from exc
         if self._representative_review_id(review) is not None:
             raise Stage3Error("same_run_duplicate_member_not_decidable")
         if (
@@ -1818,7 +4788,7 @@ class ReweaveCapsuleStage3:
         if type(response_hash) is not str or not re.fullmatch(r"[0-9a-f]{64}", response_hash):
             raise Stage3Error("stage3_evidence_invalid")
         prepared = _PreparedReview(
-            review=review,
+            review=prepared.review,
             artifact=Stage3Artifact(
                 canonical_payload=prepared.artifact.canonical_payload,
                 canonical_hash=prepared.artifact.canonical_hash,
@@ -1835,6 +4805,11 @@ class ReweaveCapsuleStage3:
             fixtures=prepared.fixtures,
             snapshot_digest=prepared.snapshot_digest,
             listener_bindings=prepared.listener_bindings,
+            capture_snapshot=prepared.capture_snapshot,
+            execution_bundle=prepared.execution_bundle,
+            execution_bundle_sha256=prepared.execution_bundle_sha256,
+            capture_brand_profile_id=prepared.capture_brand_profile_id,
+            capture_brand_profile_digest=prepared.capture_brand_profile_digest,
         )
         usage_kind = prepared.artifact.canonical_payload["usage_scope"].get("kind")
         if decision == "publish_general" and usage_kind != "general":
@@ -1925,13 +4900,32 @@ class ReweaveCapsuleStage3:
                 "WHERE cv.version_id = ?",
                 (retained_version_id,),
             ).fetchone()
-        if retained is None or not self._eligible_exact(dict(retained)):
+        if (
+            retained is None
+            or not self._eligible_exact(dict(retained))
+            or not self._exact_model_current(dict(retained))
+            or review.get("candidate_canonical_hash") != retained["canonical_hash"]
+        ):
             raise Stage3Error("semantic_split_evidence_expired")
-        prepared = self._prepare(review)
+        try:
+            summary = json.loads(review["sanitized_candidate_json"])
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise Stage3Error("sanitized_candidate_invalid") from exc
+        if (
+            summary.get("candidate_origin")
+            == "deterministic_computation_adapter"
+            and summary.get("adapter_contract_version") == COMPUTATION_ADAPTER_V2
+            and summary.get("ephemeral_capture_payload") is None
+        ):
+            prepared = self._prepare_v2_duplicate_from_retained(
+                review, dict(retained)
+            )
+        else:
+            prepared = self._prepare(review)
         if prepared.artifact.canonical_hash != retained["canonical_hash"]:
             raise Stage3Error("candidate_changed_since_validation")
         prepared = _PreparedReview(
-            review=review,
+            review=prepared.review,
             artifact=Stage3Artifact(
                 canonical_payload=prepared.artifact.canonical_payload,
                 canonical_hash=prepared.artifact.canonical_hash,
@@ -1948,6 +4942,11 @@ class ReweaveCapsuleStage3:
             fixtures=prepared.fixtures,
             snapshot_digest=prepared.snapshot_digest,
             listener_bindings=prepared.listener_bindings,
+            capture_snapshot=prepared.capture_snapshot,
+            execution_bundle=prepared.execution_bundle,
+            execution_bundle_sha256=prepared.execution_bundle_sha256,
+            capture_brand_profile_id=prepared.capture_brand_profile_id,
+            capture_brand_profile_digest=prepared.capture_brand_profile_digest,
         )
         return self._publish_version(
             prepared,
@@ -1959,6 +4958,116 @@ class ReweaveCapsuleStage3:
             reason_code="user_approved_semantic_split",
             disable_capsule_id=str(retained["capsule_id"]),
             disable_version_id=str(retained["version_id"]),
+        )
+
+    def _prepare_v2_duplicate_from_retained(
+        self, review: dict[str, Any], retained: dict[str, Any]
+    ) -> _PreparedReview:
+        try:
+            duplicate_summary = json.loads(review["sanitized_candidate_json"])
+            extraction = json.loads(retained["extraction_summary_json"])
+            payload = {
+                "capability_kind": retained["capability_kind"],
+                "activation": json.loads(retained["activation_json"]),
+                "input_contract": json.loads(retained["input_contract_json"]),
+                "output_contract": json.loads(retained["output_contract_json"]),
+                "error_contract": json.loads(retained["error_contract_json"]),
+                "runtime_allowlist": json.loads(retained["runtime_allowlist_json"]),
+                "dom_scope": json.loads(retained["dom_scope_json"]),
+                "usage_scope": json.loads(retained["usage_scope_json"]),
+                "html": retained["html_text"],
+                "css": retained["css_text"],
+                "javascript_modules": json.loads(retained["javascript_modules_json"]),
+                "assets": [],
+            }
+            cleaning = json.loads(retained["cleaning_summary_json"])
+            supervision = json.loads(retained["supervision_result_json"])
+            validation = json.loads(retained["validation_result_json"])
+        except (KeyError, TypeError, json.JSONDecodeError) as exc:
+            raise Stage3Error("semantic_split_evidence_expired") from exc
+        source_brand_profile = duplicate_summary.get("source_brand_profile")
+        capture_payload = extraction.get("ephemeral_capture_payload")
+        rules = (
+            capture_payload.get("rule_versions")
+            if type(capture_payload) is dict
+            else None
+        )
+        if (
+            extraction.get("candidate_origin")
+            != "deterministic_computation_adapter"
+            or extraction.get("adapter_contract_version") != COMPUTATION_ADAPTER_V2
+            or type(rules) is not dict
+            or type(source_brand_profile) is not dict
+            or set(source_brand_profile)
+            != {"brand_profile_id", "brand_profile_digest"}
+            or (source_brand_profile.get("brand_profile_id") is None)
+            != (source_brand_profile.get("brand_profile_digest") is None)
+            or (
+                source_brand_profile.get("brand_profile_digest") is not None
+                and re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    source_brand_profile["brand_profile_digest"],
+                )
+                is None
+            )
+            or payload["assets"] != capture_payload.get("canonical_candidate", {}).get(
+                "assets"
+            )
+            or payload["capability_kind"] != "computation"
+        ):
+            raise Stage3Error("semantic_split_evidence_expired")
+        try:
+            snapshot = JavascriptSourceService(self.store).scan(
+                str(review["project_id"])
+            )
+        except JavascriptSourceError as exc:
+            raise Stage3Error("source_changed_since_review") from exc
+        if snapshot.source_identity_sha256 != review.get("source_hash"):
+            raise Stage3Error("source_changed_since_review")
+        canonical = canonicalize_capsule(payload)
+        if canonical.sha256 != retained.get("canonical_hash"):
+            raise Stage3Error("semantic_split_evidence_expired")
+        evidence = extraction.get("stage3_evidence")
+        if type(evidence) is not dict:
+            raise Stage3Error("semantic_split_evidence_expired")
+        extraction["semantic_split_reuse"] = {
+            "schema": "semantic_split_reuse.v1",
+            "retained_version_id": retained["version_id"],
+            "source_identity_sha256": review["source_hash"],
+            "brand_profile_id": source_brand_profile["brand_profile_id"],
+            "brand_profile_digest": source_brand_profile[
+                "brand_profile_digest"
+            ],
+        }
+        review_for_publish = dict(review)
+        review_for_publish["sanitized_candidate_json"] = _json(extraction)
+        try:
+            fixtures = generate_synthetic_fixtures(payload["input_contract"])
+        except DataContractError as exc:
+            raise Stage3Error("semantic_split_evidence_expired") from exc
+        return _PreparedReview(
+            review=review_for_publish,
+            artifact=Stage3Artifact(
+                canonical_payload=canonical.payload,
+                canonical_hash=canonical.sha256,
+                assets=(),
+                cleaning_summary=cleaning,
+                security_result=evidence.get("security_result"),
+                supervision=supervision,
+                supervision_response_hash=retained["supervision_response_hash"],
+                model_name=retained["supervision_model_name"],
+                model_digest=retained["supervision_model_digest"],
+                supervised_at=retained["supervised_at"],
+                validation=validation,
+            ),
+            fixtures=fixtures,
+            snapshot_digest=snapshot.source_identity_sha256,
+            listener_bindings=[],
+            capture_snapshot=snapshot,
+            capture_brand_profile_id=source_brand_profile["brand_profile_id"],
+            capture_brand_profile_digest=source_brand_profile[
+                "brand_profile_digest"
+            ],
         )
 
     def reject_review(self, review_id: str, *, reason_code: str = "user_rejected") -> dict[str, Any]:
@@ -2001,6 +5110,14 @@ class ReweaveCapsuleStage3:
             raise Stage3Error("sanitized_candidate_invalid") from exc
         if summary.get("rejected"):
             raise Stage3Error("candidate_already_rejected")
+        if summary.get("resume_contract") == "resubmit_ephemeral_capture.v1":
+            raise Stage3Error("capture_resubmission_required")
+        if (
+            summary.get("candidate_origin")
+            == "deterministic_computation_adapter"
+            and summary.get("adapter_contract_version") == COMPUTATION_ADAPTER_V2
+        ):
+            return self._prepare_persisted_capture_v2(review, summary)
         try:
             context = self.intake._project_context(str(review["project_id"]))
             snapshot = self.intake.snapshot_project(str(review["project_id"]))
@@ -2013,39 +5130,66 @@ class ReweaveCapsuleStage3:
             ).fetchone()
         if run is None or run["snapshot_after"] != snapshot.digest:
             raise Stage3Error("source_changed_since_review")
-        try:
-            analysis, inventory = self.intake._extract(context, snapshot)
-        except IntakeError as exc:
-            raise Stage3Error(exc.code) from exc
-        entry_rel = str(context.project["entry_relpath"])
-        static_paths = {entry_rel}
-        static_paths.update(
-            _local_reference(entry_rel, item)
-            for item in inventory.stylesheets + inventory.resources
+        project_id = str(review["project_id"])
+        adapter_origin = (
+            summary.get("candidate_origin") == "deterministic_computation_adapter"
         )
+        entry_rel = str(context.project["entry_relpath"])
         snapshot_rows = {item.path: item for item in snapshot.entries}
-        if any(path not in snapshot_rows for path in static_paths):
-            raise Stage3Error("static_closure_changed")
-        static_evidence = [
-            {
-                "path": path,
-                "file_type": snapshot_rows[path].file_type,
-                "sha256": snapshot_rows[path].sha256,
-            }
-            for path in sorted(static_paths)
-        ]
+        inventory = None
+        static_evidence: list[dict[str, str]] = []
         found: dict[str, Any] | None = None
-        for candidate in analysis.get("candidates", []):
-            modules = candidate.get("javascript_modules", [])
-            source_hash = self.intake._candidate_source_hash(static_evidence, modules)
-            candidate_id = self.intake._candidate_id(
-                str(review["project_id"]), candidate, source_hash
+        if adapter_origin:
+            try:
+                found = self.intake.rebuild_computation_adapter_candidate(
+                    project_id, summary, snapshot=snapshot
+                )
+            except IntakeError as exc:
+                raise Stage3Error(exc.code) from exc
+            modules = found.get("javascript_modules", [])
+            source_hash = self.intake._candidate_source_hash([], modules)
+            candidate_id = self.intake._candidate_id(project_id, found, source_hash)
+            if (
+                candidate_id != review["candidate_id"]
+                or source_hash != review["source_hash"]
+            ):
+                raise Stage3Error("candidate_boundary_changed")
+        else:
+            try:
+                analysis, inventory = self.intake._extract(context, snapshot)
+            except IntakeError as exc:
+                raise Stage3Error(exc.code) from exc
+            static_paths = {entry_rel}
+            static_paths.update(
+                _local_reference(entry_rel, item)
+                for item in inventory.stylesheets + inventory.resources
             )
-            if candidate_id == review["candidate_id"] and source_hash == review["source_hash"]:
-                found = candidate
-                break
-        if found is None:
-            raise Stage3Error("candidate_boundary_changed")
+            if any(path not in snapshot_rows for path in static_paths):
+                raise Stage3Error("static_closure_changed")
+            static_evidence = [
+                {
+                    "path": path,
+                    "file_type": snapshot_rows[path].file_type,
+                    "sha256": snapshot_rows[path].sha256,
+                }
+                for path in sorted(static_paths)
+            ]
+            for candidate in analysis.get("candidates", []):
+                modules = candidate.get("javascript_modules", [])
+                source_hash = self.intake._candidate_source_hash(
+                    static_evidence, modules
+                )
+                candidate_id = self.intake._candidate_id(
+                    project_id, candidate, source_hash
+                )
+                if (
+                    candidate_id == review["candidate_id"]
+                    and source_hash == review["source_hash"]
+                ):
+                    found = candidate
+                    break
+            if found is None:
+                raise Stage3Error("candidate_boundary_changed")
         try:
             (
                 found["input_contract"],
@@ -2067,10 +5211,14 @@ class ReweaveCapsuleStage3:
         ):
             raise Stage3Error("sensitive_contract_identifier_unsupported")
 
-        html_source = snapshot.text.get(entry_rel, "")
-        css_source = "\n".join(
-            snapshot.text.get(_local_reference(entry_rel, item), "")
-            for item in inventory.stylesheets
+        html_source = "" if adapter_origin else snapshot.text.get(entry_rel, "")
+        css_source = (
+            ""
+            if adapter_origin
+            else "\n".join(
+                snapshot.text.get(_local_reference(entry_rel, item), "")
+                for item in inventory.stylesheets
+            )
         )
         raw = "\n".join(
             [str(item.get("source") or "") for item in found["javascript_modules"]]
@@ -2148,8 +5296,12 @@ class ReweaveCapsuleStage3:
         redact_strings = _sensitive_values(raw) + sensitive_html_values
         if usage_scope.get("kind") == "general":
             redact_strings.extend(profile.get("terms", []))
-        registered_asset_paths = sorted(
-            {_local_reference(entry_rel, item) for item in inventory.resources}
+        registered_asset_paths = (
+            []
+            if adapter_origin
+            else sorted(
+                {_local_reference(entry_rel, item) for item in inventory.resources}
+            )
         )
         if found["capability_kind"] == "computation":
             cleaned_html = ""
@@ -2290,6 +5442,120 @@ class ReweaveCapsuleStage3:
             listener_bindings=list(security.get("listener_bindings", [])),
         )
 
+    def _prepare_persisted_capture_v2(
+        self, review: dict[str, Any], summary: dict[str, Any]
+    ) -> _PreparedReview:
+        payload = summary.get("ephemeral_capture_payload")
+        if type(payload) is not dict:
+            raise Stage3Error("capture_resubmission_required")
+        payload_json = _canonical_json_bytes(payload)
+        if payload.get("project_id") != review.get("project_id"):
+            raise Stage3Error("candidate_boundary_changed")
+        try:
+            snapshot = JavascriptSourceService(self.store).scan(
+                str(review["project_id"])
+            )
+        except JavascriptSourceError as exc:
+            raise Stage3Error("source_changed_since_review") from exc
+        if (
+            snapshot.source_identity_sha256
+            != payload.get("source_identity_sha256")
+            or review.get("source_hash") != snapshot.source_identity_sha256
+        ):
+            raise Stage3Error("source_changed_since_review")
+        with self.store.read_connection() as connection:
+            project_row = connection.execute(
+                "SELECT p.*, r.brand_profile_id AS root_brand_profile_id, "
+                "r.brand_profile_json AS root_brand_profile_json, "
+                "r.brand_profile_digest AS root_brand_profile_digest, "
+                "r.brand_profile_version AS root_brand_profile_version "
+                "FROM projects p JOIN source_roots r ON r.root_id = p.source_root_id "
+                "WHERE p.project_id = ? "
+                "AND p.source_type = 'javascript_computation_source'",
+                (review["project_id"],),
+            ).fetchone()
+        if project_row is None:
+            raise Stage3Error("capture_project_unavailable")
+        try:
+            profile = self.intake._effective_brand_profile(
+                dict(project_row),
+                {
+                    "brand_profile_id": project_row["root_brand_profile_id"],
+                    "brand_profile_json": project_row["root_brand_profile_json"],
+                    "brand_profile_digest": project_row["root_brand_profile_digest"],
+                    "brand_profile_version": project_row["root_brand_profile_version"],
+                },
+            )
+        except IntakeError as exc:
+            raise Stage3Error("brand_profile_changed") from exc
+        rules = payload.get("rule_versions")
+        if type(rules) is not dict or (
+            profile.get("id"),
+            profile.get("digest"),
+        ) != (rules.get("brand_profile_id"), rules.get("brand_profile_digest")):
+            raise Stage3Error("brand_profile_changed")
+        gate = capture_static_gate(
+            payload_json,
+            snapshot=snapshot,
+            expected_source_identity_sha256=snapshot.source_identity_sha256,
+        )
+        candidate = json.loads(_json(payload.get("canonical_candidate")))
+        try:
+            (
+                candidate["input_contract"],
+                candidate["output_contract"],
+                candidate["error_contract"],
+            ) = normalize_capsule_contracts(
+                "computation",
+                candidate.get("input_contract"),
+                candidate.get("output_contract"),
+                candidate.get("error_contract"),
+            )
+            fixtures = generate_synthetic_fixtures(candidate["input_contract"])
+        except (DataContractError, TypeError, KeyError) as exc:
+            raise Stage3Error(getattr(exc, "code", "data_contract_invalid")) from exc
+        security_candidate = json.loads(_json(candidate))
+        security_candidate["candidate_origin"] = summary["candidate_origin"]
+        security_candidate["adapter_contract_version"] = summary[
+            "adapter_contract_version"
+        ]
+        security = _analyze_javascript(security_candidate, [])
+        if security.get("javascript_modules") != candidate.get("javascript_modules"):
+            raise Stage3Error("candidate_boundary_changed")
+        canonical = canonicalize_capsule(candidate)
+        if review.get("candidate_canonical_hash") not in {None, canonical.sha256}:
+            raise Stage3Error("candidate_changed_since_validation")
+        return _PreparedReview(
+            review=review,
+            artifact=Stage3Artifact(
+                canonical_payload=canonical.payload,
+                canonical_hash=canonical.sha256,
+                assets=(),
+                cleaning_summary={
+                    "schema_version": "capsule_cleaning.v1",
+                    "status": "passed",
+                    "redaction_count": 0,
+                    "html_cleaned": False,
+                    "css_cleaned": False,
+                    "asset_count": 0,
+                },
+                security_result={
+                    "schema_version": "fixed_security.v1",
+                    "status": "passed",
+                    "security_rules_version": SECURITY_RULES_VERSION,
+                    "listener_bindings": [],
+                },
+            ),
+            fixtures=fixtures,
+            snapshot_digest=snapshot.source_identity_sha256,
+            listener_bindings=[],
+            capture_snapshot=snapshot,
+            execution_bundle=gate.execution_bundle,
+            execution_bundle_sha256=gate.execution_bundle_sha256,
+            capture_brand_profile_id=profile.get("id"),
+            capture_brand_profile_digest=profile.get("digest"),
+        )
+
     def _review(self, review_id: str) -> dict[str, Any]:
         with self.store.read_connection() as connection:
             row = connection.execute(
@@ -2369,6 +5635,13 @@ class ReweaveCapsuleStage3:
     def _runtime_validation(self, prepared: _PreparedReview) -> dict[str, Any]:
         payload = prepared.artifact.canonical_payload
         if payload["capability_kind"] == "computation":
+            if prepared.execution_bundle is not None:
+                return _validate_computation(
+                    payload,
+                    prepared.fixtures,
+                    execution_bundle=prepared.execution_bundle,
+                    execution_bundle_sha256=prepared.execution_bundle_sha256,
+                )
             return _validate_computation(payload, prepared.fixtures)
         return _validate_qweb(
             payload,
@@ -2426,6 +5699,65 @@ class ReweaveCapsuleStage3:
         return [dict(row) for row in rows]
 
     @classmethod
+    def _exact_origin_compatible(
+        cls, review: dict[str, Any], version: dict[str, Any]
+    ) -> bool:
+        try:
+            candidate = json.loads(review["sanitized_candidate_json"])
+            stored = json.loads(version["extraction_summary_json"])
+        except (KeyError, TypeError, json.JSONDecodeError):
+            return False
+        if type(candidate) is not dict or type(stored) is not dict:
+            return False
+        candidate_origin = cls._candidate_origin(candidate)
+        stored_origin = cls._candidate_origin(stored)
+        if not (
+            candidate_origin in {None, "deterministic_computation_adapter"}
+            and candidate_origin == stored_origin
+        ):
+            return False
+        if candidate_origin == "deterministic_computation_adapter":
+            return candidate.get("adapter_contract_version") == stored.get(
+                "adapter_contract_version"
+            )
+        return True
+
+    @classmethod
+    def _exact_evidence_fingerprint(cls, row: dict[str, Any]) -> str:
+        try:
+            extraction = json.loads(row["extraction_summary_json"])
+        except (KeyError, TypeError, json.JSONDecodeError) as exc:
+            raise Stage3Error("exact_duplicate_target_expired") from exc
+        value = {
+            "schema": "exact_duplicate_target.v1",
+            "capsule_id": row.get("capsule_id"),
+            "version_id": row.get("version_id"),
+            "canonical_hash": row.get("canonical_hash"),
+            "candidate_origin": cls._candidate_origin(extraction),
+            "adapter_contract_version": extraction.get(
+                "adapter_contract_version"
+            ),
+            "source_graph_version": extraction.get("source_graph_version"),
+            "bundle_contract_version": extraction.get("bundle_contract_version"),
+            "decision_binding_sha256": extraction.get(
+                "decision_binding_sha256"
+            ),
+            "capture_rule_versions": (
+                extraction.get("ephemeral_capture_payload", {}).get("rule_versions")
+                if type(extraction.get("ephemeral_capture_payload")) is dict
+                else None
+            ),
+            "extraction_contract_version": row.get("extraction_contract_version"),
+            "redaction_rules_version": row.get("redaction_rules_version"),
+            "canonicalization_version": row.get("canonicalization_version"),
+            "security_rules_version": row.get("security_rules_version"),
+            "supervision_rules_version": row.get("supervision_rules_version"),
+            "validation_contract_version": row.get("validation_contract_version"),
+            "supervision_model_digest": row.get("supervision_model_digest"),
+        }
+        return hashlib.sha256(_canonical_json_bytes(value)).hexdigest()
+
+    @classmethod
     def _eligible_exact(cls, row: dict[str, Any]) -> bool:
         return (
             row["status"] == "active"
@@ -2438,6 +5770,292 @@ class ReweaveCapsuleStage3:
             and row["validation_contract_version"] == VALIDATION_CONTRACT_VERSION
             and cls._stored_version_evidence_eligible(row)
         )
+
+    def _exact_model_current(
+        self,
+        row: dict[str, Any],
+        connection: sqlite3.Connection | None = None,
+    ) -> bool:
+        # Tests and embedders may inject a deterministic supervisor without a
+        # persisted model selector. Production always uses OllamaSupervisor.
+        if not isinstance(self.supervisor, OllamaSupervisor):
+            return True
+        if connection is None:
+            try:
+                selected = self.supervisor.selected_model()
+            except Stage3Error:
+                return False
+        else:
+            current = connection.execute(
+                "SELECT value_json FROM app_settings WHERE setting_key = "
+                "'capsule_supervision_model'"
+            ).fetchone()
+            if current is None:
+                return False
+            try:
+                selected = json.loads(current["value_json"])
+            except (TypeError, json.JSONDecodeError):
+                return False
+            if type(selected) is not dict or set(selected) != {
+                "base_url",
+                "name",
+                "digest",
+                "selected_at",
+            }:
+                return False
+        return bool(
+            row.get("supervision_model_name") == selected.get("name")
+            and row.get("supervision_model_digest") == selected.get("digest")
+        )
+
+    @staticmethod
+    def _candidate_origin(summary: dict[str, Any]) -> str | None:
+        origin = summary.get("candidate_origin")
+        return origin if type(origin) is str else None
+
+    @classmethod
+    def _adapter_evidence_eligible(
+        cls, row: dict[str, Any], extraction: dict[str, Any]
+    ) -> bool:
+        origin = cls._candidate_origin(extraction)
+        if origin is None and "javascript_modules_json" not in row:
+            return True
+        try:
+            modules = json.loads(row["javascript_modules_json"])
+        except (KeyError, TypeError, json.JSONDecodeError):
+            return False
+        if (
+            type(modules) is not list
+            or any(
+                type(item) is not dict
+                or set(item) != {"path", "source"}
+                or type(item.get("path")) is not str
+                or type(item.get("source")) is not str
+                for item in modules
+            )
+            or len({item["path"] for item in modules}) != len(modules)
+        ):
+            return False
+        adapter_modules = [
+            item for item in modules if item.get("path") == COMPUTATION_ADAPTER_ENTRY
+        ]
+        if origin is None:
+            return not adapter_modules
+        if origin != "deterministic_computation_adapter":
+            return False
+        if extraction.get("adapter_contract_version") == COMPUTATION_ADAPTER_V2:
+            payload = extraction.get("ephemeral_capture_payload")
+            if (
+                type(payload) is not dict
+                or payload.get("candidate_origin") != origin
+                or payload.get("adapter_contract_version") != COMPUTATION_ADAPTER_V2
+                or payload.get("source_graph_version") != "source_graph.v1"
+                or payload.get("bundle_contract_version")
+                != CAPTURE_BUNDLE_CONTRACT_VERSION
+                or re.fullmatch(
+                    r"[0-9a-f]{64}", payload.get("source_identity_sha256") or ""
+                )
+                is None
+                or re.fullmatch(
+                    r"[0-9a-f]{64}", payload.get("execution_bundle_sha256") or ""
+                )
+                is None
+                or type(payload.get("canonical_candidate")) is not dict
+                or payload["canonical_candidate"].get("javascript_modules") != modules
+                or [item["path"] for item in modules]
+                != sorted([CAPTURE_SELECTED_ENTRY, COMPUTATION_ADAPTER_ENTRY])
+            ):
+                return False
+            rules = payload.get("rule_versions")
+            return bool(
+                type(rules) is dict
+                and rules.get("source_graph_version") == "source_graph.v1"
+                and rules.get("adapter_contract_version") == COMPUTATION_ADAPTER_V2
+                and rules.get("bundle_contract_version")
+                == CAPTURE_BUNDLE_CONTRACT_VERSION
+                and rules.get("typescript_version") == CAPTURE_TYPESCRIPT_VERSION
+                and rules.get("esbuild_version") == CAPTURE_ESBUILD_VERSION
+                and _capture_bundle_options_current(rules)
+                and rules.get("security_rules_version") == SECURITY_RULES_VERSION
+                and rules.get("validation_contract_version")
+                == VALIDATION_CONTRACT_VERSION
+                and rules.get("canonicalization_version")
+                == CANONICALIZATION_VERSION
+            )
+        if (
+            extraction.get("adapter_contract_version")
+            != COMPUTATION_ADAPTER_CONTRACT_VERSION
+            or len(adapter_modules) != 1
+            or type(adapter_modules[0].get("source")) is not str
+        ):
+            return False
+        evidence = extraction.get("adapter_evidence")
+        if type(evidence) is not dict or set(evidence) != {
+            "candidate_origin",
+            "adapter_contract_version",
+            "source",
+            "closure",
+            "mapping",
+            "generated_adapter",
+            "examples",
+        }:
+            return False
+        source = evidence.get("source")
+        closure = evidence.get("closure")
+        mapping = evidence.get("mapping")
+        generated = evidence.get("generated_adapter")
+        examples = evidence.get("examples")
+        if (
+            evidence.get("candidate_origin") != origin
+            or evidence.get("adapter_contract_version")
+            != COMPUTATION_ADAPTER_CONTRACT_VERSION
+            or type(source) is not dict
+            or set(source) != {
+                "module_relpath",
+                "export_name",
+                "function_sha256",
+                "snapshot_sha256",
+                "git_commit",
+                "git_state",
+            }
+            or type(closure) is not list
+            or not closure
+            or type(mapping) is not dict
+            or set(mapping) != {"arguments", "result_field", "mapping_sha256"}
+            or type(generated) is not dict
+            or set(generated) != {"logical_path", "sha256"}
+            or type(examples) is not dict
+            or set(examples) != {"count", "canonical_sha256", "passed"}
+        ):
+            return False
+        digest = re.compile(r"[0-9a-f]{64}")
+        module_relpath = source.get("module_relpath")
+        export_name = source.get("export_name")
+        git_commit = source.get("git_commit")
+        if (
+            type(module_relpath) is not str
+            or not module_relpath
+            or module_relpath.startswith("/")
+            or any(part in {"", ".", ".."} for part in module_relpath.split("/"))
+            or PurePosixPath(module_relpath).suffix.lower() not in {".js", ".mjs"}
+            or type(export_name) is not str
+            or re.fullmatch(r"[A-Za-z_$][A-Za-z0-9_$]*", export_name) is None
+            or type(source.get("function_sha256")) is not str
+            or digest.fullmatch(source["function_sha256"]) is None
+            or type(source.get("snapshot_sha256")) is not str
+            or digest.fullmatch(source["snapshot_sha256"]) is None
+            or source.get("git_state") not in {"clean", "dirty_or_non_git"}
+            or (
+                git_commit is not None
+                and (
+                    type(git_commit) is not str
+                    or re.fullmatch(r"[0-9a-f]{40,64}", git_commit) is None
+                )
+            )
+            or (source.get("git_state") == "clean") != (git_commit is not None)
+        ):
+            return False
+        safe_closure: list[dict[str, str]] = []
+        for item in closure:
+            if (
+                type(item) is not dict
+                or set(item) != {"logical_path", "sha256"}
+                or type(item.get("logical_path")) is not str
+                or not item["logical_path"]
+                or item["logical_path"].startswith("/")
+                or any(
+                    part in {"", ".", ".."}
+                    for part in item["logical_path"].split("/")
+                )
+                or PurePosixPath(item["logical_path"]).suffix.lower()
+                not in {".js", ".mjs"}
+                or type(item.get("sha256")) is not str
+                or digest.fullmatch(item["sha256"]) is None
+            ):
+                return False
+            safe_closure.append(item)
+        if (
+            safe_closure
+            != sorted(safe_closure, key=lambda item: item["logical_path"])
+            or len({item["logical_path"] for item in safe_closure})
+            != len(safe_closure)
+            or len(modules) != len(safe_closure) + 1
+            or module_relpath not in {item["logical_path"] for item in safe_closure}
+        ):
+            return False
+        source_modules = [
+            {
+                "logical_path": item.get("path"),
+                "sha256": hashlib.sha256(item.get("source", "").encode("utf-8")).hexdigest(),
+            }
+            for item in modules
+            if item.get("path") != COMPUTATION_ADAPTER_ENTRY
+            and type(item.get("path")) is str
+            and type(item.get("source")) is str
+        ]
+        if source_modules != safe_closure:
+            return False
+        arguments = mapping.get("arguments")
+        result_field = mapping.get("result_field")
+        if (
+            type(arguments) is not list
+            or not arguments
+            or type(result_field) is not str
+            or _SNAKE.fullmatch(result_field) is None
+            or type(mapping.get("mapping_sha256")) is not str
+            or digest.fullmatch(mapping["mapping_sha256"]) is None
+        ):
+            return False
+        source_parameters: set[str] = set()
+        input_fields: set[str] = set()
+        for item in arguments:
+            if (
+                type(item) is not dict
+                or set(item)
+                != {"source_parameter", "input_field", "minimum", "maximum"}
+                or type(item.get("source_parameter")) is not str
+                or re.fullmatch(
+                    r"[A-Za-z_$][A-Za-z0-9_$]*", item["source_parameter"]
+                )
+                is None
+                or type(item.get("input_field")) is not str
+                or _SNAKE.fullmatch(item["input_field"]) is None
+                or type(item.get("minimum")) is not int
+                or type(item.get("minimum")) is bool
+                or type(item.get("maximum")) is not int
+                or type(item.get("maximum")) is bool
+                or item["minimum"] < -(2**53 - 1)
+                or item["maximum"] > 2**53 - 1
+                or item["minimum"] > item["maximum"]
+                or item["source_parameter"] in source_parameters
+                or item["input_field"] in input_fields
+            ):
+                return False
+            source_parameters.add(item["source_parameter"])
+            input_fields.add(item["input_field"])
+        if result_field in input_fields:
+            return False
+        mapping_payload = {"arguments": arguments, "result_field": result_field}
+        if mapping["mapping_sha256"] != hashlib.sha256(
+            _json(mapping_payload).encode("utf-8")
+        ).hexdigest():
+            return False
+        if (
+            generated.get("logical_path") != COMPUTATION_ADAPTER_ENTRY
+            or type(generated.get("sha256")) is not str
+            or generated["sha256"]
+            != hashlib.sha256(
+                adapter_modules[0]["source"].encode("utf-8")
+            ).hexdigest()
+            or type(examples.get("count")) is not int
+            or type(examples.get("count")) is bool
+            or not 1 <= examples["count"] <= 64
+            or type(examples.get("canonical_sha256")) is not str
+            or digest.fullmatch(examples["canonical_sha256"]) is None
+            or examples.get("passed") is not True
+        ):
+            return False
+        return True
 
     @classmethod
     def _stored_version_evidence_eligible(cls, row: dict[str, Any]) -> bool:
@@ -2455,6 +6073,7 @@ class ReweaveCapsuleStage3:
             or type(extraction) is not dict
             or type(cleaning) is not dict
             or capability_kind not in {"presentation", "interaction", "computation"}
+            or not cls._adapter_evidence_eligible(row, extraction)
         ):
             return False
         evidence = extraction.get("stage3_evidence")
@@ -2968,13 +6587,14 @@ class ReweaveCapsuleStage3:
             run_counts = json.loads(run["counts_json"])
         except (TypeError, json.JSONDecodeError):
             run_counts = {}
+        adapter_only = run_counts.get("adapter_only") is True
         run_counts["stage3_candidate_statuses"] = counts
         if pending:
             connection.execute(
                 "UPDATE intake_runs SET counts_json = ? WHERE run_id = ?",
                 (_json(run_counts), run_id),
             )
-            if run["project_id"] is not None:
+            if run["project_id"] is not None and not adapter_only:
                 connection.execute(
                     "UPDATE projects SET last_snapshot_hash = NULL, updated_at = ? "
                     "WHERE project_id = ?",
@@ -2993,7 +6613,11 @@ class ReweaveCapsuleStage3:
                     run_id,
                 ),
             )
-            if run["project_id"] is not None and run["snapshot_after"] is not None:
+            if (
+                run["project_id"] is not None
+                and run["snapshot_after"] is not None
+                and not adapter_only
+            ):
                 connection.execute(
                     "UPDATE projects SET last_snapshot_hash = ?, updated_at = ? "
                     "WHERE project_id = ?",
@@ -3001,12 +6625,67 @@ class ReweaveCapsuleStage3:
                 )
 
     def _assert_snapshot(self, prepared: _PreparedReview) -> None:
+        if prepared.capture_snapshot is not None:
+            try:
+                current = JavascriptSourceService(self.store).scan(
+                    prepared.capture_snapshot.project_id
+                )
+            except JavascriptSourceError as exc:
+                raise Stage3Error("source_changed_during_scan") from exc
+            if not _same_capture_snapshot(prepared.capture_snapshot, current):
+                raise Stage3Error("source_changed_during_scan")
+            self._assert_capture_brand_profile(prepared)
+            return
         try:
             current = self.intake.snapshot_project(str(prepared.review["project_id"]))
         except IntakeError as exc:
             raise Stage3Error(exc.code) from exc
         if current.digest != prepared.snapshot_digest:
             raise Stage3Error("source_changed_during_scan")
+
+    def _assert_capture_brand_profile(
+        self,
+        prepared: _PreparedReview,
+        connection: sqlite3.Connection | None = None,
+    ) -> None:
+        if prepared.capture_snapshot is None:
+            return
+        owns_connection = connection is None
+        context = self.store.read_connection() if owns_connection else None
+        active = context.__enter__() if context is not None else connection
+        try:
+            row = active.execute(
+                "SELECT p.*, r.brand_profile_id AS root_brand_profile_id, "
+                "r.brand_profile_json AS root_brand_profile_json, "
+                "r.brand_profile_digest AS root_brand_profile_digest, "
+                "r.brand_profile_version AS root_brand_profile_version "
+                "FROM projects p JOIN source_roots r ON r.root_id = p.source_root_id "
+                "WHERE p.project_id = ? "
+                "AND p.source_type = 'javascript_computation_source'",
+                (prepared.review["project_id"],),
+            ).fetchone()
+            if row is None:
+                raise Stage3Error("brand_profile_changed")
+            try:
+                profile = self.intake._effective_brand_profile(
+                    dict(row),
+                    {
+                        "brand_profile_id": row["root_brand_profile_id"],
+                        "brand_profile_json": row["root_brand_profile_json"],
+                        "brand_profile_digest": row["root_brand_profile_digest"],
+                        "brand_profile_version": row["root_brand_profile_version"],
+                    },
+                )
+            except IntakeError as exc:
+                raise Stage3Error("brand_profile_changed") from exc
+            if (profile.get("id"), profile.get("digest")) != (
+                prepared.capture_brand_profile_id,
+                prepared.capture_brand_profile_digest,
+            ):
+                raise Stage3Error("brand_profile_changed")
+        finally:
+            if context is not None:
+                context.__exit__(None, None, None)
 
     def _attach_exact_duplicate(
         self, prepared: _PreparedReview, version: dict[str, Any]
@@ -3048,6 +6727,10 @@ class ReweaveCapsuleStage3:
                 or current["capsule_id"] != version["capsule_id"]
                 or current["canonical_hash"] != prepared.artifact.canonical_hash
                 or not self._eligible_exact(dict(current))
+                or not self._exact_origin_compatible(review, dict(current))
+                or not self._exact_model_current(dict(current), connection)
+                or self._exact_evidence_fingerprint(dict(current))
+                != version.get("target_evidence_fingerprint")
             ):
                 raise Stage3Error("exact_duplicate_target_expired")
             updated = connection.execute(
@@ -3379,9 +7062,11 @@ class ReweaveCapsuleStage3:
                         capsule_id=disable_capsule_id,
                     )
                     split_target = connection.execute(
-                        "SELECT status, current_version_id, capability_kind FROM capsules "
-                        "WHERE capsule_id = ?",
-                        (disable_capsule_id,),
+                        "SELECT cv.*, c.status, c.current_version_id, c.capability_kind "
+                        "FROM capsule_versions cv JOIN capsules c "
+                        "ON c.capsule_id = cv.capsule_id "
+                        "WHERE c.capsule_id = ? AND cv.version_id = ?",
+                        (disable_capsule_id, disable_version_id),
                     ).fetchone()
                     if (
                         decision != "semantic_split"
@@ -3391,6 +7076,10 @@ class ReweaveCapsuleStage3:
                         or split_target["status"] != "active"
                         or split_target["current_version_id"] != disable_version_id
                         or split_target["capability_kind"] != payload["capability_kind"]
+                        or not self._eligible_exact(dict(split_target))
+                        or not self._exact_model_current(
+                            dict(split_target), connection
+                        )
                     ):
                         raise Stage3Error("semantic_split_target_invalid")
                 if existing_capsule is None:
