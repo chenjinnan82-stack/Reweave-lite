@@ -160,8 +160,6 @@
       warehousePurpose: "管理只读来源、提取候选、人工复核并发布正式胶囊。",
       developerMode: "开发者模式",
       developerModeHelp: "显示输入类型、枚举、复核 ID、备份和任务等开发信息。",
-      simpleModeHelp: "简单模式只显示安全抓取所需操作；悬停控件可查看用途。",
-      developerModeActiveHelp: "开发者模式已开启，会显示高级类型、复核 ID、备份和任务明细。",
       sourceProjects: "来源项目",
       discoverSource: "发现来源",
       discoverSourceHelp: "选择一个来源目录并只读发现其中的项目。",
@@ -238,6 +236,7 @@
       adapterSimpleHelp: "旧参数映射为产品字段；范围是允许输入；业务样例和期望结果用于核对真实函数。",
       adapterMappingPreview: "将提交：{mapping}",
       adapterMappingConfirmation: "我确认这里只证明参数映射与指定样例，不代表完全等价。",
+      adapterMappingConfirmShort: "我确认",
       createComputationAdapter: "创建计算胶囊候选",
       continueCaptureValidation: "继续验证",
       adapterMappingInvalid: "请填写合法、唯一的 snake_case 字段和安全整数范围。",
@@ -276,35 +275,35 @@
       retainedVersionHelp: "选择人工确认后继续保留的现有正式版本。",
       targetCapsuleLabel: "目标胶囊",
       targetCapsuleHelp: "选择要替换或作为语义拆分来源的现有胶囊。",
-      decisionConfirmFictional: "确认内容为虚构样例",
+      decisionConfirmFictional: "虚构样例",
       decisionConfirmFictionalHelp: "仅在你确认命中内容不是客户或其他真实记录时使用。",
-      decisionRejectRealRecord: "确认为真实记录并拒绝",
+      decisionRejectRealRecord: "真实记录：拒绝",
       decisionRejectRealRecordHelp: "确认包含真实记录并终止此候选，不会写入正式仓库。",
-      decisionConfirmSafeRedaction: "确认脱敏结果安全",
+      decisionConfirmSafeRedaction: "确认脱敏",
       decisionConfirmSafeRedactionHelp: "确认清洗后的候选不再包含真实记录。",
-      decisionRetainBrand: "保留为品牌限定",
+      decisionRetainBrand: "品牌限定",
       decisionRetainBrandHelp: "仅允许当前品牌配置使用此胶囊。",
-      decisionRemoveBrand: "移除品牌后继续",
+      decisionRemoveBrand: "移除品牌",
       decisionRemoveBrandHelp: "按当前清洗规则移除品牌内容后重新处理。",
-      decisionConfirmEnum: "确认所选枚举值",
+      decisionConfirmEnum: "确认枚举",
       decisionConfirmEnumHelp: "确认这些字符串是业务枚举，不是真实记录。",
-      decisionConfirmAssets: "确认图片不含真实记录",
+      decisionConfirmAssets: "确认图片",
       decisionConfirmAssetsHelp: "人工确认图片像素中不含客户截图或其他真实记录。",
-      decisionPublishGeneral: "发布为通用胶囊",
+      decisionPublishGeneral: "发布（通用）",
       decisionPublishGeneralHelp: "以当前身份发布，可用于符合契约的产品。",
-      decisionPublishBrand: "发布为品牌限定胶囊",
+      decisionPublishBrand: "发布（品牌）",
       decisionPublishBrandHelp: "以当前身份发布，仅供当前品牌范围使用。",
-      decisionCreateVariant: "创建新变体",
+      decisionCreateVariant: "新建变体",
       decisionCreateVariantHelp: "保留现有实现，并把当前实现发布为另一个变体。",
-      decisionMergeExisting: "归入现有实现",
+      decisionMergeExisting: "合并现有",
       decisionMergeExistingHelp: "人工确认等价关系，默认保留现有正式实现。",
-      decisionReplaceCurrent: "发布新版本替换当前实现",
+      decisionReplaceCurrent: "替换当前",
       decisionReplaceCurrentHelp: "发布不可变新版本，并切换当前正式版本。",
-      decisionSemanticSplit: "拆分为新身份",
+      decisionSemanticSplit: "拆分身份",
       decisionSemanticSplitHelp: "把当前候选作为新的能力身份发布，旧身份不删除。",
-      decisionReject: "拒绝候选",
+      decisionReject: "拒绝",
       decisionRejectHelp: "终止当前候选，不写入正式胶囊仓库。",
-      decisionProcessCandidate: "继续安全验证",
+      decisionProcessCandidate: "继续验证",
       decisionProcessCandidateHelp: "继续现有安全、模型和运行验证；不会自动发布。",
       createBackupHelp: "备份当前本地胶囊仓库、品牌配置和使用历史。",
       importLegacyHelp: "逐条重新清洗旧仓内容；不会直接信任或恢复旧实现。",
@@ -483,8 +482,6 @@
       warehousePurpose: "Manage read-only sources, capture candidates, review them, and publish formal capsules.",
       developerMode: "Developer mode",
       developerModeHelp: "Show input types, enums, review IDs, backups, and task diagnostics.",
-      simpleModeHelp: "Simple mode shows only required safe-capture actions; hover any control for help.",
-      developerModeActiveHelp: "Developer mode is on and shows advanced types, review IDs, backups, and task details.",
       sourceProjects: "Source projects",
       discoverSource: "Discover source",
       discoverSourceHelp: "Choose a source directory and discover projects read-only.",
@@ -561,6 +558,7 @@
       adapterSimpleHelp: "Map source parameters to product fields; ranges define accepted input; the example and expected result check the real function.",
       adapterMappingPreview: "Will submit: {mapping}",
       adapterMappingConfirmation: "I confirm this proves only the mapping and specified examples, not total equivalence.",
+      adapterMappingConfirmShort: "I confirm",
       createComputationAdapter: "Create computation candidate",
       continueCaptureValidation: "Continue validation",
       adapterMappingInvalid: "Enter unique snake_case fields and safe integer ranges.",
@@ -599,35 +597,35 @@
       retainedVersionHelp: "Choose the existing formal version to retain after manual equivalence review.",
       targetCapsuleLabel: "Target capsule",
       targetCapsuleHelp: "Choose the existing capsule to replace or use as the semantic-split source.",
-      decisionConfirmFictional: "Confirm fictional example",
+      decisionConfirmFictional: "Fictional example",
       decisionConfirmFictionalHelp: "Use only when you know the matched content is not a customer or other real record.",
-      decisionRejectRealRecord: "Confirm real record and reject",
+      decisionRejectRealRecord: "Real record: reject",
       decisionRejectRealRecordHelp: "Confirm a real record is present and stop this candidate without publishing it.",
-      decisionConfirmSafeRedaction: "Confirm safe redaction",
+      decisionConfirmSafeRedaction: "Confirm redaction",
       decisionConfirmSafeRedactionHelp: "Confirm the cleaned candidate no longer contains real records.",
-      decisionRetainBrand: "Keep as brand-limited",
+      decisionRetainBrand: "Brand-limited",
       decisionRetainBrandHelp: "Allow this capsule only for the current brand profile.",
-      decisionRemoveBrand: "Remove brand and continue",
+      decisionRemoveBrand: "Remove brand",
       decisionRemoveBrandHelp: "Apply current cleaning rules to remove brand content and process again.",
-      decisionConfirmEnum: "Confirm selected enum values",
+      decisionConfirmEnum: "Confirm enum",
       decisionConfirmEnumHelp: "Confirm these strings are business enums, not real records.",
-      decisionConfirmAssets: "Confirm images contain no real records",
+      decisionConfirmAssets: "Confirm images",
       decisionConfirmAssetsHelp: "Confirm image pixels contain no customer screenshots or other real records.",
-      decisionPublishGeneral: "Publish general capsule",
+      decisionPublishGeneral: "Publish (general)",
       decisionPublishGeneralHelp: "Publish under the current identity for contract-compatible products.",
-      decisionPublishBrand: "Publish brand-limited capsule",
+      decisionPublishBrand: "Publish (brand)",
       decisionPublishBrandHelp: "Publish under the current identity for the current brand scope only.",
-      decisionCreateVariant: "Create variant",
+      decisionCreateVariant: "New variant",
       decisionCreateVariantHelp: "Keep the current implementation and publish this one as another variant.",
-      decisionMergeExisting: "Merge into existing implementation",
+      decisionMergeExisting: "Merge existing",
       decisionMergeExistingHelp: "Confirm equivalence manually and keep the existing formal implementation.",
-      decisionReplaceCurrent: "Publish new current version",
+      decisionReplaceCurrent: "Replace current",
       decisionReplaceCurrentHelp: "Publish an immutable new version and switch the current formal version.",
-      decisionSemanticSplit: "Split into new identity",
+      decisionSemanticSplit: "Split identity",
       decisionSemanticSplitHelp: "Publish this candidate as a new capability identity without deleting the old one.",
-      decisionReject: "Reject candidate",
+      decisionReject: "Reject",
       decisionRejectHelp: "Stop this candidate without writing a formal capsule.",
-      decisionProcessCandidate: "Continue safety validation",
+      decisionProcessCandidate: "Continue validation",
       decisionProcessCandidateHelp: "Continue the existing security, model, and runtime gates; this never auto-publishes.",
       createBackupHelp: "Back up the local capsule warehouse, brand configuration, and usage history.",
       importLegacyHelp: "Reclean old warehouse entries one by one; old implementations are never trusted directly.",
@@ -1379,10 +1377,8 @@
   function syncWarehouseMode() {
     var popover = $("capsule-warehouse-popover");
     var toggle = $("warehouse-developer-mode");
-    var help = $("warehouse-mode-help");
     if (toggle) toggle.checked = ingestionManagement.developerMode === true;
     if (popover) popover.classList.toggle("developer-mode", ingestionManagement.developerMode === true);
-    if (help) help.textContent = t(ingestionManagement.developerMode ? "developerModeActiveHelp" : "simpleModeHelp");
   }
 
   function reviewStatusLabel(status) {
@@ -1692,11 +1688,13 @@
 
       var confirmationLabel = document.createElement("label");
       confirmationLabel.className = "warehouse-project-choice";
+      confirmationLabel.title = t("adapterMappingConfirmation");
       var confirmation = document.createElement("input");
       confirmation.type = "checkbox";
       confirmation.required = true;
+      confirmation.title = t("adapterMappingConfirmation");
       confirmationLabel.appendChild(confirmation);
-      confirmationLabel.appendChild(document.createTextNode(" " + t("adapterMappingConfirmation")));
+      confirmationLabel.appendChild(document.createTextNode(" " + t("adapterMappingConfirmShort")));
       details.appendChild(confirmationLabel);
 
       var create = document.createElement("button");
@@ -1802,12 +1800,6 @@
       sourceMeta.textContent = " · " + [offer.module_relpath, String(offer.dependency_count || 0)].filter(Boolean).join(" · ");
       summary.appendChild(sourceMeta);
       details.appendChild(summary);
-
-      var simpleHelp = document.createElement("p");
-      simpleHelp.className = "warehouse-meta";
-      simpleHelp.textContent = t("adapterSimpleHelp");
-      simpleHelp.title = t("adapterSimpleHelp");
-      details.appendChild(simpleHelp);
 
       var resumeReview = controlHelp(document.createElement("select"), "captureResumeReviewHelp");
       var newReview = document.createElement("option");
@@ -1968,7 +1960,7 @@
       details.appendChild(resultRow);
 
       var preview = document.createElement("p");
-      preview.className = "warehouse-meta warehouse-mapping-preview";
+      preview.className = "warehouse-meta warehouse-mapping-preview warehouse-developer-only";
       preview.title = t("adapterSimpleHelp");
       details.appendChild(preview);
       function updatePreview() {
@@ -1999,7 +1991,7 @@
       confirmation.required = true;
       confirmation.title = t("adapterMappingConfirmation");
       confirmationLabel.appendChild(confirmation);
-      confirmationLabel.appendChild(document.createTextNode(" " + t("adapterMappingConfirmation")));
+      confirmationLabel.appendChild(document.createTextNode(" " + t("adapterMappingConfirmShort")));
       details.appendChild(confirmationLabel);
 
       var offerStatus = document.createElement("p");

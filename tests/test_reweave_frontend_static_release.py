@@ -115,7 +115,7 @@ console.log(JSON.stringify({before, after}));
     assert "live" in rows["after"]
 
 
-def test_capsule_warehouse_defaults_to_explained_simple_mode() -> None:
+def test_capsule_warehouse_defaults_to_compact_simple_mode() -> None:
     app = (ROOT / "reweave_frontend" / "app.js").read_text(encoding="utf-8")
     index = (ROOT / "reweave_frontend" / "index.html").read_text(encoding="utf-8")
     styles = (ROOT / "reweave_frontend" / "styles.css").read_text(encoding="utf-8")
@@ -124,6 +124,9 @@ def test_capsule_warehouse_defaults_to_explained_simple_mode() -> None:
     assert "checked" not in toggle.group(1)
     assert 'data-i18n-title="warehousePurpose"' in index
     assert 'data-i18n-title="discoverSourceHelp"' in index
+    assert 'id="warehouse-mode-help"' not in index
+    assert 'data-i18n="modelTimeoutNote"' not in index
+    assert 'data-i18n-title="modelTimeoutNote"' in index
     assert ".capsule-warehouse-popover:not(.developer-mode) .warehouse-developer-only" in styles
     v2 = app[
         app.index("  function renderJavascriptComputationOffers(") : app.index(
@@ -139,6 +142,9 @@ def test_capsule_warehouse_defaults_to_explained_simple_mode() -> None:
     assert 'process_candidate: ["decisionProcessCandidate", "decisionProcessCandidateHelp"]' in app
     assert "project.selected == null && discovered.length === 1" in app
     assert 'confirmationLabel.title = t("adapterMappingConfirmation");' in v2
+    assert 't("adapterMappingConfirmShort")' in v2
+    assert 'preview.className = "warehouse-meta warehouse-mapping-preview warehouse-developer-only";' in v2
+    assert "var simpleHelp = document.createElement" not in v2
     assert 'preview.setAttribute("aria-live", "polite")' not in v2
     assert 'data-i18n-title="createBackupHelp"' in index
     assert 'data-i18n-title="importLegacyHelp"' in index

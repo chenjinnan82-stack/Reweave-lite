@@ -243,7 +243,6 @@ preview: pending</div>
       <input type="checkbox" id="warehouse-developer-mode">
       <span data-i18n="developerMode">Developer mode</span>
     </label>
-    <p id="warehouse-mode-help" class="warehouse-meta" data-i18n="simpleModeHelp">Simple mode shows only the controls required for safe capture.</p>
     <p id="capsule-warehouse-status" class="warehouse-status" aria-live="polite"></p>
 
     <details class="warehouse-section" open>
@@ -255,7 +254,7 @@ preview: pending</div>
       <div id="warehouse-projects" class="warehouse-list"></div>
     </details>
 
-    <details class="warehouse-section">
+    <details class="warehouse-section" data-i18n-title="modelTimeoutNote">
       <summary data-i18n="supervisionModel">Supervision model</summary>
       <div class="warehouse-actions warehouse-model-actions">
         <label class="warehouse-field" for="supervision-model-select">
@@ -267,7 +266,6 @@ preview: pending</div>
         <button type="button" id="btn-supervision-model-refresh" class="btn-ghost" data-i18n="refresh" data-i18n-title="refreshModelsHelp">Refresh</button>
         <button type="button" id="btn-supervision-model-save" class="btn-ghost" data-i18n="save" data-i18n-title="saveModelHelp">Save</button>
       </div>
-      <p class="warehouse-meta" data-i18n="modelTimeoutNote">Installed does not mean supervision-verified; cold or large models may enter waiting-model after the fixed timeout.</p>
     </details>
 
     <details class="warehouse-section" open>
