@@ -358,20 +358,61 @@ function validateModuleSyntax(record, snapshot) {
   record.dynamicDependencies = dynamicDependencies;
 }
 
-function createProgram(snapshot, entryModules) {
+function createProgram(snapshot, entryModules, isolateEntryFailures = false) {
   for (const record of snapshot.records.values()) {
     record.sourceFile = ts.createSourceFile(virtualName(record.logicalPath), record.source, ts.ScriptTarget.ES2022, true, ts.ScriptKind.JS);
   }
   const activePaths = new Set();
-  const pending = [...entryModules];
-  while (pending.length > 0) {
-    const logicalPath = pending.shift();
-    if (activePaths.has(logicalPath)) continue;
-    const record = snapshot.records.get(logicalPath);
-    if (!record) throw new Rejection("source_changed", logicalPath);
-    validateModuleSyntax(record, snapshot);
-    activePaths.add(logicalPath);
-    for (const imported of record.imports) pending.push(imported.logical_path);
+  const validatedPaths = new Set();
+  const rejectedPaths = new Map();
+  const entryRejections = [];
+  if (!isolateEntryFailures) {
+    const pending = [...entryModules];
+    while (pending.length > 0) {
+      const logicalPath = pending.shift();
+      if (activePaths.has(logicalPath)) continue;
+      const record = snapshot.records.get(logicalPath);
+      if (!record) throw new Rejection("source_changed", logicalPath);
+      validateModuleSyntax(record, snapshot);
+      activePaths.add(logicalPath);
+      for (const imported of record.imports) pending.push(imported.logical_path);
+    }
+  } else {
+    for (const entryModule of entryModules) {
+      const closurePaths = new Set();
+      const pending = [entryModule];
+      try {
+        while (pending.length > 0) {
+          const logicalPath = pending.shift();
+          if (activePaths.has(logicalPath) || closurePaths.has(logicalPath)) continue;
+          const record = snapshot.records.get(logicalPath);
+          if (!record) throw new Rejection("source_changed", logicalPath);
+          if (rejectedPaths.has(logicalPath)) {
+            throw new Rejection(rejectedPaths.get(logicalPath), logicalPath);
+          }
+          if (!validatedPaths.has(logicalPath)) {
+            try {
+              validateModuleSyntax(record, snapshot);
+            } catch (error) {
+              if (error instanceof Rejection) {
+                rejectedPaths.set(logicalPath, safeRejection(error).error_code);
+              }
+              throw error;
+            }
+            validatedPaths.add(logicalPath);
+          }
+          closurePaths.add(logicalPath);
+          for (const imported of record.imports) pending.push(imported.logical_path);
+        }
+      } catch (error) {
+        if (!(error instanceof Rejection)) throw error;
+        const rejection = safeRejection(error);
+        if (rejection.error_code === "unclassified_internal_result") throw error;
+        entryRejections.push(rejection.error_code);
+        continue;
+      }
+      for (const logicalPath of closurePaths) activePaths.add(logicalPath);
+    }
   }
   const intrinsicSource = [
     "interface __ReweaveMath {",
@@ -436,7 +477,7 @@ function createProgram(snapshot, entryModules) {
   };
   const rootNames = [INTRINSIC_PATH, ...[...activePaths].sort(compareUtf8).map(virtualName)];
   const program = ts.createProgram({ rootNames, options, host });
-  return { program, checker: program.getTypeChecker(), intrinsicFile, activePaths };
+  return { program, checker: program.getTypeChecker(), intrinsicFile, activePaths, entryRejections };
 }
 
 function createGraph(snapshot, programState) {
@@ -2010,6 +2051,14 @@ function safeRejection(error) {
   return { schema: SOURCE_GRAPH_VERSION, status: "rejected", error_code: code, logical_path: logicalPath };
 }
 
+function rejectionSummary(codes) {
+  const counts = new Map();
+  for (const code of codes) counts.set(code, (counts.get(code) || 0) + 1);
+  return [...counts.entries()]
+    .sort(([left], [right]) => compareUtf8(left, right))
+    .map(([code, count]) => ({ code, count }));
+}
+
 function proofGraphContext(snapshot, graph) {
   return {
     sourceFileByLogicalPath(logicalPath) {
@@ -2117,6 +2166,25 @@ function verifySelectedBundle(bytes) {
     ts.ScriptKind.JS,
   );
   if (sourceFile.parseDiagnostics.length > 0) throw new Rejection("bundle_security_rejected");
+  const sensitivityLiterals = new Set();
+  function collectSensitivityLiterals(node) {
+    if (ts.isStringLiteralLike(node)) {
+      const value = node.text;
+      const encoded = Buffer.from(value, "utf8");
+      if (strictUtf8(encoded, SELECTED_LOGICAL_PATH) !== value) {
+        throw new Rejection("bundle_security_rejected");
+      }
+      sensitivityLiterals.add(value);
+    } else if (ts.isNumericLiteral(node)) {
+      const value = Number(node.text);
+      if (!Number.isSafeInteger(value)) {
+        throw new Rejection("bundle_security_rejected");
+      }
+      sensitivityLiterals.add(String(value));
+    }
+    ts.forEachChild(node, collectSensitivityLiterals);
+  }
+  collectSensitivityLiterals(sourceFile);
   let exportCount = 0;
   for (const statement of sourceFile.statements) {
     if (ts.isImportDeclaration(statement) || ts.isExportAssignment(statement) ||
@@ -2136,6 +2204,11 @@ function verifySelectedBundle(bytes) {
     exportCount += 1;
   }
   if (exportCount !== 1) throw new Rejection("bundle_security_rejected");
+  const orderedLiterals = [...sensitivityLiterals].sort(compareUtf8);
+  if (orderedLiterals.reduce((total, value) => total + Buffer.byteLength(value, "utf8"), 0) > bytes.length) {
+    throw new Rejection("bundle_security_rejected");
+  }
+  return orderedLiterals;
 }
 
 async function createCapture(request, snapshot, graph, proof) {
@@ -2273,7 +2346,7 @@ async function createCapture(request, snapshot, graph, proof) {
         [...symbolClosurePaths].some((logicalPath) => !metafileInputs.includes(logicalPath))) {
       throw new Rejection("bundle_security_rejected");
     }
-    verifySelectedBundle(selectedBytes);
+    const sensitivityLiterals = verifySelectedBundle(selectedBytes);
 
     return {
       schema: "selected_bundle.v1",
@@ -2292,6 +2365,7 @@ async function createCapture(request, snapshot, graph, proof) {
       module_evaluation_paths: [...expectedModulePaths].sort(compareUtf8),
       symbol_closure_paths: [...symbolClosurePaths].sort(compareUtf8),
       metafile_inputs: metafileInputs,
+      sensitivity_literals: sensitivityLiterals,
     };
   } finally {
     await fs.rm(temporaryRoot, { recursive: true, force: true });
@@ -2316,17 +2390,30 @@ async function main() {
         typeof request.project_id !== "string" || !request.project_id ||
         typeof request.scope_snapshot_sha256 !== "string" || !/^[0-9a-f]{64}$/u.test(request.scope_snapshot_sha256) ||
         typeof request.source_identity_sha256 !== "string" || !/^[0-9a-f]{64}$/u.test(request.source_identity_sha256) ||
-        !Array.isArray(request.entry_modules) || request.entry_modules.length === 0) {
+        !Array.isArray(request.entry_modules) || request.entry_modules.length === 0 ||
+        (request.isolate_entry_failures !== undefined && typeof request.isolate_entry_failures !== "boolean") ||
+        (request.mode !== "graph" && request.isolate_entry_failures === true)) {
       throw new Rejection("source_changed");
     }
     const snapshot = createSnapshot(request);
+    const isolateEntryFailures = request.mode === "graph" && request.isolate_entry_failures === true;
+    const directEntryRejections = [];
+    const usableEntryModules = [];
+    const seenEntryModules = new Set();
     for (const entry of request.entry_modules) {
       const logical = normalizedLogicalPath(entry);
+      if (isolateEntryFailures && seenEntryModules.has(logical)) continue;
+      seenEntryModules.add(logical);
       if (!snapshot.records.has(logical)) throw new Rejection("source_changed", logical);
-      if (pathUsesSymlink(logical, snapshot.symlinks)) throw new Rejection("closure_symlink_forbidden", logical);
+      if (pathUsesSymlink(logical, snapshot.symlinks)) {
+        if (!isolateEntryFailures) throw new Rejection("closure_symlink_forbidden", logical);
+        directEntryRejections.push("closure_symlink_forbidden");
+        continue;
+      }
+      usableEntryModules.push(logical);
     }
-    const entryModules = request.entry_modules.map(normalizedLogicalPath);
-    const programState = createProgram(snapshot, entryModules);
+    const programState = createProgram(snapshot, usableEntryModules, isolateEntryFailures);
+    programState.entryRejections.push(...directEntryRejections);
     const graph = createGraph(snapshot, programState);
     const result = {
       schema: SOURCE_GRAPH_VERSION,
@@ -2336,6 +2423,9 @@ async function main() {
       source_identity_sha256: request.source_identity_sha256,
       modules: graph.modules,
     };
+    if (isolateEntryFailures) {
+      result.rejection_summary = rejectionSummary(programState.entryRejections);
+    }
     if (["prove", "capture"].includes(request.mode)) {
       result.proof = createProof(request, snapshot, graph);
     }

@@ -25,6 +25,8 @@
     legacy: null,
     adapterOffers: {},
     captureResume: {},
+    captureReviewContext: {},
+    developerMode: false,
     sourceRoots: [],
     runs: {},
     errorKey: "",
@@ -155,10 +157,21 @@
       copied: "已复制",
       enrichedContentPreview: "使用补充内容预览",
       capsuleWarehouse: "胶囊仓库",
+      warehousePurpose: "管理只读来源、提取候选、人工复核并发布正式胶囊。",
+      developerMode: "开发者模式",
+      developerModeHelp: "显示输入类型、枚举、复核 ID、备份和任务等开发信息。",
+      simpleModeHelp: "简单模式只显示安全抓取所需操作；悬停控件可查看用途。",
+      developerModeActiveHelp: "开发者模式已开启，会显示高级类型、复核 ID、备份和任务明细。",
       sourceProjects: "来源项目",
       discoverSource: "发现来源",
+      discoverSourceHelp: "选择一个来源目录并只读发现其中的项目。",
       refreshAll: "全部刷新",
+      refreshAllHelp: "重新扫描全部已登记来源；仅开发者模式显示。",
       supervisionModel: "监督模型",
+      supervisionModelHelp: "选择本机 Ollama 模型；模型只做监督和命名，不决定代码边界。",
+      refreshModelsHelp: "重新读取本机可用的监督模型。",
+      saveModelHelp: "保存本次胶囊监督使用的模型和精确摘要。",
+      saveBrandHelp: "保存当前项目的品牌继承、清除或替换设置。",
       selectModel: "选择模型",
       modelTimeoutNote: "已安装不等于已通过监督验证；冷启动或较大模型可能在固定超时后进入等待模型状态。",
       save: "保存",
@@ -187,26 +200,122 @@
       refreshProject: "刷新项目",
       inspectComputationAdapters: "检查计算函数",
       registerJavascriptSource: "登记 JavaScript 计算来源",
+      registerJavascriptSourceHelp: "把所选来源根或子目录登记为只读 JavaScript 计算来源。",
+      javascriptSourceRoot: "来源根",
+      javascriptSourceRootHelp: "选择已经绑定的只读来源目录。",
       javascriptProjectRelpath: "项目或子目录（. 表示整个来源根）",
+      javascriptProjectRelpathHelp: "限定计算函数扫描范围；不会修改该目录。",
       javascriptDisplayName: "计算来源名称",
+      javascriptDisplayNameHelp: "给此计算来源一个便于识别的本地名称；留空时使用目录名。",
+      javascriptSourceType: "JavaScript 计算来源",
+      staticWebSourceType: "静态网页来源",
+      refreshProjectHelp: "重新只读扫描这个来源项目。",
+      inspectComputationAdaptersHelp: "检查旧版已导出纯计算函数；简单模式使用新的计算函数扫描。",
       scanJavascriptComputations: "扫描可抓取计算函数",
+      scanJavascriptComputationsHelp: "只读扫描并列出可由现有安全契约证明的计算函数。",
       noJavascriptComputations: "未发现可配置的 computation_adapter.v2 函数。",
       adapterInputKind: "输入类型",
+      adapterInputKindHelp: "简单模式固定为整数；布尔和枚举只在开发者模式配置。",
       adapterEnumValues: "枚举值（每行一个）",
-      captureResubmitRequired: "决定已保存。请保留当前表单并再次提交，以重新构建候选。",
+      adapterEnumValuesHelp: "列出允许的精确字符串值，每行一个。",
+      captureNeedsDecision: "等待你的安全确认；模型监督和运行验证尚未执行。",
+      captureResubmitRequired: "决定已保存。返回原函数并点击“继续验证”，系统会从当前来源重新构建。",
       captureResumeReview: "恢复待确认项（可选）",
+      captureResumeReviewHelp: "开发者恢复入口；普通流程会自动关联当前待确认项。",
       noComputationAdapters: "未发现符合 computation_adapter.v1 的计算函数。",
       adapterInputField: "输入字段",
+      adapterInputFieldHelp: "产品使用的字段名；例如旧参数 x 可以映射为 quantity。",
       adapterMinimum: "最小值",
+      adapterMinimumHelp: "该输入允许的最小安全整数。必须依据实际业务填写。",
       adapterMaximum: "最大值",
+      adapterMaximumHelp: "该输入允许的最大安全整数。必须依据实际业务填写。",
       adapterResultField: "输出字段",
+      adapterResultFieldHelp: "产品接收计算结果时使用的字段名，例如 total。",
       adapterExample: "业务样例",
+      adapterExampleHelp: "填写一组你知道正确的输入，值必须位于声明范围内。",
       adapterExpected: "期望结果",
+      adapterExpectedHelp: "旧函数处理上方业务样例时应得到的真实整数结果。",
+      adapterSimpleHelp: "旧参数映射为产品字段；范围是允许输入；业务样例和期望结果用于核对真实函数。",
+      adapterMappingPreview: "将提交：{mapping}",
       adapterMappingConfirmation: "我确认这里只证明参数映射与指定样例，不代表完全等价。",
       createComputationAdapter: "创建计算胶囊候选",
+      continueCaptureValidation: "继续验证",
       adapterMappingInvalid: "请填写合法、唯一的 snake_case 字段和安全整数范围。",
       adapterInspectionComplete: "计算函数检查完成。",
       adapterCandidateCreated: "计算胶囊候选已创建，请继续复核。",
+      captureWaitingModel: "等待本地监督模型；尚未完成验证。",
+      captureWaitingValidation: "等待 Node 运行验证；尚未入仓。",
+      captureRejected: "候选已拒绝，没有写入正式胶囊仓库。",
+      captureReviewRequired: "安全、模型和运行验证已通过，等待发布复核。",
+      captureDuplicate: "已确认与当前正式版本精确重复，并关联来源。",
+      captureOutcomeUnknown: "候选返回了无法识别的状态，已停止。",
+      captureOfferStale: "来源或函数列表已变化，请重新扫描后再提交。",
+      captureExampleMismatch: "业务样例与旧函数的真实结果不一致，请核对输入和期望结果。",
+      captureSourceChanged: "扫描期间来源发生变化；未保存候选，请重新扫描。",
+      captureWorkerTimeout: "计算验证超时；未保存候选，请检查函数范围后重试。",
+      captureSecurityRejected: "函数未通过安全边界，未保存候选。开发者模式可查看诊断。",
+      captureRequestInvalid: "提交信息不完整或已过期，请重新扫描并填写。",
+      managementOperationFailed: "操作未完成；没有写入正式胶囊。请重试或在开发者模式查看诊断。",
+      reviewStatusWaitingUser: "等待用户确认",
+      reviewStatusWaitingModel: "等待模型",
+      reviewStatusWaitingValidation: "等待运行验证",
+      reviewStatusReviewRequired: "等待发布复核",
+      reviewStatusDuplicate: "精确重复",
+      reviewStatusRejected: "已拒绝",
+      captureReview: "计算函数安全确认",
+      captureSafetySummary: "安全扫描：模糊项 {ambiguous}，品牌项 {brand}，枚举参数 {enums}。",
+      capabilityKeyLabel: "能力标识",
+      capabilityKeyHelp: "同一完整能力共享的稳定 snake_case 标识，例如 quote_calculation。",
+      roleKeyLabel: "角色标识",
+      roleKeyHelp: "该原子胶囊在能力中的稳定角色标识，例如 total_price。",
+      variantKeyLabel: "变体标识",
+      variantKeyHelp: "同一角色不同实现的稳定标识；首个通常为 default。",
+      displayNameLabel: "展示名称",
+      displayNameHelp: "仅用于界面展示，可在发布后修改。",
+      retainedVersionLabel: "保留的正式版本",
+      retainedVersionHelp: "选择人工确认后继续保留的现有正式版本。",
+      targetCapsuleLabel: "目标胶囊",
+      targetCapsuleHelp: "选择要替换或作为语义拆分来源的现有胶囊。",
+      decisionConfirmFictional: "确认内容为虚构样例",
+      decisionConfirmFictionalHelp: "仅在你确认命中内容不是客户或其他真实记录时使用。",
+      decisionRejectRealRecord: "确认为真实记录并拒绝",
+      decisionRejectRealRecordHelp: "确认包含真实记录并终止此候选，不会写入正式仓库。",
+      decisionConfirmSafeRedaction: "确认脱敏结果安全",
+      decisionConfirmSafeRedactionHelp: "确认清洗后的候选不再包含真实记录。",
+      decisionRetainBrand: "保留为品牌限定",
+      decisionRetainBrandHelp: "仅允许当前品牌配置使用此胶囊。",
+      decisionRemoveBrand: "移除品牌后继续",
+      decisionRemoveBrandHelp: "按当前清洗规则移除品牌内容后重新处理。",
+      decisionConfirmEnum: "确认所选枚举值",
+      decisionConfirmEnumHelp: "确认这些字符串是业务枚举，不是真实记录。",
+      decisionConfirmAssets: "确认图片不含真实记录",
+      decisionConfirmAssetsHelp: "人工确认图片像素中不含客户截图或其他真实记录。",
+      decisionPublishGeneral: "发布为通用胶囊",
+      decisionPublishGeneralHelp: "以当前身份发布，可用于符合契约的产品。",
+      decisionPublishBrand: "发布为品牌限定胶囊",
+      decisionPublishBrandHelp: "以当前身份发布，仅供当前品牌范围使用。",
+      decisionCreateVariant: "创建新变体",
+      decisionCreateVariantHelp: "保留现有实现，并把当前实现发布为另一个变体。",
+      decisionMergeExisting: "归入现有实现",
+      decisionMergeExistingHelp: "人工确认等价关系，默认保留现有正式实现。",
+      decisionReplaceCurrent: "发布新版本替换当前实现",
+      decisionReplaceCurrentHelp: "发布不可变新版本，并切换当前正式版本。",
+      decisionSemanticSplit: "拆分为新身份",
+      decisionSemanticSplitHelp: "把当前候选作为新的能力身份发布，旧身份不删除。",
+      decisionReject: "拒绝候选",
+      decisionRejectHelp: "终止当前候选，不写入正式胶囊仓库。",
+      decisionProcessCandidate: "继续安全验证",
+      decisionProcessCandidateHelp: "继续现有安全、模型和运行验证；不会自动发布。",
+      createBackupHelp: "备份当前本地胶囊仓库、品牌配置和使用历史。",
+      importLegacyHelp: "逐条重新清洗旧仓内容；不会直接信任或恢复旧实现。",
+      restoreHelp: "把整个本地胶囊仓库恢复到所选备份时点。",
+      mapLegacyHelp: "把旧胶囊记录关联到已人工确认的正式版本。",
+      retryUsageHelp: "重新核对产品 manifest 并登记其精确胶囊版本。",
+      cancelRunHelp: "请求取消当前后台任务；已提交的完整事务不会被拆开。",
+      renameCapabilityHelp: "只修改展示名称，不改变稳定能力标识。",
+      viewDetailsHelp: "查看此胶囊的当前正式版本摘要。",
+      disableCapsuleHelp: "停用当前胶囊；历史版本不会被物理删除。",
+      enableCapsuleHelp: "重新启用已验证且规则仍有效的当前胶囊。",
       cancelRun: "取消",
       restore: "恢复",
       viewDetails: "查看详情",
@@ -371,10 +480,21 @@
       copied: "Copied",
       enrichedContentPreview: "Use enriched content preview",
       capsuleWarehouse: "Capsule Warehouse",
+      warehousePurpose: "Manage read-only sources, capture candidates, review them, and publish formal capsules.",
+      developerMode: "Developer mode",
+      developerModeHelp: "Show input types, enums, review IDs, backups, and task diagnostics.",
+      simpleModeHelp: "Simple mode shows only required safe-capture actions; hover any control for help.",
+      developerModeActiveHelp: "Developer mode is on and shows advanced types, review IDs, backups, and task details.",
       sourceProjects: "Source projects",
       discoverSource: "Discover source",
+      discoverSourceHelp: "Choose a source directory and discover projects read-only.",
       refreshAll: "Refresh all",
+      refreshAllHelp: "Rescan every registered source; shown only in developer mode.",
       supervisionModel: "Supervision model",
+      supervisionModelHelp: "Choose a local Ollama model; it supervises and names but never chooses code boundaries.",
+      refreshModelsHelp: "Reload locally available supervision models.",
+      saveModelHelp: "Save the model and exact digest used for capsule supervision.",
+      saveBrandHelp: "Save this project's inherited, cleared, or replacement brand settings.",
       selectModel: "Select a model",
       modelTimeoutNote: "Installed does not mean supervision-verified; cold or large models may enter waiting-model after the fixed timeout.",
       save: "Save",
@@ -403,26 +523,122 @@
       refreshProject: "Refresh project",
       inspectComputationAdapters: "Inspect computation functions",
       registerJavascriptSource: "Register JavaScript computation source",
+      registerJavascriptSourceHelp: "Register a source root or subdirectory as a read-only JavaScript computation source.",
+      javascriptSourceRoot: "Source root",
+      javascriptSourceRootHelp: "Choose an already bound read-only source directory.",
       javascriptProjectRelpath: "Project or subdirectory (. means source root)",
+      javascriptProjectRelpathHelp: "Limit the computation scan scope; this directory is never modified.",
       javascriptDisplayName: "Computation source name",
+      javascriptDisplayNameHelp: "Give this computation source a recognizable local name; leave blank to use the directory name.",
+      javascriptSourceType: "JavaScript computation source",
+      staticWebSourceType: "Static web source",
+      refreshProjectHelp: "Rescan this source project read-only.",
+      inspectComputationAdaptersHelp: "Inspect legacy exported pure functions; simple mode uses the new computation scan.",
       scanJavascriptComputations: "Scan capturable computation functions",
+      scanJavascriptComputationsHelp: "Scan read-only and list functions provable by the current safety contract.",
       noJavascriptComputations: "No configurable computation_adapter.v2 functions were found.",
       adapterInputKind: "Input type",
+      adapterInputKindHelp: "Simple mode uses integers; configure booleans and enums in developer mode.",
       adapterEnumValues: "Enum values (one per line)",
-      captureResubmitRequired: "Decision saved. Keep this form and submit again to rebuild the candidate.",
+      adapterEnumValuesHelp: "List exact allowed string values, one per line.",
+      captureNeedsDecision: "Waiting for your safety decision; model supervision and runtime validation have not run.",
+      captureResubmitRequired: "Decision saved. Return to the function and click Continue validation to rebuild from current source.",
       captureResumeReview: "Resume waiting review (optional)",
+      captureResumeReviewHelp: "Developer recovery control; the normal flow links the current review automatically.",
       noComputationAdapters: "No computation_adapter.v1 functions were found.",
       adapterInputField: "Input field",
+      adapterInputFieldHelp: "The product-facing field; for example, map source parameter x to quantity.",
       adapterMinimum: "Minimum",
+      adapterMinimumHelp: "The smallest allowed safe integer. Enter a real business limit.",
       adapterMaximum: "Maximum",
+      adapterMaximumHelp: "The largest allowed safe integer. Enter a real business limit.",
       adapterResultField: "Result field",
+      adapterResultFieldHelp: "The field used by products to receive this result, for example total.",
       adapterExample: "Business example",
+      adapterExampleHelp: "Enter an input whose correct result you know; it must be within the declared range.",
       adapterExpected: "Expected result",
+      adapterExpectedHelp: "The actual integer result the old function should return for the example above.",
+      adapterSimpleHelp: "Map source parameters to product fields; ranges define accepted input; the example and expected result check the real function.",
+      adapterMappingPreview: "Will submit: {mapping}",
       adapterMappingConfirmation: "I confirm this proves only the mapping and specified examples, not total equivalence.",
       createComputationAdapter: "Create computation candidate",
+      continueCaptureValidation: "Continue validation",
       adapterMappingInvalid: "Enter unique snake_case fields and safe integer ranges.",
       adapterInspectionComplete: "Computation function inspection completed.",
       adapterCandidateCreated: "Computation candidate created; continue review.",
+      captureWaitingModel: "Waiting for the local supervision model; validation is incomplete.",
+      captureWaitingValidation: "Waiting for Node runtime validation; nothing was published.",
+      captureRejected: "Candidate rejected; no formal capsule was written.",
+      captureReviewRequired: "Security, model, and runtime validation passed; publication review is required.",
+      captureDuplicate: "Matched the active formal version exactly and linked its source.",
+      captureOutcomeUnknown: "The candidate returned an unknown status and was stopped.",
+      captureOfferStale: "The source or function list changed. Scan again before submitting.",
+      captureExampleMismatch: "The business example does not match the old function's real result. Check the input and expected result.",
+      captureSourceChanged: "The source changed during scanning. Nothing was saved; scan again.",
+      captureWorkerTimeout: "Computation validation timed out. Nothing was saved; review the function scope and retry.",
+      captureSecurityRejected: "The function did not pass the safety boundary. Nothing was saved; developer mode shows diagnostics.",
+      captureRequestInvalid: "The submission is incomplete or expired. Scan again and refill it.",
+      managementOperationFailed: "The operation did not complete and no formal capsule was written. Retry or inspect diagnostics in developer mode.",
+      reviewStatusWaitingUser: "Waiting for user decision",
+      reviewStatusWaitingModel: "Waiting for model",
+      reviewStatusWaitingValidation: "Waiting for runtime validation",
+      reviewStatusReviewRequired: "Waiting for publication review",
+      reviewStatusDuplicate: "Exact duplicate",
+      reviewStatusRejected: "Rejected",
+      captureReview: "Computation safety decision",
+      captureSafetySummary: "Safety scan: {ambiguous} ambiguous, {brand} brand, {enums} enum parameters.",
+      capabilityKeyLabel: "Capability key",
+      capabilityKeyHelp: "Stable snake_case identity shared by one complete capability, for example quote_calculation.",
+      roleKeyLabel: "Role key",
+      roleKeyHelp: "Stable identity for this atomic role, for example total_price.",
+      variantKeyLabel: "Variant key",
+      variantKeyHelp: "Stable identity for another implementation of the same role; the first is usually default.",
+      displayNameLabel: "Display name",
+      displayNameHelp: "A user-facing label that can be renamed after publication.",
+      retainedVersionLabel: "Retained formal version",
+      retainedVersionHelp: "Choose the existing formal version to retain after manual equivalence review.",
+      targetCapsuleLabel: "Target capsule",
+      targetCapsuleHelp: "Choose the existing capsule to replace or use as the semantic-split source.",
+      decisionConfirmFictional: "Confirm fictional example",
+      decisionConfirmFictionalHelp: "Use only when you know the matched content is not a customer or other real record.",
+      decisionRejectRealRecord: "Confirm real record and reject",
+      decisionRejectRealRecordHelp: "Confirm a real record is present and stop this candidate without publishing it.",
+      decisionConfirmSafeRedaction: "Confirm safe redaction",
+      decisionConfirmSafeRedactionHelp: "Confirm the cleaned candidate no longer contains real records.",
+      decisionRetainBrand: "Keep as brand-limited",
+      decisionRetainBrandHelp: "Allow this capsule only for the current brand profile.",
+      decisionRemoveBrand: "Remove brand and continue",
+      decisionRemoveBrandHelp: "Apply current cleaning rules to remove brand content and process again.",
+      decisionConfirmEnum: "Confirm selected enum values",
+      decisionConfirmEnumHelp: "Confirm these strings are business enums, not real records.",
+      decisionConfirmAssets: "Confirm images contain no real records",
+      decisionConfirmAssetsHelp: "Confirm image pixels contain no customer screenshots or other real records.",
+      decisionPublishGeneral: "Publish general capsule",
+      decisionPublishGeneralHelp: "Publish under the current identity for contract-compatible products.",
+      decisionPublishBrand: "Publish brand-limited capsule",
+      decisionPublishBrandHelp: "Publish under the current identity for the current brand scope only.",
+      decisionCreateVariant: "Create variant",
+      decisionCreateVariantHelp: "Keep the current implementation and publish this one as another variant.",
+      decisionMergeExisting: "Merge into existing implementation",
+      decisionMergeExistingHelp: "Confirm equivalence manually and keep the existing formal implementation.",
+      decisionReplaceCurrent: "Publish new current version",
+      decisionReplaceCurrentHelp: "Publish an immutable new version and switch the current formal version.",
+      decisionSemanticSplit: "Split into new identity",
+      decisionSemanticSplitHelp: "Publish this candidate as a new capability identity without deleting the old one.",
+      decisionReject: "Reject candidate",
+      decisionRejectHelp: "Stop this candidate without writing a formal capsule.",
+      decisionProcessCandidate: "Continue safety validation",
+      decisionProcessCandidateHelp: "Continue the existing security, model, and runtime gates; this never auto-publishes.",
+      createBackupHelp: "Back up the local capsule warehouse, brand configuration, and usage history.",
+      importLegacyHelp: "Reclean old warehouse entries one by one; old implementations are never trusted directly.",
+      restoreHelp: "Restore the complete local capsule warehouse to the selected backup point.",
+      mapLegacyHelp: "Link an old capsule record to a manually confirmed formal version.",
+      retryUsageHelp: "Recheck the product manifest and register its exact capsule versions.",
+      cancelRunHelp: "Request cancellation of this background task; completed transactions remain atomic.",
+      renameCapabilityHelp: "Change only the display name without changing the stable capability key.",
+      viewDetailsHelp: "View the current formal-version summary for this capsule.",
+      disableCapsuleHelp: "Disable the current capsule without physically deleting version history.",
+      enableCapsuleHelp: "Enable a current capsule whose validation evidence remains valid.",
       cancelRun: "Cancel",
       restore: "Restore",
       viewDetails: "View details",
@@ -1057,7 +1273,21 @@
 
   function managementError(result) {
     var error = result && result.error;
-    return error && (error.message_key || error.code) ? String(error.message_key || error.code) : "internal_error";
+    var code = error && (error.message_key || error.code) ? String(error.message_key || error.code) : "internal_error";
+    if (STR[locale][code]) return code;
+    return {
+      offer_stale: "captureOfferStale",
+      adapter_offer_stale: "captureOfferStale",
+      adapter_mapping_invalid: "adapterMappingInvalid",
+      adapter_example_mismatch: "captureExampleMismatch",
+      source_changed: "captureSourceChanged",
+      candidate_boundary_changed: "captureSourceChanged",
+      worker_timeout: "captureWorkerTimeout",
+      bundle_security_rejected: "captureSecurityRejected",
+      adapter_security_rejected: "captureSecurityRejected",
+      capture_request_invalid: "captureRequestInvalid",
+      capture_resubmission_required: "captureResubmitRequired",
+    }[code] || "managementOperationFailed";
   }
 
   function applyIngestionInitialState(block) {
@@ -1090,16 +1320,133 @@
     var status = $("capsule-warehouse-status");
     if (!status) return;
     status.textContent = key ? (STR[locale][key] || key) : t("managementReady");
-    status.classList.toggle("is-error", !!key && [
+    var waiting = captureStatusIsWaiting(key);
+    status.classList.toggle("is-waiting", waiting);
+    status.classList.toggle("is-error", !!key && !waiting && [
       "managementLoading",
       "decisionSaved",
       "modelSaved",
       "backupCreated",
       "adapterInspectionComplete",
       "adapterCandidateCreated",
+      "captureDuplicate",
       "restoreComplete",
       "importStarted",
     ].indexOf(key) < 0);
+  }
+
+  function captureOutcomeStatusKey(outcome) {
+    var status = outcome && typeof outcome === "object" ? String(outcome.status || "") : "";
+    return {
+      waiting_user: "captureNeedsDecision",
+      waiting_model: "captureWaitingModel",
+      waiting_validation: "captureWaitingValidation",
+      rejected: "captureRejected",
+      review_required: "captureReviewRequired",
+      duplicate: "captureDuplicate",
+    }[status] || "captureOutcomeUnknown";
+  }
+
+  function legacyAdapterOutcomeStatusKey(outcome) {
+    var gates = outcome && Array.isArray(outcome.gate_results) ? outcome.gate_results : [];
+    if (gates.length) {
+      var gateStatus = String((gates[gates.length - 1] || {}).status || "");
+      if (gateStatus === "failed") return "captureRejected";
+      return captureOutcomeStatusKey({ status: gateStatus });
+    }
+    var intakeStatus = String(
+      (((outcome || {}).intake || {}).adapter || {}).candidate_status || ""
+    );
+    if (intakeStatus === "extracted") return "captureWaitingValidation";
+    return captureOutcomeStatusKey({ status: intakeStatus });
+  }
+
+  function captureStatusIsWaiting(key) {
+    return [
+      "captureNeedsDecision",
+      "captureResubmitRequired",
+      "captureWaitingModel",
+      "captureWaitingValidation",
+      "captureReviewRequired",
+    ].indexOf(key) >= 0;
+  }
+
+  function controlHelp(element, key) {
+    if (element && key) element.title = t(key);
+    return element;
+  }
+
+  function syncWarehouseMode() {
+    var popover = $("capsule-warehouse-popover");
+    var toggle = $("warehouse-developer-mode");
+    var help = $("warehouse-mode-help");
+    if (toggle) toggle.checked = ingestionManagement.developerMode === true;
+    if (popover) popover.classList.toggle("developer-mode", ingestionManagement.developerMode === true);
+    if (help) help.textContent = t(ingestionManagement.developerMode ? "developerModeActiveHelp" : "simpleModeHelp");
+  }
+
+  function reviewStatusLabel(status) {
+    var key = {
+      waiting_user: "reviewStatusWaitingUser",
+      waiting_model: "reviewStatusWaitingModel",
+      waiting_validation: "reviewStatusWaitingValidation",
+      review_required: "reviewStatusReviewRequired",
+      duplicate: "reviewStatusDuplicate",
+      rejected: "reviewStatusRejected",
+    }[String(status || "")];
+    return key ? t(key) : String(status || t("unknown"));
+  }
+
+  function reviewDecisionCopy(decision) {
+    return {
+      process_candidate: ["decisionProcessCandidate", "decisionProcessCandidateHelp"],
+      confirm_fictional_fixture: ["decisionConfirmFictional", "decisionConfirmFictionalHelp"],
+      confirm_safe_redaction: ["decisionConfirmSafeRedaction", "decisionConfirmSafeRedactionHelp"],
+      confirm_real_record_reject: ["decisionRejectRealRecord", "decisionRejectRealRecordHelp"],
+      remove_brand: ["decisionRemoveBrand", "decisionRemoveBrandHelp"],
+      retain_brand_limited: ["decisionRetainBrand", "decisionRetainBrandHelp"],
+      confirm_selected_string_enumeration: ["decisionConfirmEnum", "decisionConfirmEnumHelp"],
+      confirm_assets_contain_no_real_records: ["decisionConfirmAssets", "decisionConfirmAssetsHelp"],
+      publish_general: ["decisionPublishGeneral", "decisionPublishGeneralHelp"],
+      publish_brand_limited: ["decisionPublishBrand", "decisionPublishBrandHelp"],
+      create_variant: ["decisionCreateVariant", "decisionCreateVariantHelp"],
+      merge_existing: ["decisionMergeExisting", "decisionMergeExistingHelp"],
+      replace_current: ["decisionReplaceCurrent", "decisionReplaceCurrentHelp"],
+      semantic_split: ["decisionSemanticSplit", "decisionSemanticSplitHelp"],
+      reject: ["decisionReject", "decisionRejectHelp"],
+    }[decision] || null;
+  }
+
+  function stableSnakeKey(value, fallback) {
+    var text = String(value || "")
+      .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .replace(/_+/g, "_");
+    if (!/^[a-z_][a-z0-9_]*$/.test(text)) return fallback;
+    return text;
+  }
+
+  function reviewIdentityDefaults(item, candidate, reviewName) {
+    var payload = candidate && candidate.ephemeral_capture_payload;
+    var selected = payload && payload.selected_function;
+    var mapping = payload && payload.mapping;
+    var exportName = selected && selected.export_name;
+    var base = stableSnakeKey(exportName || reviewName, "captured_calculation");
+    var result = stableSnakeKey(mapping && mapping.result_field, base);
+    if (result === "result") result = base;
+    var display = String(exportName || reviewName || "Captured calculation")
+      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+      .replace(/[_-]+/g, " ")
+      .trim();
+    if (!display) display = "Captured calculation";
+    return {
+      capability_key: stableSnakeKey(candidate && candidate.suggested_capability_key, base + "_calculation"),
+      role_key: stableSnakeKey(candidate && candidate.suggested_role_key, result),
+      variant_key: "default",
+      display_name: String(candidate && candidate.suggested_display_name || display),
+    };
   }
 
   function emptyManagementList(container, key) {
@@ -1209,7 +1556,7 @@
     return value;
   }
 
-  function refreshAdapterReviewItems() {
+  function refreshAdapterReviewItems(onComplete) {
     bridgeCall("list_review_items", JSON.stringify({})).then(function (raw) {
       var result = parseBridgeJson(raw);
       if (!managementPayload(result)) {
@@ -1218,6 +1565,7 @@
       }
       ingestionManagement.reviewItems = managementList(result, ["review_items", "items"]);
       renderManagementReviews();
+      if (typeof onComplete === "function") onComplete(ingestionManagement.reviewItems);
     });
   }
 
@@ -1227,7 +1575,7 @@
     if (!inspection || typeof inspection !== "object" || inspection.schema === "computation_capture_offers.v2") return;
     var offers = Array.isArray(inspection.offers) ? inspection.offers : [];
     var panel = document.createElement("div");
-    panel.className = "warehouse-project-config";
+    panel.className = "warehouse-project-config warehouse-developer-only";
     var rejections = Array.isArray(inspection.rejection_summary)
       ? inspection.rejection_summary
       : [];
@@ -1263,7 +1611,7 @@
         actions.appendChild(parameterName);
 
         var fieldLabel = document.createElement("label");
-        fieldLabel.className = "warehouse-field";
+        fieldLabel.className = "warehouse-field warehouse-developer-only";
         fieldLabel.textContent = t("adapterInputField");
         var field = document.createElement("input");
         field.type = "text";
@@ -1281,6 +1629,7 @@
         var minimum = document.createElement("input");
         minimum.type = "number";
         minimum.step = "1";
+        minimum.placeholder = "0";
         minimum.required = true;
         minimumLabel.appendChild(minimum);
         actions.appendChild(minimumLabel);
@@ -1291,6 +1640,7 @@
         var maximum = document.createElement("input");
         maximum.type = "number";
         maximum.step = "1";
+        maximum.placeholder = "10000";
         maximum.required = true;
         maximumLabel.appendChild(maximum);
         actions.appendChild(maximumLabel);
@@ -1407,8 +1757,8 @@
             result_field: resultName,
             examples: [{ input: exampleInput, expected: expectedValue }],
           },
-          function () {
-            setManagementStatus("adapterCandidateCreated");
+          function (run) {
+            setManagementStatus(legacyAdapterOutcomeStatusKey(run && run.data));
             refreshAdapterReviewItems();
           },
           false
@@ -1423,6 +1773,11 @@
   function renderJavascriptComputationOffers(projectBlock, project, inspection) {
     if (!inspection || inspection.schema !== "computation_capture_offers.v2") return;
     var offers = Array.isArray(inspection.offers) ? inspection.offers : [];
+    var resumableReviews = ingestionManagement.reviewItems.filter(function (item) {
+      return item && String(item.project_id || "") === String(inspection.project_id || "") &&
+        item.candidate_status === "waiting_user" &&
+        item.resume_contract === "resubmit_ephemeral_capture.v1";
+    });
     var panel = document.createElement("div");
     panel.className = "warehouse-project-config";
     if (!offers.length) {
@@ -1435,52 +1790,77 @@
       var parameters = Array.isArray(offer.parameters) ? offer.parameters : [];
       var details = document.createElement("details");
       details.className = "warehouse-review";
+      details.title = t("adapterSimpleHelp");
       var summary = document.createElement("summary");
-      summary.textContent = [offer.module_relpath, offer.export_name, String(offer.dependency_count || 0)]
-        .filter(Boolean).join(" · ");
+      summary.appendChild(document.createTextNode(
+        String(offer.export_name || "function") + "(" + parameters.map(function (item) {
+          return String(item.name || "parameter");
+        }).join(", ") + ")"
+      ));
+      var sourceMeta = document.createElement("span");
+      sourceMeta.className = "warehouse-developer-only warehouse-meta";
+      sourceMeta.textContent = " · " + [offer.module_relpath, String(offer.dependency_count || 0)].filter(Boolean).join(" · ");
+      summary.appendChild(sourceMeta);
       details.appendChild(summary);
-      var resumeReview = document.createElement("select");
+
+      var simpleHelp = document.createElement("p");
+      simpleHelp.className = "warehouse-meta";
+      simpleHelp.textContent = t("adapterSimpleHelp");
+      simpleHelp.title = t("adapterSimpleHelp");
+      details.appendChild(simpleHelp);
+
+      var resumeReview = controlHelp(document.createElement("select"), "captureResumeReviewHelp");
       var newReview = document.createElement("option");
       newReview.value = "";
       newReview.textContent = t("captureResumeReview");
       resumeReview.appendChild(newReview);
-      ingestionManagement.reviewItems.filter(function (item) {
-        return item && item.project_id === inspection.project_id &&
-          item.candidate_status === "waiting_user" &&
-          item.resume_contract === "resubmit_ephemeral_capture.v1";
-      }).forEach(function (item) {
+      resumableReviews.forEach(function (item, reviewIndex) {
         var option = document.createElement("option");
         option.value = String(item.review_id || "");
-        option.textContent = String(item.review_id || "waiting review");
+        option.textContent = t("captureReview") + " · " + String(item.created_at || reviewIndex + 1);
+        option.title = String(item.review_id || "");
         if (option.value === ingestionManagement.captureResume[resumeKey]) option.selected = true;
         resumeReview.appendChild(option);
       });
-      details.appendChild(resumeReview);
+      if (!resumeReview.value && resumableReviews.length === 1 && offers.length === 1) {
+        resumeReview.value = String(resumableReviews[0].review_id || "");
+        ingestionManagement.captureResume[resumeKey] = resumeReview.value;
+      }
+      var resumeLabel = document.createElement("label");
+      resumeLabel.className = "warehouse-field" +
+        (resumableReviews.length > 0 && !(resumableReviews.length === 1 && offers.length === 1)
+          ? ""
+          : " warehouse-developer-only");
+      resumeLabel.textContent = t("captureResumeReview");
+      resumeLabel.title = t("captureResumeReviewHelp");
+      resumeLabel.appendChild(resumeReview);
+      details.appendChild(resumeLabel);
+
       var argumentControls = [];
       parameters.forEach(function (parameter) {
         var row = document.createElement("div");
         row.className = "warehouse-actions";
-        var name = document.createElement("span");
+        var name = document.createElement("strong");
         name.className = "warehouse-meta";
         name.textContent = String(parameter.name || "parameter");
+        name.title = t("adapterInputFieldHelp");
         row.appendChild(name);
 
-        var field = document.createElement("input");
+        var field = controlHelp(document.createElement("input"), "adapterInputFieldHelp");
         field.type = "text";
         field.required = true;
         field.pattern = "[a-z][a-z0-9]*(?:_[a-z0-9]+)*";
         field.autocomplete = "off";
         field.spellcheck = false;
-        if (/^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/.test(String(parameter.name || ""))) {
-          field.value = String(parameter.name);
-        }
+        if (/^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/.test(String(parameter.name || ""))) field.value = String(parameter.name);
         var fieldLabel = document.createElement("label");
         fieldLabel.className = "warehouse-field";
         fieldLabel.textContent = t("adapterInputField");
+        fieldLabel.title = t("adapterInputFieldHelp");
         fieldLabel.appendChild(field);
         row.appendChild(fieldLabel);
 
-        var kind = document.createElement("select");
+        var kind = controlHelp(document.createElement("select"), "adapterInputKindHelp");
         [["integer", "integer"], ["boolean", "boolean"], ["enum", "enum"]].forEach(function (entry) {
           var option = document.createElement("option");
           option.value = entry[0];
@@ -1488,62 +1868,183 @@
           kind.appendChild(option);
         });
         var kindLabel = document.createElement("label");
-        kindLabel.className = "warehouse-field";
+        kindLabel.className = "warehouse-field warehouse-developer-only";
         kindLabel.textContent = t("adapterInputKind");
+        kindLabel.title = t("adapterInputKindHelp");
         kindLabel.appendChild(kind);
         row.appendChild(kindLabel);
 
-        var minimum = document.createElement("input");
+        var minimum = controlHelp(document.createElement("input"), "adapterMinimumHelp");
         minimum.type = "number";
         minimum.step = "1";
-        var maximum = document.createElement("input");
+        minimum.placeholder = "0";
+        var minimumLabel = document.createElement("label");
+        minimumLabel.className = "warehouse-field";
+        minimumLabel.textContent = t("adapterMinimum");
+        minimumLabel.title = t("adapterMinimumHelp");
+        minimumLabel.appendChild(minimum);
+        row.appendChild(minimumLabel);
+        var maximum = controlHelp(document.createElement("input"), "adapterMaximumHelp");
         maximum.type = "number";
         maximum.step = "1";
-        var values = document.createElement("textarea");
+        maximum.placeholder = "10000";
+        var maximumLabel = document.createElement("label");
+        maximumLabel.className = "warehouse-field";
+        maximumLabel.textContent = t("adapterMaximum");
+        maximumLabel.title = t("adapterMaximumHelp");
+        maximumLabel.appendChild(maximum);
+        row.appendChild(maximumLabel);
+        var values = controlHelp(document.createElement("textarea"), "adapterEnumValuesHelp");
         values.rows = 2;
-        values.setAttribute("aria-label", t("adapterEnumValues"));
-        var example = document.createElement("input");
+        var valuesLabel = document.createElement("label");
+        valuesLabel.className = "warehouse-field warehouse-developer-only";
+        valuesLabel.textContent = t("adapterEnumValues");
+        valuesLabel.title = t("adapterEnumValuesHelp");
+        valuesLabel.appendChild(values);
+        row.appendChild(valuesLabel);
+        var example = controlHelp(document.createElement("input"), "adapterExampleHelp");
         example.type = "text";
         example.required = true;
-        [minimum, maximum, values].forEach(function (control) { row.appendChild(control); });
+        example.placeholder = "4";
         var exampleLabel = document.createElement("label");
         exampleLabel.className = "warehouse-field";
         exampleLabel.textContent = t("adapterExample");
+        exampleLabel.title = t("adapterExampleHelp");
         exampleLabel.appendChild(example);
         row.appendChild(exampleLabel);
-        argumentControls.push({
+        var controls = {
           parameter_binding_id: String(parameter.parameter_binding_id || ""),
+          source_name: String(parameter.name || "parameter"),
           field: field,
           kind: kind,
           minimum: minimum,
+          minimumLabel: minimumLabel,
           maximum: maximum,
+          maximumLabel: maximumLabel,
           values: values,
+          valuesLabel: valuesLabel,
           example: example,
-        });
+        };
+        function syncKind() {
+          var integer = kind.value === "integer";
+          var enumeration = kind.value === "enum";
+          minimumLabel.classList.toggle("hidden", !integer);
+          maximumLabel.classList.toggle("hidden", !integer);
+          valuesLabel.classList.toggle("hidden", !enumeration);
+          minimum.required = integer;
+          maximum.required = integer;
+          values.required = enumeration;
+        }
+        kind.addEventListener("change", syncKind);
+        syncKind();
+        argumentControls.push(controls);
         details.appendChild(row);
       });
 
       var resultRow = document.createElement("div");
       resultRow.className = "warehouse-actions";
-      var resultField = document.createElement("input");
+      var resultField = controlHelp(document.createElement("input"), "adapterResultFieldHelp");
       resultField.type = "text";
       resultField.pattern = "[a-z][a-z0-9]*(?:_[a-z0-9]+)*";
       resultField.required = true;
       resultField.value = "result";
-      var expected = document.createElement("input");
+      var resultLabel = document.createElement("label");
+      resultLabel.className = "warehouse-field";
+      resultLabel.textContent = t("adapterResultField");
+      resultLabel.title = t("adapterResultFieldHelp");
+      resultLabel.appendChild(resultField);
+      resultRow.appendChild(resultLabel);
+      var expected = controlHelp(document.createElement("input"), "adapterExpectedHelp");
       expected.type = "number";
       expected.step = "1";
       expected.required = true;
-      resultRow.appendChild(resultField);
-      resultRow.appendChild(expected);
+      expected.placeholder = "20";
+      var expectedLabel = document.createElement("label");
+      expectedLabel.className = "warehouse-field";
+      expectedLabel.textContent = t("adapterExpected");
+      expectedLabel.title = t("adapterExpectedHelp");
+      expectedLabel.appendChild(expected);
+      resultRow.appendChild(expectedLabel);
       details.appendChild(resultRow);
 
-      var create = document.createElement("button");
+      var preview = document.createElement("p");
+      preview.className = "warehouse-meta warehouse-mapping-preview";
+      preview.title = t("adapterSimpleHelp");
+      details.appendChild(preview);
+      function updatePreview() {
+        var parts = argumentControls.map(function (control) {
+          var fieldName = String(control.field.value || "?").trim() || "?";
+          var domain = control.kind.value === "integer"
+            ? String(control.minimum.value || "?") + "…" + String(control.maximum.value || "?")
+            : (control.kind.value === "enum" ? String(control.values.value || "?").split(/\r?\n/).filter(Boolean).join("|") : "boolean");
+          return control.source_name + " → " + fieldName + " [" + domain + "] = " + String(control.example.value || "?");
+        });
+        parts.push(String(resultField.value || "result") + " = " + String(expected.value || "?"));
+        preview.textContent = formatText("adapterMappingPreview", { mapping: parts.join("；") });
+      }
+      argumentControls.forEach(function (control) {
+        [control.field, control.kind, control.minimum, control.maximum, control.values, control.example].forEach(function (input) {
+          input.addEventListener("input", updatePreview);
+          input.addEventListener("change", updatePreview);
+        });
+      });
+      [resultField, expected].forEach(function (input) { input.addEventListener("input", updatePreview); });
+      updatePreview();
+
+      var confirmationLabel = document.createElement("label");
+      confirmationLabel.className = "warehouse-project-choice";
+      confirmationLabel.title = t("adapterMappingConfirmation");
+      var confirmation = document.createElement("input");
+      confirmation.type = "checkbox";
+      confirmation.required = true;
+      confirmation.title = t("adapterMappingConfirmation");
+      confirmationLabel.appendChild(confirmation);
+      confirmationLabel.appendChild(document.createTextNode(" " + t("adapterMappingConfirmation")));
+      details.appendChild(confirmationLabel);
+
+      var offerStatus = document.createElement("p");
+      offerStatus.className = "warehouse-status";
+      offerStatus.setAttribute("aria-live", "polite");
+      details.appendChild(offerStatus);
+      var create = controlHelp(document.createElement("button"), "createComputationAdapter");
       create.type = "button";
       create.className = "btn-ghost";
       create.setAttribute("data-action", "create-javascript-computation-capture");
-      create.textContent = t("createComputationAdapter");
+      function syncCreateLabel() {
+        create.textContent = resumeReview.value ? t("continueCaptureValidation") : t("createComputationAdapter");
+        create.dataset.resumeReviewId = String(resumeReview.value || "");
+        var selectedReview = resumableReviews.find(function (item) {
+          return String(item.review_id || "") === String(resumeReview.value || "");
+        });
+        var decisionsRemaining = selectedReview && Array.isArray(selectedReview.allowed_decisions)
+          ? selectedReview.allowed_decisions.length > 0
+          : false;
+        create.disabled = Boolean(resumeReview.value && decisionsRemaining);
+        if (selectedReview) {
+          var resumeStatus = decisionsRemaining ? "captureNeedsDecision" : "captureResubmitRequired";
+          offerStatus.textContent = t(resumeStatus);
+          offerStatus.classList.add("is-waiting");
+          offerStatus.classList.remove("is-error");
+        }
+        if (resumeReview.value) {
+          ingestionManagement.captureResume[resumeKey] = String(resumeReview.value);
+          ingestionManagement.captureReviewContext[String(resumeReview.value)] = {
+            offer_name: String(offer.export_name || "function") + "(" + parameters.map(function (item) {
+              return String(item.name || "parameter");
+            }).join(", ") + ")",
+          };
+        }
+      }
+      resumeReview.addEventListener("change", function () {
+        syncCreateLabel();
+        renderManagementReviews();
+      });
+      syncCreateLabel();
       create.addEventListener("click", function () {
+        if (!confirmation.checked) {
+          confirmation.reportValidity();
+          return;
+        }
         var argumentsPayload = [];
         var exampleInput = {};
         var fields = {};
@@ -1609,19 +2110,33 @@
           examples: [{ input: exampleInput, expected: expectedValue }],
         }, function (run) {
           var outcome = run && run.data && typeof run.data === "object" ? run.data : {};
+          var statusKey = captureOutcomeStatusKey(outcome);
+          offerStatus.textContent = t(statusKey);
+          offerStatus.classList.toggle("is-waiting", captureStatusIsWaiting(statusKey));
+          offerStatus.classList.toggle("is-error", ["captureRejected", "captureOutcomeUnknown"].indexOf(statusKey) >= 0);
           if (outcome.status === "waiting_user" && outcome.review_id) {
             ingestionManagement.captureResume[resumeKey] = String(outcome.review_id);
+            ingestionManagement.captureReviewContext[String(outcome.review_id)] = {
+              offer_name: String(offer.export_name || "function") + "(" + parameters.map(function (item) {
+                return String(item.name || "parameter");
+              }).join(", ") + ")",
+            };
             if (!Array.prototype.some.call(resumeReview.options, function (option) { return option.value === String(outcome.review_id); })) {
               var resumeOption = document.createElement("option");
               resumeOption.value = String(outcome.review_id);
-              resumeOption.textContent = String(outcome.review_id);
+              resumeOption.textContent = t("captureReview") + " · " + String(outcome.review_id).slice(0, 8);
+              resumeOption.title = String(outcome.review_id);
               resumeReview.appendChild(resumeOption);
             }
             resumeReview.value = String(outcome.review_id);
-            setManagementStatus("captureResubmitRequired");
+            syncCreateLabel();
+            create.disabled = true;
+            setManagementStatus("captureNeedsDecision");
           } else {
             delete ingestionManagement.captureResume[resumeKey];
-            setManagementStatus("adapterCandidateCreated");
+            resumeReview.value = "";
+            syncCreateLabel();
+            setManagementStatus(statusKey);
           }
           refreshAdapterReviewItems();
         }, false);
@@ -1639,35 +2154,53 @@
     if (ingestionManagement.sourceRoots.length) {
       var registration = document.createElement("div");
       registration.className = "warehouse-project-config";
-      var rootSelect = document.createElement("select");
+      var rootSelect = controlHelp(document.createElement("select"), "javascriptSourceRootHelp");
       ingestionManagement.sourceRoots.forEach(function (root) {
         var option = document.createElement("option");
         option.value = String(root.root_id || "");
         option.textContent = String(root.current_path || root.root_id || "source root");
         rootSelect.appendChild(option);
       });
-      var relpath = document.createElement("input");
+      var rootLabel = document.createElement("label");
+      rootLabel.className = "warehouse-field";
+      rootLabel.textContent = t("javascriptSourceRoot");
+      rootLabel.title = t("javascriptSourceRootHelp");
+      rootLabel.appendChild(rootSelect);
+      var relpath = controlHelp(document.createElement("input"), "javascriptProjectRelpathHelp");
       relpath.type = "text";
       relpath.value = ".";
       relpath.placeholder = t("javascriptProjectRelpath");
-      var displayName = document.createElement("input");
+      var relpathLabel = document.createElement("label");
+      relpathLabel.className = "warehouse-field warehouse-developer-only";
+      relpathLabel.textContent = t("javascriptProjectRelpath");
+      relpathLabel.title = t("javascriptProjectRelpathHelp");
+      relpathLabel.appendChild(relpath);
+      var displayName = controlHelp(document.createElement("input"), "javascriptDisplayNameHelp");
       displayName.type = "text";
       displayName.placeholder = t("javascriptDisplayName");
       displayName.maxLength = 200;
-      var register = document.createElement("button");
+      var displayNameLabel = document.createElement("label");
+      displayNameLabel.className = "warehouse-field warehouse-developer-only";
+      displayNameLabel.textContent = t("javascriptDisplayName");
+      displayNameLabel.title = t("javascriptDisplayNameHelp");
+      displayNameLabel.appendChild(displayName);
+      var register = controlHelp(document.createElement("button"), "registerJavascriptSourceHelp");
       register.type = "button";
       register.className = "btn-ghost";
       register.setAttribute("data-action", "register-javascript-computation-source");
       register.textContent = t("registerJavascriptSource");
       register.addEventListener("click", function () {
-        var name = String(displayName.value || "").trim();
-        if (!name) {
-          setManagementStatus("javascript_source_registration_invalid");
-          return;
-        }
+        var relpathValue = String(relpath.value || ".").trim() || ".";
+        var rootName = rootSelect.options[rootSelect.selectedIndex]
+          ? String(rootSelect.options[rootSelect.selectedIndex].textContent || "source")
+          : "source";
+        var inferredName = relpathValue === "."
+          ? rootName.split(/[\\/]/).filter(Boolean).pop()
+          : relpathValue.split("/").filter(Boolean).pop();
+        var name = String(displayName.value || inferredName || "source").trim();
         bridgeCall("register_javascript_computation_source", JSON.stringify({
           source_root_id: String(rootSelect.value || ""),
-          project_relpath: String(relpath.value || ".").trim(),
+          project_relpath: relpathValue,
           display_name: name,
         })).then(function (raw) {
           var result = parseBridgeJson(raw);
@@ -1678,9 +2211,9 @@
           refreshIngestionManagement();
         });
       });
-      registration.appendChild(rootSelect);
-      registration.appendChild(relpath);
-      registration.appendChild(displayName);
+      registration.appendChild(rootLabel);
+      registration.appendChild(relpathLabel);
+      registration.appendChild(displayNameLabel);
       registration.appendChild(register);
       container.appendChild(registration);
     }
@@ -1696,12 +2229,15 @@
         label.className = "warehouse-project-choice";
         var input = document.createElement("input");
         input.type = "checkbox";
-        input.checked = project.selected !== false;
+        input.checked = project.selected === true ||
+          (project.selected == null && discovered.length === 1);
         input.value = String(project.project_id || project.id || "");
+        input.title = t("confirmProjects");
         label.appendChild(input);
         label.appendChild(document.createTextNode(" " + String(project.display_name || project.name || project.root_relpath || input.value)));
         projectConfig.appendChild(label);
         var brandEditor = createBrandEditor(project);
+        brandEditor.element.classList.add("warehouse-developer-only");
         input._brandEditor = brandEditor;
         projectConfig.appendChild(brandEditor.element);
         form.appendChild(projectConfig);
@@ -1710,6 +2246,7 @@
       confirm.type = "button";
       confirm.className = "btn-ghost";
       confirm.textContent = t("confirmProjects");
+      confirm.title = t("confirmProjects");
       confirm.addEventListener("click", function () {
         var entries = [];
         var checked = Array.prototype.slice.call(form.querySelectorAll('input[type="checkbox"]:checked'));
@@ -1725,19 +2262,29 @@
       form.appendChild(confirm);
       container.appendChild(form);
     }
-    ingestionManagement.projects.forEach(function (project) {
+    ingestionManagement.projects.slice().sort(function (left, right) {
+      function rank(project) {
+        return project.source_type === "javascript_computation_source" && project.project_state === "ready" ? 0 : 1;
+      }
+      return rank(left) - rank(right) || String(left.display_name || left.project_id || "").localeCompare(String(right.display_name || right.project_id || ""));
+    }).forEach(function (project) {
       var row = document.createElement("div");
       row.className = "warehouse-row";
       var projectStatus = project.project_state || project.status || "";
       var text = document.createElement("span");
-      text.textContent = String(project.display_name || project.name || project.project_key || project.root_relpath || project.project_id || "project") +
-        " · " + String(projectStatus);
+      var sourceType = project.source_type === "javascript_computation_source" ? t("javascriptSourceType") : t("staticWebSourceType");
+      var sourceRelpath = String(project.project_relpath || project.root_relpath || ".");
+      text.textContent = String(project.display_name || project.name || project.project_key || sourceRelpath || project.project_id || "project") +
+        " · " + sourceType + " · " + sourceRelpath + " · " + String(projectStatus);
+      text.title = text.textContent;
       row.appendChild(text);
       var refresh = document.createElement("button");
       refresh.type = "button";
       refresh.className = "btn-ghost";
       refresh.setAttribute("data-action", "refresh-project");
       refresh.textContent = t("refreshProject");
+      refresh.title = t("refreshProjectHelp");
+      refresh.classList.add("warehouse-developer-only");
       refresh.disabled = !project.project_id || projectStatus !== "ready" || project.source_type === "javascript_computation_source";
       refresh.addEventListener("click", function () {
         startManagementRun("start_refresh_project", { project_id: project.project_id });
@@ -1748,6 +2295,8 @@
       inspect.className = "btn-ghost";
       inspect.setAttribute("data-action", "inspect-computation-adapters");
       inspect.textContent = t("inspectComputationAdapters");
+      inspect.title = t("inspectComputationAdaptersHelp");
+      inspect.classList.add("warehouse-developer-only");
       inspect.disabled = !project.project_id || project.source_type === "javascript_computation_source" || ["ready", "unsupported_v1"].indexOf(projectStatus) < 0;
       inspect.addEventListener("click", function () {
         startManagementRun(
@@ -1759,6 +2308,7 @@
             ingestionManagement.adapterOffers[String(project.project_id)] = inspection;
             setManagementStatus("adapterInspectionComplete");
             renderManagementProjects();
+            renderManagementReviews();
           },
           false
         );
@@ -1769,6 +2319,7 @@
       scanJavascript.className = "btn-ghost";
       scanJavascript.setAttribute("data-action", "scan-javascript-computations");
       scanJavascript.textContent = t("scanJavascriptComputations");
+      scanJavascript.title = t("scanJavascriptComputationsHelp");
       scanJavascript.disabled = !project.project_id || projectStatus !== "ready";
       scanJavascript.addEventListener("click", function () {
         startManagementRun(
@@ -1780,6 +2331,7 @@
             ingestionManagement.adapterOffers[String(project.project_id)] = inspection;
             setManagementStatus("adapterInspectionComplete");
             renderManagementProjects();
+            renderManagementReviews();
           },
           false
         );
@@ -1790,10 +2342,12 @@
       projectBlock.appendChild(row);
       if (project.source_type !== "javascript_computation_source") {
         var existingBrand = createBrandEditor(project);
+        existingBrand.element.classList.add("warehouse-developer-only");
         var saveBrand = document.createElement("button");
         saveBrand.type = "button";
         saveBrand.className = "btn-ghost";
         saveBrand.textContent = t("save");
+        saveBrand.title = t("saveBrandHelp");
         saveBrand.addEventListener("click", function () {
           var brand = existingBrand.read();
           if (!brand) return;
@@ -1868,16 +2422,39 @@
     }
     ingestionManagement.reviewItems.forEach(function (item) {
       var candidate = item.candidate && typeof item.candidate === "object" ? item.candidate : {};
+      var reviewContext = ingestionManagement.captureReviewContext[String(item.review_id || "")] || {};
       var details = document.createElement("details");
       details.className = "warehouse-review";
+      details.title = t("reviewItems");
       var summary = document.createElement("summary");
-      summary.textContent = String(item.display_name || item.suggested_name || candidate.suggested_display_name || item.review_id || "review") +
-        " · " + String(item.candidate_status || item.status || "");
+      var reviewName = reviewContext.offer_name || item.display_name || item.suggested_name || candidate.suggested_display_name || t("captureReview");
+      var hasServerDecisions = Array.isArray(item.allowed_decisions) && item.allowed_decisions.length > 0;
+      var reviewState = item.candidate_status === "waiting_user" &&
+        item.resume_contract === "resubmit_ephemeral_capture.v1" && !hasServerDecisions
+        ? t("captureResubmitRequired")
+        : reviewStatusLabel(item.candidate_status || item.status);
+      summary.appendChild(document.createTextNode(String(reviewName) + " · " + reviewState));
+      var reviewId = document.createElement("span");
+      reviewId.className = "warehouse-developer-only warehouse-meta";
+      reviewId.textContent = " · " + String(item.review_id || "");
+      summary.appendChild(reviewId);
       details.appendChild(summary);
       var meta = document.createElement("p");
-      meta.className = "warehouse-meta";
+      meta.className = "warehouse-meta warehouse-developer-only";
       meta.textContent = [item.capability_kind || candidate.capability_kind, item.reason_code || item.error_code].filter(Boolean).join(" · ");
       details.appendChild(meta);
+      var captureSummary = item.capture_summary && typeof item.capture_summary === "object" ? item.capture_summary : null;
+      if (captureSummary) {
+        var safeSummary = document.createElement("p");
+        safeSummary.className = "warehouse-meta";
+        safeSummary.textContent = formatText("captureSafetySummary", {
+          ambiguous: Number(captureSummary.ambiguous_count || 0),
+          brand: Number(captureSummary.brand_count || 0),
+          enums: Number(captureSummary.enumeration_parameter_count || 0),
+        });
+        safeSummary.title = safeSummary.textContent;
+        details.appendChild(safeSummary);
+      }
       var decisions = Array.isArray(item.allowed_decisions) ? item.allowed_decisions :
         (Array.isArray(item.decisions) ? item.decisions : []);
       if (!decisions.length && item.candidate_status === "waiting_user") {
@@ -1903,20 +2480,34 @@
       var controls = {};
       var identityDecisions = ["publish_general", "publish_brand_limited", "create_variant", "semantic_split"];
       if (decisions.some(function (decision) { return identityDecisions.indexOf(decision) >= 0; })) {
+        var identityDefaults = reviewIdentityDefaults(item, candidate, reviewName);
         var identityFields = document.createElement("div");
         identityFields.className = "warehouse-actions";
         ["capability_key", "role_key", "variant_key", "display_name"].forEach(function (name) {
+          var labelKey = {
+            capability_key: "capabilityKeyLabel",
+            role_key: "roleKeyLabel",
+            variant_key: "variantKeyLabel",
+            display_name: "displayNameLabel",
+          }[name];
+          var helpKey = {
+            capability_key: "capabilityKeyHelp",
+            role_key: "roleKeyHelp",
+            variant_key: "variantKeyHelp",
+            display_name: "displayNameHelp",
+          }[name];
           var label = document.createElement("label");
-          label.className = "warehouse-field";
-          label.textContent = name;
-          var input = document.createElement("input");
+          label.className = "warehouse-field" + (name === "variant_key" ? " warehouse-developer-only" : "");
+          label.textContent = t(labelKey);
+          label.title = t(helpKey);
+          var input = controlHelp(document.createElement("input"), helpKey);
           input.type = "text";
           input.name = name;
           input.required = true;
           input.autocomplete = "off";
           input.spellcheck = false;
           if (name !== "display_name") input.pattern = "[a-z_][a-z0-9_]*";
-          if (name === "variant_key") input.value = "default";
+          input.value = String(identityDefaults[name] || "");
           if (name === "display_name") input.maxLength = 200;
           controls[name] = input;
           label.appendChild(input);
@@ -1935,10 +2526,13 @@
         },
       ].forEach(function (definition) {
         if (!definition.enabled) return;
+        var labelKey = definition.name === "retained_version_id" ? "retainedVersionLabel" : "targetCapsuleLabel";
+        var helpKey = definition.name === "retained_version_id" ? "retainedVersionHelp" : "targetCapsuleHelp";
         var label = document.createElement("label");
         label.className = "warehouse-field";
-        label.textContent = definition.name;
-        var select = document.createElement("select");
+        label.textContent = t(labelKey);
+        label.title = t(helpKey);
+        var select = controlHelp(document.createElement("select"), helpKey);
         select.name = definition.name;
         select.required = true;
         var empty = document.createElement("option");
@@ -1967,10 +2561,13 @@
       var actions = document.createElement("div");
       actions.className = "warehouse-actions";
       decisions.forEach(function (decision) {
-        var button = document.createElement("button");
+        var copy = reviewDecisionCopy(decision);
+        var button = controlHelp(document.createElement("button"), copy ? copy[1] : "reviewItems");
         button.type = "button";
         button.className = "btn-ghost";
-        button.textContent = String(decision);
+        button.dataset.decision = String(decision);
+        button.textContent = copy ? t(copy[0]) : String(decision);
+        if (!copy) button.classList.add("warehouse-developer-only");
         button.addEventListener("click", function () {
           var decisionPayload = managementReviewDecisionPayload(item.review_id, decision, controls);
           if (!decisionPayload) return;
@@ -1985,8 +2582,31 @@
               decided.capture_resubmission_required === true &&
               decided.resume_contract === "resubmit_ephemeral_capture.v1"
             ) {
-              setManagementStatus("captureResubmitRequired");
-              refreshAdapterReviewItems();
+              refreshAdapterReviewItems(function (items) {
+                var current = items.find(function (candidateItem) {
+                  return String(candidateItem.review_id || "") === String(item.review_id || "");
+                });
+                var decisionsRemaining = current && Array.isArray(current.allowed_decisions)
+                  ? current.allowed_decisions.length > 0
+                  : false;
+                var nextStatus = decisionsRemaining ? "captureNeedsDecision" : "captureResubmitRequired";
+                Array.prototype.forEach.call(
+                  document.querySelectorAll("[data-resume-review-id]"),
+                  function (captureButton) {
+                    if (String(captureButton.dataset.resumeReviewId || "") !== String(item.review_id || "")) return;
+                    captureButton.disabled = decisionsRemaining;
+                    captureButton.textContent = t("continueCaptureValidation");
+                    var card = captureButton.closest(".warehouse-review");
+                    var cardStatus = card && card.querySelector(".warehouse-status");
+                    if (cardStatus) {
+                      cardStatus.textContent = t(nextStatus);
+                      cardStatus.classList.add("is-waiting");
+                      cardStatus.classList.remove("is-error");
+                    }
+                  }
+                );
+                setManagementStatus(nextStatus);
+              });
               return;
             }
             if (!trackManagementRuns(result, function () {
@@ -2015,6 +2635,7 @@
     ingestionManagement.capabilityGroups.forEach(function (group) {
       var details = document.createElement("details");
       details.className = "warehouse-capability";
+      details.title = t("capabilityGroups");
       var summary = document.createElement("summary");
       summary.textContent = String(group.display_name || group.capability_key || "capability");
       details.appendChild(summary);
@@ -2022,6 +2643,7 @@
       rename.type = "button";
       rename.className = "btn-ghost";
       rename.textContent = t("renameCapability");
+      rename.title = t("renameCapabilityHelp");
       rename.addEventListener("click", function () {
         var next = window.prompt(
           t("renameCapabilityPrompt"),
@@ -2056,6 +2678,7 @@
           view.type = "button";
           view.className = "btn-ghost";
           view.textContent = t("viewDetails");
+          view.title = t("viewDetailsHelp");
           view.addEventListener("click", function () {
             bridgeCall("get_capsule_detail", JSON.stringify({ capsule_id: capsule.capsule_id })).then(function (raw) {
               var result = parseBridgeJson(raw);
@@ -2080,6 +2703,7 @@
           statusButton.type = "button";
           statusButton.className = "btn-ghost";
           statusButton.textContent = capsule.status === "active" ? t("disableCapsule") : t("enableCapsule");
+          statusButton.title = capsule.status === "active" ? t("disableCapsuleHelp") : t("enableCapsuleHelp");
           statusButton.addEventListener("click", function () {
             var status = capsule.status === "active" ? "disabled" : "active";
             bridgeCall("set_capsule_status", JSON.stringify({ capsule_id: capsule.capsule_id, status: status })).then(function (raw) {
@@ -2134,6 +2758,7 @@
         controls.className = "warehouse-actions";
         var relationship = document.createElement("select");
         relationship.setAttribute("aria-label", t("legacyRelationship"));
+        relationship.title = t("legacyRelationship");
         ["cleaned_successor", "merged", "variant"].forEach(function (value) {
           var option = document.createElement("option");
           option.value = value;
@@ -2142,6 +2767,7 @@
         });
         var target = document.createElement("select");
         target.setAttribute("aria-label", t("legacyTarget"));
+        target.title = t("legacyTarget");
         targets.forEach(function (value, index) {
           var option = document.createElement("option");
           option.value = String(index);
@@ -2156,6 +2782,7 @@
         map.type = "button";
         map.className = "btn-ghost";
         map.textContent = t("mapLegacy");
+        map.title = t("mapLegacyHelp");
         map.addEventListener("click", function () {
           var selected = targets[Number(target.value)];
           if (!selected) return;
@@ -2201,6 +2828,7 @@
       restore.type = "button";
       restore.className = "btn-ghost";
       restore.textContent = t("restore");
+      restore.title = t("restoreHelp");
       restore.disabled = backup.valid === false || !backup.path || !backup.sha256;
       restore.addEventListener("click", function () {
         inspectAndRestoreBackup(backup);
@@ -2218,6 +2846,7 @@
       retry.type = "button";
       retry.className = "btn-ghost";
       retry.textContent = t("retryUsage");
+      retry.title = t("retryUsageHelp");
       retry.addEventListener("click", function () {
         bridgeCall(
           "retry_product_usage_registration",
@@ -2276,6 +2905,7 @@
         cancel.type = "button";
         cancel.className = "btn-ghost";
         cancel.textContent = t("cancelRun");
+        cancel.title = t("cancelRunHelp");
         cancel.addEventListener("click", function () {
           bridgeCall("cancel_intake_run", JSON.stringify({ run_id: runId }));
         });
@@ -2287,6 +2917,7 @@
 
   function renderIngestionManagement() {
     if (!$("capsule-warehouse-popover")) return;
+    syncWarehouseMode();
     renderManagementProjects();
     renderManagementModels();
     renderManagementReviews();
@@ -2429,6 +3060,12 @@
   }
 
   function bindIngestionManagementEvents() {
+    var developerMode = $("warehouse-developer-mode");
+    if (developerMode) developerMode.addEventListener("change", function () {
+      ingestionManagement.developerMode = developerMode.checked === true;
+      syncWarehouseMode();
+    });
+    syncWarehouseMode();
     var discover = $("btn-warehouse-discover");
     if (discover) discover.addEventListener("click", function () {
       bridgeCall("choose_source_root").then(function (raw) {
@@ -3327,8 +3964,16 @@
     });
     document.querySelectorAll("[data-i18n-aria-label]").forEach(function (el) {
       var key = el.getAttribute("data-i18n-aria-label");
-      if (key && t(key)) el.setAttribute("aria-label", t(key));
+      if (key && t(key)) {
+        el.setAttribute("aria-label", t(key));
+        el.title = t(key);
+      }
     });
+    document.querySelectorAll("[data-i18n-title]").forEach(function (el) {
+      var key = el.getAttribute("data-i18n-title");
+      if (key && t(key)) el.setAttribute("title", t(key));
+    });
+    syncWarehouseMode();
     var input = $("task-input");
     if (input) input.placeholder = t("taskPlaceholder");
     var langBtn = $("btn-lang");

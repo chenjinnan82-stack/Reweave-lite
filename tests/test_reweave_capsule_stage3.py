@@ -2263,6 +2263,197 @@ export function calculate(quantity, price) {
         self.assertIsInstance(prepared, PreparedReview)
         return prepared, snapshot, mapping
 
+    def test_large_numeric_contract_bounds_are_not_sensitive_literals(self) -> None:
+        (self.source / "large.js").write_text(
+            "export function calculate(quantity, price) { return quantity * price; }\n",
+            encoding="utf-8",
+        )
+        snapshot = self.source_service.scan(self.project_id)
+        selection, parameters = _stage_e_selection(
+            snapshot, "large.js", "calculate"
+        )
+        mapping = {
+            "arguments": [
+                {
+                    "parameter_binding_id": parameters[0]["binding_id"],
+                    "input_field": "quantity",
+                    "kind": "integer",
+                    "minimum": 0,
+                    "maximum": 10_000,
+                },
+                {
+                    "parameter_binding_id": parameters[1]["binding_id"],
+                    "input_field": "unit_price",
+                    "kind": "integer",
+                    "minimum": 0,
+                    "maximum": 100_000,
+                },
+            ],
+            "result_field": "total",
+            "examples": [
+                {"input": {"quantity": 4, "unit_price": 5}, "expected": 20}
+            ],
+        }
+
+        prepared = self.stage3.prepare_ephemeral_computation_capture_v2(
+            snapshot, selection, mapping
+        )
+
+        self.assertIsInstance(prepared, PreparedReview)
+        with self.store.read_connection() as connection:
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM review_items").fetchone()[0],
+                0,
+            )
+
+    def test_phone_and_card_strings_still_require_sensitive_review(self) -> None:
+        phone = "13800138000"
+        card = "4111111111111111"
+        (self.source / "sensitive.js").write_text(
+            f'''export function calculate(mode, value) {{
+  if (mode === "{phone}") return value * 2;
+  if (mode === "{card}") return value * 3;
+  return value;
+}}
+''',
+            encoding="utf-8",
+        )
+        snapshot = self.source_service.scan(self.project_id)
+        selection, parameters = _stage_e_selection(
+            snapshot, "sensitive.js", "calculate"
+        )
+        mapping = {
+            "arguments": [
+                {
+                    "parameter_binding_id": parameters[0]["binding_id"],
+                    "input_field": "mode",
+                    "kind": "enum",
+                    "values": ["safe", phone, card],
+                },
+                {
+                    "parameter_binding_id": parameters[1]["binding_id"],
+                    "input_field": "value",
+                    "kind": "integer",
+                    "minimum": 0,
+                    "maximum": 10,
+                },
+            ],
+            "result_field": "total",
+            "examples": [{"input": {"mode": "safe", "value": 4}, "expected": 4}],
+        }
+
+        waiting = self.stage3.prepare_ephemeral_computation_capture_v2(
+            snapshot, selection, mapping
+        )
+
+        self.assertEqual(waiting["status"], "waiting_user")
+        self.assertGreaterEqual(waiting["safe_summary"]["ambiguous_count"], 2)
+        self.assertIn("confirm_fictional_fixture", waiting["allowed_decisions"])
+        with self.store.read_connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM review_items "
+                "WHERE review_id = ?",
+                (waiting["review_id"],),
+            ).fetchone()
+        stored_text = "\n".join(
+            value for value in dict(row).values() if type(value) is str
+        )
+        self.assertNotIn(phone, stored_text)
+        self.assertNotIn(card, stored_text)
+        database_bytes = self.store.path.read_bytes()
+        self.assertNotIn(phone.encode("utf-8"), database_bytes)
+        self.assertNotIn(card.encode("utf-8"), database_bytes)
+
+    def test_numeric_card_literal_still_requires_sensitive_review(self) -> None:
+        card = "4111111111111111"
+        (self.source / "numeric-sensitive.js").write_text(
+            f"""export function calculate(value) {{
+  if (value === {card}) return 1;
+  return value;
+}}
+""",
+            encoding="utf-8",
+        )
+        snapshot = self.source_service.scan(self.project_id)
+        selection, parameters = _stage_e_selection(
+            snapshot, "numeric-sensitive.js", "calculate"
+        )
+        mapping = {
+            "arguments": [
+                {
+                    "parameter_binding_id": parameters[0]["binding_id"],
+                    "input_field": "value",
+                    "kind": "integer",
+                    "minimum": 0,
+                    "maximum": 10,
+                }
+            ],
+            "result_field": "total",
+            "examples": [{"input": {"value": 4}, "expected": 4}],
+        }
+
+        waiting = self.stage3.prepare_ephemeral_computation_capture_v2(
+            snapshot, selection, mapping
+        )
+
+        self.assertEqual(waiting["status"], "waiting_user")
+        self.assertGreaterEqual(waiting["safe_summary"]["ambiguous_count"], 1)
+        database_bytes = self.store.path.read_bytes()
+        self.assertNotIn(card.encode("utf-8"), database_bytes)
+
+    def test_capture_rejects_incomplete_independent_literal_evidence(self) -> None:
+        phone = "13800138000"
+        (self.source / "evidence.js").write_text(
+            f'''export function calculate(mode, value) {{
+  if (mode === "{phone}") return value * 2;
+  return value;
+}}
+''',
+            encoding="utf-8",
+        )
+        snapshot = self.source_service.scan(self.project_id)
+        selection, parameters = _stage_e_selection(
+            snapshot, "evidence.js", "calculate"
+        )
+        mapping = {
+            "arguments": [
+                {
+                    "parameter_binding_id": parameters[0]["binding_id"],
+                    "input_field": "mode",
+                    "kind": "enum",
+                    "values": ["safe", phone],
+                },
+                {
+                    "parameter_binding_id": parameters[1]["binding_id"],
+                    "input_field": "value",
+                    "kind": "integer",
+                    "minimum": 0,
+                    "maximum": 10,
+                },
+            ],
+            "result_field": "total",
+            "examples": [{"input": {"mode": "safe", "value": 4}, "expected": 4}],
+        }
+        original = stage3_module._analyze_javascript
+
+        def omit_literal_evidence(candidate: object, redact_strings: object) -> dict:
+            result = original(candidate, redact_strings)
+            if result.get("sensitivity_literals_by_path"):
+                result["sensitivity_literals_by_path"][
+                    stage3_module.CAPTURE_SELECTED_ENTRY
+                ] = []
+            return result
+
+        with patch(
+            "pimos_lite.reweave_capsule_stage3._analyze_javascript",
+            side_effect=omit_literal_evidence,
+        ), self.assertRaisesRegex(
+            Stage3Error, "^capture_sensitivity_evidence_invalid$"
+        ):
+            self.stage3.prepare_ephemeral_computation_capture_v2(
+                snapshot, selection, mapping
+            )
+
     def test_enum_contract_uses_utf16_code_unit_lengths(self) -> None:
         mapping = {
             "arguments": [
@@ -2350,6 +2541,62 @@ export function calculate(quantity, price) {
         self.assertNotIn(str(self.source), json.dumps(result))
         self.assertNotIn("return quantity", json.dumps(result))
         self.assertEqual(self._formal_counts(), before)
+
+    def test_offer_inspection_isolates_unrelated_rejected_module(self) -> None:
+        (self.source / "offer.js").write_text(
+            "export function total(quantity, price) { return quantity * price; }\n",
+            encoding="utf-8",
+        )
+        (self.source / "unrelated.js").write_text(
+            'import { value } from "package"; '
+            "export function ignored(value) { return value; }\n",
+            encoding="utf-8",
+        )
+        snapshot = self.source_service.scan(self.project_id)
+        before = self._formal_counts()
+
+        result = inspect_ephemeral_computation_offers_v2(snapshot)
+
+        self.assertEqual(
+            [
+                (item["module_relpath"], item["export_name"])
+                for item in result["offers"]
+            ],
+            [("offer.js", "total")],
+        )
+        self.assertEqual(
+            result["rejection_summary"],
+            [{"code": "closure_unproven", "count": 1}],
+        )
+        self.assertEqual(self._formal_counts(), before)
+
+    def test_offer_inspection_rejects_impossible_rejection_count(self) -> None:
+        (self.source / "offer.js").write_text(
+            "export function total(quantity, price) { return quantity * price; }\n",
+            encoding="utf-8",
+        )
+        snapshot = self.source_service.scan(self.project_id)
+        completed = subprocess.CompletedProcess(
+            args=[],
+            returncode=0,
+            stdout=json.dumps(
+                {
+                    "status": "ok",
+                    "modules": [],
+                    "rejection_summary": [
+                        {"code": "closure_unproven", "count": 2}
+                    ],
+                }
+            ),
+            stderr="",
+        )
+
+        with patch(
+            "pimos_lite.reweave_capsule_stage3.subprocess.run",
+            return_value=completed,
+        ):
+            with self.assertRaisesRegex(Stage3Error, "^bundle_security_rejected$"):
+                inspect_ephemeral_computation_offers_v2(snapshot)
 
     def test_ephemeral_capture_uses_shared_gate_and_delays_modules_until_success(self) -> None:
         prepared, _snapshot, _mapping = self._positive_capture()

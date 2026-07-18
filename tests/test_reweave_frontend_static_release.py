@@ -115,6 +115,69 @@ console.log(JSON.stringify({before, after}));
     assert "live" in rows["after"]
 
 
+def test_capsule_warehouse_defaults_to_explained_simple_mode() -> None:
+    app = (ROOT / "reweave_frontend" / "app.js").read_text(encoding="utf-8")
+    index = (ROOT / "reweave_frontend" / "index.html").read_text(encoding="utf-8")
+    styles = (ROOT / "reweave_frontend" / "styles.css").read_text(encoding="utf-8")
+    toggle = re.search(r'<input type="checkbox" id="warehouse-developer-mode"([^>]*)>', index)
+    assert toggle is not None
+    assert "checked" not in toggle.group(1)
+    assert 'data-i18n-title="warehousePurpose"' in index
+    assert 'data-i18n-title="discoverSourceHelp"' in index
+    assert ".capsule-warehouse-popover:not(.developer-mode) .warehouse-developer-only" in styles
+    v2 = app[
+        app.index("  function renderJavascriptComputationOffers(") : app.index(
+            "\n  function renderManagementProjects(",
+            app.index("  function renderJavascriptComputationOffers("),
+        )
+    ]
+    assert 'fieldLabel.className = "warehouse-field";' in v2
+    assert 'resultLabel.className = "warehouse-field";' in v2
+    assert 'relpathLabel.className = "warehouse-field warehouse-developer-only";' in app
+    assert 'displayNameLabel.className = "warehouse-field warehouse-developer-only";' in app
+    assert 'button.textContent = String(decision)' not in app
+    assert 'process_candidate: ["decisionProcessCandidate", "decisionProcessCandidateHelp"]' in app
+    assert "project.selected == null && discovered.length === 1" in app
+    assert 'confirmationLabel.title = t("adapterMappingConfirmation");' in v2
+    assert 'preview.setAttribute("aria-live", "polite")' not in v2
+    assert 'data-i18n-title="createBackupHelp"' in index
+    assert 'data-i18n-title="importLegacyHelp"' in index
+
+    node = shutil.which("node")
+    if not node:
+        return
+    start = app.index("  function captureOutcomeStatusKey(")
+    end = app.index("\n  function controlHelp(", start)
+    script = app[start:end] + """
+console.log(JSON.stringify({
+  waiting: captureOutcomeStatusKey({status: 'waiting_user'}),
+  waitingModel: captureOutcomeStatusKey({status: 'waiting_model'}),
+  waitingValidation: captureOutcomeStatusKey({status: 'waiting_validation'}),
+  rejected: captureOutcomeStatusKey({status: 'rejected'}),
+  passed: captureOutcomeStatusKey({status: 'review_required'}),
+  duplicate: captureOutcomeStatusKey({status: 'duplicate'}),
+  unknown: captureOutcomeStatusKey({status: 'mystery'}),
+  reviewWaits: captureStatusIsWaiting('captureReviewRequired'),
+  rejectionWaits: captureStatusIsWaiting('captureRejected')
+}));
+"""
+    result = subprocess.run(
+        [node, "-e", script], check=True, capture_output=True, text=True
+    )
+    rows = json.loads(result.stdout)
+    assert rows == {
+        "waiting": "captureNeedsDecision",
+        "waitingModel": "captureWaitingModel",
+        "waitingValidation": "captureWaitingValidation",
+        "rejected": "captureRejected",
+        "passed": "captureReviewRequired",
+        "duplicate": "captureDuplicate",
+        "unknown": "captureOutcomeUnknown",
+        "reviewWaits": True,
+        "rejectionWaits": False,
+    }
+
+
 def test_capability_rename_and_historical_product_diagnostics_are_wired() -> None:
     app = (ROOT / "reweave_frontend" / "app.js").read_text(encoding="utf-8")
     styles = (ROOT / "reweave_frontend" / "styles.css").read_text(encoding="utf-8")
@@ -288,7 +351,7 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert "behaviorModuleCount" not in app
     assert 'id="btn-capsule-warehouse" class="btn-ghost btn-collapsed hidden"' in index
     assert 'id="capsule-warehouse-popover"' in index
-    assert index.count('class="warehouse-section"') == 6
+    assert index.count('class="warehouse-section') == 6
     assert '<details class="warehouse-section"' in index
     assert "var ingestionManagement = {" in app
     assert 'bridgeCall("list_supervision_models", JSON.stringify({}))' in app
@@ -310,7 +373,7 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert 'kindName === "enum"' in app
     assert 'resume_contract === "resubmit_ephemeral_capture.v1"' in app
     assert 'review_id: String(resumeReview.value || "") || null' in app
-    assert 'item.project_id === inspection.project_id' in app
+    assert 'String(item.project_id || "") === String(inspection.project_id || "")' in app
     assert "module_relpath: offer.module_relpath" not in app
     assert "target_binding_id: offer.target_binding_id" not in app
     assert "module_relpath: offer.module_relpath" not in app

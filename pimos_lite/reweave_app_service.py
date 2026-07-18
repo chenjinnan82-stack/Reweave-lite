@@ -1741,6 +1741,14 @@ class ReweaveAppService:
         if type(prepared) is dict:
             status = str(prepared.get("status") or "")
             returned_review = prepared.get("review_id")
+            if status == "rejected" and review_id is not None:
+                self._capsule_stage3.reject_review(
+                    review_id,
+                    reason_code=str(
+                        prepared.get("error_code")
+                        or "ephemeral_capture_rejected"
+                    ),
+                )
             with self._management_lock:
                 current = self._javascript_capture_sessions.get(project_id)
                 if current is session and status == "waiting_user":
@@ -2064,7 +2072,15 @@ class ReweaveAppService:
                             "enumeration_value_count",
                         )
                     }
-                if not status and not item["allowed_decisions"]:
+                if (
+                    not status
+                    and not item["allowed_decisions"]
+                    and not (
+                        item.get("resume_contract")
+                        == "resubmit_ephemeral_capture.v1"
+                        and item.get("candidate_status") == "waiting_user"
+                    )
+                ):
                     continue
                 items.append(item)
             return self._ok({"items": items})

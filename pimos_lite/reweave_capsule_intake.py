@@ -2369,11 +2369,17 @@ class ReweaveCapsuleIntake:
         return frozenset(allowed)
 
     @staticmethod
-    def _sensitivity(raw: str, profile: dict[str, Any]) -> dict[str, Any]:
+    def _sensitivity(
+        raw: str,
+        profile: dict[str, Any],
+        *,
+        literal_raw: str | None = None,
+    ) -> dict[str, Any]:
+        identity_raw = raw if literal_raw is None else literal_raw
         secret_count = len(_SECRET.findall(raw))
         email_count = len(_EMAIL.findall(raw))
-        phone_count = len(_PHONE.findall(raw))
-        card_count = len(_CARD.findall(raw))
+        phone_count = len(_PHONE.findall(identity_raw))
+        card_count = len(_CARD.findall(identity_raw))
         record_count = len(_RECORD.findall(raw))
         lowered = raw.casefold()
         brand_count = sum(lowered.count(term.casefold()) for term in profile.get("terms", []))

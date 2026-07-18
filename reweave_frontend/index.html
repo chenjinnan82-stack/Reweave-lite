@@ -234,18 +234,23 @@ preview: pending</div>
   </aside>
 
   <!-- Capsule ingestion and warehouse management. It is not a generation input before Phase 5. -->
-  <aside id="capsule-warehouse-popover" class="popover capsule-warehouse-popover hidden" role="dialog" aria-label="Capsule Warehouse">
+  <aside id="capsule-warehouse-popover" class="popover capsule-warehouse-popover hidden" role="dialog" aria-label="Capsule Warehouse" data-i18n-title="warehousePurpose">
     <div class="popover-head">
       <h3 data-i18n="capsuleWarehouse">Capsule Warehouse</h3>
       <button type="button" class="popover-close" data-close="capsule-warehouse" aria-label="Close" data-i18n-aria-label="close">×</button>
     </div>
+    <label class="warehouse-mode" for="warehouse-developer-mode" data-i18n-title="developerModeHelp">
+      <input type="checkbox" id="warehouse-developer-mode">
+      <span data-i18n="developerMode">Developer mode</span>
+    </label>
+    <p id="warehouse-mode-help" class="warehouse-meta" data-i18n="simpleModeHelp">Simple mode shows only the controls required for safe capture.</p>
     <p id="capsule-warehouse-status" class="warehouse-status" aria-live="polite"></p>
 
     <details class="warehouse-section" open>
       <summary data-i18n="sourceProjects">Source projects</summary>
       <div class="warehouse-actions">
-        <button type="button" id="btn-warehouse-discover" class="btn-ghost" data-i18n="discoverSource">Discover source</button>
-        <button type="button" id="btn-warehouse-refresh-all" class="btn-ghost" data-i18n="refreshAll">Refresh all</button>
+        <button type="button" id="btn-warehouse-discover" class="btn-ghost" data-i18n="discoverSource" data-i18n-title="discoverSourceHelp">Discover source</button>
+        <button type="button" id="btn-warehouse-refresh-all" class="btn-ghost warehouse-developer-only" data-i18n="refreshAll" data-i18n-title="refreshAllHelp">Refresh all</button>
       </div>
       <div id="warehouse-projects" class="warehouse-list"></div>
     </details>
@@ -255,12 +260,12 @@ preview: pending</div>
       <div class="warehouse-actions warehouse-model-actions">
         <label class="warehouse-field" for="supervision-model-select">
           <span data-i18n="supervisionModel">Supervision model</span>
-          <select id="supervision-model-select">
+          <select id="supervision-model-select" data-i18n-title="supervisionModelHelp">
             <option value="" data-i18n="selectModel">Select a model</option>
           </select>
         </label>
-        <button type="button" id="btn-supervision-model-refresh" class="btn-ghost" data-i18n="refresh">Refresh</button>
-        <button type="button" id="btn-supervision-model-save" class="btn-ghost" data-i18n="save">Save</button>
+        <button type="button" id="btn-supervision-model-refresh" class="btn-ghost" data-i18n="refresh" data-i18n-title="refreshModelsHelp">Refresh</button>
+        <button type="button" id="btn-supervision-model-save" class="btn-ghost" data-i18n="save" data-i18n-title="saveModelHelp">Save</button>
       </div>
       <p class="warehouse-meta" data-i18n="modelTimeoutNote">Installed does not mean supervision-verified; cold or large models may enter waiting-model after the fixed timeout.</p>
     </details>
@@ -275,17 +280,17 @@ preview: pending</div>
       <div id="warehouse-capability-groups" class="warehouse-list"></div>
     </details>
 
-    <details class="warehouse-section">
+    <details class="warehouse-section warehouse-developer-only">
       <summary data-i18n="backupRestore">Backup and restore</summary>
       <div class="warehouse-actions">
-        <button type="button" id="btn-warehouse-backup" class="btn-ghost" data-i18n="createBackup">Create backup</button>
-        <button type="button" id="btn-warehouse-import" class="btn-ghost" data-i18n="importLegacy">Import legacy warehouse</button>
+        <button type="button" id="btn-warehouse-backup" class="btn-ghost" data-i18n="createBackup" data-i18n-title="createBackupHelp">Create backup</button>
+        <button type="button" id="btn-warehouse-import" class="btn-ghost" data-i18n="importLegacy" data-i18n-title="importLegacyHelp">Import legacy warehouse</button>
       </div>
       <div id="warehouse-legacy" class="warehouse-list"></div>
       <div id="warehouse-backups" class="warehouse-list"></div>
     </details>
 
-    <details class="warehouse-section">
+    <details class="warehouse-section warehouse-developer-only">
       <summary data-i18n="intakeRuns">Intake runs</summary>
       <div id="warehouse-runs" class="warehouse-list"></div>
     </details>

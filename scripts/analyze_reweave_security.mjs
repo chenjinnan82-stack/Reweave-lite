@@ -1207,6 +1207,23 @@ function analyzeCandidate() {
     }
     cleanedModules.push({ path, source: source.replace(/\r\n?/g, "\n") });
   }
+  const sensitivityLiteralsByPath = {};
+  for (const item of cleanedModules) {
+    const values = new Set();
+    const tree = parseModule(item.path, item.source);
+    function collect(node) {
+      if (ts.isStringLiteralLike(node)) values.add(node.text);
+      else if (ts.isNumericLiteral(node)) {
+        const value = Number(node.text);
+        if (Number.isSafeInteger(value)) values.add(String(value));
+      }
+      ts.forEachChild(node, collect);
+    }
+    collect(tree);
+    sensitivityLiteralsByPath[item.path] = [...values].sort((left, right) =>
+      Buffer.compare(Buffer.from(left, "utf8"), Buffer.from(right, "utf8"))
+    );
+  }
   const added = listenerEvidence.filter((item) => item.operation === "addEventListener").map(({ selector, event, handler }) => ({ selector, event, handler }));
   const removed = new Set(listenerEvidence.filter((item) => item.operation === "removeEventListener").map((item) => `${item.selector}\0${item.event}\0${item.handler}`));
   if (added.some((item) => !removed.has(`${item.selector}\0${item.event}\0${item.handler}`))) throw new Rejection("interaction_dispose_not_closed");
@@ -1216,6 +1233,7 @@ function analyzeCandidate() {
     status: "passed",
     javascript_modules: cleanedModules,
     listener_bindings: [...new Map(added.map((item) => [`${item.selector}\0${item.event}\0${item.handler}`, item])).values()],
+    sensitivity_literals_by_path: sensitivityLiteralsByPath,
   };
 }
 

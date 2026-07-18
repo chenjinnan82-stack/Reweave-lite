@@ -204,6 +204,22 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
             assert window.isVisible()
 
             js("document.getElementById('btn-capsule-warehouse').click(); true")
+            assert js(
+                "!document.getElementById('warehouse-developer-mode').checked && "
+                "!document.getElementById('capsule-warehouse-popover').classList.contains('developer-mode')"
+            )
+            assert js(
+                "document.getElementById('capsule-warehouse-popover').title.length > 0 && "
+                "document.getElementById('btn-warehouse-discover').title.length > 0 && "
+                "getComputedStyle(document.getElementById('btn-warehouse-refresh-all')).display === 'none'"
+            )
+            assert js(
+                "(() => { const toggle = document.getElementById('warehouse-developer-mode'); "
+                "toggle.click(); return toggle.checked && "
+                "document.getElementById('capsule-warehouse-popover').classList.contains('developer-mode') && "
+                "getComputedStyle(document.getElementById('btn-warehouse-refresh-all')).display !== 'none'; })()"
+            )
+            js("document.getElementById('warehouse-developer-mode').click(); true")
             wait_js(
                 "Array.from(document.querySelectorAll('#supervision-model-select option'))"
                 f".some(option => option.textContent.startsWith('{model_name}'))",
@@ -294,6 +310,13 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
             assert {item["candidate_status"] for item in items} == {
                 "review_required"
             }
+            wait_js(
+                "Array.from(document.querySelectorAll('#warehouse-review-items .warehouse-review'))"
+                ".some(item => Array.from(item.querySelectorAll('button')).some("
+                "button => button.dataset.decision === 'publish_general'))",
+                30,
+                "publishable review action",
+            )
 
             role_keys = {
                 "presentation": "quote_summary",
@@ -307,9 +330,9 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
                           const row = Array.from(
                             document.querySelectorAll('#warehouse-review-items .warehouse-review')
                           ).find(item => Array.from(item.querySelectorAll('button')).some(
-                            button => button.textContent === 'publish_general'
+                            button => button.dataset.decision === 'publish_general'
                           ));
-                          return row ? row.querySelector('.warehouse-meta').textContent : '';
+                          return row ? row.querySelector('p.warehouse-meta').textContent : '';
                         })()"""
                     )
                 ).split(" · ", 1)[0]
@@ -329,7 +352,7 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
                           const row = Array.from(
                             document.querySelectorAll('#warehouse-review-items .warehouse-review')
                           ).find(item => Array.from(item.querySelectorAll('button')).some(
-                            button => button.textContent === 'publish_general'
+                            button => button.dataset.decision === 'publish_general'
                           ));
                           if (!row) return false;
                           for (const [name, value] of Object.entries(values)) {
@@ -339,7 +362,7 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
                             input.dispatchEvent(new Event('input', {bubbles:true}));
                           }
                           Array.from(row.querySelectorAll('button')).find(
-                            button => button.textContent === 'publish_general'
+                            button => button.dataset.decision === 'publish_general'
                           ).click();
                           return true;
                         })()"""

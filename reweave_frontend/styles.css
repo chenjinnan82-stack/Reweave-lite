@@ -1805,6 +1805,29 @@ summary:focus-visible {
   overflow-y: auto;
 }
 
+.capsule-warehouse-popover:not(.developer-mode) .warehouse-developer-only {
+  display: none !important;
+}
+
+.warehouse-mode {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 4px 0;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.warehouse-status.is-waiting {
+  color: #8a6500;
+}
+
+.warehouse-mapping-preview {
+  padding: 6px 8px;
+  border-left: 3px solid var(--border);
+  background: var(--bg-soft);
+}
+
 .warehouse-status,
 .warehouse-empty,
 .warehouse-meta {

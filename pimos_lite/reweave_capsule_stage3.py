@@ -272,6 +272,7 @@ class CaptureStaticGateResult:
     candidate_payload_json: bytes = field(repr=False)
     execution_bundle_sha256: str
     execution_bundle: bytes = field(repr=False)
+    sensitivity_literals: tuple[str, ...] = field(repr=False)
 
 
 @dataclass(frozen=True)
@@ -1198,6 +1199,51 @@ def _canonical_json_bytes(value: Any) -> bytes:
         raise Stage3Error("capture_payload_invalid") from exc
 
 
+def _capture_sensitivity_projection(value: Any) -> Any:
+    if type(value) is dict:
+        return {
+            key: _capture_sensitivity_projection(item)
+            for key, item in value.items()
+        }
+    if type(value) is list:
+        return [_capture_sensitivity_projection(item) for item in value]
+    if type(value) in {int, float}:
+        return None
+    return value
+
+
+def _capture_sensitivity_inputs(
+    source: str,
+    structured: dict[str, Any],
+    source_literals: list[str],
+) -> tuple[str, str]:
+    strings = set(source_literals)
+
+    def collect(value: Any) -> None:
+        if type(value) is str:
+            value.encode("utf-8")
+            strings.add(value)
+        elif type(value) is dict:
+            for key, item in value.items():
+                collect(key)
+                collect(item)
+        elif type(value) is list:
+            for item in value:
+                collect(item)
+
+    try:
+        collect(structured)
+        literal_raw = "\n".join(
+            sorted(strings, key=lambda value: value.encode("utf-8"))
+        )
+    except UnicodeEncodeError as exc:
+        raise Stage3Error("adapter_mapping_invalid") from exc
+    scan_text = source + "\n" + _json(
+        _capture_sensitivity_projection(structured)
+    )
+    return scan_text, literal_raw
+
+
 def _parse_canonical_json_bytes(value: bytes, error_code: str) -> Any:
     if type(value) is not bytes:
         raise Stage3Error(error_code)
@@ -1692,6 +1738,29 @@ def capture_static_gate(
     security = _analyze_javascript(candidate, [])
     if security.get("javascript_modules") != modules:
         raise Stage3Error("capture_source_rewrite_forbidden")
+    literals_by_path = security.get("sensitivity_literals_by_path")
+    if (
+        type(literals_by_path) is not dict
+        or set(literals_by_path) != {CAPTURE_SELECTED_ENTRY, COMPUTATION_ADAPTER_ENTRY}
+        or any(type(value) is not list for value in literals_by_path.values())
+        or literals_by_path.get(CAPTURE_SELECTED_ENTRY)
+        != rebuilt_capture.get("sensitivity_literals")
+    ):
+        raise Stage3Error("capture_sensitivity_evidence_invalid")
+    selected_literals = literals_by_path[CAPTURE_SELECTED_ENTRY]
+    try:
+        encoded_literals = [value.encode("utf-8") for value in selected_literals]
+    except (AttributeError, UnicodeEncodeError) as exc:
+        raise Stage3Error("capture_sensitivity_evidence_invalid") from exc
+    if (
+        any(type(value) is not str for value in selected_literals)
+        or len(set(selected_literals)) != len(selected_literals)
+        or selected_literals
+        != sorted(selected_literals, key=lambda value: value.encode("utf-8"))
+        or sum(len(value) for value in encoded_literals)
+        > len(selected_source.encode("utf-8"))
+    ):
+        raise Stage3Error("capture_sensitivity_evidence_invalid")
     execution_bundle, evidence = _execution_bundle_v2(modules)
     expected_execution_hash = payload.get("execution_bundle_sha256")
     if (
@@ -1705,6 +1774,7 @@ def capture_static_gate(
         candidate_payload_json=bytes(candidate_payload_json),
         execution_bundle_sha256=evidence["sha256"],
         execution_bundle=execution_bundle,
+        sensitivity_literals=tuple(selected_literals),
     )
 
 
@@ -2086,6 +2156,7 @@ def _run_source_graph_capture(
         or capture.get("bundle_options_sha256")
         != CAPTURE_SELECTED_BUNDLE_OPTIONS_SHA256
         or type(capture.get("source_base64")) is not str
+        or type(capture.get("sensitivity_literals")) is not list
         or type(capture.get("selected_bundle_sha256")) is not str
         or re.fullmatch(r"[0-9a-f]{64}", capture["selected_bundle_sha256"]) is None
         or type(capture.get("size_bytes")) is not int
@@ -2113,6 +2184,19 @@ def _run_source_graph_capture(
         != capture["selected_bundle_sha256"]
     ):
         raise Stage3Error("bundle_security_rejected")
+    sensitivity_literals = capture["sensitivity_literals"]
+    try:
+        encoded_literals = [value.encode("utf-8") for value in sensitivity_literals]
+    except (AttributeError, UnicodeEncodeError) as exc:
+        raise Stage3Error("bundle_security_rejected") from exc
+    if (
+        any(type(value) is not str for value in sensitivity_literals)
+        or len(set(sensitivity_literals)) != len(sensitivity_literals)
+        or sensitivity_literals
+        != sorted(sensitivity_literals, key=lambda value: value.encode("utf-8"))
+        or sum(len(value) for value in encoded_literals) > len(selected_bytes)
+    ):
+        raise Stage3Error("bundle_security_rejected")
     return {
         "proof": proof,
         "capture": {
@@ -2136,6 +2220,7 @@ def inspect_ephemeral_computation_offers_v2(
         "project_id": snapshot.project_id,
         "scope_snapshot_sha256": snapshot.scope_snapshot_sha256,
         "source_identity_sha256": snapshot.source_identity_sha256,
+        "isolate_entry_failures": True,
         "entry_modules": [item.logical_path for item in snapshot.modules],
         "module_snapshot": [
             {
@@ -2180,7 +2265,40 @@ def inspect_ephemeral_computation_offers_v2(
         code = str(graph.get("error_code") or "bundle_security_rejected")
         raise Stage3Error(code)
     modules = graph.get("modules")
-    if type(modules) is not list:
+    raw_rejections = graph.get("rejection_summary")
+    if type(modules) is not list or type(raw_rejections) is not list:
+        raise Stage3Error("bundle_security_rejected")
+    allowed_rejections = {
+        "closure_unproven",
+        "closure_symlink_forbidden",
+        "import_path_spelling_mismatch",
+        "invalid_export_identifier",
+    }
+    rejection_summary: list[dict[str, Any]] = []
+    rejection_codes: set[str] = set()
+    rejection_total = 0
+    for item in raw_rejections:
+        if (
+            type(item) is not dict
+            or set(item) != {"code", "count"}
+            or type(item.get("code")) is not str
+            or item["code"] not in allowed_rejections
+            or item["code"] in rejection_codes
+            or type(item.get("count")) is not int
+            or item["count"] <= 0
+        ):
+            raise Stage3Error("bundle_security_rejected")
+        rejection_codes.add(item["code"])
+        rejection_total += item["count"]
+        if (
+            item["count"] > len(snapshot.modules)
+            or rejection_total > len(snapshot.modules)
+        ):
+            raise Stage3Error("bundle_security_rejected")
+        rejection_summary.append({"code": item["code"], "count": item["count"]})
+    if rejection_summary != sorted(
+        rejection_summary, key=lambda item: item["code"].encode("utf-8")
+    ):
         raise Stage3Error("bundle_security_rejected")
     bindings: dict[str, dict[str, Any]] = {}
     for module in modules:
@@ -2281,6 +2399,7 @@ def inspect_ephemeral_computation_offers_v2(
         "source_identity_sha256": snapshot.source_identity_sha256,
         "scope_snapshot_sha256": snapshot.scope_snapshot_sha256,
         "offers": offers,
+        "rejection_summary": rejection_summary,
     }
 
 
@@ -3594,26 +3713,27 @@ class ReweaveCapsuleStage3:
             return value, _canonical_json_bytes(value)
 
         payload, payload_json = candidate_payload(usage_scope)
-        capture_static_gate(
+        static_gate = capture_static_gate(
             payload_json,
             snapshot=snapshot,
             expected_source_identity_sha256=snapshot.source_identity_sha256,
         )
-        scan_text = "\n".join(
-            [
-                capture["source"],
-                adapter_source,
-                _json(
-                    {
-                        "input": input_contract,
-                        "output": output_contract,
-                        "error": error_contract,
-                        "examples": examples,
-                    }
-                ),
-            ]
+        sensitivity_structure = {
+            "input": input_contract,
+            "output": output_contract,
+            "error": error_contract,
+            "examples": examples,
+        }
+        scan_text, literal_scan_text = _capture_sensitivity_inputs(
+            capture["source"],
+            sensitivity_structure,
+            list(static_gate.sensitivity_literals),
         )
-        sensitivity = self.intake._sensitivity(scan_text, profile)
+        sensitivity = self.intake._sensitivity(
+            scan_text,
+            profile,
+            literal_raw=literal_scan_text,
+        )
         if sensitivity["secret_count"]:
             require_fresh_evidence()
             return {

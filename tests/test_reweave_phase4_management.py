@@ -526,6 +526,48 @@ class Phase4ManagementTest(unittest.TestCase):
         self.assertFalse(forged["ok"])
         self.assertEqual(forged["error"]["code"], "capture_request_invalid")
 
+    def test_v2_real_record_resubmission_terminates_waiting_review(self) -> None:
+        static_id = self._ready_project()
+        owner_id, offer = self._scan_v2_offer(static_id)
+        request = {
+            "project_id": owner_id,
+            "offer_id": offer["offer_id"],
+            "review_id": "review-v2-real-record",
+            "arguments": [
+                {
+                    "parameter_binding_id": "c" * 64,
+                    "input_field": "quantity",
+                    "kind": "integer",
+                    "minimum": 0,
+                    "maximum": 10,
+                }
+            ],
+            "result_field": "total",
+            "examples": [{"input": {"quantity": 4}, "expected": 8}],
+        }
+        rejected = {
+            "schema": "ephemeral_capture_outcome.v1",
+            "status": "rejected",
+            "error_code": "confirmed_real_record_rejected",
+        }
+        with patch.object(
+            self.service._capsule_stage3,
+            "prepare_ephemeral_computation_capture_v2",
+            return_value=rejected,
+        ), patch.object(
+            self.service._capsule_stage3,
+            "reject_review",
+            return_value={"status": "rejected"},
+        ) as reject_review:
+            started = self.service.start_create_computation_adapter(request)
+            task = self._wait(started["run_id"])
+
+        self.assertEqual(task["data"], rejected)
+        reject_review.assert_called_once_with(
+            "review-v2-real-record",
+            reason_code="confirmed_real_record_rejected",
+        )
+
     def test_v2_review_decision_uses_one_time_stage3_authorization(self) -> None:
         binding = "d" * 64
         item = {
@@ -571,6 +613,83 @@ class Phase4ManagementTest(unittest.TestCase):
             "review-v2",
             binding,
             enum_decision="confirm_selected_string_enumeration",
+        )
+
+    def test_decided_ephemeral_review_remains_listed_for_restart_resubmission(self) -> None:
+        project_id = self._ready_project()
+        now = "2026-07-18T00:00:00.000Z"
+        candidate = {
+            "schema": "sanitized_candidate.v1",
+            "candidate_origin": "deterministic_computation_adapter",
+            "adapter_contract_version": "computation_adapter.v2",
+            "requires_reextract": True,
+            "resume_contract": "resubmit_ephemeral_capture.v1",
+        }
+        redaction = {
+            "schema": "capture_redaction_summary.v1",
+            "codes": ["sensitivity_confirmation_required"],
+            "ambiguous_count": 1,
+            "brand_count": 0,
+            "enumeration_parameter_count": 0,
+            "enumeration_value_count": 0,
+            "enum_decision_binding_sha256": "d" * 64,
+        }
+        with self.store.transaction() as connection:
+            connection.execute(
+                "INSERT INTO intake_runs (run_id, project_id, run_kind, status, "
+                "extraction_contract_version, redaction_rules_version, security_rules_version, "
+                "supervision_rules_version, validation_contract_version, canonicalization_version, "
+                "counts_json, created_at) VALUES ('capture-restart-run', ?, "
+                "'refresh_project', 'completed_with_pending', "
+                "'extraction_contract.v1', 'redaction_rules.v1', 'security_rules.v1', "
+                "'supervision_rules.v1', 'validation_contract.v1', 1, '{}', ?)",
+                (project_id, now),
+            )
+            connection.execute(
+                "INSERT INTO review_items (review_id, run_id, project_id, candidate_id, "
+                "candidate_status, source_relpath, source_location_json, source_hash, "
+                "redaction_rules_version, sanitized_candidate_json, redaction_summary_json, "
+                "sensitivity_decision, sensitivity_decided_at, created_at, updated_at) "
+                "VALUES ('capture-restart-review', 'capture-restart-run', ?, "
+                "'candidate-restart', 'waiting_user', '__ephemeral_capture__', '{}', ?, "
+                "'redaction_rules.v1', ?, ?, 'confirm_fictional_fixture', ?, ?, ?)",
+                (
+                    project_id,
+                    "a" * 64,
+                    json.dumps(candidate, sort_keys=True, separators=(",", ":")),
+                    json.dumps(redaction, sort_keys=True, separators=(",", ":")),
+                    now,
+                    now,
+                    now,
+                ),
+            )
+
+        listed = self.service.list_review_items({})
+
+        self.assertTrue(listed["ok"])
+        item = next(
+            row
+            for row in listed["data"]["items"]
+            if row["review_id"] == "capture-restart-review"
+        )
+        self.assertEqual(item["allowed_decisions"], [])
+        self.assertEqual(
+            item["resume_contract"], "resubmit_ephemeral_capture.v1"
+        )
+
+        with self.store.transaction() as connection:
+            connection.execute(
+                "UPDATE review_items SET candidate_status = 'rejected', "
+                "decision = 'reject', decided_at = ?, updated_at = ? "
+                "WHERE review_id = 'capture-restart-review'",
+                (now, now),
+            )
+            self.store.bump_revision(connection)
+        after_reject = self.service.list_review_items({})
+        self.assertTrue(after_reject["ok"])
+        self.assertNotIn(
+            "capture-restart-review",
+            {row["review_id"] for row in after_reject["data"]["items"]},
         )
 
     def test_v2_review_decisions_are_derived_from_safe_capture_evidence(self) -> None:

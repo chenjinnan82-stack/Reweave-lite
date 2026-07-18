@@ -36,6 +36,7 @@ def _request(
     parameter_domains: list[dict[str, object]] | None = None,
     module_snapshot: list[dict[str, str]] | None = None,
     symlinks: list[dict[str, str]] | None = None,
+    isolate_entry_failures: bool = False,
 ) -> dict[str, object]:
     request: dict[str, object] = {
         "schema": "source_graph_request.v1",
@@ -48,6 +49,8 @@ def _request(
         or [_module(path, source) for path, source in modules.items()],
         "symlinks": symlinks or [],
     }
+    if isolate_entry_failures:
+        request["isolate_entry_failures"] = True
     if mode in {"prove", "capture"}:
         request["target"] = target
         request["parameter_domains"] = parameter_domains or []
@@ -259,6 +262,87 @@ export function calculate(rate) {
     assert binding["binding_id"] == expected_binding_id
 
 
+def test_graph_entry_isolation_deduplicates_failures_and_keeps_valid_entry() -> None:
+    result = _request(
+        "graph",
+        {
+            "good.js": "export function total(a, b) { return a * b; }\n",
+            "bad.js": 'import value from "package"; export { value };\n',
+        },
+        entry_modules=["good.js", "bad.js", "bad.js"],
+        isolate_entry_failures=True,
+    )
+
+    assert result["status"] == "ok"
+    assert [item["logical_path"] for item in result["modules"]] == ["good.js"]
+    assert result["rejection_summary"] == [{"code": "closure_unproven", "count": 1}]
+
+
+def test_graph_entry_isolation_summarizes_direct_symlink_entry() -> None:
+    result = _request(
+        "graph",
+        {
+            "good.js": "export function total(a, b) { return a * b; }\n",
+            "linked.js": "export function ignored(value) { return value; }\n",
+        },
+        entry_modules=["good.js", "linked.js"],
+        symlinks=[{"path": "linked.js", "target": "good.js"}],
+        isolate_entry_failures=True,
+    )
+
+    assert result["status"] == "ok"
+    assert [item["logical_path"] for item in result["modules"]] == ["good.js"]
+    assert result["rejection_summary"] == [
+        {"code": "closure_symlink_forbidden", "count": 1}
+    ]
+
+
+def test_graph_entry_isolation_reuses_shared_dependency_rejection() -> None:
+    result = _request(
+        "graph",
+        {
+            "first.js": 'import { value } from "./bad.js"; export { value };\n',
+            "second.js": 'import { value } from "./bad.js"; export { value };\n',
+            "bad.js": 'import value from "package"; export { value };\n',
+            "good.js": "export function total(a, b) { return a * b; }\n",
+        },
+        entry_modules=["first.js", "second.js", "good.js"],
+        isolate_entry_failures=True,
+    )
+
+    assert result["status"] == "ok"
+    assert [item["logical_path"] for item in result["modules"]] == ["good.js"]
+    assert result["rejection_summary"] == [{"code": "closure_unproven", "count": 2}]
+
+
+def test_graph_without_isolation_preserves_global_entry_traversal() -> None:
+    result = _request(
+        "graph",
+        {
+            "a.js": 'import { value } from "./a_dep.js"; export { value };\n',
+            "b.js": 'import { other } from "./Case.js"; export { other };\n',
+            "a_dep.js": "export const value = ;\n",
+            "case.js": "export const other = 1;\n",
+        },
+        entry_modules=["a.js", "b.js"],
+    )
+
+    assert result["status"] == "rejected"
+    assert result["error_code"] == "import_path_spelling_mismatch"
+
+
+def test_graph_without_isolation_preserves_entry_preflight_order() -> None:
+    result = _request(
+        "graph",
+        {"linked.js": "export function ignored(value) { return value; }\n"},
+        entry_modules=["linked.js", "../bad.js"],
+        symlinks=[{"path": "linked.js", "target": "elsewhere.js"}],
+    )
+
+    assert result["status"] == "rejected"
+    assert result["error_code"] == "closure_symlink_forbidden"
+
+
 def test_graph_rejects_invalid_utf8_and_hash_mismatch() -> None:
     invalid = b"export function compute(x) { return x; }\n\xff"
     _assert_rejected(
@@ -372,6 +456,23 @@ def test_capture_bundle_is_deterministic_snapshot_only_and_tree_shaken() -> None
     assert "not-in-closure" not in decoded
     assert "reweave-capture-" not in decoded
     assert str(ROOT) not in decoded
+
+
+def test_capture_reports_real_string_and_safe_integer_literals_for_sensitive_scanning() -> None:
+    result = _capture(
+        {
+            "main.js": (
+                'export function total(mode, value) { '
+                'if (mode === "13800138000") return value * 2; '
+                "return value; }"
+            )
+        },
+        "main.js",
+        "total",
+        [_enum("safe", "13800138000"), _integer(0, 10)],
+    )
+    assert result["status"] == "ok", result
+    assert result["capture"]["sensitivity_literals"] == ["13800138000", "2"]
 
 
 @pytest.mark.parametrize(
