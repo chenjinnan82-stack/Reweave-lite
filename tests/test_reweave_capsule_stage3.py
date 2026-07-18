@@ -17,7 +17,6 @@ from unittest.mock import patch
 
 import pimos_lite.reweave_capsule_stage3 as stage3_module
 from pimos_lite.reweave_capsule_intake import (
-    COMPUTATION_ADAPTER_CONTRACT_VERSION,
     EXTRACTION_CONTRACT_VERSION,
     IntakeError,
     ReweaveCapsuleIntake,
@@ -1073,7 +1072,7 @@ class Stage3ComputationFlowTest(unittest.TestCase):
         )
         project = self.intake.discover_projects(source_root["root_id"])[0]
         self.intake.confirm_project(project["project_id"])
-        inspected = self.intake.inspect_computation_adapters(project["project_id"])
+        inspected = self.intake._inspect_computation_adapters_v1(project["project_id"])
         self.assertEqual(len(inspected["offers"]), 1, inspected)
         payload = {
             "project_id": project["project_id"],
@@ -1100,14 +1099,14 @@ class Stage3ComputationFlowTest(unittest.TestCase):
         mismatched = json.loads(json.dumps(payload))
         mismatched["examples"][0]["expected"] = 21
         with self.assertRaisesRegex(IntakeError, "adapter_example_mismatch"):
-            self.intake.create_computation_adapter_candidate(
+            self.intake._create_computation_adapter_candidate_v1(
                 mismatched, validator=self.stage3.preflight_computation_adapter
             )
         with self.store.read_connection() as connection:
             self.assertEqual(connection.execute("SELECT count(*) FROM intake_runs").fetchone()[0], 0)
             self.assertEqual(connection.execute("SELECT count(*) FROM review_items").fetchone()[0], 0)
 
-        created = self.intake.create_computation_adapter_candidate(
+        created = self.intake._create_computation_adapter_candidate_v1(
             payload, validator=self.stage3.preflight_computation_adapter
         )
         self.assertEqual(created["adapter"]["candidate_status"], "extracted")
@@ -1153,83 +1152,28 @@ class Stage3ComputationFlowTest(unittest.TestCase):
                 "total",
             )
 
-        result = self.stage3.process_review(review["review_id"])
-        self.assertEqual(result["status"], "review_required", result)
-        self.assertEqual(result["validation_scope"], "isolated_node_vm_computation")
-        with self.store.read_connection() as connection:
-            project_row = connection.execute(
-                "SELECT last_snapshot_hash FROM projects WHERE project_id = ?",
-                (project["project_id"],),
-            ).fetchone()
-            self.assertIsNone(project_row["last_snapshot_hash"])
-
-        published = self.stage3.publish_review(
-            review["review_id"],
-            decision="publish_general",
-            capability_key="quote_calculation",
-            role_key="total_price",
-            variant_key="default",
-            display_name="Quote calculation",
-        )
-        self.assertEqual(published["status"], "published")
-        with self.store.read_connection() as connection:
-            version = dict(
-                connection.execute(
-                    "SELECT cv.*, c.status, c.current_version_id, c.capability_kind "
-                    "FROM capsule_versions cv JOIN capsules c "
-                    "ON c.capsule_id = cv.capsule_id WHERE cv.version_id = ?",
-                    (published["version_id"],),
-                ).fetchone()
+        with self.assertRaisesRegex(Stage3Error, "adapter_contract_version_expired"):
+            self.stage3.process_review(review["review_id"])
+        with self.assertRaisesRegex(Stage3Error, "adapter_contract_version_expired"):
+            self.stage3.publish_review(
+                review["review_id"],
+                decision="publish_general",
+                capability_key="quote_calculation",
+                role_key="total_price",
+                variant_key="default",
+                display_name="Quote calculation",
             )
-        formal_summary = json.loads(version["extraction_summary_json"])
-        formal_modules = json.loads(version["javascript_modules_json"])
-        self.assertEqual(
-            formal_summary["adapter_contract_version"],
-            COMPUTATION_ADAPTER_CONTRACT_VERSION,
-        )
-        self.assertEqual(
-            [
-                module["path"]
-                for module in formal_modules
-                if module["path"] == "__reweave_adapter__/compute.js"
-            ],
-            ["__reweave_adapter__/compute.js"],
-        )
-        self.assertTrue(self.stage3._eligible_exact(version))
-
-        duplicate_created = self.intake.create_computation_adapter_candidate(
-            payload, validator=self.stage3.preflight_computation_adapter
-        )
-        duplicate = self.stage3.process_review(duplicate_created["review_ids"][0])
-        self.assertEqual(duplicate["status"], "duplicate", duplicate)
-        self.assertFalse(duplicate["model_called"])
-        self.assertFalse(duplicate["runtime_validation_run"])
-        self.assertEqual(self.supervisor.calls, 1)
-
-        calculate = self.source / "calculate.js"
-        calculate.write_text(
-            calculate.read_text(encoding="utf-8").replace(
-                "quantity * price", "quantity * price + 1"
-            ),
-            encoding="utf-8",
-        )
-        changed_offer = self.intake.inspect_computation_adapters(
-            project["project_id"]
-        )["offers"][0]
-        changed_payload = json.loads(json.dumps(payload))
-        changed_payload["offer_id"] = changed_offer["offer_id"]
-        changed_payload["examples"][0]["expected"] = 21
-        changed_created = self.intake.create_computation_adapter_candidate(
-            changed_payload, validator=self.stage3.preflight_computation_adapter
-        )
-        changed_result = self.stage3.process_review(changed_created["review_ids"][0])
-        self.assertEqual(changed_result["status"], "review_required", changed_result)
         with self.store.read_connection() as connection:
-            changed_hash = connection.execute(
-                "SELECT candidate_canonical_hash FROM review_items WHERE review_id = ?",
-                (changed_created["review_ids"][0],),
+            unchanged = connection.execute(
+                "SELECT candidate_status, decision, candidate_canonical_hash "
+                "FROM review_items WHERE review_id = ?",
+                (review["review_id"],),
+            ).fetchone()
+            formal_count = connection.execute(
+                "SELECT COUNT(*) FROM capsule_versions"
             ).fetchone()[0]
-        self.assertNotEqual(changed_hash, version["canonical_hash"])
+        self.assertEqual(tuple(unchanged), ("extracted", None, None))
+        self.assertEqual(formal_count, 0)
 
     def test_computation_adapter_git_evidence_and_replay_are_bound(self) -> None:
         successful_status = subprocess.CompletedProcess(
@@ -1269,7 +1213,7 @@ class Stage3ComputationFlowTest(unittest.TestCase):
         )
         project = self.intake.discover_projects(source_root["root_id"])[0]
         self.intake.confirm_project(project["project_id"])
-        inspected = self.intake.inspect_computation_adapters(project["project_id"])
+        inspected = self.intake._inspect_computation_adapters_v1(project["project_id"])
         self.assertEqual(inspected["git_state"], "clean")
         self.assertEqual(inspected["git_commit"], commit)
         offer = inspected["offers"][0]
@@ -1295,7 +1239,7 @@ class Stage3ComputationFlowTest(unittest.TestCase):
                 {"input": {"quantity": 4, "unit_price": 5}, "expected": 20}
             ],
         }
-        created = self.intake.create_computation_adapter_candidate(
+        created = self.intake._create_computation_adapter_candidate_v1(
             payload, validator=self.stage3.preflight_computation_adapter
         )
         with self.store.read_connection() as connection:
@@ -1335,9 +1279,8 @@ class Stage3ComputationFlowTest(unittest.TestCase):
             self.intake.snapshot_project(project["project_id"]).digest,
             original_snapshot.digest,
         )
-        replay = self.stage3.process_review(created["review_ids"][0])
-        self.assertEqual(replay["status"], "rejected", replay)
-        self.assertEqual(replay["error_code"], "candidate_boundary_changed")
+        with self.assertRaisesRegex(Stage3Error, "adapter_contract_version_expired"):
+            self.stage3.process_review(created["review_ids"][0])
 
     def test_brand_scope_revalidation_replaces_the_pending_current_version(self) -> None:
         (self.source / "index.html").write_text(

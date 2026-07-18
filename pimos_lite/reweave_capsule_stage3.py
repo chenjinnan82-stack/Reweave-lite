@@ -4321,6 +4321,14 @@ class ReweaveCapsuleStage3:
         except json.JSONDecodeError as exc:
             raise Stage3Error("sanitized_candidate_invalid") from exc
         if (
+            type(summary) is dict
+            and summary.get("candidate_origin")
+            == "deterministic_computation_adapter"
+            and summary.get("adapter_contract_version")
+            == COMPUTATION_ADAPTER_CONTRACT_VERSION
+        ):
+            raise Stage3Error("adapter_contract_version_expired")
+        if (
             review["candidate_status"] in {
                 "waiting_user",
                 "waiting_model",
@@ -4830,6 +4838,18 @@ class ReweaveCapsuleStage3:
         retained_version_id: str | None = None,
     ) -> dict[str, Any]:
         review = self._review(review_id)
+        try:
+            summary = json.loads(review["sanitized_candidate_json"])
+        except json.JSONDecodeError as exc:
+            raise Stage3Error("sanitized_candidate_invalid") from exc
+        if (
+            type(summary) is dict
+            and summary.get("candidate_origin")
+            == "deterministic_computation_adapter"
+            and summary.get("adapter_contract_version")
+            == COMPUTATION_ADAPTER_CONTRACT_VERSION
+        ):
+            raise Stage3Error("adapter_contract_version_expired")
         if review["project_id"] is not None:
             with self.store.read_connection() as connection:
                 schema_version = int(
@@ -6002,6 +6022,11 @@ class ReweaveCapsuleStage3:
                 and rules.get("canonicalization_version")
                 == CANONICALIZATION_VERSION
             )
+        if (
+            extraction.get("adapter_contract_version")
+            == COMPUTATION_ADAPTER_CONTRACT_VERSION
+        ):
+            return False
         if (
             extraction.get("adapter_contract_version")
             != COMPUTATION_ADAPTER_CONTRACT_VERSION

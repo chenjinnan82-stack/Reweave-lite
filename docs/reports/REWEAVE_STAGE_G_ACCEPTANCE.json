@@ -1,0 +1,195 @@
+{
+  "schema_version": "reweave_stage_g_acceptance.v1",
+  "completed_date": "2026-07-19",
+  "stage": "G",
+  "verdict": "PASS",
+  "reweave_head_at_start": "5d7eb5bca4b3917aadd7ea62409ab25bfad9e4f7",
+  "corpus": {
+    "manifest_sha256": "c90b2e45fc42727fd74dfec26ef30de4420cf11296ae0eb95367f089315f823e",
+    "selected_projects": 12,
+    "evaluated_projects": 3,
+    "stop_reason": "validated_positive_target_met"
+  },
+  "validated_projects": [
+    {
+      "project_id": "grapheme",
+      "repository_url": "https://github.com/anematode/grapheme.git",
+      "commit": "c84ff5386bee8f47d686bf9d757ad48654f4f5eb",
+      "license_file": "LICENSE",
+      "license_id": "GPL-3.0",
+      "license_sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
+      "module_relpath": "basic_arithmetic.js",
+      "export_name": "Multiply",
+      "classification": "validated_positive",
+      "canonical_hash": "0f82dc743f08b2704b49a0dae6ec3b95fbbcdc9a4c5fb5bf6eb1fb274e53e61a",
+      "gates": {
+        "source_graph": true,
+        "bundle": true,
+        "sensitive_brand_enum": true,
+        "data_contract": true,
+        "ast_security": true,
+        "ollama_supervision": true,
+        "node_runtime_validation": true
+      },
+      "formal_rows_delta": 0,
+      "source_unchanged": true,
+      "evidence_label": "validation/grapheme/attempt-06",
+      "evidence_sha256": "00b781e40b9568a2137a9d39939f51dee461860230707e5abdbcbebebde7cc0c"
+    },
+    {
+      "project_id": "build_tools_code_quality",
+      "repository_url": "https://github.com/betocostadev/build-tools-code-quality.git",
+      "commit": "9d462676c6c8a6cb785c79e58b1f6308a3a3ff2b",
+      "license_file": "LICENSE",
+      "license_id": "MIT",
+      "license_sha256": "ce6517d0462cd1117faf9fedd641f12369a173d0cb191e547f7c0cde6407bb84",
+      "module_relpath": "basic-math.js",
+      "export_name": "multiply",
+      "classification": "validated_positive",
+      "canonical_hash": "ba3915945cc82189e52f56e38c892c4d65da4790b8848026119029293f66eda7",
+      "gates": {
+        "source_graph": true,
+        "bundle": true,
+        "sensitive_brand_enum": true,
+        "data_contract": true,
+        "ast_security": true,
+        "ollama_supervision": true,
+        "node_runtime_validation": true
+      },
+      "formal_rows_delta": 0,
+      "source_unchanged": true,
+      "evidence_label": "validation/build_tools_code_quality/attempt-02",
+      "evidence_sha256": "bedd26145895087b4ff8b78fbf58b5477f4148b52154044b0d1e8acc49a2bf97"
+    },
+    {
+      "project_id": "colorjs",
+      "repository_url": "https://github.com/color-js/color.js.git",
+      "commit": "9ab13a94ae9170b551c4292f6624995900f78711",
+      "license_file": "LICENSE",
+      "license_id": "MIT",
+      "license_sha256": "feee8a4ec1649b385f3ec9ac73174501cbfc9d5a75171a056d94cb452d3f3ec3",
+      "module_relpath": "util.js",
+      "export_name": "clamp",
+      "classification": "validated_positive",
+      "canonical_hash": "251912275eda0c8e4cbd97a095a77b5c7100277b1c9cfb0db7e31555a7cdbdd0",
+      "gates": {
+        "source_graph": true,
+        "bundle": true,
+        "sensitive_brand_enum": true,
+        "data_contract": true,
+        "ast_security": true,
+        "ollama_supervision": true,
+        "node_runtime_validation": true
+      },
+      "formal_rows_delta": 0,
+      "source_unchanged": true,
+      "evidence_label": "validation/colorjs/attempt-02",
+      "evidence_sha256": "42238eac406522a12e2dbe3fbb5b3efc281962ceb7c4c0692a1fb0622c942cf8"
+    }
+  ],
+  "environment_observations": [
+    {
+      "project_id": "grapheme",
+      "classification": "supervision_environment_failure",
+      "raw_error_code": "ollama_unavailable",
+      "formal_rows_delta": 0,
+      "source_unchanged": true,
+      "evidence_label": "validation/grapheme/attempt-05",
+      "evidence_sha256": "a550b0f54106fc521a24f72d6736505b1127f7e2f5f10a3f67d40e94cc6a72ff"
+    }
+  ],
+  "grapheme_version": {
+    "adapter_contract_version": "computation_adapter.v2",
+    "mapping": {
+      "x": "quantity",
+      "y": "unit_price",
+      "result": "total"
+    },
+    "old_v1_canonical_hash": "08266b91ff72162b5f9037f9e7d519b18dde540f8eae6677fd2301e51520a288",
+    "new_v2_canonical_hash": "0f82dc743f08b2704b49a0dae6ec3b95fbbcdc9a4c5fb5bf6eb1fb274e53e61a",
+    "version_id": "ver_61de5d83f63445b9ae3faaf93a980047",
+    "old_version_reused": false
+  },
+  "product_acceptance": {
+    "scope": "real_qwebengine_product_interaction",
+    "manifest_digest": "a0f8fb5f58bb0989d1d26c4b94f99fed7ff81db0e72d9bfb3da13cf62dd2cc00",
+    "capsules": [
+      {
+        "kind": "presentation",
+        "version_id": "ver_2e9ba6869e334227a04df87891d90173",
+        "canonical_hash": "97103a0e56518064c7fb0e324846723772dd27f563b1e2c0b14092537d9373ef"
+      },
+      {
+        "kind": "interaction",
+        "version_id": "ver_13853a3a1a8140c7be5e35c481e431d4",
+        "canonical_hash": "2ecd6d79c2c3adfcce7b6a6ec24fda0b50d3f1137b4c808cdd9495c04fddf568"
+      },
+      {
+        "kind": "computation",
+        "version_id": "ver_61de5d83f63445b9ae3faaf93a980047",
+        "canonical_hash": "0f82dc743f08b2704b49a0dae6ec3b95fbbcdc9a4c5fb5bf6eb1fb274e53e61a"
+      }
+    ],
+    "usage_rows": 6,
+    "quantity": 4,
+    "unit_price": 5,
+    "total": 20,
+    "emission_count": 1,
+    "runtime_status": "passed",
+    "blocked_requests": [],
+    "console_messages": [],
+    "outside_mutations": [],
+    "evidence_label": "e2e/attempt-07",
+    "evidence_sha256": "bdf441ba6bb766cdf00ae9074e564b368888676a0f797bf943f4fef18cf53f91"
+  },
+  "v1_retirement": {
+    "new_creation_error": "adapter_creation_path_retired",
+    "unfinished_review_error": "adapter_contract_version_expired",
+    "backup_verified": true,
+    "revision_bound_cas": true,
+    "zero_to_one_revision_race_closed": true,
+    "restored_backup_rechecks_retirement": true,
+    "legacy_json_migration_entry": "developer_mode_read_only"
+  },
+  "invariants": {
+    "all_sources_unchanged": true,
+    "user_state_unchanged": true,
+    "old_v1_database_unchanged": true,
+    "temporary_sqlite_only": true,
+    "single_repository": true,
+    "single_composer": true
+  },
+  "verification": {
+    "python_3_14_pyside6": {
+      "python": "3.14.5",
+      "pytest": "9.1.1",
+      "pyside6": "6.11.1",
+      "passed": 756,
+      "failed": 0,
+      "skipped": 0,
+      "subtests_passed": 183
+    },
+    "python_3_11_node_24_ci_equivalent": {
+      "python": "3.11.15",
+      "node": "24.14.0",
+      "passed": 745,
+      "failed": 0,
+      "skipped": 11,
+      "subtests_passed": 183,
+      "npm_ci_offline": "passed",
+      "public_demo_help": "passed",
+      "frontend_node_check": "passed"
+    },
+    "hosted_ci_for_final_bytes": "not_run_no_push"
+  },
+  "remaining": {
+    "p0": 0,
+    "p1": 0,
+    "p2": [
+      "hosted_final_byte_ci_requires_explicit_push_approval",
+      "demo_repository_and_pages_publication_are_separate_release_actions",
+      "public_demo_distribution_requires_a_separate_GPL_3_0_license_and_attribution_review"
+    ]
+  },
+  "scope_limit": "Does not prove automatic extraction of presentation, interaction, classic-script, framework, bootstrap, or build-required source projects."
+}

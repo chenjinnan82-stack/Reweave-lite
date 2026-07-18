@@ -685,6 +685,20 @@ for name in sys.modules:
             {row["version_id"] for row in manifest["capsules"]},
             set(self.versions.values()),
         )
+        with self.store.read_connection() as connection:
+            expected_hashes = {
+                str(row["version_id"]): str(row["canonical_hash"])
+                for row in connection.execute(
+                    "SELECT version_id, canonical_hash FROM capsule_versions"
+                )
+            }
+        self.assertEqual(
+            {
+                row["version_id"]: row["canonical_hash"]
+                for row in manifest["capsules"]
+            },
+            expected_hashes,
+        )
         expected_usage = {
             (row["version_id"], contribution, manifest["generated_at"])
             for row in manifest["capsules"]
@@ -1195,6 +1209,19 @@ globalThis.document = {{getElementById() {{ return root; }}}};
         self.assertEqual(retried["data"]["status"], "registered")
         self.assertEqual(reader.call_count, 2)
 
+        legacy = self._create_orphan()
+        legacy_manifest_path = legacy / "manifest.json"
+        legacy_manifest = json.loads(legacy_manifest_path.read_bytes())
+        for row in legacy_manifest["capsules"]:
+            row.pop("canonical_hash")
+        legacy_manifest_path.write_bytes(_canonical_manifest_bytes(legacy_manifest))
+        with self._fast_generation():
+            legacy_retried = self.service.retry_product_usage_registration(
+                {"product_id": legacy.name}
+            )
+        self.assertTrue(legacy_retried["ok"], legacy_retried)
+        self.assertEqual(legacy_retried["data"]["status"], "registered")
+
         def forge_identity(manifest: dict[str, object]) -> None:
             manifest["capsules"][0]["role_key"] = "forged_role"  # type: ignore[index]
 
@@ -1209,6 +1236,9 @@ globalThis.document = {{getElementById() {{ return root; }}}};
             row = manifest["capsules"][0]  # type: ignore[index]
             row["contributions"] = [row["capability_kind"]]
 
+        def forge_canonical_hash(manifest: dict[str, object]) -> None:
+            manifest["capsules"][0]["canonical_hash"] = "f" * 64  # type: ignore[index]
+
         def forge_connection(manifest: dict[str, object]) -> None:
             manifest["connections"][0]["output"] = "forged_event"  # type: ignore[index]
 
@@ -1216,6 +1246,7 @@ globalThis.document = {{getElementById() {{ return root; }}}};
             ("identity", forge_identity),
             ("scope", forge_scope),
             ("contributions", forge_contributions),
+            ("canonical_hash", forge_canonical_hash),
             ("connection", forge_connection),
         ):
             with self.subTest(label=label):

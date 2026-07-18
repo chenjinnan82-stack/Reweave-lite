@@ -490,14 +490,25 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert 'bridgeCall("get_capsule_detail", JSON.stringify({ capsule_id: capsule.capsule_id }))' in app
     assert 'bridgeCall("list_backups", JSON.stringify({}))' in app
     assert 'bridgeCall("get_intake_run", JSON.stringify({ run_id: runId }))' in app
-    assert '"start_inspect_computation_adapters"' in app
+    assert '"start_inspect_computation_adapters"' not in app
     assert '"start_create_computation_adapter"' in app
     assert '"start_scan_javascript_computations"' in app
     assert 'bridgeCall("register_javascript_computation_source"' in app
-    assert 'data-action", "inspect-computation-adapters"' in app
-    assert 'data-action", "create-computation-adapter"' in app
+    assert 'data-action", "inspect-computation-adapters"' not in app
+    assert 'data-action", "create-computation-adapter"' not in app
     assert 'data-action", "scan-javascript-computations"' in app
     assert 'data-action", "create-javascript-computation-capture"' in app
+    assert "function renderComputationAdapterOffers" not in app
+    assert "legacyAdapterOutcomeStatusKey" not in app
+    assert "computation_adapter_offers.v1" not in app
+    assert "旧版候选已过期，请重新扫描。" in app
+    assert "This legacy candidate has expired. Scan again" in app
+    assert 'adapter_creation_path_retired: "adapterCreationPathRetired"' in app
+    assert 'adapter_contract_version_expired: "adapterContractVersionExpired"' in app
+    assert "var adapterContractExpired = item.adapter_contract_version_expired === true;" in app
+    assert "item && item.adapter_contract_version_expired !== true" in app
+    assert "var decisions = adapterContractExpired ? []" in app
+    assert "if (!adapterContractExpired && !decisions.length" in app
     assert "parameter_binding_id: control.parameter_binding_id" in app
     assert 'kindName === "boolean"' in app
     assert 'kindName === "enum"' in app

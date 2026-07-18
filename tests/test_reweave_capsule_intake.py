@@ -1731,7 +1731,20 @@ export function compute(input) {
             },
         )
 
-    def test_computation_adapter_offer_is_read_only_and_candidate_is_deterministic(self) -> None:
+    def test_public_computation_adapter_v1_entrypoints_are_retired(self) -> None:
+        with patch.object(self.intake, "_project_context") as project_context:
+            with self.assertRaisesRegex(IntakeError, "adapter_creation_path_retired"):
+                self.intake.inspect_computation_adapters("project-retired")
+        project_context.assert_not_called()
+
+        with patch.object(self.intake, "_run_extraction_analyzer") as analyzer:
+            with self.assertRaisesRegex(IntakeError, "adapter_creation_path_retired"):
+                self.intake.create_computation_adapter_candidate(
+                    {"project_id": "project-retired", "offer_id": "offer-retired"}
+                )
+        analyzer.assert_not_called()
+
+    def test_historical_computation_adapter_v1_is_deterministic(self) -> None:
         self._write_adapter_project(self.source)
         project = self._bind_discover_confirm(self.source)
         with self.store.read_connection() as connection:
@@ -1740,7 +1753,7 @@ export function compute(input) {
                 for table in ("intake_runs", "review_items", "capsules", "capsule_versions")
             )
 
-        inspected = self.intake.inspect_computation_adapters(project["project_id"])
+        inspected = self.intake._inspect_computation_adapters_v1(project["project_id"])
 
         self.assertEqual(inspected["schema"], "computation_adapter_offers.v1")
         self.assertEqual(len(inspected["offers"]), 1, inspected)
@@ -1804,15 +1817,15 @@ export function compute(input) {
                 ).hexdigest(),
             }
 
-        first = self.intake.create_computation_adapter_candidate(
+        first = self.intake._create_computation_adapter_candidate_v1(
             payload, validator=validate
         )
         reordered = {**payload, "arguments": list(reversed(payload["arguments"]))}
-        second = self.intake.create_computation_adapter_candidate(
+        second = self.intake._create_computation_adapter_candidate_v1(
             reordered, validator=validate
         )
         renamed = {**payload, "result_field": "grand_total"}
-        third = self.intake.create_computation_adapter_candidate(
+        third = self.intake._create_computation_adapter_candidate_v1(
             renamed, validator=validate
         )
         wider = {
@@ -1822,7 +1835,7 @@ export function compute(input) {
                 payload["arguments"][1],
             ],
         }
-        fourth = self.intake.create_computation_adapter_candidate(
+        fourth = self.intake._create_computation_adapter_candidate_v1(
             wider, validator=validate
         )
 
@@ -1955,7 +1968,7 @@ export function compute(input) {
                 for relative, source in files.items():
                     (project_root / relative).write_text(source, encoding="utf-8")
                 project = self._bind_discover_confirm(project_root)
-                inspected = self.intake.inspect_computation_adapters(
+                inspected = self.intake._inspect_computation_adapters_v1(
                     project["project_id"]
                 )
                 self.assertTrue(
@@ -1987,7 +2000,7 @@ export function compute(input) {
                         encoding="utf-8",
                     )
                 project = self._bind_discover_confirm(project_root)
-                inspected = self.intake.inspect_computation_adapters(
+                inspected = self.intake._inspect_computation_adapters_v1(
                     project["project_id"]
                 )
                 self.assertFalse(
@@ -2011,13 +2024,13 @@ export function compute(input) {
             encoding="utf-8",
         )
         project = self._bind_discover_confirm(typescript_root)
-        inspected = self.intake.inspect_computation_adapters(project["project_id"])
+        inspected = self.intake._inspect_computation_adapters_v1(project["project_id"])
         self.assertEqual(inspected["offers"], [])
 
     def test_computation_adapter_stale_offer_and_invalid_mapping_write_no_review(self) -> None:
         self._write_adapter_project(self.source)
         project = self._bind_discover_confirm(self.source)
-        offer = self.intake.inspect_computation_adapters(project["project_id"])["offers"][0]
+        offer = self.intake._inspect_computation_adapters_v1(project["project_id"])["offers"][0]
         invalid = {
             "project_id": project["project_id"],
             "offer_id": offer["offer_id"],
@@ -2039,7 +2052,7 @@ export function compute(input) {
             "examples": [{"input": {"value": 4}, "expected": 20}],
         }
         with self.assertRaisesRegex(IntakeError, "adapter_mapping_invalid"):
-            self.intake.create_computation_adapter_candidate(
+            self.intake._create_computation_adapter_candidate_v1(
                 invalid, validator=lambda *_args: {"status": "passed"}
             )
 
@@ -2072,7 +2085,7 @@ export function compute(input) {
             with self.subTest(name=name), self.assertRaisesRegex(
                 IntakeError, "adapter_mapping_invalid"
             ):
-                self.intake.create_computation_adapter_candidate(
+                self.intake._create_computation_adapter_candidate_v1(
                     {
                         **invalid,
                         "arguments": arguments,
@@ -2107,7 +2120,7 @@ export function compute(input) {
             ],
         }
         with self.assertRaisesRegex(IntakeError, "adapter_interval_unproven"):
-            self.intake.create_computation_adapter_candidate(
+            self.intake._create_computation_adapter_candidate_v1(
                 overflow, validator=lambda *_args: {"status": "passed"}
             )
 
@@ -2127,7 +2140,7 @@ export function compute(input) {
             {"input": {"quantity": 4, "unit_price": 5}, "expected": 20}
         ]
         with self.assertRaisesRegex(IntakeError, "adapter_offer_stale"):
-            self.intake.create_computation_adapter_candidate(
+            self.intake._create_computation_adapter_candidate_v1(
                 valid_shape, validator=lambda *_args: {"status": "passed"}
             )
         with self.store.read_connection() as connection:
@@ -2145,7 +2158,7 @@ export function compute(input) {
         project = self._bind_discover_confirm(self.source)
 
         with self.assertRaisesRegex(IntakeError, "adapter_source_unsupported_v1"):
-            self.intake.inspect_computation_adapters(project["project_id"])
+            self.intake._inspect_computation_adapters_v1(project["project_id"])
 
     def test_cancel_and_restart_recovery_leave_no_half_candidate(self) -> None:
         self._write_complete_project(self.source)

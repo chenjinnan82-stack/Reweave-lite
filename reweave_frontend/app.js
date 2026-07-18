@@ -196,7 +196,6 @@
       brandProfileInvalid: "品牌配置必须是 JSON 对象。",
       projectConfirmationPartial: "部分项目未能确认，请查看项目状态。",
       refreshProject: "刷新项目",
-      inspectComputationAdapters: "检查计算函数",
       registerJavascriptSource: "登记 JavaScript 计算来源",
       registerJavascriptSourceHelp: "把所选来源根或子目录登记为只读 JavaScript 计算来源。",
       javascriptSourceRoot: "来源根",
@@ -209,7 +208,6 @@
       staticWebSourceType: "静态网页来源",
       unknownSourceType: "未知来源类型",
       refreshProjectHelp: "重新只读扫描这个来源项目。",
-      inspectComputationAdaptersHelp: "检查旧版已导出纯计算函数；简单模式使用新的计算函数扫描。",
       scanJavascriptComputations: "查找可复用的计算功能",
       scanJavascriptComputationsHelp: "只读检查这个项目中的 JavaScript 函数。不会运行、修改或构建来源项目，也不会立即发布胶囊。",
       scanJavascriptRunning: "正在只读分析 JavaScript 函数……",
@@ -231,7 +229,8 @@
       captureResubmitRequired: "决定已保存。返回原函数并点击“继续验证”，系统会从当前来源重新构建。",
       captureResumeReview: "恢复待确认项（可选）",
       captureResumeReviewHelp: "开发者恢复入口；普通流程会自动关联当前待确认项。",
-      noComputationAdapters: "未发现符合 computation_adapter.v1 的计算函数。",
+      adapterCreationPathRetired: "旧版计算入口已退役，请重新扫描计算功能。",
+      adapterContractVersionExpired: "旧版候选已过期，请重新扫描。不能继续处理或发布这个旧候选。",
       adapterInputField: "输入字段",
       adapterInputFieldHelp: "产品使用的字段名；例如旧参数 x 可以映射为 quantity。",
       adapterInputSourceLabel: "输入 {index}（源码参数：{parameter}）",
@@ -532,7 +531,6 @@
       brandProfileInvalid: "Brand profile must be a JSON object.",
       projectConfirmationPartial: "Some projects could not be confirmed; review their status.",
       refreshProject: "Refresh project",
-      inspectComputationAdapters: "Inspect computation functions",
       registerJavascriptSource: "Register JavaScript computation source",
       registerJavascriptSourceHelp: "Register a source root or subdirectory as a read-only JavaScript computation source.",
       javascriptSourceRoot: "Source root",
@@ -545,7 +543,6 @@
       staticWebSourceType: "Static web source",
       unknownSourceType: "Unknown source type",
       refreshProjectHelp: "Rescan this source project read-only.",
-      inspectComputationAdaptersHelp: "Inspect legacy exported pure functions; simple mode uses the new computation scan.",
       scanJavascriptComputations: "Find reusable calculations",
       scanJavascriptComputationsHelp: "Inspect JavaScript functions in this project read-only. Reweave will not run, modify, or build the source project, and it will not publish a capsule yet.",
       scanJavascriptRunning: "Analyzing JavaScript functions read-only…",
@@ -567,7 +564,8 @@
       captureResubmitRequired: "Decision saved. Return to the function and click Continue validation to rebuild from current source.",
       captureResumeReview: "Resume waiting review (optional)",
       captureResumeReviewHelp: "Developer recovery control; the normal flow links the current review automatically.",
-      noComputationAdapters: "No computation_adapter.v1 functions were found.",
+      adapterCreationPathRetired: "The legacy calculation entry point is retired. Scan for calculations again.",
+      adapterContractVersionExpired: "This legacy candidate has expired. Scan again; it can no longer be processed or published.",
       adapterInputField: "Input field",
       adapterInputFieldHelp: "The product-facing field; for example, map source parameter x to quantity.",
       adapterInputSourceLabel: "Input {index} (source parameter: {parameter})",
@@ -1315,6 +1313,8 @@
       adapter_security_rejected: "captureSecurityRejected",
       capture_request_invalid: "captureRequestInvalid",
       capture_resubmission_required: "captureResubmitRequired",
+      adapter_creation_path_retired: "adapterCreationPathRetired",
+      adapter_contract_version_expired: "adapterContractVersionExpired",
     }[code] || "managementOperationFailed";
   }
 
@@ -1373,20 +1373,6 @@
       review_required: "captureReviewRequired",
       duplicate: "captureDuplicate",
     }[status] || "captureOutcomeUnknown";
-  }
-
-  function legacyAdapterOutcomeStatusKey(outcome) {
-    var gates = outcome && Array.isArray(outcome.gate_results) ? outcome.gate_results : [];
-    if (gates.length) {
-      var gateStatus = String((gates[gates.length - 1] || {}).status || "");
-      if (gateStatus === "failed") return "captureRejected";
-      return captureOutcomeStatusKey({ status: gateStatus });
-    }
-    var intakeStatus = String(
-      (((outcome || {}).intake || {}).adapter || {}).candidate_status || ""
-    );
-    if (intakeStatus === "extracted") return "captureWaitingValidation";
-    return captureOutcomeStatusKey({ status: intakeStatus });
   }
 
   function captureStatusIsWaiting(key) {
@@ -1604,214 +1590,12 @@
     });
   }
 
-  function renderComputationAdapterOffers(projectBlock, project) {
-    var projectId = String(project.project_id || "");
-    var inspection = ingestionManagement.adapterOffers[projectId];
-    if (!inspection || typeof inspection !== "object" || inspection.schema === "computation_capture_offers.v2") return;
-    var offers = Array.isArray(inspection.offers) ? inspection.offers : [];
-    var panel = document.createElement("div");
-    panel.className = "warehouse-project-config warehouse-developer-only";
-    var rejections = Array.isArray(inspection.rejection_summary)
-      ? inspection.rejection_summary
-      : [];
-    if (rejections.length) {
-      var rejection = document.createElement("p");
-      rejection.className = "warehouse-meta";
-      rejection.textContent = rejections.map(function (item) {
-        return String(item.code || "adapter_source_unsupported_v1") + " · " + String(item.count || 0);
-      }).join(" · ");
-      panel.appendChild(rejection);
-    }
-    if (!offers.length) {
-      emptyManagementList(panel, "noComputationAdapters");
-      projectBlock.appendChild(panel);
-      return;
-    }
-    offers.forEach(function (offer) {
-      var parameters = Array.isArray(offer.parameters) ? offer.parameters : [];
-      var details = document.createElement("details");
-      details.className = "warehouse-review";
-      var summary = document.createElement("summary");
-      summary.textContent = [offer.module_relpath, offer.export_name, parameters.join(", ")]
-        .filter(Boolean).join(" · ");
-      details.appendChild(summary);
-      var argumentControls = [];
-      var exampleControls = [];
-      parameters.forEach(function (parameter) {
-        var actions = document.createElement("div");
-        actions.className = "warehouse-actions";
-        var parameterName = document.createElement("span");
-        parameterName.className = "warehouse-meta";
-        parameterName.textContent = String(parameter);
-        actions.appendChild(parameterName);
-
-        var fieldLabel = document.createElement("label");
-        fieldLabel.className = "warehouse-field warehouse-developer-only";
-        fieldLabel.textContent = t("adapterInputField");
-        var field = document.createElement("input");
-        field.type = "text";
-        field.required = true;
-        field.pattern = "[a-z][a-z0-9]*(?:_[a-z0-9]+)*";
-        field.autocomplete = "off";
-        field.spellcheck = false;
-        if (/^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/.test(String(parameter))) field.value = String(parameter);
-        fieldLabel.appendChild(field);
-        actions.appendChild(fieldLabel);
-
-        var minimumLabel = document.createElement("label");
-        minimumLabel.className = "warehouse-field";
-        minimumLabel.textContent = t("adapterMinimum");
-        var minimum = document.createElement("input");
-        minimum.type = "number";
-        minimum.step = "1";
-        minimum.placeholder = "0";
-        minimum.required = true;
-        minimumLabel.appendChild(minimum);
-        actions.appendChild(minimumLabel);
-
-        var maximumLabel = document.createElement("label");
-        maximumLabel.className = "warehouse-field";
-        maximumLabel.textContent = t("adapterMaximum");
-        var maximum = document.createElement("input");
-        maximum.type = "number";
-        maximum.step = "1";
-        maximum.placeholder = "10000";
-        maximum.required = true;
-        maximumLabel.appendChild(maximum);
-        actions.appendChild(maximumLabel);
-
-        var exampleLabel = document.createElement("label");
-        exampleLabel.className = "warehouse-field";
-        exampleLabel.textContent = t("adapterExample") + " · " + String(parameter);
-        var example = document.createElement("input");
-        example.type = "number";
-        example.step = "1";
-        example.required = true;
-        exampleLabel.appendChild(example);
-        actions.appendChild(exampleLabel);
-
-        argumentControls.push({
-          source_parameter: String(parameter),
-          field: field,
-          minimum: minimum,
-          maximum: maximum,
-        });
-        exampleControls.push({ field: field, value: example });
-        details.appendChild(actions);
-      });
-
-      var resultActions = document.createElement("div");
-      resultActions.className = "warehouse-actions";
-      var resultLabel = document.createElement("label");
-      resultLabel.className = "warehouse-field";
-      resultLabel.textContent = t("adapterResultField");
-      var resultField = document.createElement("input");
-      resultField.type = "text";
-      resultField.required = true;
-      resultField.pattern = "[a-z][a-z0-9]*(?:_[a-z0-9]+)*";
-      resultField.value = "result";
-      resultField.autocomplete = "off";
-      resultField.spellcheck = false;
-      resultLabel.appendChild(resultField);
-      resultActions.appendChild(resultLabel);
-      var expectedLabel = document.createElement("label");
-      expectedLabel.className = "warehouse-field";
-      expectedLabel.textContent = t("adapterExpected");
-      var expected = document.createElement("input");
-      expected.type = "number";
-      expected.step = "1";
-      expected.required = true;
-      expectedLabel.appendChild(expected);
-      resultActions.appendChild(expectedLabel);
-      details.appendChild(resultActions);
-
-      var confirmationLabel = document.createElement("label");
-      confirmationLabel.className = "warehouse-project-choice";
-      confirmationLabel.title = t("adapterMappingConfirmation");
-      var confirmation = document.createElement("input");
-      confirmation.type = "checkbox";
-      confirmation.required = true;
-      confirmation.title = t("adapterMappingConfirmation");
-      confirmationLabel.appendChild(confirmation);
-      confirmationLabel.appendChild(document.createTextNode(" " + t("adapterMappingConfirmShort")));
-      details.appendChild(confirmationLabel);
-
-      var create = document.createElement("button");
-      create.type = "button";
-      create.className = "btn-ghost";
-      create.setAttribute("data-action", "create-computation-adapter");
-      create.textContent = t("createComputationAdapter");
-      create.addEventListener("click", function () {
-        if (!confirmation.checked) {
-          confirmation.reportValidity();
-          return;
-        }
-        var argumentsPayload = [];
-        var exampleInput = {};
-        var seenFields = {};
-        for (var index = 0; index < argumentControls.length; index += 1) {
-          var current = argumentControls[index];
-          var fieldName = String(current.field.value || "").trim();
-          var minimumValue = adapterSafeInteger(current.minimum);
-          var maximumValue = adapterSafeInteger(current.maximum);
-          var exampleValue = adapterSafeInteger(exampleControls[index].value);
-          if (
-            !current.field.checkValidity() ||
-            seenFields[fieldName] ||
-            minimumValue === null ||
-            maximumValue === null ||
-            exampleValue === null ||
-            minimumValue > maximumValue ||
-            exampleValue < minimumValue ||
-            exampleValue > maximumValue
-          ) {
-            setManagementStatus("adapterMappingInvalid");
-            if (!current.field.checkValidity()) current.field.reportValidity();
-            return;
-          }
-          seenFields[fieldName] = true;
-          argumentsPayload.push({
-            source_parameter: current.source_parameter,
-            input_field: fieldName,
-            minimum: minimumValue,
-            maximum: maximumValue,
-          });
-          exampleInput[fieldName] = exampleValue;
-        }
-        var resultName = String(resultField.value || "").trim();
-        var expectedValue = adapterSafeInteger(expected);
-        if (!resultField.checkValidity() || seenFields[resultName] || expectedValue === null) {
-          setManagementStatus("adapterMappingInvalid");
-          if (!resultField.checkValidity()) resultField.reportValidity();
-          return;
-        }
-        startManagementRun(
-          "start_create_computation_adapter",
-          {
-            project_id: projectId,
-            offer_id: String(offer.offer_id || ""),
-            arguments: argumentsPayload,
-            result_field: resultName,
-            examples: [{ input: exampleInput, expected: expectedValue }],
-          },
-          function (run) {
-            setManagementStatus(legacyAdapterOutcomeStatusKey(run && run.data));
-            refreshAdapterReviewItems();
-          },
-          false
-        );
-      });
-      details.appendChild(create);
-      panel.appendChild(details);
-    });
-    projectBlock.appendChild(panel);
-  }
-
   function renderJavascriptComputationOffers(projectBlock, project, inspection) {
     if (!inspection || inspection.schema !== "computation_capture_offers.v2") return;
     var offers = Array.isArray(inspection.offers) ? inspection.offers : [];
     var resumableReviews = ingestionManagement.reviewItems.filter(function (item) {
-      return item && String(item.project_id || "") === String(inspection.project_id || "") &&
+      return item && item.adapter_contract_version_expired !== true &&
+        String(item.project_id || "") === String(inspection.project_id || "") &&
         item.candidate_status === "waiting_user" &&
         item.resume_contract === "resubmit_ephemeral_capture.v1";
     });
@@ -2377,30 +2161,6 @@
         startManagementRun("start_refresh_project", { project_id: project.project_id });
       });
       row.appendChild(refresh);
-      var inspect = document.createElement("button");
-      inspect.type = "button";
-      inspect.className = "btn-ghost";
-      inspect.setAttribute("data-action", "inspect-computation-adapters");
-      inspect.textContent = t("inspectComputationAdapters");
-      inspect.title = t("inspectComputationAdaptersHelp");
-      inspect.classList.add("warehouse-developer-only");
-      inspect.disabled = !project.project_id || project.source_type === "javascript_computation_source" || ["ready", "unsupported_v1"].indexOf(projectStatus) < 0;
-      inspect.addEventListener("click", function () {
-        startManagementRun(
-          "start_inspect_computation_adapters",
-          { project_id: project.project_id },
-          function (run) {
-            var inspection = run && run.data;
-            if (!inspection || typeof inspection !== "object") return;
-            ingestionManagement.adapterOffers[String(project.project_id)] = inspection;
-            setManagementStatus("adapterInspectionComplete");
-            renderManagementProjects();
-            renderManagementReviews();
-          },
-          false
-        );
-      });
-      row.appendChild(inspect);
       var scanJavascript = document.createElement("button");
       scanJavascript.type = "button";
       scanJavascript.className = "btn-ghost";
@@ -2469,7 +2229,6 @@
         existingBrand.element.appendChild(saveBrand);
         projectBlock.appendChild(existingBrand.element);
       }
-      renderComputationAdapterOffers(projectBlock, project);
       renderJavascriptComputationOffers(
         projectBlock,
         project,
@@ -2533,6 +2292,7 @@
     }
     ingestionManagement.reviewItems.forEach(function (item) {
       var candidate = item.candidate && typeof item.candidate === "object" ? item.candidate : {};
+      var adapterContractExpired = item.adapter_contract_version_expired === true;
       var reviewContext = ingestionManagement.captureReviewContext[String(item.review_id || "")] || {};
       var details = document.createElement("details");
       details.className = "warehouse-review";
@@ -2540,10 +2300,12 @@
       var summary = document.createElement("summary");
       var reviewName = reviewContext.offer_name || item.display_name || item.suggested_name || candidate.suggested_display_name || t("captureReview");
       var hasServerDecisions = Array.isArray(item.allowed_decisions) && item.allowed_decisions.length > 0;
-      var reviewState = item.candidate_status === "waiting_user" &&
-        item.resume_contract === "resubmit_ephemeral_capture.v1" && !hasServerDecisions
-        ? t("captureResubmitRequired")
-        : reviewStatusLabel(item.candidate_status || item.status);
+      var reviewState = adapterContractExpired
+        ? t("adapterContractVersionExpired")
+        : (item.candidate_status === "waiting_user" &&
+          item.resume_contract === "resubmit_ephemeral_capture.v1" && !hasServerDecisions
+          ? t("captureResubmitRequired")
+          : reviewStatusLabel(item.candidate_status || item.status));
       summary.appendChild(document.createTextNode(String(reviewName) + " · " + reviewState));
       var reviewId = document.createElement("span");
       reviewId.className = "warehouse-developer-only warehouse-meta";
@@ -2554,6 +2316,12 @@
       meta.className = "warehouse-meta warehouse-developer-only";
       meta.textContent = [item.capability_kind || candidate.capability_kind, item.reason_code || item.error_code].filter(Boolean).join(" · ");
       details.appendChild(meta);
+      if (adapterContractExpired) {
+        var expiredStatus = document.createElement("p");
+        expiredStatus.className = "warehouse-status is-error";
+        expiredStatus.textContent = t("adapterContractVersionExpired");
+        details.appendChild(expiredStatus);
+      }
       var captureSummary = item.capture_summary && typeof item.capture_summary === "object" ? item.capture_summary : null;
       if (captureSummary) {
         var safeSummary = document.createElement("p");
@@ -2566,9 +2334,10 @@
         safeSummary.title = safeSummary.textContent;
         details.appendChild(safeSummary);
       }
-      var decisions = Array.isArray(item.allowed_decisions) ? item.allowed_decisions :
-        (Array.isArray(item.decisions) ? item.decisions : []);
-      if (!decisions.length && item.candidate_status === "waiting_user") {
+      var decisions = adapterContractExpired ? [] :
+        (Array.isArray(item.allowed_decisions) ? item.allowed_decisions :
+          (Array.isArray(item.decisions) ? item.decisions : []));
+      if (!adapterContractExpired && !decisions.length && item.candidate_status === "waiting_user") {
         var codes = item.redaction && Array.isArray(item.redaction.codes) ? item.redaction.codes : [];
         var stage3Code = candidate.stage3_failure && candidate.stage3_failure.error_code;
         if (

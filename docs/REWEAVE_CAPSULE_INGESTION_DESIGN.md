@@ -1,6 +1,6 @@
 # Reweave 旧项目清洗入库与唯一胶囊仓库设计
 
-文档状态：阶段 0 已封板；阶段 1–6 在 Static Web V1 支持面内为 `PASS`；附录 S 的 JavaScript 计算抓取阶段 D、E、F 为 `PASS`，阶段 G 第三方验收尚未开始；本地真实桌面闭环已通过，既有冻结提交的 GitHub 托管 Ubuntu/Windows CI 已通过，本次未提交字节仅完成本机 CI 等价复验、尚未 push；外部真实项目正向覆盖仍为 `PARTIAL`；classic script、普通应用顶层 bootstrap、框架源码与需构建项目明确留在 V1 外
+文档状态：阶段 0 已封板；阶段 1–6 在 Static Web V1 支持面内为 `PASS`；附录 S 的 JavaScript 计算抓取阶段 D–G 为 `PASS`。阶段 G 已用三个冻结第三方项目证明 `computation_adapter.v2` 的 `validated_positive`，并把 Grapheme 的外部 computation 胶囊与既有 presentation/interaction 组合，在真实 QWebEngine 中完成业务断言；这不扩大为外部 presentation/interaction 自动拆分已经完成。本地真实桌面与 Python 3.11/Node 24 CI 等价门已通过，本次最终字节尚未 push、未触发托管 CI；classic script、普通应用顶层 bootstrap、框架源码与需构建项目明确留在 V1 外
 
 初版日期：2026-07-14
 
@@ -6191,3 +6191,55 @@ P2=1 hosted Ubuntu/Windows CI pending checkpoint/push
 ~~~
 
 本次收口没有运行来源项目命令，没有修改来源项目或用户正式状态目录，没有 commit 或 push。
+
+### S.24 阶段 G 第三方验收、真实产品与 v1 退役封板（2026-07-19）
+
+阶段 G 按固定预算完成并判定为 `PASS`。本轮在运行 Reweave 前冻结 12 个第三方项目的 URL、完整 commit、许可证文件、Git 状态、目标函数和来源摘要；达到三个独立项目 `validated_positive` 后依约停止，没有用运行结果替换样本，也没有继续检查剩余九项。来源项目没有安装、构建、运行、修改或回写，全部 SQLite、产品与原始证据只存在于 `/private/tmp/reweave-stage-g-final`。
+
+三个 `validated_positive` 为：
+
+- Grapheme（GPL-3.0），commit `c84ff5386bee8f47d686bf9d757ad48654f4f5eb`，目标 `basic_arithmetic.js / Multiply`，正式验证 canonical hash `0f82dc743f08b2704b49a0dae6ec3b95fbbcdc9a4c5fb5bf6eb1fb274e53e61a`，证据 SHA-256 `00b781e40b9568a2137a9d39939f51dee461860230707e5abdbcbebebde7cc0c`。
+- betocostadev/build-tools-code-quality（MIT），commit `9d462676c6c8a6cb785c79e58b1f6308a3a3ff2b`，目标 `basic-math.js / multiply`，canonical hash `ba3915945cc82189e52f56e38c892c4d65da4790b8848026119029293f66eda7`，证据 SHA-256 `bedd26145895087b4ff8b78fbf58b5477f4148b52154044b0d1e8acc49a2bf97`。
+- Color.js（MIT），commit `9ab13a94ae9170b551c4292f6624995900f78711`，目标 `util.js / clamp`，canonical hash `251912275eda0c8e4cbd97a095a77b5c7100277b1c9cfb0db7e31555a7cdbdd0`，证据 SHA-256 `42238eac406522a12e2dbe3fbb5b3efc281962ceb7c4c0692a1fb0622c942cf8`。
+
+三项均通过 source graph、确定性 bundle、敏感/品牌/枚举门、`data_contract.v1`、bundle 后 AST 安全检查、真实 loopback Ollama 监督和真实 Node computation worker。三项验证运行前后正式 `capsules`、`capsule_versions`、`product_capsule_usage` 行数均为零；仅 Grapheme 随后的端到端流程执行了人工发布。Grapheme 第一次硬切后复验因冷模型未能在固定时间内响应而停在 `ollama_unavailable`，没有执行 worker 或写正式表；使用不含来源内容的提示预热同一个固定模型后，对同一冻结来源重跑通过。该次失败只记录为监督环境观察，不计作来源项目不支持。
+
+Grapheme 通过现有 `computation_adapter.v2` 生成新映射 `x → quantity`、`y → unit_price`、`result → total`，业务样例为 `4 × 5 = 20`。新版本 canonical hash 为 `0f82dc743f08b2704b49a0dae6ec3b95fbbcdc9a4c5fb5bf6eb1fb274e53e61a`，最终验收 version ID 为 `ver_61de5d83f63445b9ae3faaf93a980047`；它与旧临时 v1 `x/y → result` 的 canonical hash `08266b91ff72162b5f9037f9e7d519b18dde540f8eae6677fd2301e51520a288` 不同，旧版本未被修改、覆盖或冒充复用，`module_native` 没有增加运行时字段改名。
+
+真实产品由以下三个 active-current 精确版本组成：
+
+- presentation：`ver_2e9ba6869e334227a04df87891d90173`，canonical hash `97103a0e56518064c7fb0e324846723772dd27f563b1e2c0b14092537d9373ef`。
+- interaction：`ver_13853a3a1a8140c7be5e35c481e431d4`，canonical hash `2ecd6d79c2c3adfcce7b6a6ec24fda0b50d3f1137b4c808cdd9495c04fddf568`。
+- computation：`ver_61de5d83f63445b9ae3faaf93a980047`，canonical hash `0f82dc743f08b2704b49a0dae6ec3b95fbbcdc9a4c5fb5bf6eb1fb274e53e61a`。
+
+manifest digest 为 `a0f8fb5f58bb0989d1d26c4b94f99fed7ff81db0e72d9bfb3da13cf62dd2cc00`，六条 `product_capsule_usage` 贡献记录与 manifest 的三个精确 version ID 和 canonical hash 一致。真实 QWebEngine 业务验收范围为 `real_qwebengine_product_interaction`：输入数量 `4`、单价 `5`，点击 Calculate 后得到 `20`；事件发出一次、runtime 为 `passed`、阻断请求为空、控制台错误为空、根外 mutation 为空。最终字节证据 SHA-256 为 `bdf441ba6bb766cdf00ae9074e564b368888676a0f797bf943f4fef18cf53f91`。这不是启动探针或 synthetic interaction。
+
+阶段 G 成功后执行精确硬切：新的 v1 inspect/create 固定返回 `adapter_creation_path_retired`；旧 v1 waiting/review 的处理、决定和发布固定返回 `adapter_contract_version_expired`。只有证据明确属于 `computation_adapter.v1` 的 active-current 版本，在验证完整备份且 warehouse revision 未变化后，才通过 current version + active CAS 转为 `pending_revalidation`；普通 computation、adapter v2、历史版本、disabled、旧产品和只读 `capsules.json` 开发者迁移入口均不受影响。恢复旧备份后会重新运行同一退役门。
+
+最终冻结验证：
+
+- Python 3.14.5、pytest 9.1.1、PySide6 6.11.1 全量：`756 passed, 183 subtests passed`。
+- Python 3.11.15、Node 24.14.0 隔离 CI 等价全量：`745 passed, 11 skipped, 183 subtests passed`；11 个 skip 均为隔离环境未包含 PySide6 的既定图片/QWeb/桌面门。隔离副本 `npm ci --offline`、公开 demo `--help`、Node 24 前端语法和 `git diff --check` 均通过；源仓与隔离副本受控文件聚合 SHA-256 均为 `2c3a5cbbe2afa756a0cf251c260b32633acc76895814b27955c502c229b3a794`。
+- computation 真实 Node worker 与产品真实 QWebEngine 业务断言均通过；来源摘要、用户正式状态、旧 v1 数据库和 Reweave 受测工作树摘要前后相同。
+- 一次与 CI 全量并行运行的 Python 3.14 全量中，一个 source graph worker 用例出现非确定性失败；该用例单独重跑通过，Stage 3 整文件 `55 passed, 42 subtests passed`，取消并行重任务后的正式全量全绿。没有据此修改安全或超时契约。
+- 最终限定 diff 复核发现并修复一个退役竞态：预查时无 v1、随后旧进程发布 v1 的 `0 → 1` 时序，第二事务现在也必须通过 warehouse revision 复核；不匹配时事务失败并重试，下一次看到 v1 后先做验证备份，再允许 CAS 退役。四条精确退役回归及管理/生成/桌面关联组通过。
+- 当前最终字节尚未 push，未触发 GitHub 托管 Ubuntu/Windows runner；本机 CI 等价结果不冒充托管 CI。
+
+当前阶段门：
+
+~~~text
+STAGE_A_PASS
+STAGE_B_PASS
+STAGE_C_PASS_POSIX_CAPTURE_WINDOWS_STRUCTURED_UNSUPPORTED
+STAGE_D_PASS
+STAGE_E_PASS
+STAGE_F_PASS
+STAGE_G_PASS
+P0=0
+P1=0
+P2=1 hosted final-byte CI and demo publication pending explicit push/release approval
+~~~
+
+结构化摘要见 `docs/reports/REWEAVE_STAGE_G_ACCEPTANCE.json`。Stage G 到此停止，不实施 Bootstrap V3，不扩大 DSL，不创建模板、fallback、第二仓库或第二 composer；外部旧项目的 presentation/interaction 自动拆分仍未证明。
+
+若后续建立公开 `Reweave-demo`，必须在独立发布动作中按 Grapheme 的 GPL-3.0 许可完成衍生输出的许可证、源代码提供方式和归属核对；Stage G 的本地临时验收本身不构成公开分发批准。

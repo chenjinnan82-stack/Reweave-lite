@@ -121,6 +121,16 @@ _LEGACY_ID = re.compile(r"cap_[0-9a-f]{12}")
 _TERMINAL_TASK_STATES = frozenset({"completed", "failed", "cancelled"})
 
 
+def _retired_v1_adapter_candidate(candidate: Any) -> bool:
+    return bool(
+        type(candidate) is dict
+        and candidate.get("candidate_origin")
+        == "deterministic_computation_adapter"
+        and candidate.get("adapter_contract_version")
+        == COMPUTATION_ADAPTER_CONTRACT_VERSION
+    )
+
+
 class _InactiveLegacyEngine:
     """Sentinel: formal App/CLI startup must not construct a historical engine."""
 
@@ -1004,6 +1014,8 @@ class ReweaveAppService:
     @staticmethod
     def _allowed_review_decisions(item: dict[str, Any]) -> list[str]:
         candidate = item.get("candidate") or {}
+        if _retired_v1_adapter_candidate(candidate):
+            return []
         comparison = item.get("comparison") or {}
         current_status = str(item.get("candidate_status") or "")
         allowed: list[str] = []
@@ -1122,8 +1134,52 @@ class ReweaveAppService:
                 self._management_rules_checked = True
 
     def _require_current_rule_versions(self) -> None:
+        # Use the serialized store transaction boundary for the preflight query,
+        # but do not mutate it. The verified backup is created after this block
+        # and before the separate CAS transaction below.
+        with self._capsule_store.transaction() as connection:
+            active_rows = connection.execute(
+                "SELECT cv.extraction_summary_json FROM capsules c "
+                "JOIN capsule_versions cv ON cv.version_id = c.current_version_id "
+                "WHERE c.status = 'active'"
+            ).fetchall()
+            retirement_revision = int(
+                connection.execute(
+                    "SELECT warehouse_revision FROM warehouse_state "
+                    "WHERE singleton_id = 1"
+                ).fetchone()[0]
+            )
+        retiring_v1 = False
+        for row in active_rows:
+            try:
+                summary = json.loads(row["extraction_summary_json"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            if _retired_v1_adapter_candidate(summary):
+                retiring_v1 = True
+                break
+        if retiring_v1:
+            # The retirement is a warehouse mutation. A verified full backup must
+            # exist before the first active-current v1 capsule changes status.
+            backup = self._capsule_store.create_backup("upgrade")
+            if (
+                type(backup.get("warehouse_revision")) is not int
+                or backup["warehouse_revision"] != retirement_revision
+            ):
+                raise CapsuleStoreError("warehouse_changed_during_adapter_retirement")
+
         now = _now()
         with self._capsule_store.transaction() as connection:
+            current_revision = int(
+                connection.execute(
+                    "SELECT warehouse_revision FROM warehouse_state "
+                    "WHERE singleton_id = 1"
+                ).fetchone()[0]
+            )
+            if current_revision != retirement_revision:
+                raise CapsuleStoreError(
+                    "warehouse_changed_during_adapter_retirement"
+                )
             rows = connection.execute(
                 "SELECT c.capsule_id, c.current_version_id FROM capsules c "
                 "JOIN capsule_versions cv ON cv.version_id = c.current_version_id "
@@ -1162,10 +1218,12 @@ class ReweaveAppService:
                 ) != "deterministic_computation_adapter":
                     continue
                 adapter_version = summary.get("adapter_contract_version")
-                if adapter_version not in {
-                    COMPUTATION_ADAPTER_CONTRACT_VERSION,
-                    COMPUTATION_ADAPTER_V2,
-                }:
+                if adapter_version == COMPUTATION_ADAPTER_CONTRACT_VERSION:
+                    stale[str(row["capsule_id"])] = (
+                        str(row["current_version_id"]),
+                        "adapter_contract_version_changed",
+                    )
+                elif adapter_version != COMPUTATION_ADAPTER_V2:
                     stale[str(row["capsule_id"])] = (
                         str(row["current_version_id"]),
                         "adapter_contract_version_changed",
@@ -1767,21 +1825,7 @@ class ReweaveAppService:
     def start_inspect_computation_adapters(
         self, payload: dict[str, Any] | None = None
     ) -> dict[str, Any]:
-        try:
-            request = self._payload(payload)
-            project_id = str(request.get("project_id") or "").strip()
-            if not project_id:
-                return self._error("project_id_required")
-            return self._submit_management_task(
-                "inspect_computation_adapters",
-                lambda cancel: self._capsule_intake.inspect_computation_adapters(
-                    project_id,
-                    cancel_check=cancel.is_set,
-                ),
-                cancellable=True,
-            )
-        except ValueError as exc:
-            return self._exception_error(exc, "inspect_computation_adapters_invalid")
+        return self._error("adapter_creation_path_retired")
 
     def start_create_computation_adapter(
         self, payload: dict[str, Any] | None = None
@@ -1814,80 +1858,8 @@ class ReweaveAppService:
                     cancellable=True,
                 )
             if request.get("review_id") is not None:
-                return self._error("capture_resubmission_required")
-            if self._capsule_store.path.is_file():
-                with self._capsule_store.read_connection() as connection:
-                    version = int(
-                        connection.execute("PRAGMA user_version").fetchone()[0]
-                    )
-                    project_row = (
-                        connection.execute(
-                            "SELECT source_type FROM projects WHERE project_id = ?",
-                            (project_id,),
-                        ).fetchone()
-                        if version == 2
-                        else None
-                    )
-                if (
-                    project_row is not None
-                    and project_row["source_type"] == JAVASCRIPT_SOURCE_TYPE
-                ):
-                    return self._error("offer_stale")
-            # Client-supplied source paths and hashes are deliberately discarded.
-            adapter_request = {
-                "project_id": project_id,
-                "offer_id": offer_id,
-                "arguments": request.get("arguments"),
-                "result_field": request.get("result_field"),
-                "examples": request.get("examples"),
-            }
-
-            def action(cancel: threading.Event) -> dict[str, Any]:
-                intake_result = (
-                    self._capsule_intake.create_computation_adapter_candidate(
-                        adapter_request,
-                        cancel_check=cancel.is_set,
-                        validator=self._capsule_stage3.preflight_computation_adapter,
-                    )
-                )
-                gate_results: list[dict[str, Any]] = []
-                cancelled_before_completion = False
-                for review_id in intake_result.get("review_ids", []):
-                    with self._capsule_store.read_connection() as connection:
-                        row = connection.execute(
-                            "SELECT candidate_status FROM review_items WHERE review_id = ?",
-                            (review_id,),
-                        ).fetchone()
-                    if row is None or row["candidate_status"] != "extracted":
-                        continue
-                    if cancel.is_set():
-                        cancelled_before_completion = True
-                        break
-                    try:
-                        gate_results.append(
-                            self._capsule_stage3.process_review(str(review_id))
-                        )
-                    except Stage3Error as exc:
-                        gate_results.append(
-                            {
-                                "review_id": str(review_id),
-                                "status": "failed",
-                                "error_code": exc.code,
-                            }
-                        )
-                return {
-                    "status": (
-                        "cancelled" if cancelled_before_completion else "completed"
-                    ),
-                    "intake": intake_result,
-                    "gate_results": gate_results,
-                }
-
-            return self._submit_management_task(
-                "create_computation_adapter",
-                action,
-                cancellable=True,
-            )
+                return self._error("adapter_contract_version_expired")
+            return self._error("adapter_creation_path_retired")
         except ValueError as exc:
             return self._exception_error(exc, "create_computation_adapter_invalid")
 
@@ -2060,6 +2032,9 @@ class ReweaveAppService:
                         item[target] = None
                 item["allowed_decisions"] = self._allowed_review_decisions(item)
                 candidate = item.get("candidate") or {}
+                item["adapter_contract_version_expired"] = (
+                    _retired_v1_adapter_candidate(candidate)
+                )
                 item["resume_contract"] = candidate.get("resume_contract")
                 if item["resume_contract"] == "resubmit_ephemeral_capture.v1":
                     redaction = item.get("redaction") or {}
@@ -2080,6 +2055,7 @@ class ReweaveAppService:
                         == "resubmit_ephemeral_capture.v1"
                         and item.get("candidate_status") == "waiting_user"
                     )
+                    and not item["adapter_contract_version_expired"]
                 ):
                     continue
                 items.append(item)
@@ -2109,6 +2085,8 @@ class ReweaveAppService:
             )
             if item is None:
                 return self._error("review_item_not_found")
+            if item.get("adapter_contract_version_expired") is True:
+                return self._error("adapter_contract_version_expired")
             if decision not in item["allowed_decisions"]:
                 return self._error("review_decision_not_allowed")
             candidate = item.get("candidate") or {}
@@ -3313,6 +3291,7 @@ class ReweaveAppService:
                     {
                         "capsule_id": capsule_id,
                         "version_id": str(row["version_id"]),
+                        "canonical_hash": str(row["canonical_hash"]),
                         "capability_key": str(row["capability_key"]),
                         "role_key": str(row["role_key"]),
                         "variant_key": str(row["variant_key"]),
@@ -3363,6 +3342,7 @@ class ReweaveAppService:
                 or row["role_key"] != capsule["role_key"]
                 or row["variant_key"] != capsule["variant_key"]
                 or row["capability_kind"] != capsule["capability_kind"]
+                or row["canonical_hash"] != capsule["canonical_hash"]
                 or row["usage_scope_json"]
                 != json.dumps(
                     capsule["usage_scope"],
@@ -3376,7 +3356,10 @@ class ReweaveAppService:
 
     @staticmethod
     def _manifest_capsules(
-        capsules: list[dict[str, Any]], connections: list[dict[str, Any]]
+        capsules: list[dict[str, Any]],
+        connections: list[dict[str, Any]],
+        *,
+        include_canonical_hash: bool = True,
     ) -> list[dict[str, Any]]:
         wired = {
             str(row.get(key) or "")
@@ -3392,18 +3375,19 @@ class ReweaveAppService:
                 contributions.add("asset")
             if capsule["version_id"] in wired:
                 contributions.add("wiring")
-            result.append(
-                {
-                    "capsule_id": capsule["capsule_id"],
-                    "version_id": capsule["version_id"],
-                    "capability_key": capsule["capability_key"],
-                    "role_key": capsule["role_key"],
-                    "variant_key": capsule["variant_key"],
-                    "capability_kind": capsule["capability_kind"],
-                    "usage_scope": capsule["usage_scope"],
-                    "contributions": sorted(contributions),
-                }
-            )
+            receipt = {
+                "capsule_id": capsule["capsule_id"],
+                "version_id": capsule["version_id"],
+                "capability_key": capsule["capability_key"],
+                "role_key": capsule["role_key"],
+                "variant_key": capsule["variant_key"],
+                "capability_kind": capsule["capability_kind"],
+                "usage_scope": capsule["usage_scope"],
+                "contributions": sorted(contributions),
+            }
+            if include_canonical_hash:
+                receipt["canonical_hash"] = capsule["canonical_hash"]
+            result.append(receipt)
         return sorted(result, key=lambda item: item["version_id"])
 
     def _register_product_usage(
@@ -3499,7 +3483,10 @@ class ReweaveAppService:
                 task=task,
                 product_id=product_id,
                 generated_at=generated_at,
-                capsules=capsules,
+                capsules=[
+                    {key: value for key, value in capsule.items() if key != "canonical_hash"}
+                    for capsule in capsules
+                ],
             )
         except ValueError as exc:
             code = str(exc)
@@ -3723,20 +3710,31 @@ class ReweaveAppService:
             raise ProductGenerationError("product_manifest_invalid")
         allowed = {"presentation", "interaction", "computation", "asset", "wiring"}
         seen_versions: set[str] = set()
+        canonical_hash_mode: bool | None = None
+        legacy_keys = {
+            "capsule_id",
+            "version_id",
+            "capability_key",
+            "role_key",
+            "variant_key",
+            "capability_kind",
+            "usage_scope",
+            "contributions",
+        }
         for row in manifest["capsules"]:
+            row_keys = set(row) if type(row) is dict else set()
+            has_canonical_hash = row_keys == legacy_keys | {"canonical_hash"}
+            if frozenset(row_keys) not in {
+                frozenset(legacy_keys),
+                frozenset(legacy_keys | {"canonical_hash"}),
+            }:
+                raise ProductGenerationError("product_manifest_capsule_invalid")
+            if canonical_hash_mode is None:
+                canonical_hash_mode = has_canonical_hash
+            elif canonical_hash_mode != has_canonical_hash:
+                raise ProductGenerationError("product_manifest_capsule_invalid")
             if (
                 type(row) is not dict
-                or set(row)
-                != {
-                    "capsule_id",
-                    "version_id",
-                    "capability_key",
-                    "role_key",
-                    "variant_key",
-                    "capability_kind",
-                    "usage_scope",
-                    "contributions",
-                }
                 or type(row.get("contributions")) is not list
                 or not row["contributions"]
                 or row["contributions"] != sorted(set(row["contributions"]))
@@ -3753,6 +3751,13 @@ class ReweaveAppService:
                         "role_key",
                         "variant_key",
                     )
+                )
+                or (
+                    has_canonical_hash
+                    and _MANIFEST_DIGEST.fullmatch(
+                        str(row.get("canonical_hash") or "")
+                    )
+                    is None
                 )
                 or type(row.get("usage_scope")) is not dict
                 or row.get("version_id") in seen_versions
@@ -3974,7 +3979,10 @@ class ReweaveAppService:
                 task=manifest["task"],
                 product_id=manifest["product_id"],
                 generated_at=manifest["generated_at"],
-                capsules=capsules,
+                capsules=[
+                    {key: value for key, value in capsule.items() if key != "canonical_hash"}
+                    for capsule in capsules
+                ],
             )
         except ValueError as exc:
             raise ProductGenerationError("formal_capsule_selection_expired") from exc
@@ -3986,7 +3994,15 @@ class ReweaveAppService:
         )
         if type(expected_connections) is not list:
             raise ProductGenerationError("formal_capsule_selection_expired")
-        expected_capsules = self._manifest_capsules(capsules, expected_connections)
+        include_canonical_hash = all(
+            type(row) is dict and "canonical_hash" in row
+            for row in manifest["capsules"]
+        )
+        expected_capsules = self._manifest_capsules(
+            capsules,
+            expected_connections,
+            include_canonical_hash=include_canonical_hash,
+        )
         if (
             manifest["product_usage_scope"] != product_scope
             or manifest["composer_version"] != composition.get("composer_version")

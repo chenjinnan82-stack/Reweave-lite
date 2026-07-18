@@ -675,6 +675,10 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
             capsules = groups[0]["capsules"]
             assert len(capsules) == 3
             version_ids = {row["current_version_id"] for row in capsules}
+            version_hashes = {
+                row["current_version_id"]: row["canonical_hash"]
+                for row in capsules
+            }
             assert {row["status"] for row in capsules} == {"active"}
             wait_js(
                 "window.__phase6_document_token === 'same-document' && "
@@ -741,6 +745,10 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
             assert manifest_bytes == _canonical_manifest_bytes(manifest)
             assert hashlib.sha256(manifest_bytes).hexdigest() == record["manifest_digest"]
             assert {row["version_id"] for row in manifest["capsules"]} == version_ids
+            assert {
+                row["version_id"]: row["canonical_hash"]
+                for row in manifest["capsules"]
+            } == version_hashes
             expected_usage = {
                 (row["version_id"], contribution)
                 for row in manifest["capsules"]

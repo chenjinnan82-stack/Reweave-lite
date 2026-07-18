@@ -283,7 +283,7 @@ class Phase4ManagementTest(unittest.TestCase):
         self.assertEqual(task["status"], "completed")
         self.assertEqual(task["data"], {"committed": True})
 
-    def test_computation_adapter_inspection_is_async_and_read_only(self) -> None:
+    def test_computation_adapter_v1_inspection_is_retired_without_source_read(self) -> None:
         project_id = self._ready_project()
         revision_before = self.store.current_revision()
         with self.store.read_connection() as connection:
@@ -291,39 +291,16 @@ class Phase4ManagementTest(unittest.TestCase):
                 connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
                 for table in ("capsules", "capsule_versions", "product_capsule_usage")
             )
-        inspection = {
-            "schema": "computation_adapter_offers.v1",
-            "project_id": project_id,
-            "snapshot_sha256": "a" * 64,
-            "git_commit": None,
-            "offers": [
-                {
-                    "offer_id": "offer-1",
-                    "module_relpath": "src/calculate.js",
-                    "export_name": "calculate",
-                    "parameters": ["quantity", "price"],
-                    "function_sha256": "b" * 64,
-                    "closure": [],
-                }
-            ],
-            "rejection_summary": [],
-        }
         with patch.object(
             self.service._capsule_intake,
             "inspect_computation_adapters",
-            create=True,
-            return_value=inspection,
         ) as inspect:
-            started = self.service.start_inspect_computation_adapters(
+            result = self.service.start_inspect_computation_adapters(
                 {"project_id": project_id}
             )
-            task = self._wait(started["run_id"])
 
-        self.assertEqual(task["status"], "completed")
-        self.assertEqual(task["data"], inspection)
-        inspect.assert_called_once()
-        self.assertEqual(inspect.call_args.args, (project_id,))
-        self.assertTrue(callable(inspect.call_args.kwargs["cancel_check"]))
+        self.assertEqual(result["error"]["code"], "adapter_creation_path_retired")
+        inspect.assert_not_called()
         self.assertEqual(self.store.current_revision(), revision_before)
         with self.store.read_connection() as connection:
             formal_after = tuple(
@@ -332,15 +309,8 @@ class Phase4ManagementTest(unittest.TestCase):
             )
         self.assertEqual(formal_after, formal_before)
 
-    def test_computation_adapter_create_strips_client_source_evidence(self) -> None:
+    def test_computation_adapter_v1_create_is_retired_without_preflight(self) -> None:
         project_id = self._ready_project()
-        intake_result = {
-            "run_id": "adapter-intake",
-            "status": "completed",
-            "counts": {"extracted": 0},
-            "review_ids": [],
-            "adapter": {"example_count": 1, "example_sha256": "c" * 64},
-        }
         request = {
             "project_id": project_id,
             "offer_id": "offer-1",
@@ -361,28 +331,19 @@ class Phase4ManagementTest(unittest.TestCase):
         with patch.object(
             self.service._capsule_intake,
             "create_computation_adapter_candidate",
-            create=True,
-            return_value=intake_result,
         ) as create, patch.object(
             self.service._capsule_stage3,
             "preflight_computation_adapter",
             create=True,
-        ) as validator:
-            started = self.service.start_create_computation_adapter(request)
-            task = self._wait(started["run_id"])
+        ) as validator, patch.object(
+            self.store, "read_connection"
+        ) as warehouse_read:
+            result = self.service.start_create_computation_adapter(request)
 
-        self.assertEqual(task["status"], "completed")
-        self.assertEqual(task["data"]["intake"], intake_result)
-        forwarded = create.call_args.args[0]
-        self.assertEqual(
-            set(forwarded),
-            {"project_id", "offer_id", "arguments", "result_field", "examples"},
-        )
-        self.assertNotIn("module_relpath", forwarded)
-        self.assertNotIn("function_sha256", forwarded)
-        self.assertNotIn("source_hash", forwarded)
-        self.assertIs(create.call_args.kwargs["validator"], validator)
-        self.assertTrue(callable(create.call_args.kwargs["cancel_check"]))
+        self.assertEqual(result["error"]["code"], "adapter_creation_path_retired")
+        create.assert_not_called()
+        validator.assert_not_called()
+        warehouse_read.assert_not_called()
 
     def _scan_v2_offer(self, project_id: str) -> tuple[str, dict[str, object]]:
         source = self.root / "project" / "calculate.js"
@@ -776,6 +737,63 @@ class Phase4ManagementTest(unittest.TestCase):
 
         self.assertNotIn("process_candidate", decisions)
         self.assertIn("confirm_safe_redaction", decisions)
+
+    def test_retired_v1_review_remains_visible_but_cannot_be_decided(self) -> None:
+        project_id = self._ready_project()
+        now = "2026-07-18T00:00:00Z"
+        candidate = {
+            "candidate_origin": "deterministic_computation_adapter",
+            "adapter_contract_version": "computation_adapter.v1",
+        }
+        with self.store.transaction() as connection:
+            connection.execute(
+                "INSERT INTO intake_runs (run_id, project_id, run_kind, status, "
+                "extraction_contract_version, redaction_rules_version, security_rules_version, "
+                "supervision_rules_version, validation_contract_version, canonicalization_version, "
+                "counts_json, created_at) VALUES ('retired-v1-run', ?, 'refresh_project', "
+                "'completed_with_pending', 'extraction_contract.v1', 'redaction_rules.v1', "
+                "'security_rules.v1', 'supervision_rules.v1', 'validation_contract.v1', "
+                "1, '{}', ?)",
+                (project_id, now),
+            )
+            connection.execute(
+                "INSERT INTO review_items (review_id, run_id, project_id, candidate_id, "
+                "candidate_status, source_relpath, source_location_json, source_hash, "
+                "redaction_rules_version, sanitized_candidate_json, redaction_summary_json, "
+                "created_at, updated_at) VALUES ('retired-v1-review', 'retired-v1-run', ?, "
+                "'retired-v1-candidate', 'waiting_user', 'calculate.js', '{}', ?, "
+                "'redaction_rules.v1', ?, '{}', ?, ?)",
+                (
+                    project_id,
+                    "a" * 64,
+                    json.dumps(candidate, sort_keys=True, separators=(",", ":")),
+                    now,
+                    now,
+                ),
+            )
+
+        listed = self.service.list_review_items({})
+        self.assertTrue(listed["ok"], listed)
+        item = next(
+            row
+            for row in listed["data"]["items"]
+            if row["review_id"] == "retired-v1-review"
+        )
+        self.assertTrue(item["adapter_contract_version_expired"])
+        self.assertEqual(item["allowed_decisions"], [])
+
+        decided = self.service.decide_review_item(
+            {"review_id": "retired-v1-review", "decision": "reject"}
+        )
+        self.assertEqual(
+            decided["error"]["code"], "adapter_contract_version_expired"
+        )
+        with self.store.read_connection() as connection:
+            unchanged = connection.execute(
+                "SELECT candidate_status, decision, decided_at FROM review_items "
+                "WHERE review_id = 'retired-v1-review'"
+            ).fetchone()
+        self.assertEqual(tuple(unchanged), ("waiting_user", None, None))
 
     def test_refresh_all_reports_cooperative_cancel(self) -> None:
         self.store.initialize()
@@ -1268,6 +1286,196 @@ class Phase4ManagementTest(unittest.TestCase):
             ("revalidation_required", "adapter_contract_version_changed"),
         )
         self.assertEqual(COMPUTATION_ADAPTER_CONTRACT_VERSION, "computation_adapter.v1")
+
+    def test_v1_retirement_requests_verified_backup_then_marks_active_current(self) -> None:
+        project_id = self._ready_project()
+        capsule_id, version_id = self._seed_project_contribution(
+            project_id,
+            extraction_summary={
+                "candidate_origin": "deterministic_computation_adapter",
+                "adapter_contract_version": "computation_adapter.v1",
+            },
+        )
+        status_during_backup: list[str] = []
+
+        def verified_backup(kind: str) -> dict[str, str]:
+            with self.store.read_connection() as connection:
+                status_during_backup.append(
+                    str(
+                        connection.execute(
+                            "SELECT status FROM capsules WHERE capsule_id = ?",
+                            (capsule_id,),
+                        ).fetchone()[0]
+                    )
+                )
+            return {
+                "path": str(self.state / "backups" / "verified.sqlite3"),
+                "kind": kind,
+                "sha256": "f" * 64,
+                "warehouse_revision": self.store.current_revision(),
+            }
+
+        with patch.object(
+            self.store,
+            "create_backup",
+            side_effect=verified_backup,
+        ) as backup:
+            self.service.get_initial_state()
+
+        backup.assert_called_once_with("upgrade")
+        self.assertEqual(status_during_backup, ["active"])
+        with self.store.read_connection() as connection:
+            capsule = connection.execute(
+                "SELECT status, current_version_id FROM capsules WHERE capsule_id = ?",
+                (capsule_id,),
+            ).fetchone()
+            events = connection.execute(
+                "SELECT event_type, version_id, reason_code FROM capsule_status_events "
+                "WHERE capsule_id = ? ORDER BY created_at",
+                (capsule_id,),
+            ).fetchall()
+        self.assertEqual(
+            tuple(capsule), ("pending_revalidation", version_id)
+        )
+        self.assertEqual(
+            [tuple(row) for row in events],
+            [
+                (
+                    "revalidation_required",
+                    version_id,
+                    "adapter_contract_version_changed",
+                )
+            ],
+        )
+
+    def test_v1_retirement_backup_failure_leaves_capsule_active(self) -> None:
+        project_id = self._ready_project()
+        capsule_id, version_id = self._seed_project_contribution(
+            project_id,
+            extraction_summary={
+                "candidate_origin": "deterministic_computation_adapter",
+                "adapter_contract_version": "computation_adapter.v1",
+            },
+        )
+
+        with patch.object(
+            self.store, "create_backup", side_effect=OSError("backup failed")
+        ):
+            state = self.service.get_initial_state()
+
+        self.assertEqual(state["capsuleIngestionV1"]["databaseStatus"], "unavailable")
+        with self.store.read_connection() as connection:
+            capsule = connection.execute(
+                "SELECT status, current_version_id FROM capsules WHERE capsule_id = ?",
+                (capsule_id,),
+            ).fetchone()
+            event_count = connection.execute(
+                "SELECT COUNT(*) FROM capsule_status_events WHERE capsule_id = ?",
+                (capsule_id,),
+            ).fetchone()[0]
+        self.assertEqual(tuple(capsule), ("active", version_id))
+        self.assertEqual(event_count, 0)
+
+    def test_v1_retirement_rejects_warehouse_change_after_backup(self) -> None:
+        project_id = self._ready_project()
+        capsule_id, version_id = self._seed_project_contribution(
+            project_id,
+            extraction_summary={
+                "candidate_origin": "deterministic_computation_adapter",
+                "adapter_contract_version": "computation_adapter.v1",
+            },
+        )
+
+        def racing_backup(_kind: str) -> dict[str, object]:
+            revision = self.store.current_revision()
+            with self.store.transaction() as connection:
+                self.store.bump_revision(connection)
+            return {
+                "path": str(self.state / "backups" / "racing.sqlite3"),
+                "kind": "upgrade",
+                "sha256": "f" * 64,
+                "warehouse_revision": revision,
+            }
+
+        with patch.object(self.store, "create_backup", side_effect=racing_backup):
+            state = self.service.get_initial_state()
+
+        self.assertEqual(state["capsuleIngestionV1"]["databaseStatus"], "unavailable")
+        with self.store.read_connection() as connection:
+            capsule = connection.execute(
+                "SELECT status, current_version_id FROM capsules WHERE capsule_id = ?",
+                (capsule_id,),
+            ).fetchone()
+            event_count = connection.execute(
+                "SELECT COUNT(*) FROM capsule_status_events WHERE capsule_id = ?",
+                (capsule_id,),
+            ).fetchone()[0]
+        self.assertEqual(tuple(capsule), ("active", version_id))
+        self.assertEqual(event_count, 0)
+
+    def test_v1_retirement_rejects_zero_to_one_race_before_backup(self) -> None:
+        project_id = self._ready_project()
+        inserted: list[tuple[str, str]] = []
+        status_during_backup: list[str] = []
+
+        def insert_v1_after_empty_preflight() -> str:
+            if not inserted:
+                inserted.append(
+                    self._seed_project_contribution(
+                        project_id,
+                        extraction_summary={
+                            "candidate_origin": "deterministic_computation_adapter",
+                            "adapter_contract_version": "computation_adapter.v1",
+                        },
+                    )
+                )
+                with self.store.transaction() as connection:
+                    self.store.bump_revision(connection)
+            return "2026-07-19T00:00:00Z"
+
+        def verified_backup(kind: str) -> dict[str, object]:
+            capsule_id, _version_id = inserted[0]
+            with self.store.read_connection() as connection:
+                status_during_backup.append(
+                    str(
+                        connection.execute(
+                            "SELECT status FROM capsules WHERE capsule_id = ?",
+                            (capsule_id,),
+                        ).fetchone()[0]
+                    )
+                )
+            return {
+                "path": str(self.state / "backups" / "zero-to-one.sqlite3"),
+                "kind": kind,
+                "sha256": "f" * 64,
+                "warehouse_revision": self.store.current_revision(),
+            }
+
+        with (
+            patch(
+                "pimos_lite.reweave_app_service._now",
+                side_effect=insert_v1_after_empty_preflight,
+            ),
+            patch.object(
+                self.store, "create_backup", side_effect=verified_backup
+            ) as backup,
+        ):
+            self.service.get_initial_state()
+
+        backup.assert_called_once_with("upgrade")
+        self.assertEqual(status_during_backup, ["active"])
+        capsule_id, version_id = inserted[0]
+        with self.store.read_connection() as connection:
+            capsule = connection.execute(
+                "SELECT status, current_version_id FROM capsules WHERE capsule_id = ?",
+                (capsule_id,),
+            ).fetchone()
+            event_count = connection.execute(
+                "SELECT COUNT(*) FROM capsule_status_events WHERE capsule_id = ?",
+                (capsule_id,),
+            ).fetchone()[0]
+        self.assertEqual(tuple(capsule), ("pending_revalidation", version_id))
+        self.assertEqual(event_count, 1)
 
     def test_v2_bundle_evidence_expiry_marks_only_active_current_adapter(self) -> None:
         project_id = self._ready_project()

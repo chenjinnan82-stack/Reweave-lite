@@ -818,6 +818,15 @@ class ReweaveCapsuleIntake:
         *,
         cancel_check: Callable[[], bool] | None = None,
     ) -> dict[str, Any]:
+        """Reject the retired computation_adapter.v1 discovery path."""
+        raise IntakeError("adapter_creation_path_retired")
+
+    def _inspect_computation_adapters_v1(
+        self,
+        project_id: str,
+        *,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
         """Return source-free adapter offers from one consistent project snapshot."""
         with _project_guard(project_id):
             context = self._project_context(project_id)
@@ -1084,6 +1093,17 @@ class ReweaveCapsuleIntake:
         return arguments, result_field, examples, mapping_hash, examples_hash
 
     def create_computation_adapter_candidate(
+        self,
+        payload: dict[str, Any],
+        *,
+        cancel_check: Callable[[], bool] | None = None,
+        validator: Callable[[dict[str, Any], list[dict[str, Any]], str], dict[str, Any]]
+        | None = None,
+    ) -> dict[str, Any]:
+        """Reject creation through the retired computation_adapter.v1 path."""
+        raise IntakeError("adapter_creation_path_retired")
+
+    def _create_computation_adapter_candidate_v1(
         self,
         payload: dict[str, Any],
         *,
