@@ -150,6 +150,12 @@ def test_capsule_warehouse_defaults_to_compact_simple_mode() -> None:
     assert 'preview.className = "warehouse-meta warehouse-mapping-preview warehouse-developer-only";' in v2
     assert "var simpleHelp = document.createElement" not in v2
     assert 'preview.setAttribute("aria-live", "polite")' not in v2
+    assert 'signatureMeta.className = "warehouse-developer-only warehouse-meta";' in v2
+    assert 'formatText("adapterInputSourceLabel"' in v2
+    assert 't("adapterInputFieldVisibleHelp")' in v2
+    assert 't("adapterResultFieldVisibleHelp")' in v2
+    assert 'field.setAttribute("aria-describedby", fieldHelp.id);' in v2
+    assert 'resultField.setAttribute("aria-describedby", resultHelp.id);' in v2
     assert 'data-i18n-title="createBackupHelp"' in index
     assert 'data-i18n-title="importLegacyHelp"' in index
 
@@ -185,6 +191,120 @@ console.log(JSON.stringify({
         "unknown": "captureOutcomeUnknown",
         "reviewWaits": True,
         "rejectionWaits": False,
+    }
+
+
+def test_javascript_scan_eligibility_is_fail_closed_and_explained() -> None:
+    app = (ROOT / "reweave_frontend" / "app.js").read_text(encoding="utf-8")
+    assert 'scanJavascriptComputations: "查找可复用的计算功能"' in app
+    assert 'scanStatus.textContent = t("scanJavascriptRunning");' in app
+    assert 'formatText("scanJavascriptFound", { count: existingOffers.length })' in app
+    assert 'scanHelp.textContent = t("scanJavascriptComputationsHelp");' in app
+    assert 'scanJavascript.setAttribute("aria-describedby", scanHelp.id + " " + scanStatus.id);' in app
+    assert 'row.appendChild(scanStatus);' in app
+    status_block = app[
+        app.index("      var existingInspection = ingestionManagement.adapterOffers") : app.index(
+            '      scanJavascript.setAttribute("aria-describedby"',
+            app.index("      var existingInspection = ingestionManagement.adapterOffers"),
+        )
+    ]
+    assert status_block.index("if (!scanEligibility.enabled)") < status_block.index(
+        'existingInspection.schema === "computation_capture_offers.v2"'
+    )
+    assert 'source_unavailable: "projectScanSourceMissing"' in app
+    assert 'source_platform_unsupported_v1: "projectScanPlatformUnsupported"' in app
+
+    node = shutil.which("node")
+    if not node:
+        return
+    start = app.index("  function computationScanEligibility(")
+    end = app.index("\n  function renderManagementProjects(", start)
+    script = app[start:end] + """
+const rows = {
+  readyJs: computationScanEligibility({project_id: 'js', source_type: 'javascript_computation_source', project_state: 'ready'}),
+  readyStatic: computationScanEligibility({project_id: 's1', source_type: 'static_web', project_state: 'ready'}),
+  unsupportedStatic: computationScanEligibility({project_id: 's2', source_type: 'static_web', project_state: 'unsupported_v1'}),
+  pending: computationScanEligibility({project_id: 's3', source_type: 'static_web', project_state: 'pending_confirmation'}),
+  discovered: computationScanEligibility({project_id: 's4', source_type: 'static_web', project_state: 'discovered_unconfirmed'}),
+  missing: computationScanEligibility({project_id: 's5', source_type: 'static_web', project_state: 'source_missing'}),
+  platform: computationScanEligibility({project_id: 's6', source_type: 'static_web', project_state: 'source_platform_unsupported_v1'}),
+  unknownState: computationScanEligibility({project_id: 's7', source_type: 'static_web', project_state: 'mystery'}),
+  unknownType: computationScanEligibility({project_id: 's8', source_type: 'mystery', project_state: 'ready'}),
+  incomplete: computationScanEligibility({source_type: 'static_web', project_state: 'ready'})
+};
+console.log(JSON.stringify(rows));
+"""
+    result = subprocess.run(
+        [node, "-e", script], check=True, capture_output=True, text=True
+    )
+    rows = json.loads(result.stdout)
+    assert rows == {
+        "readyJs": {"enabled": True, "messageKey": "projectScanReady"},
+        "readyStatic": {"enabled": True, "messageKey": "projectScanReady"},
+        "unsupportedStatic": {
+            "enabled": True,
+            "messageKey": "projectScanStaticUnsupported",
+        },
+        "pending": {"enabled": False, "messageKey": "projectScanPending"},
+        "discovered": {"enabled": False, "messageKey": "projectScanPending"},
+        "missing": {"enabled": False, "messageKey": "projectScanSourceMissing"},
+        "platform": {
+            "enabled": False,
+            "messageKey": "projectScanPlatformUnsupported",
+        },
+        "unknownState": {
+            "enabled": False,
+            "messageKey": "projectScanUnknownState",
+        },
+        "unknownType": {
+            "enabled": False,
+            "messageKey": "projectScanUnknownType",
+        },
+        "incomplete": {
+            "enabled": False,
+            "messageKey": "projectScanIncomplete",
+        },
+    }
+
+
+def test_management_run_failure_reaches_project_row_callback() -> None:
+    node = shutil.which("node")
+    if not node:
+        return
+    app = (ROOT / "reweave_frontend" / "app.js").read_text(encoding="utf-8")
+    start = app.index("  function pollManagementRun(")
+    end = app.index("\n  function inspectAndRestoreBackup(", start)
+    script = """
+var seen = {refreshed: false};
+function bridgeCall() {
+  return Promise.resolve(JSON.stringify({
+    ok: true,
+    data: {run: {status: 'failed', error: {code: 'source_unavailable'}}}
+  }));
+}
+function parseBridgeJson(raw) { return JSON.parse(raw); }
+function managementPayload(result) { return result && result.ok !== false ? result.data : null; }
+function managementError(result) {
+  return result && result.error && result.error.code === 'source_unavailable'
+    ? 'projectScanSourceMissing'
+    : 'managementOperationFailed';
+}
+function rememberManagementRun() {}
+function renderManagementRuns() {}
+function setManagementStatus(key) { seen.global = key; }
+function refreshIngestionManagement() { seen.refreshed = true; }
+function collectRunIds() { return []; }
+""" + app[start:end] + """
+pollManagementRun('run-1', null, false, function (key) { seen.row = key; });
+setTimeout(function () { console.log(JSON.stringify(seen)); }, 0);
+"""
+    result = subprocess.run(
+        [node, "-e", script], check=True, capture_output=True, text=True
+    )
+    assert json.loads(result.stdout) == {
+        "refreshed": False,
+        "global": "projectScanSourceMissing",
+        "row": "projectScanSourceMissing",
     }
 
 

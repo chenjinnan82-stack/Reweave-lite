@@ -468,6 +468,40 @@ class Phase4ManagementTest(unittest.TestCase):
             "b" * 64,
         )
 
+    def test_static_unsupported_scan_reuses_v2_owner_without_legacy_adapter(self) -> None:
+        static_id = self._ready_project()
+        with self.store.transaction() as connection:
+            connection.execute(
+                "UPDATE projects SET project_state = 'unsupported_v1' WHERE project_id = ?",
+                (static_id,),
+            )
+        with (
+            patch.object(
+                self.service._capsule_intake, "inspect_computation_adapters"
+            ) as legacy_inspect,
+            patch.object(
+                self.service._capsule_intake,
+                "create_computation_adapter_candidate",
+            ) as legacy_create,
+        ):
+            first_owner, _offer = self._scan_v2_offer(static_id)
+            second_owner, _offer = self._scan_v2_offer(static_id)
+
+        self.assertEqual(first_owner, second_owner)
+        legacy_inspect.assert_not_called()
+        legacy_create.assert_not_called()
+        with self.store.read_connection() as connection:
+            owners = connection.execute(
+                "SELECT COUNT(*) FROM projects WHERE source_type = "
+                "'javascript_computation_source'"
+            ).fetchone()[0]
+            formal = tuple(
+                connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                for table in ("capsules", "capsule_versions", "product_capsule_usage")
+            )
+        self.assertEqual(owners, 1)
+        self.assertEqual(formal, (0, 0, 0))
+
     def test_v2_create_uses_authoritative_offer_and_allows_bound_resubmission(self) -> None:
         static_id = self._ready_project()
         owner_id, offer = self._scan_v2_offer(static_id)

@@ -20,6 +20,285 @@ ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "fixtures" / "reweave_phase6_quote"
 
 
+def test_simple_mode_scans_multiply_without_creating_candidate(
+    tmp_path: Path, monkeypatch
+) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("Node is required for JavaScript computation scanning")
+    if sys.platform.startswith("linux") and not (
+        os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    ):
+        pytest.skip("A desktop GUI session is required")
+    pytest.importorskip("PySide6.QtWebEngineCore")
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from PySide6.QtWebEngineCore import QWebEngineProfile
+
+    source = tmp_path / "source"
+    state = tmp_path / "state"
+    source.mkdir()
+    (source / "multiply.js").write_text(
+        "export function Multiply(x, y) { return x * y; }\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("REWEAVE_STATE_DIR", str(state))
+
+    def source_snapshot() -> list[tuple[str, int, int, str]]:
+        rows: list[tuple[str, int, int, str]] = []
+        for path in sorted(source.rglob("*")):
+            info = path.lstat()
+            digest = hashlib.sha256(path.read_bytes()).hexdigest() if path.is_file() else ""
+            rows.append(
+                (
+                    path.relative_to(source).as_posix(),
+                    stat.S_IMODE(info.st_mode),
+                    info.st_mtime_ns,
+                    digest,
+                )
+            )
+        return rows
+
+    source_before = source_snapshot()
+    from pimos_lite import desktop_reweave_static as desktop
+    from pimos_lite.reweave_app_service import ReweaveAppService
+
+    service = ReweaveAppService()
+    root = service._capsule_intake.bind_source_root(
+        source, root_kind="single_project"
+    )
+    registered = service.register_javascript_computation_source(
+        {
+            "source_root_id": root["root_id"],
+            "project_relpath": ".",
+            "display_name": "Multiply source",
+        }
+    )
+    assert registered.get("ok") is True, registered
+
+    original_get_initial_state = service.get_initial_state
+
+    def initial_state_with_disabled_rows() -> dict[str, object]:
+        initial = original_get_initial_state()
+        management = initial["capsuleIngestionV1"]
+        management["projects"] = list(management["projects"]) + [
+            {
+                "project_id": "pending-project",
+                "source_type": "static_web",
+                "project_state": "pending_confirmation",
+                "project_relpath": "pending",
+                "display_name": "Pending source",
+            },
+            {
+                "project_id": "missing-project",
+                "source_type": "static_web",
+                "project_state": "source_missing",
+                "project_relpath": "missing",
+                "display_name": "Missing source",
+            },
+            {
+                "project_id": "unknown-state-project",
+                "source_type": "static_web",
+                "project_state": "mystery",
+                "project_relpath": "unknown-state",
+                "display_name": "Unknown state source",
+            },
+            {
+                "project_id": "unknown-type-project",
+                "source_type": "mystery",
+                "project_state": "ready",
+                "project_relpath": "unknown-type",
+                "display_name": "Unknown type source",
+            },
+        ]
+        return initial
+
+    monkeypatch.setattr(service, "get_initial_state", initial_state_with_disabled_rows)
+
+    QApplication = desktop.import_qt_webengine()[0]
+    app = QApplication.instance() or QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
+    profile = QWebEngineProfile.defaultProfile()
+    profile.setCachePath(str(tmp_path / "qweb-cache"))
+    profile.setPersistentStoragePath(str(tmp_path / "qweb-storage"))
+    window = None
+
+    def pump(seconds: float = 0.03) -> None:
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.005)
+
+    try:
+        with patch.object(desktop, "ReweaveAppService", return_value=service):
+            window, _bridge = desktop.create_reweave_window()
+            page = window.centralWidget().page()
+            window.show()
+
+            def js(expression: str, timeout: float = 15) -> object:
+                result: list[object] = []
+                page.runJavaScript(expression, result.append)
+                deadline = time.monotonic() + timeout
+                while not result and time.monotonic() < deadline:
+                    pump()
+                if not result:
+                    raise TimeoutError("javascript_callback_timeout")
+                return result[0]
+
+            def wait_js(expression: str, timeout: float, label: str) -> object:
+                deadline = time.monotonic() + timeout
+                last: object = None
+                while time.monotonic() < deadline:
+                    last = js(expression)
+                    if last:
+                        return last
+                    pump(0.08)
+                raise TimeoutError(f"{label}:{last!r}")
+
+            wait_js(
+                "document.readyState === 'complete' && !!window.reweaveBridge",
+                30,
+                "desktop_bridge",
+            )
+            if js("document.documentElement.lang !== 'zh-CN'"):
+                js("document.getElementById('btn-lang').click(); true")
+            js("document.getElementById('btn-capsule-warehouse').click(); true")
+            wait_js(
+                "document.getElementById('warehouse-projects').textContent.includes('Multiply source')",
+                30,
+                "project_row",
+            )
+            before_click = json.loads(
+                str(
+                    js(
+                        """JSON.stringify((() => {
+                          const block = Array.from(document.querySelectorAll('#warehouse-projects .warehouse-project-config'))
+                            .find(item => item.textContent.includes('Multiply source'));
+                          const button = block?.querySelector('[data-action="scan-javascript-computations"]');
+                          const statusId = button?.getAttribute('aria-describedby')?.split(' ').pop();
+                          return {
+                            developer_mode: document.getElementById('warehouse-developer-mode').checked,
+                            popover_developer: document.getElementById('capsule-warehouse-popover').classList.contains('developer-mode'),
+                            button_text: button?.textContent || '',
+                            disabled: button?.disabled ?? true,
+                            status: statusId ? document.getElementById(statusId)?.textContent || '' : '',
+                            help: document.getElementById('javascript-computation-scan-help')?.textContent || '',
+                            described_by_help: (button?.getAttribute('aria-describedby') || '').split(' ').includes('javascript-computation-scan-help'),
+                            clicked: button ? (button.click(), true) : false
+                          };
+                        })())"""
+                    )
+                )
+            )
+            assert before_click == {
+                "developer_mode": False,
+                "popover_developer": False,
+                "button_text": "查找可复用的计算功能",
+                "disabled": False,
+                "status": "已准备好，可以只读查找计算功能。",
+                "help": "只读检查这个项目中的 JavaScript 函数。不会运行、修改或构建来源项目，也不会立即发布胶囊。",
+                "described_by_help": True,
+                "clicked": True,
+            }
+            disabled_rows = json.loads(
+                str(
+                    js(
+                        """JSON.stringify((() => {
+                          function row(name) {
+                            const block = Array.from(document.querySelectorAll('#warehouse-projects .warehouse-project-config'))
+                              .find(item => item.textContent.includes(name));
+                            const button = block?.querySelector('[data-action="scan-javascript-computations"]');
+                            const statusId = button?.getAttribute('aria-describedby')?.split(' ').pop();
+                            return {
+                              disabled: button?.disabled ?? false,
+                              status: statusId ? document.getElementById(statusId)?.textContent || '' : '',
+                              source_label: block?.querySelector('.warehouse-row > span')?.textContent || ''
+                            };
+                          }
+                          return {
+                            pending: row('Pending source'),
+                            missing: row('Missing source'),
+                            unknown_state: row('Unknown state source'),
+                            unknown_type: row('Unknown type source')
+                          };
+                        })())"""
+                    )
+                )
+            )
+            assert disabled_rows == {
+                "pending": {
+                    "disabled": True,
+                    "status": "项目尚未确认，请先确认来源项目。",
+                    "source_label": "Pending source · 静态网页来源",
+                },
+                "missing": {
+                    "disabled": True,
+                    "status": "来源目录当前不可访问，请重新选择原目录。",
+                    "source_label": "Missing source · 静态网页来源",
+                },
+                "unknown_state": {
+                    "disabled": True,
+                    "status": "项目状态未知，请刷新项目列表后重试。",
+                    "source_label": "Unknown state source · 静态网页来源",
+                },
+                "unknown_type": {
+                    "disabled": True,
+                    "status": "来源类型无法识别，请重新发现或登记该项目。",
+                    "source_label": "Unknown type source · 未知来源类型",
+                },
+            }
+            wait_js(
+                "Array.from(document.querySelectorAll('#warehouse-projects details summary')).some(item => item.textContent.includes('Multiply'))",
+                60,
+                "multiply_offer",
+            )
+            offer = json.loads(
+                str(
+                    js(
+                        """JSON.stringify((() => {
+                          const block = Array.from(document.querySelectorAll('#warehouse-projects .warehouse-project-config'))
+                            .find(item => item.textContent.includes('Multiply source'));
+                          const details = Array.from(block?.querySelectorAll('details') || [])
+                            .find(item => item.querySelector('summary')?.textContent.includes('Multiply'));
+                          if (details) details.open = true;
+                          return {
+                            found: block?.textContent.includes('找到 1 个可进一步验证的计算功能。') || false,
+                            input_1: details?.textContent.includes('输入 1（源码参数：x）') || false,
+                            input_2: details?.textContent.includes('输入 2（源码参数：y）') || false,
+                            input_help: details?.textContent.includes('这是该输入在新产品中的名称。例如 quantity 可以表示数量。') || false,
+                            result_help: details?.textContent.includes('这是计算结果在新产品中的名称。例如 total 可以表示总价。') || false
+                          };
+                        })())"""
+                    )
+                )
+            )
+            assert offer == {
+                "found": True,
+                "input_1": True,
+                "input_2": True,
+                "input_help": True,
+                "result_help": True,
+            }
+            with service._capsule_store.read_connection() as connection:
+                counts = tuple(
+                    connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+                    for table in (
+                        "review_items",
+                        "capsules",
+                        "capsule_versions",
+                        "product_capsule_usage",
+                    )
+                )
+            assert counts == (0, 0, 0, 0)
+            assert source_snapshot() == source_before
+    finally:
+        if window is not None:
+            window.close()
+            window.deleteLater()
+            pump()
+            QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+            app.processEvents()
+        service.close()
+
+
 def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -> None:
     if shutil.which("node") is None:
         pytest.skip("Node is required for Stage 6 generation")

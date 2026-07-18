@@ -207,11 +207,22 @@
       javascriptDisplayNameHelp: "给此计算来源一个便于识别的本地名称；留空时使用目录名。",
       javascriptSourceType: "JavaScript 计算来源",
       staticWebSourceType: "静态网页来源",
+      unknownSourceType: "未知来源类型",
       refreshProjectHelp: "重新只读扫描这个来源项目。",
       inspectComputationAdaptersHelp: "检查旧版已导出纯计算函数；简单模式使用新的计算函数扫描。",
-      scanJavascriptComputations: "扫描可抓取计算函数",
-      scanJavascriptComputationsHelp: "只读扫描并列出可由现有安全契约证明的计算函数。",
-      noJavascriptComputations: "未发现可配置的 computation_adapter.v2 函数。",
+      scanJavascriptComputations: "查找可复用的计算功能",
+      scanJavascriptComputationsHelp: "只读检查这个项目中的 JavaScript 函数。不会运行、修改或构建来源项目，也不会立即发布胶囊。",
+      scanJavascriptRunning: "正在只读分析 JavaScript 函数……",
+      scanJavascriptFound: "找到 {count} 个可进一步验证的计算功能。",
+      noJavascriptComputations: "没有找到符合当前安全范围的纯计算函数。来源项目没有被修改。",
+      projectScanReady: "已准备好，可以只读查找计算功能。",
+      projectScanPending: "项目尚未确认，请先确认来源项目。",
+      projectScanSourceMissing: "来源目录当前不可访问，请重新选择原目录。",
+      projectScanStaticUnsupported: "不能作为 Static Web 提取，但可以尝试查找纯计算函数。",
+      projectScanPlatformUnsupported: "当前平台不支持旧 JavaScript 计算抓取；没有读取来源。",
+      projectScanIncomplete: "项目记录不完整，请重新发现或登记该项目。",
+      projectScanUnknownType: "来源类型无法识别，请重新发现或登记该项目。",
+      projectScanUnknownState: "项目状态未知，请刷新项目列表后重试。",
       adapterInputKind: "输入类型",
       adapterInputKindHelp: "简单模式固定为整数；布尔和枚举只在开发者模式配置。",
       adapterEnumValues: "枚举值（每行一个）",
@@ -223,12 +234,15 @@
       noComputationAdapters: "未发现符合 computation_adapter.v1 的计算函数。",
       adapterInputField: "输入字段",
       adapterInputFieldHelp: "产品使用的字段名；例如旧参数 x 可以映射为 quantity。",
+      adapterInputSourceLabel: "输入 {index}（源码参数：{parameter}）",
+      adapterInputFieldVisibleHelp: "这是该输入在新产品中的名称。例如 quantity 可以表示数量。",
       adapterMinimum: "最小值",
       adapterMinimumHelp: "该输入允许的最小安全整数。必须依据实际业务填写。",
       adapterMaximum: "最大值",
       adapterMaximumHelp: "该输入允许的最大安全整数。必须依据实际业务填写。",
       adapterResultField: "输出字段",
       adapterResultFieldHelp: "产品接收计算结果时使用的字段名，例如 total。",
+      adapterResultFieldVisibleHelp: "这是计算结果在新产品中的名称。例如 total 可以表示总价。",
       adapterExample: "业务样例",
       adapterExampleHelp: "填写一组你知道正确的输入，值必须位于声明范围内。",
       adapterExpected: "期望结果",
@@ -529,11 +543,22 @@
       javascriptDisplayNameHelp: "Give this computation source a recognizable local name; leave blank to use the directory name.",
       javascriptSourceType: "JavaScript computation source",
       staticWebSourceType: "Static web source",
+      unknownSourceType: "Unknown source type",
       refreshProjectHelp: "Rescan this source project read-only.",
       inspectComputationAdaptersHelp: "Inspect legacy exported pure functions; simple mode uses the new computation scan.",
-      scanJavascriptComputations: "Scan capturable computation functions",
-      scanJavascriptComputationsHelp: "Scan read-only and list functions provable by the current safety contract.",
-      noJavascriptComputations: "No configurable computation_adapter.v2 functions were found.",
+      scanJavascriptComputations: "Find reusable calculations",
+      scanJavascriptComputationsHelp: "Inspect JavaScript functions in this project read-only. Reweave will not run, modify, or build the source project, and it will not publish a capsule yet.",
+      scanJavascriptRunning: "Analyzing JavaScript functions read-only…",
+      scanJavascriptFound: "Found {count} calculations that can be validated further.",
+      noJavascriptComputations: "No pure calculation matched the current safety scope. The source project was not modified.",
+      projectScanReady: "Ready for a read-only calculation scan.",
+      projectScanPending: "This project is not confirmed yet. Confirm the source project first.",
+      projectScanSourceMissing: "The source directory is unavailable. Select the original directory again.",
+      projectScanStaticUnsupported: "Static Web extraction is unsupported, but Reweave can still look for pure calculations.",
+      projectScanPlatformUnsupported: "Legacy JavaScript capture is unsupported on this platform; the source was not read.",
+      projectScanIncomplete: "This project record is incomplete. Discover or register the project again.",
+      projectScanUnknownType: "The source type is unknown. Discover or register the project again.",
+      projectScanUnknownState: "The project state is unknown. Refresh the project list and try again.",
       adapterInputKind: "Input type",
       adapterInputKindHelp: "Simple mode uses integers; configure booleans and enums in developer mode.",
       adapterEnumValues: "Enum values (one per line)",
@@ -545,12 +570,15 @@
       noComputationAdapters: "No computation_adapter.v1 functions were found.",
       adapterInputField: "Input field",
       adapterInputFieldHelp: "The product-facing field; for example, map source parameter x to quantity.",
+      adapterInputSourceLabel: "Input {index} (source parameter: {parameter})",
+      adapterInputFieldVisibleHelp: "This is the input name used by the new product. For example, quantity can mean an item count.",
       adapterMinimum: "Minimum",
       adapterMinimumHelp: "The smallest allowed safe integer. Enter a real business limit.",
       adapterMaximum: "Maximum",
       adapterMaximumHelp: "The largest allowed safe integer. Enter a real business limit.",
       adapterResultField: "Result field",
       adapterResultFieldHelp: "The field used by products to receive this result, for example total.",
+      adapterResultFieldVisibleHelp: "This is the result name used by the new product. For example, total can mean a total price.",
       adapterExample: "Business example",
       adapterExampleHelp: "Enter an input whose correct result you know; it must be within the declared range.",
       adapterExpected: "Expected result",
@@ -1280,6 +1308,8 @@
       adapter_example_mismatch: "captureExampleMismatch",
       source_changed: "captureSourceChanged",
       candidate_boundary_changed: "captureSourceChanged",
+      source_unavailable: "projectScanSourceMissing",
+      source_platform_unsupported_v1: "projectScanPlatformUnsupported",
       worker_timeout: "captureWorkerTimeout",
       bundle_security_rejected: "captureSecurityRejected",
       adapter_security_rejected: "captureSecurityRejected",
@@ -1799,11 +1829,13 @@
       details.className = "warehouse-review";
       details.title = t("adapterSimpleHelp");
       var summary = document.createElement("summary");
-      summary.appendChild(document.createTextNode(
-        String(offer.export_name || "function") + "(" + parameters.map(function (item) {
-          return String(item.name || "parameter");
-        }).join(", ") + ")"
-      ));
+      summary.appendChild(document.createTextNode(String(offer.export_name || "function")));
+      var signatureMeta = document.createElement("span");
+      signatureMeta.className = "warehouse-developer-only warehouse-meta";
+      signatureMeta.textContent = "(" + parameters.map(function (item) {
+        return String(item.name || "parameter");
+      }).join(", ") + ")";
+      summary.appendChild(signatureMeta);
       var sourceMeta = document.createElement("span");
       sourceMeta.className = "warehouse-developer-only warehouse-meta";
       sourceMeta.textContent = " · " + [offer.module_relpath, String(offer.dependency_count || 0)].filter(Boolean).join(" · ");
@@ -1838,12 +1870,15 @@
       details.appendChild(resumeLabel);
 
       var argumentControls = [];
-      parameters.forEach(function (parameter) {
+      parameters.forEach(function (parameter, parameterIndex) {
         var row = document.createElement("div");
         row.className = "warehouse-actions";
         var name = document.createElement("strong");
         name.className = "warehouse-meta";
-        name.textContent = String(parameter.name || "parameter");
+        name.textContent = formatText("adapterInputSourceLabel", {
+          index: parameterIndex + 1,
+          parameter: String(parameter.name || "parameter"),
+        });
         name.title = t("adapterInputFieldHelp");
         row.appendChild(name);
 
@@ -1860,6 +1895,12 @@
         fieldLabel.title = t("adapterInputFieldHelp");
         fieldLabel.appendChild(field);
         row.appendChild(fieldLabel);
+        var fieldHelp = document.createElement("span");
+        fieldHelp.id = "adapter-input-help-" + resumeKey.slice(0, 12) + "-" + parameterIndex;
+        fieldHelp.className = "warehouse-meta";
+        fieldHelp.textContent = t("adapterInputFieldVisibleHelp");
+        field.setAttribute("aria-describedby", fieldHelp.id);
+        row.appendChild(fieldHelp);
 
         var kind = controlHelp(document.createElement("select"), "adapterInputKindHelp");
         [["integer", "integer"], ["boolean", "boolean"], ["enum", "enum"]].forEach(function (entry) {
@@ -1955,6 +1996,12 @@
       resultLabel.title = t("adapterResultFieldHelp");
       resultLabel.appendChild(resultField);
       resultRow.appendChild(resultLabel);
+      var resultHelp = document.createElement("span");
+      resultHelp.id = "adapter-result-help-" + resumeKey.slice(0, 12);
+      resultHelp.className = "warehouse-meta";
+      resultHelp.textContent = t("adapterResultFieldVisibleHelp");
+      resultField.setAttribute("aria-describedby", resultHelp.id);
+      resultRow.appendChild(resultHelp);
       var expected = controlHelp(document.createElement("input"), "adapterExpectedHelp");
       expected.type = "number";
       expected.step = "1";
@@ -2148,6 +2195,34 @@
     projectBlock.appendChild(panel);
   }
 
+  function computationScanEligibility(project) {
+    var sourceType = String(project && project.source_type || "");
+    var status = String(project && project.project_state || "");
+    var knownType = sourceType === "javascript_computation_source" || sourceType === "static_web";
+    if (!project || !project.project_id) {
+      return { enabled: false, messageKey: "projectScanIncomplete" };
+    }
+    if (!knownType) {
+      return { enabled: false, messageKey: "projectScanUnknownType" };
+    }
+    if (["source_platform_unsupported_v1", "platform_unsupported"].indexOf(status) >= 0) {
+      return { enabled: false, messageKey: "projectScanPlatformUnsupported" };
+    }
+    if (status === "source_missing") {
+      return { enabled: false, messageKey: "projectScanSourceMissing" };
+    }
+    if (["discovered_unconfirmed", "pending_confirmation"].indexOf(status) >= 0) {
+      return { enabled: false, messageKey: "projectScanPending" };
+    }
+    if (status === "ready") {
+      return { enabled: true, messageKey: "projectScanReady" };
+    }
+    if (sourceType === "static_web" && status === "unsupported_v1") {
+      return { enabled: true, messageKey: "projectScanStaticUnsupported" };
+    }
+    return { enabled: false, messageKey: "projectScanUnknownState" };
+  }
+
   function renderManagementProjects() {
     var container = $("warehouse-projects");
     if (!container) return;
@@ -2263,6 +2338,11 @@
       form.appendChild(confirm);
       container.appendChild(form);
     }
+    var scanHelp = document.createElement("p");
+    scanHelp.id = "javascript-computation-scan-help";
+    scanHelp.className = "warehouse-meta warehouse-project-scan-help";
+    scanHelp.textContent = t("scanJavascriptComputationsHelp");
+    if (ingestionManagement.projects.length) container.appendChild(scanHelp);
     ingestionManagement.projects.slice().sort(function (left, right) {
       function rank(project) {
         return project.source_type === "javascript_computation_source" && project.project_state === "ready" ? 0 : 1;
@@ -2273,12 +2353,18 @@
       row.className = "warehouse-row";
       var projectStatus = project.project_state || project.status || "";
       var text = document.createElement("span");
-      var sourceType = project.source_type === "javascript_computation_source" ? t("javascriptSourceType") : t("staticWebSourceType");
+      var sourceType = project.source_type === "javascript_computation_source"
+        ? t("javascriptSourceType")
+        : (project.source_type === "static_web" ? t("staticWebSourceType") : t("unknownSourceType"));
       var sourceRelpath = String(project.project_relpath || project.root_relpath || ".");
-      text.textContent = String(project.display_name || project.name || project.project_key || sourceRelpath || project.project_id || "project") +
-        " · " + sourceType + " · " + sourceRelpath + " · " + String(projectStatus);
-      text.title = text.textContent;
+      var projectName = String(project.display_name || project.name || project.project_key || sourceRelpath || project.project_id || "project");
+      text.textContent = projectName + " · " + sourceType;
+      text.title = [projectName, sourceType, sourceRelpath, String(projectStatus)].join(" · ");
       row.appendChild(text);
+      var projectMeta = document.createElement("span");
+      projectMeta.className = "warehouse-meta warehouse-developer-only";
+      projectMeta.textContent = " · " + sourceRelpath + " · " + String(projectStatus);
+      row.appendChild(projectMeta);
       var refresh = document.createElement("button");
       refresh.type = "button";
       refresh.className = "btn-ghost";
@@ -2321,23 +2407,47 @@
       scanJavascript.setAttribute("data-action", "scan-javascript-computations");
       scanJavascript.textContent = t("scanJavascriptComputations");
       scanJavascript.title = t("scanJavascriptComputationsHelp");
-      scanJavascript.disabled = !project.project_id || projectStatus !== "ready";
+      var scanEligibility = computationScanEligibility(project);
+      scanJavascript.disabled = !scanEligibility.enabled;
+      var scanStatus = document.createElement("span");
+      scanStatus.id = "project-scan-status-" + String(project.project_id || "unknown").replace(/[^a-zA-Z0-9_-]/g, "");
+      scanStatus.className = "warehouse-meta warehouse-project-scan-status";
+      var existingInspection = ingestionManagement.adapterOffers[String(project.project_id || "")];
+      if (!scanEligibility.enabled) {
+        scanStatus.textContent = t(scanEligibility.messageKey);
+      } else if (existingInspection && existingInspection.schema === "computation_capture_offers.v2") {
+        var existingOffers = Array.isArray(existingInspection.offers) ? existingInspection.offers : [];
+        scanStatus.textContent = existingOffers.length
+          ? formatText("scanJavascriptFound", { count: existingOffers.length })
+          : t("noJavascriptComputations");
+      } else {
+        scanStatus.textContent = t(scanEligibility.messageKey);
+      }
+      scanJavascript.setAttribute("aria-describedby", scanHelp.id + " " + scanStatus.id);
       scanJavascript.addEventListener("click", function () {
+        scanStatus.textContent = t("scanJavascriptRunning");
         startManagementRun(
           "start_scan_javascript_computations",
           { project_id: project.project_id },
           function (run) {
             var inspection = run && run.data;
-            if (!inspection || inspection.schema !== "computation_capture_offers.v2") return;
+            if (!inspection || inspection.schema !== "computation_capture_offers.v2") {
+              scanStatus.textContent = t("managementOperationFailed");
+              return;
+            }
             ingestionManagement.adapterOffers[String(project.project_id)] = inspection;
             setManagementStatus("adapterInspectionComplete");
             renderManagementProjects();
             renderManagementReviews();
           },
-          false
+          false,
+          function (errorKey) {
+            scanStatus.textContent = t(errorKey || "managementOperationFailed");
+          }
         );
       });
       row.appendChild(scanJavascript);
+      row.appendChild(scanStatus);
       var projectBlock = document.createElement("div");
       projectBlock.className = "warehouse-project-config";
       projectBlock.appendChild(row);
@@ -2995,13 +3105,15 @@
     });
   }
 
-  function pollManagementRun(runId, onComplete, refreshAfter) {
+  function pollManagementRun(runId, onComplete, refreshAfter, onFailure) {
     bridgeCall("get_intake_run", JSON.stringify({ run_id: runId })).then(function (raw) {
       var result = parseBridgeJson(raw);
       var payload = managementPayload(result);
       if (!payload) {
+        var missingPayloadKey = managementError(result);
         rememberManagementRun(runId, { status: "failed" });
-        setManagementStatus(managementError(result));
+        setManagementStatus(missingPayloadKey);
+        if (typeof onFailure === "function") onFailure(missingPayloadKey);
         renderManagementRuns();
         return;
       }
@@ -3009,29 +3121,40 @@
       rememberManagementRun(runId, run);
       renderManagementRuns();
       if (run.status === "queued" || run.status === "running") {
-        setTimeout(function () { pollManagementRun(runId, onComplete, refreshAfter); }, 750);
+        setTimeout(function () { pollManagementRun(runId, onComplete, refreshAfter, onFailure); }, 750);
       } else {
-        if (run.status === "failed" && run.error) setManagementStatus(managementError({ error: run.error }));
-        if (run.status === "completed" && typeof onComplete === "function") onComplete(run);
+        if (run.status === "completed") {
+          if (typeof onComplete === "function") onComplete(run);
+        } else {
+          var failureKey = run.error
+            ? managementError({ error: run.error })
+            : "managementOperationFailed";
+          setManagementStatus(failureKey);
+          if (typeof onFailure === "function") onFailure(failureKey);
+        }
         if (refreshAfter !== false) refreshIngestionManagement();
       }
     });
   }
 
-  function trackManagementRuns(result, onComplete, refreshAfter) {
+  function trackManagementRuns(result, onComplete, refreshAfter, onFailure) {
     var ids = collectRunIds(result);
     ids.forEach(function (runId) {
       rememberManagementRun(runId, { status: "queued" });
-      pollManagementRun(runId, onComplete, refreshAfter);
+      pollManagementRun(runId, onComplete, refreshAfter, onFailure);
     });
     renderManagementRuns();
     return ids.length > 0;
   }
 
-  function startManagementRun(method, payload, onComplete, refreshAfter) {
+  function startManagementRun(method, payload, onComplete, refreshAfter, onFailure) {
     return bridgeCall(method, JSON.stringify(payload || {})).then(function (raw) {
       var result = parseBridgeJson(raw);
-      if (!trackManagementRuns(result, onComplete, refreshAfter)) setManagementStatus(managementError(result));
+      if (!trackManagementRuns(result, onComplete, refreshAfter, onFailure)) {
+        var errorKey = managementError(result);
+        setManagementStatus(errorKey);
+        if (typeof onFailure === "function") onFailure(errorKey);
+      }
       return result;
     });
   }
