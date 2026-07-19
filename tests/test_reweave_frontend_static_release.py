@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
 import shutil
@@ -864,6 +865,202 @@ def test_static_web_target_ui_acceptance_keeps_confirmation_review_only() -> Non
     assert report["zero_writes"]["target_tree_unchanged"] is True
     assert report["scope_limit"]["qt_service_is_stubbed"] is True
     assert report["scope_limit"]["release_tag_moved"] is False
+
+
+def test_real_static_web_target_e2e_receipt_is_bound_and_review_only() -> None:
+    report_path = (
+        ROOT
+        / "docs"
+        / "reports"
+        / "REWEAVE_STATIC_WEB_TARGET_REAL_E2E_ACCEPTANCE.json"
+    )
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    acceptance_sha256 = report.pop("acceptance_sha256")
+    canonical = json.dumps(
+        report, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+
+    assert hashlib.sha256(canonical).hexdigest() == acceptance_sha256
+    assert report["schema_version"] == (
+        "reweave_static_web_target_real_e2e_acceptance.v1"
+    )
+    assert report["verdict"] == "PASS"
+    assert report["input"] == {
+        "repository": "https://github.com/MasiaAntoine/snake-js",
+        "commit": "894e7dc8549b0aa347ecbe985704a3c32fbbc767",
+        "entry_path": "index.html",
+        "target_snapshot_sha256": (
+            "26ac34b1bc41102c9846d7899dca5d3ce5b4709ab988899cc30ab1fb800e1e5d"
+        ),
+        "target_git_clean_before": True,
+        "target_git_clean_after": True,
+    }
+
+    runtime = report["runtime_path"]
+    assert runtime == {
+        "acceptance_scope": "real_qwebengine_real_bridge_real_app_service",
+        "analyze_generate_stubbed": False,
+        "target_bridge_calls": [
+            "choose_static_web_target",
+            "analyze_static_web_target",
+            "generate_static_web_patch",
+        ],
+        "confirmation_bridge_calls": 0,
+        "composer_calls": 1,
+        "composer_version": "module_native_formal_product.v1",
+    }
+
+    review = report["review"]
+    confirmation = report["confirmation"]
+    frontend_binding = confirmation["frontend_binding"]
+    e2e_binding = confirmation["e2e_acceptance_binding"]
+    assert {
+        "profile_schema": review["profile_schema"],
+        "patch_schema": review["patch_schema"],
+        "patch_status": review["patch_status"],
+        "authorization_mode": review["authorization_mode"],
+        "strategy": review["strategy"],
+    } == {
+        "profile_schema": "static_web_target_profile.v1",
+        "patch_schema": "static_web_target_patch.v1",
+        "patch_status": "ready_for_review",
+        "authorization_mode": "review_patch_only",
+        "strategy": "static_web_iframe_embed.v1",
+    }
+    assert review["file_diff_visible"] is True
+    assert review["validation_evidence_visible"] is True
+    assert review["developer_mode_completed"] is True
+    assert confirmation["kind"] == "in_memory_review_receipt"
+    assert confirmation["bridge_call"] is False
+    assert confirmation["write_authorization"] is False
+    assert confirmation["confirmed"] is True
+    assert review["plan_id"] == frontend_binding["plan_id"] == e2e_binding["plan_id"]
+    assert review["plan_id"] == (
+        "weave_dd8dc1dc965daa0085d897e4f481815e7e465cf6d770652893e27591a030b54f"
+    )
+    assert (
+        review["target_snapshot_sha256"]
+        == frontend_binding["target_snapshot_sha256"]
+        == e2e_binding["target_snapshot_sha256"]
+    )
+    assert review["patch_sha256"] == e2e_binding["patch_sha256"]
+    assert review["patch_sha256"] == (
+        "ae85f9bd49ec8a0d5f25f70fa8dccc07809319dbfcdd1e80874f2f4fb891d76f"
+    )
+    assert review["capsule_versions"] == e2e_binding["capsule_versions"]
+    assert {
+        (
+            row["capsule_id"],
+            row["version_id"],
+            row["capability_kind"],
+            row["canonical_hash"],
+        )
+        for row in review["capsule_versions"]
+    } == {
+        (
+            "capsule_computation",
+            "version_computation_1",
+            "computation",
+            "b8ffa3ae8ff9e34f34312363189432882ad781c2f9dfd97b5c92acf3c82f90b3",
+        ),
+        (
+            "capsule_interaction",
+            "version_interaction_1",
+            "interaction",
+            "69f3834c9041f49713c85c83ab2f4e13bae2de17dd3dfc39081ecb8a10539bb4",
+        ),
+        (
+            "capsule_presentation",
+            "version_presentation_1",
+            "presentation",
+            "9c7a3a7d332432c5c8eb8718d29cc360045de75a910f62361c5469d4e1e4863e",
+        ),
+    }
+    assert len(review["capsule_versions"]) == 3
+
+    assert all(value is False for value in report["display_safety"].values())
+    assert all(
+        report["plan3_contract"][key] is True
+        for key in (
+            "authorization_match",
+            "content_addressed_plan_id_consistent",
+            "evidence_all_passed",
+            "evidence_checks_match",
+            "fixed_input_patch_digest_match",
+            "fixed_input_plan_id_match",
+            "patch_schema_match",
+            "patch_status_match",
+            "strategy_match",
+            "target_snapshot_match",
+            "validation_steps_match",
+        )
+    )
+    assert review["validation_steps"] == [
+        "target_snapshot_match",
+        "target_path_and_resource_boundaries",
+        "capsule_usage_scope",
+        "module_native_composition",
+        "target_output_collision",
+        "target_snapshot_unchanged",
+    ]
+    assert [row["name"] for row in review["evidence_checks"]] == [
+        "target_snapshot_bound",
+        "target_paths_and_resources",
+        "capsule_usage_scope",
+        "module_native_composition",
+        "output_paths_collision_free",
+        "target_snapshot_unchanged",
+    ]
+    assert all(row["passed"] is True for row in review["evidence_checks"])
+    state_evidence = report["state_evidence"]
+    for key in (
+        "target_tree",
+        "target_git",
+        "warehouse_revision",
+        "product_directory",
+        "product_capsule_usage",
+    ):
+        assert state_evidence[key]["before"] == state_evidence[key]["after"]
+    assert state_evidence["target_git"]["before"]["head"] == report["input"][
+        "commit"
+    ]
+    assert state_evidence["target_git"]["before"]["status_clean"] is True
+    assert re.fullmatch(
+        r"[0-9a-f]{64}", state_evidence["target_tree"]["before"]["sha256"]
+    )
+    assert re.fullmatch(
+        r"[0-9a-f]{64}",
+        state_evidence["target_tree"]["before"]["mtime_sha256"],
+    )
+    assert re.fullmatch(
+        r"[0-9a-f]{64}",
+        state_evidence["product_capsule_usage"]["before"]["sha256"],
+    )
+    assert all(value is False for value in report["scope_limit"].values())
+    assert report["verification"] == {"real_e2e": {"passed": 1, "failed": 0}}
+    for key in (
+        "apply",
+        "commit",
+        "product_store_write",
+        "rollback",
+        "target_project_write",
+        "usage_registration_write",
+    ):
+        assert report["zero_writes"][key] is False
+    for key in (
+        "product_capsule_usage_unchanged",
+        "product_directory_unchanged",
+        "target_git_head_unchanged",
+        "target_git_status_unchanged",
+        "target_tree_unchanged",
+        "warehouse_revision_unchanged",
+    ):
+        assert report["zero_writes"][key] is True
+
+    serialized = report_path.read_text(encoding="utf-8")
+    assert '"after_content":' not in serialized
+    assert "/private/" not in serialized
+    assert "/Users/" not in serialized
 
 
 def test_desktop_user_flow_doc_is_linked() -> None:

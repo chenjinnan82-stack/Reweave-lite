@@ -1,0 +1,235 @@
+{
+  "acceptance_sha256": "8b61158ac501ea957456d54a445e1488dc569f6981e4ae4027ebd1b8f6d0b331",
+  "completed_date": "2026-07-19",
+  "confirmation": {
+    "bridge_call": false,
+    "confirmed": true,
+    "e2e_acceptance_binding": {
+      "capsule_versions": [
+        {
+          "canonical_hash": "b8ffa3ae8ff9e34f34312363189432882ad781c2f9dfd97b5c92acf3c82f90b3",
+          "capability_kind": "computation",
+          "capsule_id": "capsule_computation",
+          "version_id": "version_computation_1"
+        },
+        {
+          "canonical_hash": "69f3834c9041f49713c85c83ab2f4e13bae2de17dd3dfc39081ecb8a10539bb4",
+          "capability_kind": "interaction",
+          "capsule_id": "capsule_interaction",
+          "version_id": "version_interaction_1"
+        },
+        {
+          "canonical_hash": "9c7a3a7d332432c5c8eb8718d29cc360045de75a910f62361c5469d4e1e4863e",
+          "capability_kind": "presentation",
+          "capsule_id": "capsule_presentation",
+          "version_id": "version_presentation_1"
+        }
+      ],
+      "patch_sha256": "ae85f9bd49ec8a0d5f25f70fa8dccc07809319dbfcdd1e80874f2f4fb891d76f",
+      "plan_id": "weave_dd8dc1dc965daa0085d897e4f481815e7e465cf6d770652893e27591a030b54f",
+      "target_snapshot_sha256": "26ac34b1bc41102c9846d7899dca5d3ce5b4709ab988899cc30ab1fb800e1e5d"
+    },
+    "frontend_binding": {
+      "plan_id": "weave_dd8dc1dc965daa0085d897e4f481815e7e465cf6d770652893e27591a030b54f",
+      "target_snapshot_sha256": "26ac34b1bc41102c9846d7899dca5d3ce5b4709ab988899cc30ab1fb800e1e5d"
+    },
+    "kind": "in_memory_review_receipt",
+    "write_authorization": false
+  },
+  "display_safety": {
+    "after_content_executed": false,
+    "after_content_rendered": false,
+    "target_absolute_path_in_dom": false,
+    "target_absolute_path_in_log": false,
+    "target_absolute_path_persisted": false
+  },
+  "input": {
+    "commit": "894e7dc8549b0aa347ecbe985704a3c32fbbc767",
+    "entry_path": "index.html",
+    "repository": "https://github.com/MasiaAntoine/snake-js",
+    "target_git_clean_after": true,
+    "target_git_clean_before": true,
+    "target_snapshot_sha256": "26ac34b1bc41102c9846d7899dca5d3ce5b4709ab988899cc30ab1fb800e1e5d"
+  },
+  "plan3_contract": {
+    "authorization_match": true,
+    "content_addressed_plan_id_consistent": true,
+    "evidence_all_passed": true,
+    "evidence_checks_match": true,
+    "fixed_input_patch_digest_match": true,
+    "fixed_input_plan_id_match": true,
+    "patch_schema_match": true,
+    "patch_status_match": true,
+    "reference": "docs/reports/REWEAVE_STATIC_WEB_TARGET_PATCH_ACCEPTANCE.json",
+    "strategy_match": true,
+    "target_snapshot_match": true,
+    "validation_steps_match": true
+  },
+  "review": {
+    "authorization_mode": "review_patch_only",
+    "capsule_versions": [
+      {
+        "canonical_hash": "b8ffa3ae8ff9e34f34312363189432882ad781c2f9dfd97b5c92acf3c82f90b3",
+        "capability_kind": "computation",
+        "capsule_id": "capsule_computation",
+        "version_id": "version_computation_1"
+      },
+      {
+        "canonical_hash": "69f3834c9041f49713c85c83ab2f4e13bae2de17dd3dfc39081ecb8a10539bb4",
+        "capability_kind": "interaction",
+        "capsule_id": "capsule_interaction",
+        "version_id": "version_interaction_1"
+      },
+      {
+        "canonical_hash": "9c7a3a7d332432c5c8eb8718d29cc360045de75a910f62361c5469d4e1e4863e",
+        "capability_kind": "presentation",
+        "capsule_id": "capsule_presentation",
+        "version_id": "version_presentation_1"
+      }
+    ],
+    "developer_mode_completed": true,
+    "evidence_checks": [
+      {
+        "name": "target_snapshot_bound",
+        "passed": true
+      },
+      {
+        "name": "target_paths_and_resources",
+        "passed": true
+      },
+      {
+        "name": "capsule_usage_scope",
+        "passed": true
+      },
+      {
+        "name": "module_native_composition",
+        "passed": true
+      },
+      {
+        "name": "output_paths_collision_free",
+        "passed": true
+      },
+      {
+        "name": "target_snapshot_unchanged",
+        "passed": true
+      }
+    ],
+    "file_diff_visible": true,
+    "patch_schema": "static_web_target_patch.v1",
+    "patch_sha256": "ae85f9bd49ec8a0d5f25f70fa8dccc07809319dbfcdd1e80874f2f4fb891d76f",
+    "patch_status": "ready_for_review",
+    "plan_id": "weave_dd8dc1dc965daa0085d897e4f481815e7e465cf6d770652893e27591a030b54f",
+    "profile_schema": "static_web_target_profile.v1",
+    "strategy": "static_web_iframe_embed.v1",
+    "target_snapshot_sha256": "26ac34b1bc41102c9846d7899dca5d3ce5b4709ab988899cc30ab1fb800e1e5d",
+    "validation_evidence_visible": true,
+    "validation_steps": [
+      "target_snapshot_match",
+      "target_path_and_resource_boundaries",
+      "capsule_usage_scope",
+      "module_native_composition",
+      "target_output_collision",
+      "target_snapshot_unchanged"
+    ]
+  },
+  "runtime_path": {
+    "acceptance_scope": "real_qwebengine_real_bridge_real_app_service",
+    "analyze_generate_stubbed": false,
+    "composer_calls": 1,
+    "composer_version": "module_native_formal_product.v1",
+    "confirmation_bridge_calls": 0,
+    "target_bridge_calls": [
+      "choose_static_web_target",
+      "analyze_static_web_target",
+      "generate_static_web_patch"
+    ]
+  },
+  "schema_version": "reweave_static_web_target_real_e2e_acceptance.v1",
+  "scope_limit": {
+    "general_adapter_supported": false,
+    "node_target_supported": false,
+    "react_vite_supported": false,
+    "stage_g_modified": false,
+    "target_apply_supported": false,
+    "target_cli_added": false,
+    "target_commit_supported": false,
+    "target_rollback_supported": false
+  },
+  "state_evidence": {
+    "product_capsule_usage": {
+      "after": {
+        "count": 0,
+        "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "before": {
+        "count": 0,
+        "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      }
+    },
+    "product_directory": {
+      "after": {
+        "entry_count": 0,
+        "exists": false,
+        "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      },
+      "before": {
+        "entry_count": 0,
+        "exists": false,
+        "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+      }
+    },
+    "target_git": {
+      "after": {
+        "head": "894e7dc8549b0aa347ecbe985704a3c32fbbc767",
+        "status_clean": true,
+        "status_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      },
+      "before": {
+        "head": "894e7dc8549b0aa347ecbe985704a3c32fbbc767",
+        "status_clean": true,
+        "status_sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+      }
+    },
+    "target_tree": {
+      "after": {
+        "entry_count": 16,
+        "exists": true,
+        "mtime_sha256": "8431c6e579e4d5e70e2475cac3c2f336ed8cc530919fd29990b4ca3eacc43e22",
+        "root_mode": 493,
+        "sha256": "b54e45ad6e75c29b3975ae03d4d1fb449798932c755fc39e6ddec21ea2d5a2e9"
+      },
+      "before": {
+        "entry_count": 16,
+        "exists": true,
+        "mtime_sha256": "8431c6e579e4d5e70e2475cac3c2f336ed8cc530919fd29990b4ca3eacc43e22",
+        "root_mode": 493,
+        "sha256": "b54e45ad6e75c29b3975ae03d4d1fb449798932c755fc39e6ddec21ea2d5a2e9"
+      }
+    },
+    "warehouse_revision": {
+      "after": 0,
+      "before": 0
+    }
+  },
+  "verdict": "PASS",
+  "verification": {
+    "real_e2e": {
+      "failed": 0,
+      "passed": 1
+    }
+  },
+  "zero_writes": {
+    "apply": false,
+    "commit": false,
+    "product_capsule_usage_unchanged": true,
+    "product_directory_unchanged": true,
+    "product_store_write": false,
+    "rollback": false,
+    "target_git_head_unchanged": true,
+    "target_git_status_unchanged": true,
+    "target_project_write": false,
+    "target_tree_unchanged": true,
+    "usage_registration_write": false,
+    "warehouse_revision_unchanged": true
+  }
+}

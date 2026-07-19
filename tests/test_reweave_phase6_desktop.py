@@ -6,6 +6,7 @@ import os
 import re
 import shutil
 import stat
+import subprocess
 import sys
 import threading
 import time
@@ -18,6 +19,126 @@ import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURE = ROOT / "tests" / "fixtures" / "reweave_phase6_quote"
+SNAKE_JS_REPOSITORY = "https://github.com/MasiaAntoine/snake-js"
+SNAKE_JS_COMMIT = "894e7dc8549b0aa347ecbe985704a3c32fbbc767"
+SNAKE_JS_SNAPSHOT = "26ac34b1bc41102c9846d7899dca5d3ce5b4709ab988899cc30ab1fb800e1e5d"
+SNAKE_JS_PLAN_ID = (
+    "weave_dd8dc1dc965daa0085d897e4f481815e7e465cf6d770652893e27591a030b54f"
+)
+SNAKE_JS_PATCH_SHA256 = (
+    "ae85f9bd49ec8a0d5f25f70fa8dccc07809319dbfcdd1e80874f2f4fb891d76f"
+)
+TARGET_VALIDATION_STEPS = [
+    "target_snapshot_match",
+    "target_path_and_resource_boundaries",
+    "capsule_usage_scope",
+    "module_native_composition",
+    "target_output_collision",
+    "target_snapshot_unchanged",
+]
+TARGET_EVIDENCE_CHECKS = [
+    "target_snapshot_bound",
+    "target_paths_and_resources",
+    "capsule_usage_scope",
+    "module_native_composition",
+    "output_paths_collision_free",
+    "target_snapshot_unchanged",
+]
+
+
+def _canonical_sha256(value: object) -> str:
+    canonical = json.dumps(
+        value,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def _tree_state(root: Path, *, exclude_git: bool = False) -> dict[str, object]:
+    if not root.exists():
+        return {"exists": False, "entry_count": 0, "sha256": _canonical_sha256([])}
+    rows: list[dict[str, object]] = []
+    mtimes = [{"path": ".", "mtime_ns": root.lstat().st_mtime_ns}]
+    for path in sorted(root.rglob("*")):
+        relpath = path.relative_to(root)
+        if exclude_git and relpath.parts and relpath.parts[0] == ".git":
+            continue
+        info = path.lstat()
+        mtimes.append({"path": relpath.as_posix(), "mtime_ns": info.st_mtime_ns})
+        row: dict[str, object] = {
+            "path": relpath.as_posix(),
+            "mode": stat.S_IMODE(info.st_mode),
+        }
+        if path.is_symlink():
+            row.update({"kind": "symlink", "target": os.readlink(path)})
+        elif path.is_file():
+            content = path.read_bytes()
+            row.update(
+                {
+                    "kind": "file",
+                    "size_bytes": len(content),
+                    "sha256": hashlib.sha256(content).hexdigest(),
+                }
+            )
+        elif path.is_dir():
+            row["kind"] = "directory"
+        else:
+            row["kind"] = "other"
+        rows.append(row)
+    return {
+        "exists": True,
+        "root_mode": stat.S_IMODE(root.lstat().st_mode),
+        "entry_count": len(rows),
+        "sha256": _canonical_sha256(rows),
+        "mtime_sha256": _canonical_sha256(mtimes),
+    }
+
+
+def _git_target_state(target: Path) -> dict[str, object]:
+    environment = dict(os.environ)
+    environment["GIT_OPTIONAL_LOCKS"] = "0"
+
+    def git(*args: str) -> bytes:
+        return subprocess.run(
+            ["git", "-C", str(target), *args],
+            check=True,
+            capture_output=True,
+            env=environment,
+        ).stdout
+
+    status = git("status", "--porcelain=v1", "-z", "--untracked-files=all")
+    return {
+        "head": git("rev-parse", "HEAD").decode("ascii").strip(),
+        "status_clean": status == b"",
+        "status_sha256": hashlib.sha256(status).hexdigest(),
+    }
+
+
+def _usage_state(store) -> dict[str, object]:
+    with store.read_connection() as connection:
+        rows = [
+            dict(row)
+            for row in connection.execute(
+                "SELECT * FROM product_capsule_usage ORDER BY usage_id"
+            )
+        ]
+    return {"count": len(rows), "sha256": _canonical_sha256(rows)}
+
+
+def _contains_bytes(root: Path, needle: bytes) -> bool:
+    if not root.exists():
+        return False
+    for path in root.rglob("*"):
+        if path.is_file() and not path.is_symlink():
+            try:
+                if needle in path.read_bytes():
+                    return True
+            except OSError:
+                continue
+    return False
 
 
 def test_simple_mode_scans_multiply_without_creating_candidate(
@@ -681,6 +802,602 @@ def test_static_web_target_review_ui_never_writes_or_calls_confirm_service(
             pump()
             QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
             app.processEvents()
+
+
+def test_static_web_target_review_ui_with_real_service(
+    tmp_path: Path, monkeypatch, caplog
+) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("Node is required for module_native composition")
+    if not (ROOT / "node_modules" / "esbuild" / "package.json").is_file():
+        pytest.skip("npm ci is required for module_native composition")
+    if sys.platform.startswith("linux") and not (
+        os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    ):
+        pytest.skip("A desktop GUI session is required")
+    pytest.importorskip("PySide6.QtWebEngineCore")
+
+    # The default Chromium profile outlives a closed window on macOS; this
+    # acceptance needs a fresh process so its isolated cache paths stay safe.
+    if os.environ.get("REWEAVE_REAL_E2E_CHILD") != "1":
+        child_env = os.environ.copy()
+        child_env["REWEAVE_REAL_E2E_CHILD"] = "1"
+        child_env.pop("PYTEST_ADDOPTS", None)
+        child = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-p",
+                "no:cacheprovider",
+                "-q",
+                (
+                    "tests/test_reweave_phase6_desktop.py::"
+                    "test_static_web_target_review_ui_with_real_service"
+                ),
+            ],
+            cwd=ROOT,
+            env=child_env,
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        assert child.returncode == 0, child.stdout + child.stderr
+        return
+
+    from PySide6.QtCore import QCoreApplication, QEvent, qInstallMessageHandler
+    from PySide6.QtWebEngineCore import QWebEngineProfile
+
+    from pimos_lite import desktop_reweave_static as desktop
+    from pimos_lite.composer.module_native import compose_capsule_product
+    from pimos_lite.reweave_app_service import ReweaveAppService
+    from pimos_lite.reweave_capsule_store import CapsuleWarehouseStore
+    from tests.test_reweave_phase5_generation import _seed_capsule
+
+    configured_target = os.environ.get("REWEAVE_SNAKE_JS_CHECKOUT", "").strip()
+    fixed_snake_input = bool(configured_target)
+    if fixed_snake_input:
+        target = Path(configured_target).expanduser().resolve(strict=True)
+        repository = SNAKE_JS_REPOSITORY
+    else:
+        target = tmp_path / "static-web-target"
+        target.mkdir()
+        (target / "index.html").write_text(
+            "<!doctype html><html><head><link rel=\"stylesheet\" href=\"./styles.css\">"
+            "</head><body><h1>Static target</h1>"
+            "<script type=\"module\" src=\"./main.js\"></script></body></html>\n",
+            encoding="utf-8",
+        )
+        (target / "styles.css").write_text("body { color: #222; }\n", encoding="utf-8")
+        (target / "main.js").write_text(
+            'import { value } from "./value.js";\nconsole.log(value);\n',
+            encoding="utf-8",
+        )
+        (target / "value.js").write_text("export const value = 1;\n", encoding="utf-8")
+        subprocess.run(["git", "init", "-q"], cwd=target, check=True)
+        subprocess.run(["git", "add", "."], cwd=target, check=True)
+        subprocess.run(
+            [
+                "git",
+                "-c",
+                "user.name=Reweave E2E",
+                "-c",
+                "user.email=reweave-e2e@example.invalid",
+                "commit",
+                "-qm",
+                "fixture",
+            ],
+            cwd=target,
+            check=True,
+        )
+        repository = "local-static-web-fixture"
+
+    git_before = _git_target_state(target)
+    if fixed_snake_input:
+        assert git_before["head"] == SNAKE_JS_COMMIT
+        origin = subprocess.run(
+            ["git", "-C", str(target), "remote", "get-url", "origin"],
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout.strip()
+        assert origin.removesuffix(".git") == SNAKE_JS_REPOSITORY
+    assert git_before["status_clean"] is True
+
+    state = tmp_path / "state"
+    monkeypatch.setenv("REWEAVE_STATE_DIR", str(state))
+    store = CapsuleWarehouseStore(state / "capsule_warehouse.sqlite3")
+    store.initialize()
+    capsule_ids: list[str] = []
+    for kind in ("presentation", "interaction", "computation"):
+        capsule_id, _version_id = _seed_capsule(store, kind)
+        capsule_ids.append(capsule_id)
+
+    class ObservedService(ReweaveAppService):
+        def __init__(self) -> None:
+            super().__init__(capsule_store=store)
+            self.target_calls: list[str] = []
+            self.profile_result: dict[str, object] | None = None
+            self.patch_result: dict[str, object] | None = None
+
+        def analyze_static_web_target(
+            self, payload: dict[str, object] | None = None
+        ) -> dict[str, object]:
+            self.target_calls.append("analyze_static_web_target")
+            result = super().analyze_static_web_target(payload)
+            self.profile_result = result
+            return result
+
+        def generate_static_web_patch(
+            self, payload: dict[str, object] | None = None
+        ) -> dict[str, object]:
+            self.target_calls.append("generate_static_web_patch")
+            result = super().generate_static_web_patch(payload)
+            self.patch_result = result
+            return result
+
+    service = ObservedService()
+    initial_state = service.get_initial_state()
+    eligible_ids = {
+        row["capsule_id"]
+        for row in initial_state["warehouseCapsules"]
+        if row["generation_eligible"] is True
+    }
+    assert eligible_ids == set(capsule_ids)
+
+    target_before = _tree_state(target, exclude_git=True)
+    warehouse_revision_before = store.current_revision()
+    usage_before = _usage_state(store)
+    products_before = _tree_state(state / "products")
+
+    class FixedDirectoryDialog:
+        calls = 0
+
+        @staticmethod
+        def getExistingDirectory(*_args, **_kwargs) -> str:
+            FixedDirectoryDialog.calls += 1
+            return str(target)
+
+    qt_parts = desktop.import_qt_webengine()
+    QApplication = qt_parts[0]
+    app = QApplication.instance() or QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
+    profile = QWebEngineProfile.defaultProfile()
+    qweb_cache = tmp_path / "qweb-cache"
+    qweb_storage = tmp_path / "qweb-storage"
+    profile.setCachePath(str(qweb_cache))
+    profile.setPersistentStoragePath(str(qweb_storage))
+    qt_messages: list[str] = []
+
+    def qt_message_handler(_mode, _context, message) -> None:
+        qt_messages.append(str(message))
+
+    previous_qt_handler = qInstallMessageHandler(qt_message_handler)
+    caplog.set_level(10, logger="reweave.desktop")
+    window = None
+    patch_data: dict[str, object] | None = None
+    profile_data: dict[str, object] | None = None
+    developer_evidence: dict[str, object] | None = None
+    integration_state: dict[str, object] | None = None
+    dom_probe: dict[str, object] | None = None
+    review_text = ""
+    bridge_calls_before_confirm: list[str] = []
+    bridge_calls_after_confirm: list[str] = []
+    composer_calls = 0
+
+    def pump(seconds: float = 0.03) -> None:
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.005)
+
+    try:
+        with (
+            patch.object(
+                desktop,
+                "import_qt_webengine",
+                return_value=(*qt_parts[:5], FixedDirectoryDialog),
+            ),
+            patch.object(desktop, "ReweaveAppService", return_value=service),
+            patch(
+                "pimos_lite.reweave_app_service.compose_capsule_product",
+                wraps=compose_capsule_product,
+            ) as composer,
+        ):
+            window, bridge = desktop.create_reweave_window()
+            assert bridge._engine is service
+            page = window.centralWidget().page()
+            window.show()
+
+            def js(expression: str, timeout: float = 20.0) -> object:
+                result: list[object] = []
+                page.runJavaScript(expression, result.append)
+                deadline = time.monotonic() + timeout
+                while not result and time.monotonic() < deadline:
+                    pump()
+                if not result:
+                    raise TimeoutError("javascript_callback_timeout")
+                return result[0]
+
+            def wait_js(expression: str, timeout: float, label: str) -> object:
+                deadline = time.monotonic() + timeout
+                last: object = None
+                while time.monotonic() < deadline:
+                    last = js(expression)
+                    if last:
+                        return last
+                    pump(0.08)
+                raise TimeoutError(f"{label}:{last!r}")
+
+            wait_js(
+                "document.readyState === 'complete' && !!window.reweaveBridge && "
+                "!document.getElementById('screen-main').classList.contains('hidden')",
+                30,
+                "desktop_bridge",
+            )
+            assert js(
+                "(() => {"
+                "window.__reweaveBridgeCalls=[];"
+                "const transport=qt.webChannelTransport;"
+                "const send=transport.send.bind(transport);"
+                "transport.send=function(raw){"
+                "try { const data=typeof raw==='string' ? JSON.parse(raw) : raw;"
+                "if(data && data.type===6 && data.object==='reweaveBridge') "
+                "window.__reweaveBridgeCalls.push(String(data.method)); } catch (_) {}"
+                "return send(raw); };"
+                "return true;})()"
+            ) is True
+            js("document.getElementById('btn-open-target').click(); true")
+            wait_js(
+                "!document.getElementById('screen-target').classList.contains('hidden')",
+                10,
+                "target_screen",
+            )
+            js("document.getElementById('btn-select-target').click(); true")
+            wait_js(
+                "document.getElementById('target-selected-name').textContent.includes("
+                + json.dumps(target.name)
+                + ")",
+                10,
+                "target_selection",
+            )
+            assert FixedDirectoryDialog.calls == 1
+
+            js("document.getElementById('btn-analyze-target').click(); true")
+            wait_js(
+                "!document.getElementById('target-profile-summary').classList.contains('hidden')",
+                30,
+                "target_profile",
+            )
+            assert service.profile_result and service.profile_result.get("ok") is True
+            profile_data = service.profile_result["data"]
+
+            for capsule_id in capsule_ids:
+                clicked = js(
+                    "(() => { const input = document.querySelector("
+                    + json.dumps(
+                        f'#target-capsule-cards input[value="{capsule_id}"]'
+                    )
+                    + "); if (!input) return false; input.click(); return true; })()"
+                )
+                assert clicked is True
+            wait_js(
+                "document.querySelectorAll('#target-capsule-cards input:checked').length === 3",
+                10,
+                "capsule_selection",
+            )
+            js(
+                "(() => { const task=document.getElementById('target-task');"
+                "task.value='Add quote calculator';"
+                "task.dispatchEvent(new Event('input',{bubbles:true})); return true; })()"
+            )
+            wait_js(
+                "!document.getElementById('btn-generate-target-patch').disabled",
+                10,
+                "generate_enabled",
+            )
+            js("document.getElementById('btn-generate-target-patch').click(); true")
+            wait_js(
+                "!document.getElementById('target-review').classList.contains('hidden') && "
+                "document.getElementById('target-file-diffs').textContent.trim().length > 0 && "
+                "document.getElementById('target-evidence-summary').textContent.trim().length > 0",
+                60,
+                "patch_review",
+            )
+            assert service.patch_result and service.patch_result.get("ok") is True
+            patch_data = service.patch_result["data"]
+            assert composer.call_count == 1
+            composer_calls = composer.call_count
+            assert patch_data["weave_plan"]["validation_steps"] == (
+                TARGET_VALIDATION_STEPS
+            )
+            assert patch_data["evidence"]["status"] == "passed"
+            assert [row["name"] for row in patch_data["evidence"]["checks"]] == (
+                TARGET_EVIDENCE_CHECKS
+            )
+            assert all(
+                row["passed"] is True for row in patch_data["evidence"]["checks"]
+            )
+            assert patch_data["evidence"]["target_project_write"] is False
+            assert patch_data["evidence"]["product_store_write"] is False
+            assert patch_data["evidence"]["usage_registration_write"] is False
+
+            developer_text = str(
+                js("document.getElementById('target-patch-developer').textContent")
+            )
+            developer_evidence = json.loads(developer_text)
+            assert "after_content" not in developer_text
+            assert developer_evidence["plan_id"] == patch_data["plan_id"]
+            assert developer_evidence["target"]["snapshot_sha256"] == profile_data[
+                "snapshot_sha256"
+            ]
+            assert {
+                (row["capsule_id"], row["version_id"], row["canonical_hash"])
+                for row in developer_evidence["weave_plan"]["capsules"]
+            } == {
+                (row["capsule_id"], row["version_id"], row["canonical_hash"])
+                for row in patch_data["weave_plan"]["capsules"]
+            }
+            review_text = str(js("document.getElementById('target-review').textContent"))
+            assert js(
+                "document.querySelector('#target-review iframe[data-reweave-plan]') === null"
+            )
+
+            js("document.getElementById('target-developer-mode').click(); true")
+            wait_js(
+                "document.getElementById('screen-target').classList.contains('developer-mode')",
+                10,
+                "developer_mode",
+            )
+            bridge_calls_before_confirm = json.loads(
+                str(js("JSON.stringify(window.__reweaveBridgeCalls)"))
+            )
+            js("document.getElementById('btn-confirm-target-patch').click(); true")
+            wait_js(
+                "document.getElementById('target-confirmation-receipt').textContent.trim().length > 0",
+                10,
+                "confirmation_receipt",
+            )
+            pump(0.2)
+            bridge_calls_after_confirm = json.loads(
+                str(js("JSON.stringify(window.__reweaveBridgeCalls)"))
+            )
+            assert bridge_calls_before_confirm == bridge_calls_after_confirm == [
+                "choose_static_web_target",
+                "analyze_static_web_target",
+                "generate_static_web_patch",
+            ]
+            assert service.target_calls == [
+                "analyze_static_web_target",
+                "generate_static_web_patch",
+            ]
+            integration_state = json.loads(
+                str(js("JSON.stringify(window.ReweavePrototype.getState().target)"))
+            )
+            assert integration_state == {
+                "available": True,
+                "profileReady": True,
+                "patchReady": True,
+                "planId": patch_data["plan_id"],
+                "confirmed": True,
+            }
+            dom_probe = json.loads(
+                str(
+                    js(
+                        "JSON.stringify({"
+                        "text:document.body.textContent,"
+                        "html:document.documentElement.outerHTML,"
+                        "values:Array.from(document.querySelectorAll('input,textarea')).map(el=>el.value),"
+                        "local:Object.keys(localStorage).sort().map(key=>[key,localStorage.getItem(key)]),"
+                        "session:Object.keys(sessionStorage).sort().map(key=>[key,sessionStorage.getItem(key)])"
+                        "})"
+                    )
+                )
+            )
+            assert str(target) not in json.dumps(dom_probe, ensure_ascii=False)
+    finally:
+        if window is not None:
+            window.close()
+            window.deleteLater()
+            pump()
+            QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+            app.processEvents()
+        qInstallMessageHandler(previous_qt_handler)
+        service.close()
+
+    assert patch_data is not None
+    assert profile_data is not None
+    assert developer_evidence is not None
+    assert integration_state is not None
+    assert dom_probe is not None
+    assert str(target) not in caplog.text
+    assert all(str(target) not in message for message in qt_messages)
+    target_path_bytes = str(target).encode("utf-8")
+    assert not _contains_bytes(state, target_path_bytes)
+    assert not _contains_bytes(qweb_cache, target_path_bytes)
+    assert not _contains_bytes(qweb_storage, target_path_bytes)
+
+    target_after = _tree_state(target, exclude_git=True)
+    git_after = _git_target_state(target)
+    warehouse_revision_after = store.current_revision()
+    usage_after = _usage_state(store)
+    products_after = _tree_state(state / "products")
+    assert target_after == target_before
+    assert git_after == git_before
+    assert warehouse_revision_after == warehouse_revision_before
+    assert usage_after == usage_before
+    assert products_after == products_before
+
+    patch_sha256 = _canonical_sha256(patch_data)
+    plan3_acceptance = json.loads(
+        (ROOT / "docs" / "reports" / "REWEAVE_STATIC_WEB_TARGET_PATCH_ACCEPTANCE.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    if fixed_snake_input:
+        assert profile_data["snapshot_sha256"] == SNAKE_JS_SNAPSHOT
+        assert profile_data["snapshot_sha256"] == (
+            plan3_acceptance["target"]["snapshot_sha256"]
+        )
+        assert patch_data["plan_id"] == SNAKE_JS_PLAN_ID
+        assert patch_sha256 == SNAKE_JS_PATCH_SHA256
+
+    capsule_versions = sorted(
+        [
+            {
+                "capsule_id": row["capsule_id"],
+                "version_id": row["version_id"],
+                "canonical_hash": row["canonical_hash"],
+                "capability_kind": row["capability_kind"],
+            }
+            for row in patch_data["weave_plan"]["capsules"]
+        ],
+        key=lambda row: (row["capsule_id"], row["version_id"]),
+    )
+    receipt: dict[str, object] = {
+        "schema_version": "reweave_static_web_target_real_e2e_acceptance.v1",
+        "completed_date": "2026-07-19",
+        "verdict": "PASS",
+        "input": {
+            "repository": repository,
+            "commit": git_before["head"],
+            "entry_path": "index.html",
+            "target_snapshot_sha256": profile_data["snapshot_sha256"],
+            "target_git_clean_before": git_before["status_clean"],
+            "target_git_clean_after": git_after["status_clean"],
+        },
+        "runtime_path": {
+            "acceptance_scope": "real_qwebengine_real_bridge_real_app_service",
+            "analyze_generate_stubbed": False,
+            "target_bridge_calls": bridge_calls_after_confirm,
+            "confirmation_bridge_calls": len(bridge_calls_after_confirm)
+            - len(bridge_calls_before_confirm),
+            "composer_version": patch_data["composer"]["composer_version"],
+            "composer_calls": composer_calls,
+        },
+        "review": {
+            "profile_schema": profile_data["schema_version"],
+            "patch_schema": patch_data["schema_version"],
+            "patch_status": patch_data["status"],
+            "authorization_mode": patch_data["authorization"]["mode"],
+            "strategy": patch_data["strategy"],
+            "plan_id": patch_data["plan_id"],
+            "patch_sha256": patch_sha256,
+            "target_snapshot_sha256": profile_data["snapshot_sha256"],
+            "capsule_versions": capsule_versions,
+            "file_diff_visible": bool(review_text.strip()),
+            "validation_evidence_visible": True,
+            "validation_steps": patch_data["weave_plan"]["validation_steps"],
+            "evidence_checks": patch_data["evidence"]["checks"],
+            "developer_mode_completed": True,
+        },
+        "confirmation": {
+            "kind": "in_memory_review_receipt",
+            "confirmed": integration_state["confirmed"],
+            "frontend_binding": {
+                "plan_id": integration_state["planId"],
+                "target_snapshot_sha256": profile_data["snapshot_sha256"],
+            },
+            "e2e_acceptance_binding": {
+                "plan_id": patch_data["plan_id"],
+                "target_snapshot_sha256": profile_data["snapshot_sha256"],
+                "patch_sha256": patch_sha256,
+                "capsule_versions": capsule_versions,
+            },
+            "bridge_call": False,
+            "write_authorization": False,
+        },
+        "display_safety": {
+            "target_absolute_path_in_dom": False,
+            "target_absolute_path_in_log": False,
+            "target_absolute_path_persisted": False,
+            "after_content_rendered": False,
+            "after_content_executed": False,
+        },
+        "plan3_contract": {
+            "reference": "docs/reports/REWEAVE_STATIC_WEB_TARGET_PATCH_ACCEPTANCE.json",
+            "target_snapshot_match": fixed_snake_input,
+            "patch_schema_match": patch_data["schema_version"]
+            == plan3_acceptance["patch"]["schema_version"],
+            "patch_status_match": patch_data["status"]
+            == plan3_acceptance["patch"]["status"],
+            "strategy_match": patch_data["strategy"]
+            == plan3_acceptance["patch"]["strategy"],
+            "authorization_match": patch_data["authorization"]
+            == plan3_acceptance["authorization"],
+            "content_addressed_plan_id_consistent": patch_data["plan_id"]
+            == patch_data["weave_plan"]["plan_id"],
+            "fixed_input_plan_id_match": (
+                patch_data["plan_id"] == SNAKE_JS_PLAN_ID
+                if fixed_snake_input
+                else None
+            ),
+            "fixed_input_patch_digest_match": (
+                patch_sha256 == SNAKE_JS_PATCH_SHA256
+                if fixed_snake_input
+                else None
+            ),
+            "validation_steps_match": patch_data["weave_plan"]["validation_steps"]
+            == TARGET_VALIDATION_STEPS,
+            "evidence_checks_match": [
+                row["name"] for row in patch_data["evidence"]["checks"]
+            ]
+            == TARGET_EVIDENCE_CHECKS,
+            "evidence_all_passed": all(
+                row["passed"] is True for row in patch_data["evidence"]["checks"]
+            ),
+        },
+        "state_evidence": {
+            "target_tree": {"before": target_before, "after": target_after},
+            "target_git": {"before": git_before, "after": git_after},
+            "warehouse_revision": {
+                "before": warehouse_revision_before,
+                "after": warehouse_revision_after,
+            },
+            "product_directory": {
+                "before": products_before,
+                "after": products_after,
+            },
+            "product_capsule_usage": {
+                "before": usage_before,
+                "after": usage_after,
+            },
+        },
+        "zero_writes": {
+            "target_tree_unchanged": target_after == target_before,
+            "target_git_head_unchanged": git_after["head"] == git_before["head"],
+            "target_git_status_unchanged": git_after["status_sha256"]
+            == git_before["status_sha256"],
+            "warehouse_revision_unchanged": warehouse_revision_after
+            == warehouse_revision_before,
+            "product_directory_unchanged": products_after == products_before,
+            "product_capsule_usage_unchanged": usage_after == usage_before,
+            "target_project_write": False,
+            "product_store_write": False,
+            "usage_registration_write": False,
+            "apply": False,
+            "commit": False,
+            "rollback": False,
+        },
+        "scope_limit": {
+            "target_apply_supported": False,
+            "target_commit_supported": False,
+            "target_rollback_supported": False,
+            "target_cli_added": False,
+            "react_vite_supported": False,
+            "node_target_supported": False,
+            "general_adapter_supported": False,
+            "stage_g_modified": False,
+        },
+        "verification": {"real_e2e": {"passed": 1, "failed": 0}},
+    }
+    receipt["acceptance_sha256"] = _canonical_sha256(receipt)
+    receipt_output = os.environ.get("REWEAVE_REAL_E2E_RECEIPT_PATH", "").strip()
+    if receipt_output:
+        Path(receipt_output).write_text(
+            json.dumps(receipt, indent=2, ensure_ascii=False, sort_keys=True) + "\n",
+            encoding="utf-8",
+        )
 
 
 def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -> None:
