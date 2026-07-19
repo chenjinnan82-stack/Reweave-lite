@@ -59,7 +59,7 @@ def _request(
         temporary_root = Path(temporary).resolve()
         os.chmod(temporary_root, 0o700)
         marker = temporary_root / ".reweave-capture-job-v1"
-        marker.write_text("reweave-capture-private-job.v1\n", encoding="utf-8")
+        marker.write_bytes(b"reweave-capture-private-job.v1\n")
         os.chmod(marker, 0o600)
         if mode == "capture":
             request["temporary_root"] = str(temporary_root)
@@ -68,6 +68,7 @@ def _request(
             input=json.dumps(request, ensure_ascii=False, separators=(",", ":")),
             capture_output=True,
             text=True,
+            encoding="utf-8",
             cwd=ROOT,
             timeout=45,
             check=False,

@@ -733,6 +733,10 @@ def test_javascript_change_after_final_git_sample_invalidates_source_snapshot() 
         assert _index_state(store, project_id) == old_state
 
 
+@pytest.mark.skipif(
+    not javascript_source._descriptor_relative_snapshot_supported(),
+    reason="descriptor-relative snapshot primitives are unavailable",
+)
 def test_same_project_scan_lock_rejects_parallel_refresh() -> None:
     with _sandbox() as base:
         source = base / "source"
@@ -823,7 +827,7 @@ def test_scope_resolution_rejects_directory_to_symlink_swap() -> None:
         ) -> tuple[tuple[str, int, int], ...]:
             nonlocal swapped
             identity = original_identity(path, require_exists=require_exists)
-            if Path(path) == child and not swapped:
+            if not swapped and os.path.samefile(path, child):
                 saved = root / "saved-child"
                 child.rename(saved)
                 try:
@@ -842,6 +846,7 @@ def test_scope_resolution_rejects_directory_to_symlink_swap() -> None:
                     str(root), "child", require_exists=True
                 ),
             )
+        assert swapped
 
 
 @pytest.mark.skipif(not hasattr(os, "symlink"), reason="symlinks are unavailable")

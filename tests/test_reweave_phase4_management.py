@@ -19,6 +19,9 @@ from pimos_lite.reweave_capsule_intake import (
 )
 from pimos_lite.reweave_capsule_store import CapsuleWarehouseStore
 from pimos_lite.reweave_engine.local import LocalReweaveEngine
+from pimos_lite.reweave_javascript_source import (
+    _descriptor_relative_snapshot_supported,
+)
 
 
 class Phase4ManagementTest(unittest.TestCase):
@@ -346,6 +349,8 @@ class Phase4ManagementTest(unittest.TestCase):
         warehouse_read.assert_not_called()
 
     def _scan_v2_offer(self, project_id: str) -> tuple[str, dict[str, object]]:
+        if not _descriptor_relative_snapshot_supported():
+            self.skipTest("descriptor-relative snapshot primitives are unavailable")
         source = self.root / "project" / "calculate.js"
         source.write_text(
             "export function calculate(quantity) { return quantity * 2; }\n",

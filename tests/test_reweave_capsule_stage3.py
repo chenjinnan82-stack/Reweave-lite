@@ -2117,7 +2117,8 @@ class Stage3PySideFlowTest(unittest.TestCase):
 class StageECaptureTest(unittest.TestCase):
     def setUp(self) -> None:
         self.temporary = tempfile.TemporaryDirectory(
-            dir="/private/tmp", prefix="reweave-stage-e-test."
+            dir="/private/tmp" if Path("/private/tmp").is_dir() else None,
+            prefix="reweave-stage-e-test.",
         )
         self.root = Path(self.temporary.name)
         self.source = self.root / "source"
