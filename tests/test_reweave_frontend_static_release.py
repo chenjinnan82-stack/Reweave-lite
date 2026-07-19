@@ -335,7 +335,8 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     artifacts = (ROOT / "reweave_frontend" / "artifacts.js").read_text(encoding="utf-8")
     source_workflow = (ROOT / "reweave_frontend" / "source_workflow.js").read_text(encoding="utf-8")
     capsule_reader = (ROOT / "reweave_frontend" / "capsule_reader.js").read_text(encoding="utf-8")
-    frontend = "\n".join([app, bridge, renderers, artifacts, source_workflow, capsule_reader])
+    target_workflow = (ROOT / "reweave_frontend" / "target_workflow.js").read_text(encoding="utf-8")
+    frontend = "\n".join([app, bridge, renderers, artifacts, source_workflow, capsule_reader, target_workflow])
     index = (ROOT / "reweave_frontend" / "index.html").read_text(encoding="utf-8")
     mock = (ROOT / "reweave_frontend" / "mock-data.json").read_text(encoding="utf-8")
     styles = (ROOT / "reweave_frontend" / "styles.css").read_text(encoding="utf-8")
@@ -347,9 +348,11 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert '<script src="artifacts.js"></script>' in index
     assert '<script src="source_workflow.js"></script>' in index
     assert '<script src="capsule_reader.js"></script>' in index
+    assert index.count('<script src="target_workflow.js"></script>') == 1
     assert index.index('src="bridge.js"') < index.index('src="app.js"')
     assert index.index('src="source_workflow.js"') < index.index('src="app.js"')
-    assert index.index('src="capsule_reader.js"') < index.index('src="app.js"')
+    assert index.index('src="capsule_reader.js"') < index.index('src="target_workflow.js"')
+    assert index.index('src="target_workflow.js"') < index.index('src="app.js"')
     assert ".logo-mark::before" not in styles
     assert ".logo-mark::after" not in styles
     assert 'class="btn-ghost btn-add-source hidden" disabled' in index
@@ -711,8 +714,17 @@ def test_desktop_frontend_declares_local_only_content_policy() -> None:
 
 def test_static_web_target_ui_is_review_only_and_fail_closed() -> None:
     app = (ROOT / "reweave_frontend" / "app.js").read_text(encoding="utf-8")
+    target = (ROOT / "reweave_frontend" / "target_workflow.js").read_text(encoding="utf-8")
     index = (ROOT / "reweave_frontend" / "index.html").read_text(encoding="utf-8")
     styles = (ROOT / "reweave_frontend" / "styles.css").read_text(encoding="utf-8")
+    node = shutil.which("node")
+    if node:
+        subprocess.run(
+            [node, "--check", str(ROOT / "reweave_frontend" / "target_workflow.js")],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
 
     for element_id in (
         "btn-open-target",
@@ -732,9 +744,9 @@ def test_static_web_target_ui_is_review_only_and_fail_closed() -> None:
     assert ".target-developer-only" in styles
     assert ".screen-target.developer-mode .target-developer-only" in styles
 
-    bridge_guard = app[
-        app.index("  function hasTargetBridge(") : app.index(
-            "\n  function ", app.index("  function hasTargetBridge(") + 1
+    bridge_guard = target[
+        target.index("    function hasTargetBridge(") : target.index(
+            "\n    function ", target.index("    function hasTargetBridge(") + 1
         )
     ]
     for method in (
@@ -743,38 +755,38 @@ def test_static_web_target_ui_is_review_only_and_fail_closed() -> None:
         "generate_static_web_patch",
     ):
         assert method in bridge_guard
-    assert 'bridgeCall("analyze_static_web_target", JSON.stringify(payload))' in app
-    assert 'bridgeCall("generate_static_web_patch", JSON.stringify(payload))' in app
-    assert "targetWorkflow.profileRevision += 1" in app
-    assert "targetWorkflow.patchRevision += 1" in app
-    analyze = app[
-        app.index("  function handleAnalyzeStaticWebTarget(") : app.index(
-            "\n  function handleGenerateStaticWebPatch(",
-            app.index("  function handleAnalyzeStaticWebTarget("),
+    assert 'bridgeCall("analyze_static_web_target", JSON.stringify(payload))' in target
+    assert 'bridgeCall("generate_static_web_patch", JSON.stringify(payload))' in target
+    assert "targetWorkflow.profileRevision += 1" in target
+    assert "targetWorkflow.patchRevision += 1" in target
+    analyze = target[
+        target.index("    function handleAnalyzeStaticWebTarget(") : target.index(
+            "\n    function handleGenerateStaticWebPatch(",
+            target.index("    function handleAnalyzeStaticWebTarget("),
         )
     ]
-    generate = app[
-        app.index("  function handleGenerateStaticWebPatch(") : app.index(
-            "\n  function handleConfirmTargetPatch(",
-            app.index("  function handleGenerateStaticWebPatch("),
+    generate = target[
+        target.index("    function handleGenerateStaticWebPatch(") : target.index(
+            "\n    function handleConfirmTargetPatch(",
+            target.index("    function handleGenerateStaticWebPatch("),
         )
     ]
     assert "requestRevision !== targetWorkflow.profileRevision" in analyze
     assert "requestRevision !== targetWorkflow.patchRevision" in generate
 
-    safe_profile = app[
-        app.index("  function isSafeTargetProfile(") : app.index(
-            "\n  function ", app.index("  function isSafeTargetProfile(") + 1
+    safe_profile = target[
+        target.index("    function isSafeTargetProfile(") : target.index(
+            "\n    function ", target.index("    function isSafeTargetProfile(") + 1
         )
     ]
     assert "profile.schema_version" in safe_profile
     assert '"static_web_target_profile.v1"' in safe_profile
-    assert 'patch.schema_version !== "static_web_target_patch.v1"' in app
-    assert 'patch.status !== "ready_for_review"' in app
-    assert 'patch.strategy !== "static_web_iframe_embed.v1"' in app
-    assert 'authorization.mode !== "review_patch_only"' in app
-    assert 'targetExactObject(profile, [' in app
-    assert 'targetExactObject(patch, [' in app
+    assert 'patch.schema_version !== "static_web_target_patch.v1"' in target
+    assert 'patch.status !== "ready_for_review"' in target
+    assert 'patch.strategy !== "static_web_iframe_embed.v1"' in target
+    assert 'authorization.mode !== "review_patch_only"' in target
+    assert 'targetExactObject(profile, [' in target
+    assert 'targetExactObject(patch, [' in target
     for write_flag in (
         "target_project_write",
         "apply",
@@ -782,19 +794,19 @@ def test_static_web_target_ui_is_review_only_and_fail_closed() -> None:
         "product_store_write",
         "usage_registration_write",
     ):
-        assert write_flag in app
+        assert write_flag in target
 
-    confirm_start = app.index("  function handleConfirmTargetPatch(")
-    confirm_end = app.index("\n  function ", confirm_start + 1)
-    confirmation = app[confirm_start:confirm_end]
+    confirm_start = target.index("    function handleConfirmTargetPatch(")
+    confirm_end = target.index("\n    function ", confirm_start + 1)
+    confirmation = target[confirm_start:confirm_end]
     assert "bridgeCall(" not in confirmation
     assert "targetWorkflow.confirmation =" in confirmation
     assert "planId" in confirmation
     assert "snapshotSha256" in confirmation
 
-    render_start = app.index("  function renderTargetPatch(")
-    render_end = app.index("\n  function renderTargetError(", render_start)
-    patch_render = app[render_start:render_end]
+    render_start = target.index("    function renderTargetPatch(")
+    render_end = target.index("\n    function renderTargetError(", render_start)
+    patch_render = target[render_start:render_end]
     assert ".textContent = change.diff" in patch_render
     assert 'change.content_encoding === "utf-8"' in patch_render
     assert 'binary.textContent = t("targetBinaryDiff")' in patch_render
@@ -802,44 +814,78 @@ def test_static_web_target_ui_is_review_only_and_fail_closed() -> None:
     assert "innerHTML" not in patch_render
 
     error_start = render_end
-    error_end = app.index("\n  function ", error_start + 1)
-    error_render = app[error_start:error_end]
+    error_end = target.index("\n    function ", error_start + 1)
+    error_render = target[error_start:error_end]
     assert "targetRejectionEvidence.textContent" in error_render
     assert "rawEvidence.logical_path" in error_render
     assert "rawEvidence.target_path" not in error_render
     assert "innerHTML" not in error_render
-    profile_projection = app[
-        app.index("  function targetProfileDeveloperEvidence(") : app.index(
-            "\n  function renderTargetProfile(",
-            app.index("  function targetProfileDeveloperEvidence("),
+    profile_projection = target[
+        target.index("    function targetProfileDeveloperEvidence(") : target.index(
+            "\n    function renderTargetProfile(",
+            target.index("    function targetProfileDeveloperEvidence("),
         )
     ]
     assert "files: profile.files.map" in profile_projection
     assert "files: profile.files," not in profile_projection
-    patch_projection = app[
-        app.index("  function targetPatchDeveloperEvidence(") : app.index(
-            "\n  function renderTargetPatch(",
-            app.index("  function targetPatchDeveloperEvidence("),
+    patch_projection = target[
+        target.index("    function targetPatchDeveloperEvidence(") : target.index(
+            "\n    function renderTargetPatch(",
+            target.index("    function targetPatchDeveloperEvidence("),
         )
     ]
     assert "authorization: patch.authorization" not in patch_projection
     assert "weave_plan: patch.weave_plan" not in patch_projection
     assert "composer: patch.composer" not in patch_projection
-    assert 'targetBack.addEventListener("click", showStandaloneProduct)' in app
-    capsule_render = app[
-        app.index("  function renderTargetCapsules(") : app.index(
-            "\n  function appendTargetMetric(",
-            app.index("  function renderTargetCapsules("),
+    assert 'targetBack.addEventListener("click", showStandaloneProduct)' in target
+    capsule_render = target[
+        target.index("    function renderTargetCapsules(") : target.index(
+            "\n    function appendTargetMetric(",
+            target.index("    function renderTargetCapsules("),
         )
     ]
     assert "resetTargetPatch();" in capsule_render
-    assert ".after_content" not in app
+    assert ".after_content" not in target
     for forbidden_method in (
         "apply_static_web_patch",
         "commit_static_web_patch",
         "write_static_web_target",
     ):
-        assert forbidden_method not in app
+        assert forbidden_method not in app + target
+
+    assert "window.ReweaveTargetWorkflow.create({" in app
+    assert "targetIntegration.bind();" in app
+    assert app.count("targetIntegration.sync();") == 4
+    assert "target: targetIntegration.getState()," in app
+    warehouse_refresh = app[
+        app.index("  function applyWarehouseCapsules(") :
+        app.index("\n  function applyDesktopInitialState(", app.index("  function applyWarehouseCapsules("))
+    ]
+    assert warehouse_refresh.count("targetIntegration.sync();") == 1
+    assert "els.target" not in warehouse_refresh
+    assert "els.target" not in app
+    for extracted in (
+        "var targetWorkflow =",
+        "function hasTargetBridge(",
+        "function targetChecksPassed(",
+        "function renderTargetWorkflow(",
+        "function bindTargetEvents(",
+        "choose_static_web_target",
+        "analyze_static_web_target",
+        "generate_static_web_patch",
+        "static_web_target_profile.v1",
+        "static_web_target_patch.v1",
+        "static_web_iframe_embed.v1",
+        "review_patch_only",
+    ):
+        assert extracted not in app
+    assert "window.ReweaveTargetWorkflow = {" in target
+    assert target.count("window.ReweaveTargetWorkflow = {") == 1
+    assert """    return {
+      bind: bind,
+      sync: sync,
+      getState: getState,
+    };""" in target
 
 
 def test_static_web_target_ui_acceptance_keeps_confirmation_review_only() -> None:
