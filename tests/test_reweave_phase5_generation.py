@@ -41,6 +41,7 @@ from pimos_lite.reweave_capsule_store import (
     CapsuleWarehouseStore,
     canonicalize_capsule,
 )
+from pimos_lite.reweave_static_web_target import TARGET_AUTHORIZATION_MODE
 from scripts import run_public_reweave_demo
 
 
@@ -745,6 +746,131 @@ for name in sys.modules:
         )
         self.assertEqual(first, second)
         self.assertNotIn("reweave-formal-compose-", first["files"]["app.js"])
+
+    def test_static_web_target_service_returns_review_only_patch_without_writes(
+        self,
+    ) -> None:
+        if not (ROOT / "node_modules" / "esbuild" / "package.json").is_file():
+            self.skipTest("npm ci is required for the formal composer")
+        target = self.root / "target"
+        target.mkdir()
+        (target / "index.html").write_text(
+            "<!doctype html><html><head></head><body><h1>Target</h1></body></html>\n",
+            encoding="utf-8",
+        )
+        target_before = {
+            path.relative_to(target).as_posix(): (
+                path.read_bytes(),
+                path.stat().st_mtime_ns,
+            )
+            for path in target.rglob("*")
+            if path.is_file()
+        }
+        with self.store.read_connection() as connection:
+            usage_before = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM product_capsule_usage"
+                ).fetchone()[0]
+            )
+        revision_before = self.store.current_revision()
+
+        profiled = self.service.analyze_static_web_target(
+            {"target_path": str(target), "entry_relpath": "index.html"}
+        )
+        self.assertTrue(profiled.get("ok"), profiled)
+        authorization = {
+            "mode": TARGET_AUTHORIZATION_MODE,
+            "target_snapshot_sha256": profiled["data"]["snapshot_sha256"],
+        }
+        with patch(
+            "pimos_lite.reweave_app_service.compose_capsule_product",
+            wraps=compose_capsule_product,
+        ) as composer:
+            result = self.service.generate_static_web_patch(
+                {
+                    "target_path": str(target),
+                    "entry_relpath": "index.html",
+                    "task": "Add quote calculator",
+                    "capsule_ids": [
+                        self.ids["presentation"],
+                        self.ids["interaction"],
+                        self.ids["computation"],
+                    ],
+                    "selection_mode": "manual",
+                    "authorization": authorization,
+                }
+            )
+
+        self.assertTrue(result.get("ok"), result)
+        self.assertEqual(composer.call_count, 1)
+        patch_data = result["data"]
+        self.assertEqual(patch_data["status"], "ready_for_review")
+        self.assertEqual(
+            patch_data["strategy"], "static_web_iframe_embed.v1"
+        )
+        self.assertTrue(patch_data["target"]["profile"]["source_unchanged"])
+        self.assertFalse(patch_data["authorization"]["target_project_write"])
+        self.assertFalse(patch_data["authorization"]["apply"])
+        self.assertFalse(patch_data["authorization"]["commit"])
+        self.assertIn("data-reweave-plan", patch_data["text_unified_diff"])
+        self.assertNotIn(str(target), json.dumps(patch_data, ensure_ascii=False))
+        target_after = {
+            path.relative_to(target).as_posix(): (
+                path.read_bytes(),
+                path.stat().st_mtime_ns,
+            )
+            for path in target.rglob("*")
+            if path.is_file()
+        }
+        self.assertEqual(target_after, target_before)
+        self.assertFalse((target / "reweave").exists())
+        self.assertFalse((self.state / "products").exists())
+        with self.store.read_connection() as connection:
+            usage_after = int(
+                connection.execute(
+                    "SELECT COUNT(*) FROM product_capsule_usage"
+                ).fetchone()[0]
+            )
+        revision_after = self.store.current_revision()
+        self.assertEqual(usage_after, usage_before)
+        self.assertEqual(revision_after, revision_before)
+
+    def test_static_web_target_service_rejects_stale_review_authorization(
+        self,
+    ) -> None:
+        target = self.root / "target"
+        target.mkdir()
+        (target / "index.html").write_text(
+            "<!doctype html><html><head></head><body></body></html>\n",
+            encoding="utf-8",
+        )
+
+        result = self.service.generate_static_web_patch(
+            {
+                "target_path": str(target),
+                "entry_relpath": "index.html",
+                "task": "Add quote calculator",
+                "capsule_ids": [self.ids["presentation"]],
+                "selection_mode": "manual",
+                "authorization": {
+                    "mode": TARGET_AUTHORIZATION_MODE,
+                    "target_snapshot_sha256": "0" * 64,
+                },
+            }
+        )
+
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "target_snapshot_mismatch")
+        self.assertEqual(
+            result["error"]["evidence"],
+            {
+                "status": "rejected",
+                "code": "target_snapshot_mismatch",
+                "phase": "authorization",
+            },
+        )
+        self.assertFalse((target / "reweave").exists())
+        self.assertFalse((self.state / "products").exists())
 
     def test_formal_composer_rechecks_fixed_computation_adapter(self) -> None:
         if not (ROOT / "node_modules" / "esbuild" / "package.json").is_file():

@@ -84,6 +84,14 @@ class ReweaveAppServiceTest(unittest.TestCase):
         self.assertFalse(CAPSULE_MANAGEMENT_ACTIONS & LEGACY_WORKBENCH_ACTIONS)
         self.assertFalse(CAPSULE_MANAGEMENT_ACTIONS & SUPPORT_VIEWER_ACTIONS)
         self.assertEqual(release_boundary_for_action("generate_product"), "public_product")
+        self.assertEqual(
+            release_boundary_for_action("analyze_static_web_target"),
+            "public_product",
+        )
+        self.assertEqual(
+            release_boundary_for_action("generate_static_web_patch"),
+            "public_product",
+        )
         self.assertEqual(release_boundary_for_action("generate_preview"), "unknown")
         self.assertEqual(release_boundary_for_action("export_preview_package"), "legacy_workbench")
         self.assertEqual(release_boundary_for_action("get_preview_package"), "support_viewer")
@@ -106,6 +114,8 @@ class ReweaveAppServiceTest(unittest.TestCase):
         )
         self.assertEqual(release_boundary_for_action("made_up_action"), "unknown")
         self.assertIn("generate_product", public_product_actions())
+        self.assertIn("analyze_static_web_target", public_product_actions())
+        self.assertIn("generate_static_web_patch", public_product_actions())
         self.assertNotIn("generate_preview", public_product_actions())
         self.assertIn("export_preview_package", legacy_workbench_actions())
 

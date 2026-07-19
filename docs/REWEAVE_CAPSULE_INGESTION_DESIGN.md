@@ -6243,3 +6243,70 @@ P2=1 hosted final-byte CI and demo publication pending explicit push/release app
 结构化摘要见 `docs/reports/REWEAVE_STAGE_G_ACCEPTANCE.json`。Stage G 到此停止，不实施 Bootstrap V3，不扩大 DSL，不创建模板、fallback、第二仓库或第二 composer；外部旧项目的 presentation/interaction 自动拆分仍未证明。
 
 若后续建立公开 `Reweave-demo`，必须在独立发布动作中按 Grapheme 的 GPL-3.0 许可完成衍生输出的许可证、源代码提供方式和归属核对；Stage G 的本地临时验收本身不构成公开分发批准。
+
+### S.25 计划三 Static Web 目标画像与 review-only Patch 后端（2026-07-19）
+
+计划三完成第一个目标接入后端切片，只支持用户显式选择的单入口、无需安装或构建的 Static Web 目标。它没有修改
+Stage G、SQLite DDL、正式 Capsule IR、`module_native`、前端或桌面桥接；没有新增依赖、第二仓库、第二组合器、通用
+Target Adapter 框架或 Patch 应用器。
+
+唯一数据流固定为：
+
+~~~text
+显式 target root + entry_relpath
+→ 两次稳定只读画像与目标 snapshot SHA-256
+→ review_patch_only 精确快照授权
+→ eligible active-current 正式胶囊与 general usage scope
+→ 唯一 module_native 内存组合
+→ static_web_iframe_embed.v1
+→ static_web_weave_plan.v1 + static_web_target_patch.v1
+→ 返回结构化变更、文本 Diff、provenance 和拒绝证据
+→ 重新核对正式版本与目标快照
+~~~
+
+`pimos_lite/reweave_static_web_target.py` 是唯一目标侧规划模块。目标画像不写 `projects`、`project_file_index` 或任何
+新表；稳定快照绑定全部可见目标路径的 exact/casefold/NFC/NFC+casefold 身份，并对 HTML、CSS、JavaScript、PNG、
+JPEG、WebP 支持文件绑定大小和 SHA-256。所有 symlink、根外路径、路径冲突、非 UTF-8 文本、大小/深度上限和读中漂移
+均失败关闭。
+
+资源门只声明已经证明的窄事实：入口 HTML 中的本地直接资源引用、已引用 stylesheet 中未出现 CSS escape、`@import`、
+`url()` 或 `image-set()`，以及由现有 `source_graph.v1` 证明的本地 ES module import 闭包。它不把目标 JavaScript 中任意
+运行时字符串解释成资源闭包。remote URL、query/fragment、inline/classic script、inline style/event、CSP、`base`、
+`srcset`、嵌入文档和未证明的 HTML5 特殊插入上下文均结构化拒绝。
+
+Patch 授权必须字面等于 `review_patch_only` 并绑定画像返回的精确目标摘要；调用方不能提交受影响路径、write、apply、
+commit 或 delete 权限。服务端只读取满足现有完整证据门的 active-current 正式版本。当前目标画像没有可信的持久化品牌
+身份，因此只允许 `general` usage scope，`brand_limited` 固定返回 scope mismatch。现有 Capsule IR 没有法律许可证授权
+字段，本阶段不宣称自动许可证判断或公开分发许可。
+
+`module_native` 每次请求只调用一次。`static_web_iframe_embed.v1` 不提取或重组 composer 输出，只把唯一结果映射到入口
+同级的 `reweave/<plan-digest>/` 内容寻址命名空间，并在解析器证明的唯一真实 `</body>` 前增加固定 iframe。目标已有命名
+空间和 composer 输出同时执行 exact/casefold/NFC/NFC+casefold 与文件/目录前缀冲突检查。结构化 `changes` 对文本携带完整
+UTF-8 内容、before/after hash 与统一 Diff，对二进制携带完整 base64、hash 和大小且 `diff=null`；文本 Diff 只是审阅视图，
+不是二进制或应用权威。
+
+应用服务只新增 `analyze_static_web_target` 与 `generate_static_web_patch` 两个 public-product 动作。返回 Patch 前再次核对正式
+版本仍是同一 eligible active-current version，并重新画像目标；任一漂移都丢弃结果并结构化拒绝。成功路径不创建产品目录，
+不登记 `product_capsule_usage`，不增加 warehouse revision，也不写目标项目。
+
+固定第三方目标验收使用 `MasiaAntoine/snake-js` commit
+`894e7dc8549b0aa347ecbe985704a3c32fbbc767` 的 `index.html`，没有安装、构建、运行或修改该项目。目标画像摘要为
+`26ac34b1bc41102c9846d7899dca5d3ce5b4709ab988899cc30ab1fb800e1e5d`，`source_graph.v1` 可达 5 个 module；真实
+`module_native_formal_product.v1` 调用一次后返回 4 项完整变更，Patch SHA-256 为
+`55ee5ec1519162db765b739b3cb08190eaa5a90a64399891376c112b578411be`。运行前后目标树、Git 状态、warehouse revision、
+产品目录和 `product_capsule_usage` 均不变。该临时本地验收不分发目标源码，也不构成许可证授权；结构化摘要见
+`docs/reports/REWEAVE_STATIC_WEB_TARGET_PATCH_ACCEPTANCE.json`。
+
+最终本地门禁：
+
+- 目标画像、路径/资源、授权、HTML 插入位置、完整 Patch 和碰撞直接回归：`19 passed`。
+- 真实 composer 服务闭环与过期快照拒绝：`2 passed`；真实 `module_native` 精确调用一次。
+- 计划三关联全集除 GUI 沙箱节点外：`44 passed, 10 subtests passed`；唯一 GUI 沙箱失败的既有 QWeb orphan 节点在同一
+  macOS 真实桌面环境精确重跑为 `1 passed`，没有据此修改业务代码。
+- macOS 全仓：`772 passed, 2 skipped, 183 subtests passed`；无失败，两个 skip 为当前 Python 环境声明的平台/可选桌面门。
+- Python compileall、前端与 source-graph Node 语法、验收 JSON canonical hash 和 `git diff --check` 均通过。
+- 最终限定只读复核未发现剩余可复现 P0/P1/P2。托管 Ubuntu、Windows 与 CodeQL 必须在本次 checkpoint push 后以
+  GitHub 实际结果为准，本地结果不冒充托管 CI。
+
+计划三到此停止。新页面、双入口、简单/开发者模式、胶囊卡片、文件 Diff 和最终确认属于独立计划四；真实工作树 apply、
+commit、回滚事务、临时副本构建/行为验证，以及 React + Vite / Node 目标适配均不在本阶段。

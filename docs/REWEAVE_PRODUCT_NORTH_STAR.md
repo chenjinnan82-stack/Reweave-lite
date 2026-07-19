@@ -2,7 +2,9 @@
 
 文档性质：长期产品方向与演进指引
 
-当前基线：Reweave Static Web V1（v0.3.0）
+已发布基线：Reweave Static Web V1（v0.3.0）
+
+当前主线：Static Web 目标画像与 review-only Patch 后端
 
 更新时间：2026-07-19
 
@@ -19,7 +21,8 @@
 
 ## 2. 当前 Reweave
 
-当前 Reweave 是一个本地优先、来源只读的 Static Web 能力提取、正式仓储和独立产品生成系统。
+当前 Reweave 是一个本地优先、来源和目标只读的 Static Web 能力提取、正式仓储、独立产品生成和
+review-only 目标 Patch 规划系统。
 
 当前正式主线是：
 
@@ -35,6 +38,17 @@
 → manifest、精确版本 usage 和本地历史
 ```
 
+同一仓库和组合核心现在还有一条只读目标交付支线：
+
+```text
+满足资格的正式胶囊 + 用户授权的精确目标快照
+→ 目标路径、HTML 资源引用和 JavaScript module 闭包校验
+→ 同一个 module_native 组合器
+→ static_web_iframe_embed.v1
+→ 结构化文件 Patch、文本 Diff、Weave Plan 和拒绝证据
+→ 目标项目、产品仓和 usage 零写入
+```
+
 当前已经具备：
 
 - 来源项目只读扫描和一致性证据。
@@ -45,16 +59,17 @@
 - 单一 `module_native` 组合器、产品 manifest 和精确版本 usage。
 - 备份、恢复、停用和选择性重新验证。
 - JavaScript computation capture 阶段 A–G，以及固定第三方项目和真实产品交互的正向验收。
+- 单入口 Static Web 目标的只读画像、精确快照授权、确定性 Weave Plan 和可审查结构化 Patch 后端。
 
 当前仍未完成：
 
-- 面向已有 Static Web 目标站点的只读画像、路径/资源/授权校验和可审查 Patch 生成。
 - 面向目标接入的新页面、双入口、简单/开发者模式、胶囊卡片、文件 Diff 和最终确认闭环。
 - React + Vite 与 Node 目标项目的受控接入。
 - 直接应用、commit 或回滚用户真实工作树的事务能力。
 
-因此，当前 Static Web V1 支持面内的本地闭环和 Stage G 第三方正向证明已经 `PASS`。这证明的是当前
-胶囊提取、仓储和独立产品生成主线，不证明任意项目接入、外部 presentation/interaction 自动拆分或后续框架支持。
+因此，当前 Static Web V1 支持面内的本地闭环、Stage G 第三方正向证明和计划三 review-only Patch 后端已经
+`PASS`。这不证明任意项目接入、目标 Patch 的前端交互、真实工作树应用、外部 presentation/interaction 自动拆分
+或后续框架支持。
 
 ## 3. 长期北极星
 
@@ -90,10 +105,11 @@ flowchart LR
   C --> D["单一 SQLite 仓库"]
   D --> E["选择与单一组合核心"]
   E --> F["独立新产品（当前）"]
-  E --> G["Target Adapter（未来）"]
-  G --> H["临时目标副本"]
+  E --> G["Static Web Target Adapter（当前后端）"]
+  G --> J["可审查 Patch（当前后端）"]
+  J -.-> H["临时目标副本（未来）"]
   H --> I["构建与行为验证"]
-  I --> J["可审查 patch 与回滚凭证"]
+  I --> K["回滚凭证"]
 ```
 
 目标接入的适配顺序固定为：
@@ -124,7 +140,8 @@ flowchart LR
 
 ### 5.3 Weave Plan
 
-当前胶囊选择、连接关系和产品 manifest 是一个仅面向独立 Static Web 产品的窄雏形。
+当前胶囊选择、连接关系和产品 manifest 支撑独立 Static Web 产品；`static_web_weave_plan.v1` 在同一主线上
+增加了首个目标接入窄契约，绑定精确胶囊版本、目标快照、固定 adapter、受影响文件、验证步骤和失败策略。
 
 目标接入的 Weave Plan 需要显式描述：
 
@@ -135,17 +152,15 @@ flowchart LR
 - 将运行哪些构建、测试和行为验证。
 - 每一步失败时如何停止和回滚。
 
-计划三只先生成 Static Web 可审查 Patch，不直接写用户项目；在第一个目标接入闭环之前，不设计覆盖所有框架的
-通用计划语言。
+当前 Weave Plan 只生成 Static Web 可审查 Patch，不直接写用户项目；它不是覆盖所有框架的通用计划语言。
 
 ### 5.4 当前尚不存在的能力
 
 以下能力属于未来，不得在产品说明中写成已经完成：
 
-- 完整目标项目画像，以及路径、资源和授权校验。
+- 面向任意项目和框架的完整目标画像。
 - 跨项目兼容性规划器。
 - 面向任意框架的 Target Adapter。
-- 生成可审查 Patch 的 Static Web 后端闭环。
 - 新页面、双入口、双模式、胶囊卡片、文件 Diff 和最终确认的前端闭环。
 - 临时工作树中的目标项目改动应用。
 - 目标项目构建、测试和行为验证编排。
@@ -168,7 +183,7 @@ flowchart LR
 - 本文正式纳入版本控制，作为唯一总路线图。
 - 仍可达的兼容代码、旧 composer、QWebChannel 槽位、前端清理和依赖清理不属于本计划，不能用本次结论扩大删除范围。
 
-### 计划三：后端——Static Web 最小闭环（待实施）
+### 计划三：后端——Static Web 最小闭环（已完成）
 
 首个目标接入后端切片只支持单入口、无需安装或构建的 Static Web 目标：
 
@@ -181,7 +196,17 @@ flowchart LR
 → 返回验证证据和拒绝原因
 ```
 
-计划三只产出确定性的分析、校验、Diff/Patch 数据和证据，不承担新交互页面，也不直接写入用户项目。
+完成边界固定为：
+
+- 目标画像仅存在于进程内，显式绑定单一 HTML 入口和稳定快照摘要，不写入 `projects` 或 `project_file_index`。
+- 路径、symlink、大小写/Unicode 冲突、HTML 资源引用、CSS 未支持资源语法和本地 JavaScript module 闭包均失败关闭。
+- Patch 授权模式只接受 `review_patch_only` 并绑定精确目标快照；受影响路径由后端生成，不能请求 apply、write 或 commit。
+- 只消费满足资格的 active-current 正式版本和 `general` usage scope；缺少可信目标品牌身份时结构化拒绝 `brand_limited`。
+- `module_native` 仍是唯一组合器；固定 `static_web_iframe_embed.v1` 只把其唯一结果映射到内容寻址命名空间。
+- 返回完整 UTF-8/base64 文件内容、hash、文件级文本 Diff、Weave Plan、provenance 和拒绝证据；二进制不伪造文本 Diff。
+- 返回前重新核对胶囊资格和目标快照；目标项目、产品仓与 `product_capsule_usage` 均零写入。
+
+本计划没有新增前端页面或桌面桥接槽位，没有应用 Patch，也不把 Capsule IR 尚未表达的法律许可证判断写成自动授权。
 任何真实工作树应用、commit 或回滚事务都必须在本计划之外另行批准。
 
 ### 计划四：前端——完整交互闭环（待实施）
@@ -215,7 +240,7 @@ flowchart LR
 - 不让模型决定代码边界、放宽安全规则、生成自由 adapter 或自动发布。
 - 不提前建设插件平台、CAS、OCI、MCP/WIT 分发、Nix 环境或五工作区大型 UI。
 - 不为未来框架预先增加抽象；只有经过验证的第二个真实消费者出现后，才提取公共接口。
-- 计划三只读分析目标并生成可审查 Patch，不直接写用户项目；未来如需应用验证，只能先在隔离临时副本进行。
+- 计划三后端只读分析目标并生成可审查 Patch，不直接写用户项目；未来如需应用验证，只能先在隔离临时副本进行。
 - 计划四的最终确认不等于用户真实工作树的写入授权。
 - React/Vite 和 Node 是明确路线目标，但必须在 Static Web 目标事务闭合后顺序实施。
 
@@ -226,7 +251,8 @@ flowchart LR
 3. 第一个目标接入类型是单入口 Static Web。
 4. React/Vite 和 Node 目标项目必须在当前四计划之后进入后续路线，但分别设计、分别验收、顺序实施。
 5. 现有 SQLite 胶囊仓库继续是唯一权威状态。
-6. `module_native` 继续是唯一组合器；未来 Target Adapter 只负责把组合结果接入特定目标形态。
+6. `module_native` 继续是唯一组合器；当前 Static Web Target Adapter 只负责把唯一组合结果映射为目标 Patch，未来 adapter
+   也不得复制组合逻辑。
 7. 当前总路线固定为四个独立验收计划；计划三后端和计划四前端不得互相夹带能力。
 8. 目标接入的最终确认不自动授予真实项目写入权限。
 

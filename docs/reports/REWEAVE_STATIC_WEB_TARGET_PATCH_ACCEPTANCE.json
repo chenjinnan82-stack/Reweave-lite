@@ -1,0 +1,79 @@
+{
+  "acceptance_sha256": "a8bf9396250c27bb79a89539f90237951393b5b21a35cdae6b41bf54984c1692",
+  "authorization": {
+    "apply": false,
+    "commit": false,
+    "mode": "review_patch_only",
+    "target_project_write": false,
+    "target_snapshot_sha256": "26ac34b1bc41102c9846d7899dca5d3ce5b4709ab988899cc30ab1fb800e1e5d",
+    "usage_scope": {
+      "kind": "general"
+    },
+    "usage_scope_match": true
+  },
+  "patch": {
+    "change_count": 4,
+    "changes": [
+      {
+        "after_sha256": "952733e85f2697dc48ae1fa20cd719dc6dd62507d3e92c4cdcb2ae5ff14d76a6",
+        "before_sha256": "2723fbb997d7f387dbaa76f42459f975c4980de4cabda2607aedf953ccfe60f3",
+        "diff_sha256": "d6871a8063617d5232f9d7dceb6ffc1d8f667f70f5ebdbdf7d4556e567600973",
+        "encoding": "utf-8",
+        "operation": "modify",
+        "path": "index.html"
+      },
+      {
+        "after_sha256": "99faecffaaefd2a6359ed150144f270707f994798c5d66920d249283fb3719e2",
+        "before_sha256": null,
+        "diff_sha256": "b185c1db93d6b7a22e058acbf8d6b8a58ddf193bffed58d0dce4282b907df1c3",
+        "encoding": "utf-8",
+        "operation": "add",
+        "path": "reweave/27543fd1c47999fd49cae01f99ed4b2a2fba2c9c305bd5c9e5bcb509ad22a200/app.js"
+      },
+      {
+        "after_sha256": "ac44ff29c400fb6175c806a5903fc96cbe156af49ec4e4c0fbf9bb19975b1c1c",
+        "before_sha256": null,
+        "diff_sha256": "16b14cb4556eb0ba6a381070c7f3c18baa134bfbb95bb06dc57bae942a4c0071",
+        "encoding": "utf-8",
+        "operation": "add",
+        "path": "reweave/27543fd1c47999fd49cae01f99ed4b2a2fba2c9c305bd5c9e5bcb509ad22a200/index.html"
+      },
+      {
+        "after_sha256": "ad6adf4719232cd878cf105ced6670491d65a0d9d475578864e6b44d266fe858",
+        "before_sha256": null,
+        "diff_sha256": "9b9678d453ba552d1b2064658e0e2529c31196ec590f2b638383647c85664f56",
+        "encoding": "utf-8",
+        "operation": "add",
+        "path": "reweave/27543fd1c47999fd49cae01f99ed4b2a2fba2c9c305bd5c9e5bcb509ad22a200/styles.css"
+      }
+    ],
+    "composer_calls": 1,
+    "composer_version": "module_native_formal_product.v1",
+    "patch_sha256": "55ee5ec1519162db765b739b3cb08190eaa5a90a64399891376c112b578411be",
+    "plan_id": "weave_27543fd1c47999fd49cae01f99ed4b2a2fba2c9c305bd5c9e5bcb509ad22a200",
+    "schema_version": "static_web_target_patch.v1",
+    "status": "ready_for_review",
+    "strategy": "static_web_iframe_embed.v1"
+  },
+  "schema_version": "reweave_static_web_target_patch_acceptance.v1",
+  "target": {
+    "commit": "894e7dc8549b0aa347ecbe985704a3c32fbbc767",
+    "distribution_authorization_asserted": false,
+    "entry_path": "index.html",
+    "git_clean_after": true,
+    "javascript_graph_sha256": "71698dbad88c45a97bf6d5b7fde4c2fd5d0d70db0d45fb87e9e6224473247e5e",
+    "license_automation": false,
+    "reachable_module_count": 5,
+    "repository": "https://github.com/MasiaAntoine/snake-js",
+    "snapshot_sha256": "26ac34b1bc41102c9846d7899dca5d3ce5b4709ab988899cc30ab1fb800e1e5d"
+  },
+  "zero_writes": {
+    "product_store_unchanged": true,
+    "product_store_write": false,
+    "product_usage_unchanged": true,
+    "target_project_write": false,
+    "target_tree_unchanged": true,
+    "usage_registration_write": false,
+    "warehouse_revision_unchanged": true
+  }
+}

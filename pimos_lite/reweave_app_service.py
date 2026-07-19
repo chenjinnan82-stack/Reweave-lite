@@ -54,6 +54,15 @@ from pimos_lite.reweave_javascript_source import (
     JavascriptSourceService,
 )
 from pimos_lite.reweave_source_registry import state_dir
+from pimos_lite.reweave_static_web_target import (
+    TARGET_AUTHORIZATION_MODE,
+    StaticWebTargetError,
+    analyze_static_web_target as analyze_static_web_target_profile,
+    build_static_web_patch,
+    capture_static_web_target,
+    rejection_evidence,
+    static_web_plan_identity,
+)
 
 APP_SERVICE_VERSION = "v2"
 LUMO_LITE_MODE = "source_read_only_preview_write"
@@ -65,6 +74,8 @@ PUBLIC_PRODUCT_ACTIONS = frozenset(
     {
         "get_initial_state",
         "generate_product",
+        "analyze_static_web_target",
+        "generate_static_web_patch",
         "get_latest_product_entry_path",
     }
 )
@@ -1110,6 +1121,26 @@ class ReweaveAppService:
         if type(code) is not str or not re.fullmatch(r"[a-z][a-z0-9_]{1,95}", code):
             code = fallback
         return cls._error(code)
+
+    @classmethod
+    def _target_exception_error(
+        cls, exc: BaseException, fallback: str
+    ) -> dict[str, Any]:
+        result = cls._exception_error(exc, fallback)
+        if isinstance(exc, StaticWebTargetError):
+            result["error"]["evidence"] = rejection_evidence(exc)
+        else:
+            phase = (
+                "capsule_selection"
+                if isinstance(exc, (CapsuleStoreError, ProductGenerationError, sqlite3.Error))
+                else "request"
+            )
+            result["error"]["evidence"] = {
+                "status": "rejected",
+                "code": result["error"]["code"],
+                "phase": phase,
+            }
+        return result
 
     @staticmethod
     def _payload(value: dict[str, Any] | None) -> dict[str, Any]:
@@ -3145,6 +3176,169 @@ class ReweaveAppService:
         if hasattr(self._engine, "get_lumo_lite_artifact_path"):
             return self._engine.get_lumo_lite_artifact_path(artifact_id_or_path)  # type: ignore[attr-defined]
         return None
+
+    def analyze_static_web_target(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if set(request) != {"target_path", "entry_relpath"}:
+                raise StaticWebTargetError(
+                    "target_profile_request_invalid", {"phase": "request"}
+                )
+            target_path = request.get("target_path")
+            entry_relpath = request.get("entry_relpath")
+            if type(target_path) is not str or not target_path.strip():
+                raise StaticWebTargetError(
+                    "target_path_required", {"phase": "path"}
+                )
+            if type(entry_relpath) is not str or not entry_relpath:
+                raise StaticWebTargetError(
+                    "target_entry_required", {"phase": "entry"}
+                )
+            return self._ok(
+                analyze_static_web_target_profile(target_path, entry_relpath)
+            )
+        except (OSError, StaticWebTargetError, ValueError) as exc:
+            return self._target_exception_error(exc, "target_profile_failed")
+
+    @_serialized_management
+    def generate_static_web_patch(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            self._ensure_capsule_management()
+            request = self._payload(payload)
+            expected_keys = {
+                "target_path",
+                "entry_relpath",
+                "task",
+                "capsule_ids",
+                "selection_mode",
+                "authorization",
+            }
+            if set(request) != expected_keys:
+                raise StaticWebTargetError(
+                    "target_patch_authorization_invalid",
+                    {"phase": "authorization"},
+                )
+            target_path = request.get("target_path")
+            entry_relpath = request.get("entry_relpath")
+            task = str(request.get("task") or "").strip()
+            raw_ids = request.get("capsule_ids")
+            selection_mode = request.get("selection_mode")
+            authorization = request.get("authorization")
+            if type(target_path) is not str or not target_path.strip():
+                raise StaticWebTargetError(
+                    "target_path_required", {"phase": "path"}
+                )
+            if type(entry_relpath) is not str or not entry_relpath:
+                raise StaticWebTargetError(
+                    "target_entry_required", {"phase": "entry"}
+                )
+            if not task or len(task) > 500:
+                raise StaticWebTargetError(
+                    "product_task_invalid", {"phase": "request"}
+                )
+            if (
+                type(raw_ids) is not list
+                or not raw_ids
+                or len(raw_ids) > 3
+                or any(type(item) is not str or not item for item in raw_ids)
+                or len(raw_ids) != len(set(raw_ids))
+            ):
+                raise StaticWebTargetError(
+                    "formal_capsule_selection_required",
+                    {"phase": "capsule_selection"},
+                )
+            if selection_mode != "manual":
+                raise StaticWebTargetError(
+                    "formal_selection_mode_invalid",
+                    {"phase": "capsule_selection"},
+                )
+            if (
+                type(authorization) is not dict
+                or set(authorization) != {"mode", "target_snapshot_sha256"}
+                or authorization.get("mode") != TARGET_AUTHORIZATION_MODE
+                or re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    str(authorization.get("target_snapshot_sha256") or ""),
+                )
+                is None
+            ):
+                raise StaticWebTargetError(
+                    "target_patch_authorization_invalid",
+                    {"phase": "authorization"},
+                )
+
+            before = capture_static_web_target(target_path, entry_relpath)
+            if (
+                authorization["target_snapshot_sha256"]
+                != before["snapshot_sha256"]
+            ):
+                raise StaticWebTargetError(
+                    "target_snapshot_mismatch", {"phase": "authorization"}
+                )
+            capsules, product_scope = self._load_generation_capsules(list(raw_ids))
+            if product_scope != {"kind": "general"}:
+                raise StaticWebTargetError(
+                    "target_usage_scope_mismatch", {"phase": "authorization"}
+                )
+            identity = static_web_plan_identity(
+                snapshot=before,
+                task=task,
+                capsules=capsules,
+                product_scope=product_scope,
+                authorization=authorization,
+            )
+            try:
+                composition = compose_capsule_product(
+                    task=task,
+                    product_id=identity["product_id"],
+                    generated_at="content-addressed",
+                    capsules=[
+                        {
+                            key: value
+                            for key, value in capsule.items()
+                            if key != "canonical_hash"
+                        }
+                        for capsule in capsules
+                    ],
+                )
+            except ValueError as exc:
+                code = str(exc)
+                raise ProductGenerationError(
+                    code
+                    if re.fullmatch(r"[a-z][a-z0-9_]{1,95}", code)
+                    else "product_composition_failed"
+                ) from exc
+            patch = build_static_web_patch(
+                snapshot=before,
+                task=task,
+                capsules=capsules,
+                product_scope=product_scope,
+                authorization=authorization,
+                identity=identity,
+                composition=composition,
+            )
+            with self._capsule_store.read_connection() as connection:
+                self._assert_generation_capsules_current(connection, capsules)
+            after = capture_static_web_target(target_path, entry_relpath)
+            if before["snapshot_sha256"] != after["snapshot_sha256"]:
+                raise StaticWebTargetError(
+                    "target_changed_during_analysis", {"phase": "consistency"}
+                )
+            patch["target"]["profile"]["source_unchanged"] = True
+            return self._ok(patch)
+        except (
+            CapsuleStoreError,
+            OSError,
+            ProductGenerationError,
+            sqlite3.Error,
+            StaticWebTargetError,
+            ValueError,
+        ) as exc:
+            return self._target_exception_error(exc, "target_patch_generation_failed")
 
     def generate_product(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         try:
