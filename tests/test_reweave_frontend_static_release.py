@@ -708,6 +708,164 @@ def test_desktop_frontend_declares_local_only_content_policy() -> None:
     assert 'new URLSearchParams(window.location.search).get("desktop") === "1"' in (ROOT / "reweave_frontend" / "app.js").read_text(encoding="utf-8")
 
 
+def test_static_web_target_ui_is_review_only_and_fail_closed() -> None:
+    app = (ROOT / "reweave_frontend" / "app.js").read_text(encoding="utf-8")
+    index = (ROOT / "reweave_frontend" / "index.html").read_text(encoding="utf-8")
+    styles = (ROOT / "reweave_frontend" / "styles.css").read_text(encoding="utf-8")
+
+    for element_id in (
+        "btn-open-target",
+        "screen-target",
+        "btn-target-back",
+        "target-developer-mode",
+        "target-capsule-cards",
+        "target-file-diffs",
+        "target-rejection-evidence",
+        "btn-confirm-target-patch",
+        "target-confirmation-receipt",
+    ):
+        assert f'id="{element_id}"' in index
+    toggle = re.search(r'<input type="checkbox" id="target-developer-mode"([^>]*)>', index)
+    assert toggle is not None
+    assert "checked" not in toggle.group(1)
+    assert ".target-developer-only" in styles
+    assert ".screen-target.developer-mode .target-developer-only" in styles
+
+    bridge_guard = app[
+        app.index("  function hasTargetBridge(") : app.index(
+            "\n  function ", app.index("  function hasTargetBridge(") + 1
+        )
+    ]
+    for method in (
+        "choose_static_web_target",
+        "analyze_static_web_target",
+        "generate_static_web_patch",
+    ):
+        assert method in bridge_guard
+    assert 'bridgeCall("analyze_static_web_target", JSON.stringify(payload))' in app
+    assert 'bridgeCall("generate_static_web_patch", JSON.stringify(payload))' in app
+    assert "targetWorkflow.profileRevision += 1" in app
+    assert "targetWorkflow.patchRevision += 1" in app
+    analyze = app[
+        app.index("  function handleAnalyzeStaticWebTarget(") : app.index(
+            "\n  function handleGenerateStaticWebPatch(",
+            app.index("  function handleAnalyzeStaticWebTarget("),
+        )
+    ]
+    generate = app[
+        app.index("  function handleGenerateStaticWebPatch(") : app.index(
+            "\n  function handleConfirmTargetPatch(",
+            app.index("  function handleGenerateStaticWebPatch("),
+        )
+    ]
+    assert "requestRevision !== targetWorkflow.profileRevision" in analyze
+    assert "requestRevision !== targetWorkflow.patchRevision" in generate
+
+    safe_profile = app[
+        app.index("  function isSafeTargetProfile(") : app.index(
+            "\n  function ", app.index("  function isSafeTargetProfile(") + 1
+        )
+    ]
+    assert "profile.schema_version" in safe_profile
+    assert '"static_web_target_profile.v1"' in safe_profile
+    assert 'patch.schema_version !== "static_web_target_patch.v1"' in app
+    assert 'patch.status !== "ready_for_review"' in app
+    assert 'patch.strategy !== "static_web_iframe_embed.v1"' in app
+    assert 'authorization.mode !== "review_patch_only"' in app
+    assert 'targetExactObject(profile, [' in app
+    assert 'targetExactObject(patch, [' in app
+    for write_flag in (
+        "target_project_write",
+        "apply",
+        "commit",
+        "product_store_write",
+        "usage_registration_write",
+    ):
+        assert write_flag in app
+
+    confirm_start = app.index("  function handleConfirmTargetPatch(")
+    confirm_end = app.index("\n  function ", confirm_start + 1)
+    confirmation = app[confirm_start:confirm_end]
+    assert "bridgeCall(" not in confirmation
+    assert "targetWorkflow.confirmation =" in confirmation
+    assert "planId" in confirmation
+    assert "snapshotSha256" in confirmation
+
+    render_start = app.index("  function renderTargetPatch(")
+    render_end = app.index("\n  function renderTargetError(", render_start)
+    patch_render = app[render_start:render_end]
+    assert ".textContent = change.diff" in patch_render
+    assert 'change.content_encoding === "utf-8"' in patch_render
+    assert 'binary.textContent = t("targetBinaryDiff")' in patch_render
+    assert "after_content" not in patch_render
+    assert "innerHTML" not in patch_render
+
+    error_start = render_end
+    error_end = app.index("\n  function ", error_start + 1)
+    error_render = app[error_start:error_end]
+    assert "targetRejectionEvidence.textContent" in error_render
+    assert "rawEvidence.logical_path" in error_render
+    assert "rawEvidence.target_path" not in error_render
+    assert "innerHTML" not in error_render
+    profile_projection = app[
+        app.index("  function targetProfileDeveloperEvidence(") : app.index(
+            "\n  function renderTargetProfile(",
+            app.index("  function targetProfileDeveloperEvidence("),
+        )
+    ]
+    assert "files: profile.files.map" in profile_projection
+    assert "files: profile.files," not in profile_projection
+    patch_projection = app[
+        app.index("  function targetPatchDeveloperEvidence(") : app.index(
+            "\n  function renderTargetPatch(",
+            app.index("  function targetPatchDeveloperEvidence("),
+        )
+    ]
+    assert "authorization: patch.authorization" not in patch_projection
+    assert "weave_plan: patch.weave_plan" not in patch_projection
+    assert "composer: patch.composer" not in patch_projection
+    assert 'targetBack.addEventListener("click", showStandaloneProduct)' in app
+    capsule_render = app[
+        app.index("  function renderTargetCapsules(") : app.index(
+            "\n  function appendTargetMetric(",
+            app.index("  function renderTargetCapsules("),
+        )
+    ]
+    assert "resetTargetPatch();" in capsule_render
+    assert ".after_content" not in app
+    for forbidden_method in (
+        "apply_static_web_patch",
+        "commit_static_web_patch",
+        "write_static_web_target",
+    ):
+        assert forbidden_method not in app
+
+
+def test_static_web_target_ui_acceptance_keeps_confirmation_review_only() -> None:
+    report = json.loads(
+        (ROOT / "docs" / "reports" / "REWEAVE_STATIC_WEB_TARGET_UI_ACCEPTANCE.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert report["schema_version"] == "reweave_static_web_target_ui_acceptance.v1"
+    assert report["verdict"] == "PASS"
+    assert report["desktop_flow"]["acceptance_scope"] == (
+        "real_qwebengine_with_stubbed_plan3_service_contract"
+    )
+    assert report["confirmation"] == {
+        "kind": "in_memory_review_receipt",
+        "bound_to_plan_id": True,
+        "bound_to_target_snapshot_sha256": True,
+        "bridge_call": False,
+        "write_authorization": False,
+        "invalidated_by_input_change": True,
+    }
+    assert all(value is False for key, value in report["zero_writes"].items() if key != "target_tree_unchanged")
+    assert report["zero_writes"]["target_tree_unchanged"] is True
+    assert report["scope_limit"]["qt_service_is_stubbed"] is True
+    assert report["scope_limit"]["release_tag_moved"] is False
+
+
 def test_desktop_user_flow_doc_is_linked() -> None:
     readme = (ROOT / "README.md").read_text(encoding="utf-8")
     readme_cn = (ROOT / "README.zh-CN.md").read_text(encoding="utf-8")

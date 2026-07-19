@@ -199,6 +199,26 @@ class ReweaveBridge:
                     json.dumps({"path": path, "root_kind": "project_collection"}),
                 )
 
+            @Slot(result=str)
+            def choose_static_web_target(self) -> str:
+                try:
+                    _, _, _, _, _, QFileDialog = import_qt_webengine()
+                    path = QFileDialog.getExistingDirectory(
+                        self._parent_widget, "Select Static Web target"
+                    )
+                except Exception:
+                    logger.error("Static Web target chooser failed")
+                    return self._phase4_error("internal_error", "internalError")
+                if not path:
+                    return json.dumps({"ok": False, "cancelled": True})
+                return json.dumps(
+                    {
+                        "ok": True,
+                        "target_path": path,
+                        "display_name": Path(path).name or "Static Web target",
+                    }
+                )
+
             @Slot(str, result=str)
             def discover_source_root(self, payload_json: str = "") -> str:
                 return self._phase4_call("discover_source_root", payload_json)
@@ -310,6 +330,14 @@ class ReweaveBridge:
             @Slot(str, result=str)
             def generate_product(self, payload_json: str = "") -> str:
                 return self._phase4_call("generate_product", payload_json)
+
+            @Slot(str, result=str)
+            def analyze_static_web_target(self, payload_json: str = "") -> str:
+                return self._phase4_call("analyze_static_web_target", payload_json)
+
+            @Slot(str, result=str)
+            def generate_static_web_patch(self, payload_json: str = "") -> str:
+                return self._phase4_call("generate_static_web_patch", payload_json)
 
             @Slot(str, result=str)
             def retry_product_usage_registration(self, payload_json: str = "") -> str:
