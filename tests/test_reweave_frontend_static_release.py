@@ -94,6 +94,8 @@ def test_capsule_warehouse_scene_is_one_read_only_release_module() -> None:
     assert "getCapsules: function ()" in app
     assert "getProjects: function ()" in app
     assert 'bridgeCall("get_capsule_detail"' in app
+    assert "readCapsuleCoreCode: function (capsuleId, versionId, projectId)" in app
+    assert 'bridgeCall("get_capsule_core_code_projection"' in app
     assert "innerHTML" not in scene
     assert "localStorage" not in scene
     assert "sessionStorage" not in scene
@@ -124,7 +126,7 @@ def test_capsule_warehouse_scene_is_one_read_only_release_module() -> None:
     assert "targetIntegration.getState()" in app
 
 
-def test_capsule_core_code_fail_closed_without_formal_contract() -> None:
+def test_capsule_core_code_projection_is_exact_formal_and_fail_closed() -> None:
     node = shutil.which("node")
     reader_path = ROOT / "reweave_frontend" / "capsule_reader.js"
     reader = reader_path.read_text(encoding="utf-8")
@@ -140,7 +142,31 @@ def test_capsule_core_code_fail_closed_without_formal_contract() -> None:
         'kind === "validated_core_code"',
     ):
         assert speculative_rule not in reader + scene
-    assert "verified_core_code: false" in scene
+    assert "snippet" not in scene
+    assert "preview" not in scene
+    assert "function coreCodeIdentity(group, cap)" in scene
+    assert "if (!hasFormalSourceFact(group, cap)) return null;" in scene
+    assert "JSON.stringify([identity.capsuleId, identity.versionId, identity.projectId])" in scene
+    assert "host.readCapsuleCoreCode(" in scene
+    assert 'raw.schema_version !== "capsule_core_code_projection.v1"' in scene
+    assert 'raw.source_identity !== "project:" + identity.projectId' in scene
+    assert "raw.version_id !== identity.versionId" in scene
+    assert "raw.project_id !== identity.projectId" in scene
+    assert "raw.validation.status !== \"passed\"" in scene
+    assert 'raw.core_code.kind !== "javascript_entry_module"' in scene
+    assert 'raw.core_code.language !== "javascript"' in scene
+    assert "safeJavascriptPath(raw.core_code.logical_path) !== exactEntryModule(cap)" in scene
+    assert "cached.requestRevision === coreCodeRequestRevision" in scene
+    assert "codeElement.textContent = coreProjection ? coreProjection.core_code.content : \"\";" in scene
+    assert "verified_core_code: !!(group && cap && currentCoreCodeProjection(group, cap))" in scene
+
+    developer = scene[scene.index("    function developerProjection(") : scene.index(
+        "\n    function applyCodeScale(", scene.index("    function developerProjection(")
+    )]
+    assert "core_code_projection" in developer
+    assert "coreProjection.core_code.logical_path" in developer
+    assert "coreProjection.core_code.sha256" in developer
+    assert "coreProjection.core_code.content" not in developer
 
     if node:
         script = (
@@ -149,6 +175,144 @@ def test_capsule_core_code_fail_closed_without_formal_contract() -> None:
         )
         result = subprocess.run([node, "-e", script], check=True, capture_output=True, text=True)
         assert result.stdout.strip() == "undefined"
+
+
+def test_capsule_core_code_late_response_cannot_replace_current_revision() -> None:
+    node = shutil.which("node")
+    if not node:
+        return
+    scene_path = ROOT / "reweave_frontend" / "capsule_warehouse_scene.js"
+    script = r"""
+const fs = require("fs");
+global.window = {};
+let source = fs.readFileSync(process.argv[1], "utf8");
+const needle = `    return {
+      bind: bind,
+      sync: sync,
+      getState: getState,
+    };`;
+const replacement = `    return {
+      bind: bind,
+      sync: sync,
+      getState: getState,
+      __test: {
+        setDetail: function (cap, projectId) {
+          details[capsuleId(cap)] = {
+            versionId: String(cap.version_id || ""),
+            loading: false,
+            requestRevision: 1,
+            value: {
+              exact_version: true,
+              sources: [{
+                version_id: String(cap.version_id || ""),
+                project_id: projectId,
+                source_identity: "project:" + projectId,
+                source_kind: "project",
+                source_relpath: "index.html",
+                relationship: "exact",
+              }],
+              version: {activation: {entry_module: "entry.js"}},
+              status_events: [],
+            },
+          };
+        },
+        select: function (group, cap) {
+          invalidatePendingCoreCodeRequests();
+          state.active = true;
+          state.view = "code";
+          state.projectKey = group.key;
+          state.capsuleId = capsuleId(cap);
+        },
+        ensure: ensureCoreCodeProjection,
+        current: currentCoreCodeProjection,
+      },
+    };`;
+if (!source.includes(needle)) throw new Error("scene test hook insertion failed");
+source = source.replace(needle, replacement);
+eval(source);
+
+const capA = {capsule_id: "capsule-a", version_id: "version-a", type: "presentation", formal_version: true, status: "active", name: "A"};
+const capB = {capsule_id: "capsule-b", version_id: "version-b", type: "interaction", formal_version: true, status: "active", name: "B"};
+const groupA = {key: "project:project-a", projectId: "project-a", evidenceStatus: "formal_exact_version_source"};
+const groupB = {key: "project:project-b", projectId: "project-b", evidenceStatus: "formal_exact_version_source"};
+const pending = {};
+const calls = [];
+const host = {
+  getCapsules: () => [capA, capB],
+  getProjects: () => [
+    {project_id: "project-a", display_name: "Project A"},
+    {project_id: "project-b", display_name: "Project B"},
+  ],
+  readCapsuleCoreCode: (capsuleId, versionId, projectId) => {
+    calls.push([capsuleId, versionId, projectId]);
+    return new Promise((resolve) => { pending[capsuleId] = resolve; });
+  },
+};
+const scene = window.ReweaveCapsuleWarehouseScene.create(host);
+const hooks = scene.__test;
+hooks.setDetail(capA, "project-a");
+hooks.setDetail(capB, "project-b");
+
+function response(cap, projectId, content, digestChar) {
+  return {
+    schema_version: "capsule_core_code_projection.v1",
+    capsule_id: cap.capsule_id,
+    version_id: cap.version_id,
+    project_id: projectId,
+    source_identity: "project:" + projectId,
+    canonical_hash: digestChar.repeat(64),
+    capability_kind: cap.type,
+    validation: {
+      contract_version: "validation_contract.v1",
+      schema_version: "qweb_validation.v1",
+      status: "passed",
+      acceptance_scope: "real_qwebengine_render",
+    },
+    core_code: {
+      kind: "javascript_entry_module",
+      logical_path: "entry.js",
+      language: "javascript",
+      content: content,
+      sha256: digestChar.repeat(64),
+    },
+  };
+}
+
+(async () => {
+  hooks.select(groupA, capA);
+  hooks.ensure(groupA, capA);
+  hooks.select(groupB, capB);
+  hooks.ensure(groupB, capB);
+  pending["capsule-b"](response(capB, "project-b", "B_ENTRY", "b"));
+  await new Promise(setImmediate);
+  const afterB = hooks.current(groupB, capB);
+  pending["capsule-a"](response(capA, "project-a", "A_STALE", "a"));
+  await new Promise(setImmediate);
+  const afterLateA = hooks.current(groupB, capB);
+  console.log(JSON.stringify({
+    calls: calls,
+    after_b: afterB && afterB.core_code.content,
+    after_late_a: afterLateA && afterLateA.core_code.content,
+    stale_a: hooks.current(groupA, capA),
+  }));
+})().catch((error) => { console.error(error); process.exitCode = 1; });
+"""
+    completed = subprocess.run(
+        [node, "-e", script, str(scene_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    result = json.loads(completed.stdout)
+    assert result == {
+        "calls": [
+            ["capsule-a", "version-a", "project-a"],
+            ["capsule-b", "version-b", "project-b"],
+        ],
+        "after_b": "B_ENTRY",
+        "after_late_a": "B_ENTRY",
+        "stale_a": None,
+    }
 
 
 def test_capsule_detail_fails_closed_without_exact_version() -> None:
@@ -185,6 +349,9 @@ def test_capsule_source_fact_line_requires_exact_formal_identity() -> None:
     get_state = scene[scene.index("    function getState(") : scene.index(
         "\n    return {", scene.index("    function getState(")
     )]
+    core_identity = scene[scene.index("    function coreCodeIdentity(") : scene.index(
+        "\n    function exactEntryModule(", scene.index("    function coreCodeIdentity(")
+    )]
 
     assert "missingIdentity" not in scene
     assert 'projectId: evidenceStatus === "formal_exact_version_source"' in grouping
@@ -201,6 +368,9 @@ def test_capsule_source_fact_line_requires_exact_formal_identity() -> None:
     assert "source_identity_status: sourceStatus" in projection
     assert "relationships: formalSource ? exactProjectSources(cap).filter" in projection
     assert 'group.evidenceStatus === "formal_exact_version_source"' in get_state
+    assert "if (!hasFormalSourceFact(group, cap)) return null;" in core_identity
+    assert "missing_exact_version_source_relation" not in core_identity
+    assert "missing_formal_source_identity" not in core_identity
 
 
 def test_formal_capsule_selection_is_correctable_and_fail_closed() -> None:

@@ -56,6 +56,7 @@ def test_phase4_bridge_forwards_json_payloads_to_app_service() -> None:
         "list_capability_groups",
         "rename_capability_group",
         "get_capsule_detail",
+        "get_capsule_core_code_projection",
         "set_capsule_status",
         "create_backup",
         "list_backups",

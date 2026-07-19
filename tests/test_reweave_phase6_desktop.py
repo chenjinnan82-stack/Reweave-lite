@@ -853,7 +853,7 @@ def test_capsule_warehouse_read_only_scene_with_real_service(
     from pimos_lite import desktop_reweave_static as desktop
     from pimos_lite.reweave_app_service import ReweaveAppService
     from pimos_lite.reweave_capsule_store import CapsuleWarehouseStore
-    from tests.test_reweave_phase5_generation import _seed_capsule
+    from tests.test_reweave_phase5_generation import _capsule_payload, _seed_capsule
 
     sources_root = tmp_path / "readonly-sources"
     sources_root.mkdir()
@@ -865,9 +865,11 @@ def test_capsule_warehouse_read_only_scene_with_real_service(
     absolute_canary = str(sources_root.resolve())
     after_content_canary = "WAREHOUSE_AFTER_CONTENT_MUST_NOT_RENDER"
     snippet_code_canary = "WAREHOUSE_SPECULATIVE_SNIPPET_MUST_NOT_RENDER"
+    helper_code_canary = "WAREHOUSE_HELPER_MODULE_MUST_NOT_RENDER"
     missing_version_capsule_id = ""
     missing_version_version_id = ""
     missing_identity_capsule_id = ""
+    projection_variants: dict[str, str] = {}
 
     class ObservedService(ReweaveAppService):
         def get_initial_state(self) -> dict[str, object]:
@@ -925,35 +927,84 @@ def test_capsule_warehouse_read_only_scene_with_real_service(
                     ]
             return result
 
+        def get_capsule_core_code_projection(
+            self, payload: dict[str, object] | None = None
+        ) -> dict[str, object]:
+            result = super().get_capsule_core_code_projection(payload)
+            projection = result.get("data") if isinstance(result, dict) else None
+            capsule_id = str((payload or {}).get("capsule_id") or "")
+            variant = projection_variants.get(capsule_id)
+            if not isinstance(projection, dict) or not variant:
+                return result
+            core_code = projection.get("core_code")
+            if variant == "wrong_schema":
+                projection["schema_version"] = "capsule_core_code_projection.invalid"
+            elif variant == "wrong_version":
+                projection["version_id"] = str(projection.get("version_id") or "") + "-other"
+            elif variant == "wrong_project":
+                projection["project_id"] = "project-other"
+                projection["source_identity"] = "project:project-other"
+            elif variant == "absolute_path" and isinstance(core_code, dict):
+                core_code["logical_path"] = absolute_canary + "/entry.js"
+            elif variant == "helper_module" and isinstance(core_code, dict):
+                core_code["logical_path"] = "helper.js"
+                core_code["content"] = helper_code_canary
+                core_code["sha256"] = hashlib.sha256(
+                    helper_code_canary.encode("utf-8")
+                ).hexdigest()
+            return result
+
     service = ObservedService(capsule_store=store)
     project_rows: list[tuple[Path, str, str]] = []
-    for slug, display_name in (
-        ("source-a", "Readonly source A"),
-        ("source-b", "Readonly source B"),
-        ("source-c", "Readonly source C"),
+    deterministic_source_ids = [
+        "00000000-0000-4000-8000-000000000001",
+        "00000000-0000-4000-8000-000000000101",
+        "00000000-0000-4000-8000-000000000002",
+        "00000000-0000-4000-8000-000000000102",
+        "00000000-0000-4000-8000-000000000003",
+        "00000000-0000-4000-8000-000000000103",
+    ]
+    with patch(
+        "pimos_lite.reweave_capsule_intake._uuid",
+        side_effect=deterministic_source_ids,
     ):
-        source = sources_root / slug
-        source.mkdir()
-        (source / "index.html").write_text(
-            f'<main data-capsule-root="{slug}"></main>\n', encoding="utf-8"
-        )
-        root = service._capsule_intake.bind_source_root(
-            source, root_kind="single_project"
-        )
-        discovered = service._capsule_intake.discover_projects(str(root["root_id"]))
-        project = service._capsule_intake.confirm_project(
-            str(discovered[0]["project_id"])
-        )
-        project_id = str(project["project_id"])
-        with store.transaction() as connection:
-            connection.execute(
-                "UPDATE projects SET display_name = ? WHERE project_id = ?",
-                (display_name, project_id),
+        for slug, display_name in (
+            ("source-a", "Readonly source A"),
+            ("source-b", "Readonly source B"),
+            ("source-c", "Readonly source C"),
+        ):
+            source = sources_root / slug
+            source.mkdir()
+            (source / "index.html").write_text(
+                f'<main data-capsule-root="{slug}"></main>\n', encoding="utf-8"
             )
-            store.bump_revision(connection)
-        project_rows.append((source, display_name, project_id))
+            root = service._capsule_intake.bind_source_root(
+                source, root_kind="single_project"
+            )
+            discovered = service._capsule_intake.discover_projects(str(root["root_id"]))
+            project = service._capsule_intake.confirm_project(
+                str(discovered[0]["project_id"])
+            )
+            project_id = str(project["project_id"])
+            with store.transaction() as connection:
+                connection.execute(
+                    "UPDATE projects SET display_name = ? WHERE project_id = ?",
+                    (display_name, project_id),
+                )
+                store.bump_revision(connection)
+            project_rows.append((source, display_name, project_id))
 
     capsule_rows: list[tuple[str, str, int]] = []
+    successful_payload = _capsule_payload("presentation")
+    successful_payload["javascript_modules"].append(  # type: ignore[union-attr]
+        {
+            "path": "helper.js",
+            "source": f'export const helperCanary = "{helper_code_canary}";\n',
+        }
+    )
+    successful_entry_content = str(
+        successful_payload["javascript_modules"][0]["source"]  # type: ignore[index]
+    )
     for project_index, kind, suffix, capability_key in (
         (0, "presentation", "alpha_presentation", "alpha_presentation"),
         (0, "interaction", "alpha_interaction", "alpha_interaction"),
@@ -963,9 +1014,22 @@ def test_capsule_warehouse_read_only_scene_with_real_service(
         (2, "computation", "gamma_computation", "gamma_computation"),
     ):
         capsule_id, version_id = _seed_capsule(
-            store, kind, capability_key=capability_key, suffix=suffix
+            store,
+            kind,
+            capability_key=capability_key,
+            suffix=suffix,
+            payload=successful_payload if suffix == "alpha_presentation" else None,
         )
         capsule_rows.append((capsule_id, version_id, project_index))
+    projection_variants.update(
+        {
+            capsule_rows[1][0]: "wrong_schema",
+            capsule_rows[2][0]: "wrong_version",
+            capsule_rows[3][0]: "wrong_project",
+            capsule_rows[4][0]: "absolute_path",
+            capsule_rows[5][0]: "helper_module",
+        }
+    )
     missing_version_capsule_id, missing_version_version_id = _seed_capsule(
         store,
         "presentation",
@@ -1009,6 +1073,34 @@ def test_capsule_warehouse_read_only_scene_with_real_service(
     initial_state = service.get_initial_state()
     assert len(initial_state["warehouseCapsules"]) == 8
     assert len(initial_state["capsuleIngestionV1"]["projects"]) == 3
+
+    untouched_target = tmp_path / "untouched-user-target"
+    untouched_target.mkdir()
+    (untouched_target / "sentinel.txt").write_text(
+        "core-code projection must not touch this target\n", encoding="utf-8"
+    )
+
+    def warehouse_table_state() -> dict[str, object]:
+        tables = (
+            "capsules",
+            "capsule_versions",
+            "capsule_sources",
+            "product_capsule_usage",
+        )
+        with store.read_connection() as connection:
+            rows = [
+                {
+                    "table": table,
+                    "rows": [
+                        dict(row)
+                        for row in connection.execute(
+                            f"SELECT * FROM {table} ORDER BY rowid"
+                        )
+                    ],
+                }
+                for table in tables
+            ]
+        return {"tables": list(tables), "sha256": _canonical_sha256(rows)}
 
     qt_parts = desktop.import_qt_webengine()
     QApplication = qt_parts[0]
@@ -1064,16 +1156,23 @@ def test_capsule_warehouse_read_only_scene_with_real_service(
                 "desktop main screen",
             )
             bridge_calls: list[str] = []
+            projection_bridge_payloads: list[dict[str, object]] = []
             original_phase4_call = bridge._phase4_call
 
             def observe_phase4_call(method_name: str, payload_json: str = "") -> str:
                 bridge_calls.append(method_name)
+                if method_name == "get_capsule_core_code_projection":
+                    parsed_payload = json.loads(payload_json)
+                    assert isinstance(parsed_payload, dict)
+                    projection_bridge_payloads.append(parsed_payload)
                 return original_phase4_call(method_name, payload_json)
 
             bridge._phase4_call = observe_phase4_call
 
             source_before = _tree_state(sources_root)
+            target_before = _tree_state(untouched_target)
             revision_before = store.current_revision()
+            tables_before = warehouse_table_state()
             usage_before = _usage_state(store)
             products_before = _tree_state(state_dir / "products")
 
@@ -1086,6 +1185,7 @@ def test_capsule_warehouse_read_only_scene_with_real_service(
                 "source project overview",
             )
             assert warehouse_state()["view"] == "overview"
+            assert projection_bridge_payloads == []
             assert js("document.querySelectorAll('#warehouse-scene-links line').length") == 0
             overview_positions = json.loads(
                 str(
@@ -1128,6 +1228,7 @@ def test_capsule_warehouse_read_only_scene_with_real_service(
             assert js("document.querySelectorAll('#warehouse-scene-links line').length") == 2
             formal_project_state = warehouse_state()
             assert formal_project_state["project_id"] == project_rows[0][2]
+            assert projection_bridge_payloads == []
             assert not js("!!document.querySelector('.warehouse-node.is-center .warehouse-node-note')")
 
             js("document.getElementById('btn-warehouse-zoom-in').click(); true")
@@ -1141,26 +1242,36 @@ def test_capsule_warehouse_read_only_scene_with_real_service(
             assert project_view["canvas"]["scale"] > 1
             assert project_view["canvas"]["x"] < 0
 
-            selected_id = str(
-                js("document.querySelector('#warehouse-scene-nodes [data-capsule-id]').dataset.capsuleId")
-            )
+            selected_id = capsule_rows[0][0]
             assert js(
-                "(() => { const node = document.querySelector('#warehouse-scene-nodes [data-capsule-id]'); "
+                "(() => { const node = document.querySelector('#warehouse-scene-nodes "
+                "[data-capsule-id=" + json.dumps(selected_id) + "]'); "
                 "node.focus(); return document.activeElement === node; })()"
             )
             QTest.keyClick(key_target, Qt.Key.Key_Return)
             wait_js(
-                "window.ReweavePrototype.getState().warehouse.view === 'code'",
+                "window.ReweavePrototype.getState().warehouse.view === 'code' && "
+                "window.ReweavePrototype.getState().warehouse.verified_core_code === true",
                 10,
-                "capsule code page",
+                "verified capsule code page",
             )
             simple_state = warehouse_state()
             assert simple_state["capsule_id"] == selected_id
-            assert simple_state["verified_core_code"] is False
+            assert simple_state["verified_core_code"] is True
+            assert projection_bridge_payloads == [
+                {
+                    "capsule_id": selected_id,
+                    "version_id": capsule_rows[0][1],
+                    "project_id": project_rows[0][2],
+                }
+            ]
             assert js(
-                "document.getElementById('warehouse-core-code').classList.contains('hidden') && "
-                "!document.getElementById('warehouse-core-code-empty').classList.contains('hidden') && "
-                "!document.body.textContent.includes(" + json.dumps(snippet_code_canary) + ")"
+                "!document.getElementById('warehouse-core-code').classList.contains('hidden') && "
+                "document.getElementById('warehouse-core-code-empty').classList.contains('hidden') && "
+                "document.getElementById('warehouse-core-code').textContent === "
+                + json.dumps(successful_entry_content) + " && "
+                "!document.body.textContent.includes(" + json.dumps(snippet_code_canary) + ") && "
+                "!document.body.textContent.includes(" + json.dumps(helper_code_canary) + ")"
             )
 
             js("document.getElementById('warehouse-code-developer-mode').click(); true")
@@ -1181,10 +1292,22 @@ def test_capsule_warehouse_read_only_scene_with_real_service(
                 == "formal_exact_version_source"
             )
             assert len(formal_evidence["source"]["relationships"]) == 1
+            assert formal_evidence["capsule"]["version_id"] == capsule_rows[0][1]
+            assert formal_evidence["core_code_projection"]["schema_version"] == (
+                "capsule_core_code_projection.v1"
+            )
+            assert formal_evidence["core_code_projection"]["logical_path"] == (
+                "presentation.js"
+            )
+            assert re.fullmatch(
+                r"[0-9a-f]{64}", formal_evidence["core_code_projection"]["sha256"]
+            )
+            assert "content" not in formal_evidence["core_code_projection"]
             assert js(
                 "!document.documentElement.outerHTML.includes(" + json.dumps(absolute_canary) + ") && "
                 "!document.body.textContent.includes(" + json.dumps(after_content_canary) + ") && "
-                "!document.body.textContent.includes(" + json.dumps(snippet_code_canary) + ")"
+                "!document.body.textContent.includes(" + json.dumps(snippet_code_canary) + ") && "
+                "!document.body.textContent.includes(" + json.dumps(helper_code_canary) + ")"
             )
 
             js("document.getElementById('btn-warehouse-code-zoom-in').click(); true")
@@ -1255,6 +1378,99 @@ def test_capsule_warehouse_read_only_scene_with_real_service(
             assert warehouse_state()["view"] == "overview"
             assert warehouse_state()["canvas"] == overview_before_search["canvas"]
 
+            def assert_failed_projection(
+                project_label: str,
+                capsule_row: tuple[str, str, int],
+                variant: str,
+            ) -> None:
+                capsule_id, version_id, project_index = capsule_row
+                before_calls = len(projection_bridge_payloads)
+                assert projection_variants[capsule_id] == variant
+                assert js(
+                    "(() => { const node = Array.from(document.querySelectorAll("
+                    "'#warehouse-scene-nodes [data-project-key]')).find(function (item) { "
+                    "return item.textContent.includes(" + json.dumps(project_label) + "); }); "
+                    "node.click(); return true; })()"
+                )
+                wait_js(
+                    "window.ReweavePrototype.getState().warehouse.view === 'project' && "
+                    "window.ReweavePrototype.getState().warehouse.project_id === "
+                    + json.dumps(project_rows[project_index][2]),
+                    10,
+                    variant + " project",
+                )
+                assert js(
+                    "(() => { const node = document.querySelector('#warehouse-scene-nodes "
+                    "[data-capsule-id=" + json.dumps(capsule_id) + "]'); "
+                    "node.click(); return true; })()"
+                )
+                wait_js(
+                    "window.ReweavePrototype.getState().warehouse.view === 'code' && "
+                    "window.ReweavePrototype.getState().warehouse.capsule_id === "
+                    + json.dumps(capsule_id),
+                    10,
+                    variant + " code page",
+                )
+                deadline = time.monotonic() + 10
+                while (
+                    len(projection_bridge_payloads) != before_calls + 1
+                    and time.monotonic() < deadline
+                ):
+                    pump(0.03)
+                assert len(projection_bridge_payloads) == before_calls + 1
+                pump(0.15)
+                failed_state = warehouse_state()
+                assert failed_state["verified_core_code"] is False
+                assert projection_bridge_payloads[-1] == {
+                    "capsule_id": capsule_id,
+                    "version_id": version_id,
+                    "project_id": project_rows[project_index][2],
+                }
+                assert js(
+                    "document.getElementById('warehouse-core-code').classList.contains('hidden') && "
+                    "!document.getElementById('warehouse-core-code-empty').classList.contains('hidden') && "
+                    "document.getElementById('warehouse-core-code').textContent === '' && "
+                    "!document.documentElement.outerHTML.includes(" + json.dumps(absolute_canary) + ") && "
+                    "!document.body.textContent.includes(" + json.dumps(helper_code_canary) + ") && "
+                    "!document.body.textContent.includes(" + json.dumps(after_content_canary) + ") && "
+                    "!document.body.textContent.includes(" + json.dumps(snippet_code_canary) + ")"
+                )
+                failed_evidence = json.loads(
+                    str(js("document.getElementById('warehouse-developer-evidence').textContent"))
+                )
+                assert failed_evidence["capsule"]["capsule_id"] == capsule_id
+                assert failed_evidence["capsule"]["version_id"] == version_id
+                assert failed_evidence["source"]["project_id"] == project_rows[project_index][2]
+                assert failed_evidence["core_code_projection"] is None
+                js("document.getElementById('btn-warehouse-scene-back').click(); true")
+                wait_js(
+                    "window.ReweavePrototype.getState().warehouse.view === 'project'",
+                    10,
+                    "return from " + variant + " code",
+                )
+                js("document.getElementById('btn-warehouse-scene-back').click(); true")
+                wait_js(
+                    "window.ReweavePrototype.getState().warehouse.view === 'overview'",
+                    10,
+                    "return from " + variant + " project",
+                )
+
+            for failed_row, variant in zip(
+                capsule_rows[1:],
+                (
+                    "wrong_schema",
+                    "wrong_version",
+                    "wrong_project",
+                    "absolute_path",
+                    "helper_module",
+                ),
+                strict=True,
+            ):
+                assert_failed_projection(
+                    project_rows[failed_row[2]][1], failed_row, variant
+                )
+
+            fallback_projection_calls = len(projection_bridge_payloads)
             assert js(
                 "(() => { const node = Array.from(document.querySelectorAll("
                 "'#warehouse-scene-nodes [data-project-key]')).find(function (item) { "
@@ -1285,6 +1501,12 @@ def test_capsule_warehouse_read_only_scene_with_real_service(
                 "missing exact version code page",
             )
             assert warehouse_state()["capsule_id"] == missing_version_capsule_id
+            assert warehouse_state()["verified_core_code"] is False
+            assert len(projection_bridge_payloads) == fallback_projection_calls
+            assert js(
+                "document.getElementById('warehouse-core-code').classList.contains('hidden') && "
+                "!document.getElementById('warehouse-core-code-empty').classList.contains('hidden')"
+            )
             js(
                 "(() => { const toggle = document.getElementById('warehouse-code-developer-mode'); "
                 "if (!toggle.checked) toggle.click(); return true; })()"
@@ -1299,6 +1521,8 @@ def test_capsule_warehouse_read_only_scene_with_real_service(
                 == "missing_exact_version_source_relation"
             )
             assert missing_version_evidence["source"]["relationships"] == []
+            assert missing_version_evidence["core_code_projection"] is None
+            assert len(projection_bridge_payloads) == fallback_projection_calls
             js("document.getElementById('btn-warehouse-scene-back').click(); true")
             wait_js(
                 "window.ReweavePrototype.getState().warehouse.view === 'project'",
@@ -1352,6 +1576,9 @@ def test_capsule_warehouse_read_only_scene_with_real_service(
                 == "missing_formal_source_identity"
             )
             assert missing_identity_evidence["source"]["relationships"] == []
+            assert missing_identity_evidence["core_code_projection"] is None
+            assert warehouse_state()["verified_core_code"] is False
+            assert len(projection_bridge_payloads) == fallback_projection_calls
             js("document.getElementById('btn-warehouse-scene-back').click(); true")
             wait_js(
                 "window.ReweavePrototype.getState().warehouse.view === 'project'",
@@ -1377,9 +1604,13 @@ def test_capsule_warehouse_read_only_scene_with_real_service(
                 "main entry focus restored",
             )
 
-            assert bridge_calls == ["get_capsule_detail"] * 8
+            assert bridge_calls == ["get_capsule_detail"] * 8 + [
+                "get_capsule_core_code_projection"
+            ] * 6
             assert _tree_state(sources_root) == source_before
+            assert _tree_state(untouched_target) == target_before
             assert store.current_revision() == revision_before
+            assert warehouse_table_state() == tables_before
             assert _usage_state(store) == usage_before
             assert _tree_state(state_dir / "products") == products_before
     finally:

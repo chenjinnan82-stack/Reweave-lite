@@ -24,7 +24,9 @@
       searchSnapshot: null,
     };
     var details = {};
+    var coreCodeCache = {};
     var requestRevision = 0;
+    var coreCodeRequestRevision = 0;
     var bound = false;
     var panning = null;
     var els = {};
@@ -85,6 +87,19 @@
       if (!path || looksAbsolutePath(path)) return "";
       if (path.split(/[\\/]/).some(function (part) { return part === ".."; })) return "";
       return path;
+    }
+
+    function safeJavascriptPath(value) {
+      if (typeof value !== "string" || value !== value.trim()) return "";
+      if (!value || /[\u0000-\u001f\u007f]/.test(value) || value.indexOf("\\") >= 0) return "";
+      if (looksAbsolutePath(value)) return "";
+      if (value.split("/").some(function (part) { return !part || part === "." || part === ".."; })) return "";
+      return /\.(?:js|mjs)$/i.test(value) ? value : "";
+    }
+
+    function hasExactKeys(value, expected) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+      return Object.keys(value).sort().join("\n") === expected.slice().sort().join("\n");
     }
 
     function safeValue(value, depth) {
@@ -368,6 +383,164 @@
       });
     }
 
+    function coreCodeIdentity(group, cap) {
+      if (!hasFormalSourceFact(group, cap)) return null;
+      var identity = {
+        capsuleId: capsuleId(cap),
+        versionId: String(cap.version_id || ""),
+        projectId: String(group.projectId || ""),
+      };
+      if (!identity.capsuleId || !identity.versionId || !identity.projectId) return null;
+      identity.key = JSON.stringify([identity.capsuleId, identity.versionId, identity.projectId]);
+      return identity;
+    }
+
+    function exactEntryModule(cap) {
+      var cached = details[capsuleId(cap)];
+      var version = cached && cached.value && cached.value.exact_version === true
+        ? cached.value.version
+        : null;
+      var activation = version && version.activation;
+      return safeJavascriptPath(activation && activation.entry_module);
+    }
+
+    function validateCoreCodeProjection(raw, group, cap) {
+      var identity = coreCodeIdentity(group, cap);
+      var digest = /^[0-9a-f]{64}$/;
+      if (
+        !identity ||
+        !hasExactKeys(raw, [
+          "schema_version", "capsule_id", "version_id", "project_id",
+          "source_identity", "canonical_hash", "capability_kind", "validation", "core_code",
+        ]) ||
+        raw.schema_version !== "capsule_core_code_projection.v1" ||
+        raw.capsule_id !== identity.capsuleId ||
+        raw.version_id !== identity.versionId ||
+        raw.project_id !== identity.projectId ||
+        raw.source_identity !== "project:" + identity.projectId ||
+        typeof raw.canonical_hash !== "string" ||
+        !digest.test(raw.canonical_hash) ||
+        ["presentation", "interaction", "computation"].indexOf(raw.capability_kind) < 0 ||
+        raw.capability_kind !== String(cap.type || "")
+      ) return null;
+      if (
+        !hasExactKeys(raw.validation, [
+          "contract_version", "schema_version", "status", "acceptance_scope",
+        ]) ||
+        [
+          raw.validation.contract_version,
+          raw.validation.schema_version,
+          raw.validation.acceptance_scope,
+        ].some(function (value) { return typeof value !== "string" || !value; }) ||
+        raw.validation.status !== "passed"
+      ) return null;
+      if (
+        !hasExactKeys(raw.core_code, ["kind", "logical_path", "language", "content", "sha256"]) ||
+        raw.core_code.kind !== "javascript_entry_module" ||
+        raw.core_code.language !== "javascript" ||
+        typeof raw.core_code.content !== "string" ||
+        !raw.core_code.content ||
+        typeof raw.core_code.sha256 !== "string" ||
+        !digest.test(raw.core_code.sha256) ||
+        !safeJavascriptPath(raw.core_code.logical_path) ||
+        safeJavascriptPath(raw.core_code.logical_path) !== exactEntryModule(cap)
+      ) return null;
+      return {
+        schema_version: raw.schema_version,
+        capsule_id: raw.capsule_id,
+        version_id: raw.version_id,
+        project_id: raw.project_id,
+        source_identity: raw.source_identity,
+        canonical_hash: raw.canonical_hash,
+        capability_kind: raw.capability_kind,
+        validation: {
+          contract_version: raw.validation.contract_version,
+          schema_version: raw.validation.schema_version,
+          status: raw.validation.status,
+          acceptance_scope: raw.validation.acceptance_scope,
+        },
+        core_code: {
+          kind: raw.core_code.kind,
+          logical_path: raw.core_code.logical_path,
+          language: raw.core_code.language,
+          content: raw.core_code.content,
+          sha256: raw.core_code.sha256,
+        },
+      };
+    }
+
+    function currentCoreCodeProjection(group, cap) {
+      var identity = coreCodeIdentity(group, cap);
+      var cached = identity ? coreCodeCache[identity.key] : null;
+      return cached && cached.status === "ready" &&
+        cached.requestRevision === coreCodeRequestRevision ? cached.value : null;
+    }
+
+    function invalidatePendingCoreCodeRequests() {
+      coreCodeRequestRevision += 1;
+      Object.keys(coreCodeCache).forEach(function (key) {
+        if (coreCodeCache[key].status === "loading") delete coreCodeCache[key];
+      });
+    }
+
+    function invalidateCoreCodeForCapsule(id) {
+      invalidatePendingCoreCodeRequests();
+      Object.keys(coreCodeCache).forEach(function (key) {
+        if (coreCodeCache[key].capsuleId === id) delete coreCodeCache[key];
+      });
+    }
+
+    function ensureCoreCodeProjection(group, cap) {
+      var identity = coreCodeIdentity(group, cap);
+      if (!identity || !host.readCapsuleCoreCode) return;
+      if (
+        coreCodeCache[identity.key] &&
+        coreCodeCache[identity.key].requestRevision === coreCodeRequestRevision
+      ) return;
+      delete coreCodeCache[identity.key];
+      var revision = ++coreCodeRequestRevision;
+      coreCodeCache[identity.key] = {
+        capsuleId: identity.capsuleId,
+        status: "loading",
+        requestRevision: revision,
+        value: null,
+      };
+      Promise.resolve(host.readCapsuleCoreCode(
+        identity.capsuleId, identity.versionId, identity.projectId
+      )).then(function (raw) {
+        var cached = coreCodeCache[identity.key];
+        var groups = sourceGroups();
+        var currentGroupValue = currentGroup(groups);
+        var currentCap = selectedCapsule(currentGroupValue);
+        var currentIdentity = currentCap ? coreCodeIdentity(currentGroupValue, currentCap) : null;
+        if (
+          !cached || cached.requestRevision !== revision || revision !== coreCodeRequestRevision ||
+          !state.active || state.view !== "code" || !currentIdentity || currentIdentity.key !== identity.key
+        ) {
+          if (cached && cached.requestRevision === revision) delete coreCodeCache[identity.key];
+          return;
+        }
+        var projection = validateCoreCodeProjection(raw, currentGroupValue, currentCap);
+        coreCodeCache[identity.key] = {
+          capsuleId: identity.capsuleId,
+          status: projection ? "ready" : "failed",
+          requestRevision: revision,
+          value: projection,
+        };
+        render();
+      }).catch(function () {
+        var cached = coreCodeCache[identity.key];
+        if (!cached || cached.requestRevision !== revision || revision !== coreCodeRequestRevision) return;
+        coreCodeCache[identity.key] = {
+          capsuleId: identity.capsuleId,
+          status: "failed",
+          requestRevision: revision,
+          value: null,
+        };
+        render();
+      });
+    }
+
     function createNode(options) {
       var button = document.createElement("button");
       button.type = "button";
@@ -513,6 +686,7 @@
       var cached = details[capsuleId(cap)];
       var detail = cached && cached.value ? cached.value : { sources: [], version: {}, status_events: [] };
       var formalSource = hasFormalSourceFact(group, cap);
+      var coreProjection = currentCoreCodeProjection(group, cap);
       var sourceStatus = formalSource
         ? "formal_exact_version_source"
         : group.evidenceStatus === "missing_formal_source_identity"
@@ -534,6 +708,13 @@
         },
         version: detail.version,
         status_events: detail.status_events,
+        core_code_projection: coreProjection ? {
+          schema_version: coreProjection.schema_version,
+          logical_path: coreProjection.core_code.logical_path,
+          sha256: coreProjection.core_code.sha256,
+          canonical_hash: coreProjection.canonical_hash,
+          validation: coreProjection.validation,
+        } : null,
       };
     }
 
@@ -560,16 +741,17 @@
       els.codePath.textContent = group.label + " / " + String(cap.name || capsuleId(cap));
       els.codeTitle.textContent = String(cap.name || capsuleId(cap));
       var codeElement = els.coreCode.querySelector("code");
-      // ponytail: no formal core-code projection exists, so snippet claims stay untrusted.
-      codeElement.textContent = "";
-      els.coreCode.classList.add("hidden");
-      els.coreCodeEmpty.classList.remove("hidden");
+      var coreProjection = currentCoreCodeProjection(group, cap);
+      codeElement.textContent = coreProjection ? coreProjection.core_code.content : "";
+      els.coreCode.classList.toggle("hidden", !coreProjection);
+      els.coreCodeEmpty.classList.toggle("hidden", !!coreProjection);
       els.codeDeveloperMode.checked = state.developerMode;
       els.developerDetails.classList.toggle("hidden", !state.developerMode);
       els.developerEvidence.textContent = state.developerMode
         ? JSON.stringify(developerProjection(group, cap), null, 2)
         : "";
       applyCodeScale();
+      if (!coreProjection) ensureCoreCodeProjection(group, cap);
     }
 
     function updateIngestionEntry() {
@@ -593,6 +775,7 @@
     function requestDetail(cap) {
       var id = capsuleId(cap);
       var versionId = String(cap.version_id || "");
+      invalidateCoreCodeForCapsule(id);
       var revision = ++requestRevision;
       details[id] = { versionId: versionId, loading: true, value: null, requestRevision: revision };
       Promise.resolve(host.readCapsuleDetail ? host.readCapsuleDetail(id) : null).then(function (raw) {
@@ -655,6 +838,7 @@
     }
 
     function leaveScene() {
+      invalidatePendingCoreCodeRequests();
       state.active = false;
       host.showScreen("screen-main");
       if (host.syncAppState) host.syncAppState();
@@ -677,6 +861,7 @@
     }
 
     function openCapsule(group, cap) {
+      invalidatePendingCoreCodeRequests();
       state.projectSnapshot = viewSnapshot();
       state.view = "code";
       state.projectKey = group.key;
@@ -687,6 +872,7 @@
 
     function goBack() {
       if (state.view === "code") {
+        invalidatePendingCoreCodeRequests();
         var capsuleFocus = "capsule:" + state.capsuleId;
         restoreSnapshot(state.projectSnapshot);
         state.view = "project";
@@ -896,9 +1082,13 @@
         live[capsuleId(cap)] = String(cap.version_id || "");
       });
       Object.keys(details).forEach(function (id) {
-        if (!(id in live) || details[id].versionId !== live[id]) delete details[id];
+        if (!(id in live) || details[id].versionId !== live[id]) {
+          delete details[id];
+          invalidateCoreCodeForCapsule(id);
+        }
       });
       if (!state.active) return;
+      if (state.view === "code") invalidatePendingCoreCodeRequests();
       render();
       ensureDetails();
     }
@@ -922,7 +1112,7 @@
         formal_capsule_count: formalCapsules().length,
         source_group_count: groups.length,
         source_relations_loading: detailsLoading(),
-        verified_core_code: false,
+        verified_core_code: !!(group && cap && currentCoreCodeProjection(group, cap)),
         focused_node: activeNodeKey() || null,
       };
     }

@@ -876,6 +876,16 @@
         return managementPayload(result);
       });
     },
+    readCapsuleCoreCode: function (capsuleId, versionId, projectId) {
+      return bridgeCall("get_capsule_core_code_projection", JSON.stringify({
+        capsule_id: capsuleId,
+        version_id: versionId,
+        project_id: projectId,
+      })).then(function (raw) {
+        var result = parseBridgeJson(raw);
+        return managementPayload(result);
+      });
+    },
     openManagement: function () {
       togglePopover("capsule-warehouse");
       if (!ingestionManagement.loaded && !ingestionManagement.loading) refreshIngestionManagement();

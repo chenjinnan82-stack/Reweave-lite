@@ -1,10 +1,18 @@
 {
   "schema_version": "reweave_capsule_warehouse_scene_acceptance.v1",
   "completed_date": "2026-07-19",
-  "verdict": "PARTIAL",
-  "verdict_reason": "The only remaining gap is the absence of a formal, exact-version-bound verified core-code projection in the current capsule detail contract. Speculative snippet flags and kinds are rejected, so the code page correctly stays in its explicit empty state; all browse, multi-project layout, safety, and fail-closed gates passed.",
+  "verdict": "PASS",
+  "verdict_reason": "The warehouse scene and its previously missing code-page fact are now complete: capsule_core_code_projection.v1 proves an active/current/eligible capsule, exact version and project source identity, canonical hash, validation evidence, and the real JavaScript entry module before the existing code page renders it.",
+  "verdict_transition": {
+    "previous_verdict": "PARTIAL",
+    "previous_reason": "The only remaining gap is the absence of a formal, exact-version-bound verified core-code projection in the current capsule detail contract. Speculative snippet flags and kinds are rejected, so the code page correctly stays in its explicit empty state; all browse, multi-project layout, safety, and fail-closed gates passed.",
+    "resolution": "capsule_core_code_projection.v1 resolved that sole gap without changing the earlier browse, layout, source-identity, or failure-closed evidence.",
+    "resolved_date": "2026-07-20"
+  },
   "baseline": {
     "main_commit": "91caa16750ba361956672a824169cabfb2cadaa3",
+    "warehouse_scene_commit": "be0da04db567b7ccf66b46cfe69dcf4d5d87be6d",
+    "core_code_projection_stage_baseline": "be0da04db567b7ccf66b46cfe69dcf4d5d87be6d",
     "target_workflow_extraction_commit": "5f64fb6",
     "frontend_runtime": "native_html_css_javascript_qwebengine",
     "warehouse": "temporary_sqlite_formal_capsule_warehouse",
@@ -18,6 +26,7 @@
     "keyboard_enter_project",
     "center_source_project_and_expand_formal_capsules",
     "keyboard_enter_capsule_code_page",
+    "render_verified_real_javascript_entry_module",
     "switch_simple_to_developer_mode_on_same_capsule",
     "return_to_capsule_constellation_with_view_and_focus_restored",
     "return_to_source_project_overview_with_view_and_focus_restored",
@@ -111,7 +120,10 @@
     "fail_closed_canaries": {
       "speculative_snippet": "verified=true, validation_status=passed, and verified_core_code kind are not proof",
       "missing_exact_version_source_relation": "a source_id remains a stable browse-group key, but a different returned version and its source relation are rejected",
-      "missing_formal_source_identity": "a display-only source label is visible but produces no fact line"
+      "missing_formal_source_identity": "a display-only source label is visible but produces no fact line",
+      "core_projection_wrong_schema_version_or_project": "the code page retains the explicit empty state",
+      "core_projection_absolute_logical_path": "the response is rejected before DOM rendering",
+      "core_projection_helper_module": "only activation.entry_module can pass; helper content is neither returned by the real service nor rendered from a forged response"
     },
     "formal_relationship": "capsule_sources.source_kind=project and source_identity=project:<project_id>",
     "fictional_graph_relationships_added": false
@@ -141,11 +153,23 @@
       "validation and supervision results",
       "status events"
     ],
+    "capsule_core_code_projection": [
+      "schema_version",
+      "capsule_id",
+      "version_id",
+      "project_id",
+      "source_identity",
+      "canonical_hash",
+      "capability_kind",
+      "validation contract, schema, status and acceptance scope",
+      "core_code kind, safe logical path, language, content and sha256"
+    ],
     "explicitly_not_consumed": [
       "source_roots.current_path",
       "html_text",
       "css_text",
       "javascript_modules_json",
+      "non-entry JavaScript helper modules",
       "after_content",
       "raw source content",
       "snippet flags or kinds as verified core-code proof",
@@ -187,11 +211,13 @@
     "full_page": true,
     "simple_and_developer_modes_share_capsule_id": true,
     "canvas_scale_independent_from_code_scale": true,
-    "formal_exact_version_core_code_projection_present": false,
+    "formal_exact_version_core_code_projection_present": true,
     "speculative_snippet_validation_rules_enabled": false,
-    "verified_core_code_available_from_current_formal_service": false,
-    "only_remaining_partial_reason": "no formal exact-version-bound verified core-code projection",
+    "verified_core_code_available_from_current_formal_service": true,
+    "previous_partial_reason_resolved": "formal exact-version-bound verified core-code projection is now provided by capsule_core_code_projection.v1",
+    "projection_scope": "one verified JavaScript activation.entry_module only",
     "empty_state": "暂无经验证的核心代码",
+    "empty_state_retained_for_failed_or_unproven_projection": true,
     "metadata_used_as_code": false,
     "receipt_used_as_code": false,
     "developer_projection_is_whitelisted_and_path_sanitized": true
@@ -207,8 +233,17 @@
       "get_capsule_detail",
       "get_capsule_detail"
     ],
+    "core_code_projection_calls": [
+      "get_capsule_core_code_projection",
+      "get_capsule_core_code_projection",
+      "get_capsule_core_code_projection",
+      "get_capsule_core_code_projection",
+      "get_capsule_core_code_projection",
+      "get_capsule_core_code_projection"
+    ],
     "write_calls": [],
-    "new_bridge_method": false,
+    "warehouse_scene_stage_new_bridge_method": false,
+    "core_code_projection_stage_new_read_bridge_method": true,
     "management_entry_retained": true,
     "management_entry_priority": "developer_or_empty_state_only"
   },
@@ -219,13 +254,20 @@
     "after_content_canary_in_dom": false,
     "after_content_executed": false,
     "speculative_snippet_code_canary_in_dom": false,
+    "helper_module_canary_in_dom": false,
+    "invalid_schema_version_project_or_logical_path_content_in_dom": false,
     "raw_source_rendered": false,
     "browser_state_persisted": false
   },
   "zero_write_evidence": {
     "source_project_tree_unchanged": true,
+    "unselected_user_target_tree_unchanged": true,
     "warehouse_revision_unchanged": true,
+    "capsules_table_unchanged": true,
+    "capsule_versions_table_unchanged": true,
+    "capsule_sources_table_unchanged": true,
     "product_capsule_usage_unchanged": true,
+    "product_catalog_representation": "products directory; the warehouse schema has no product_catalog SQLite table",
     "product_directory_unchanged": true,
     "target_apply": false,
     "target_commit": false,
@@ -246,7 +288,7 @@
       "failed": 0
     },
     "frontend_static_release": {
-      "passed": 23,
+      "passed": 24,
       "failed": 0
     },
     "release_surface_audit": {
@@ -259,9 +301,9 @@
       "execution": "each desktop test in an isolated process"
     },
     "repository_without_phase6_desktop": {
-      "passed": 780,
+      "passed": 785,
       "failed": 0,
-      "subtests_passed": 183
+      "subtests_passed": 188
     },
     "phase6_same_process_aggregation": {
       "passed": false,
@@ -271,7 +313,8 @@
     "git_diff_check": "passed"
   },
   "scope_limit": {
-    "backend_changed": false,
+    "warehouse_scene_stage_backend_changed": false,
+    "core_code_projection_stage_read_backend_changed": true,
     "sqlite_schema_changed": false,
     "target_workflow_semantics_changed": false,
     "model_call_added": false,
