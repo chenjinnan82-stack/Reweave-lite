@@ -70,13 +70,13 @@ def test_readmes_describe_the_formal_sqlite_service_path() -> None:
         assert "ReweaveAppService" in text
         assert "--capsule-id" in text
         assert "SQLite" in text
-        assert "run_public_stage4_demo.py" in text
+        assert "run_public_stage4_demo.py" not in text
         assert "qwen2.5-coder" not in text
         assert "--llm" not in text
         assert "--model" not in text
         assert "built-in Stage4 composer" not in text
-    assert "inactive migration history" in readmes[0]
-    assert "非活跃迁移历史" in readmes[1]
+    assert "only public CLI entry" in readmes[0]
+    assert "唯一公开 CLI 入口" in readmes[1]
 
 
 def test_public_reweave_demo_requires_a_formal_capsule(tmp_path: Path) -> None:

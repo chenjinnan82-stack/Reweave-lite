@@ -3782,7 +3782,7 @@ pytest 9.1.1
 - 前端没有自动匹配分支。未选择正式胶囊时，生成按钮只显示“请先选择至少一个可生成的正式胶囊”并停止，不向桥发送空 `capsule_ids`；一旦发送，请求中的 `selection_mode` 是字面固定的 `manual`。服务端独立再次要求一至三个非空、互不重复的正式 capsule ID。
 - 服务只接受一至三个正式 capsule ID。每个 ID 必须在 SQLite 中同时满足 `active`、`current_version_id` 命中、当前提取/脱敏/canonical/security/supervision/validation 版本证据完整且 `_eligible_exact=true`。历史 version ID、pending revalidation、disabled、证据过期和 canonical 重建不一致均失败关闭。
 - 所选原子角色必须共享一个 `capability_key`，同一种 `capability_kind` 最多一个，并至少包含 presentation 或 interaction。V1 不做任务文本自动语义选择，也不恢复旧 JSON、Stage4 behavior module 或模型生成分流。
-- `get_initial_state()` 的生成胶囊只来自上述正式查询，明确返回 `generationActive=true`、`generationFromSqlite=true`、`canGenerateProduct=true`、`canGeneratePreview=false`。旧 `generate_preview()` 固定返回 `legacy_generation_inactive`；`run_public_stage4_demo.py` 固定返回 `legacy_stage4_demo_inactive` 并以非零状态退出。
+- `get_initial_state()` 的生成胶囊只来自上述正式查询，明确返回 `generationActive=true`、`generationFromSqlite=true`、`canGenerateProduct=true`、`canGeneratePreview=false`。旧 `generate_preview()` 固定返回 `legacy_generation_inactive`；曾作为固定失败历史入口保留的 Stage 4 公开 demo 已在后续可达性证明后删除。
 
 ### I.2 module_native 内存组合
 

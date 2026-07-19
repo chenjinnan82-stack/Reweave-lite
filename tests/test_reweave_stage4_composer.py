@@ -1785,38 +1785,6 @@ def test_stage4_preview_is_recoverable_from_normal_history(tmp_path: Path) -> No
     assert {"task_pack.json", "capsules_used.json", "provenance.json", "quality_gate.json"} <= set(recovered["package"]["files"])
 
 
-def test_public_stage4_source_boxes_compose_with_builtin_runtime(tmp_path: Path) -> None:
-    from scripts.run_public_stage4_demo import run
-
-    result = run(tmp_path / "reweave_stage4_integration")
-
-    assert result == {
-        "ok": False,
-        "error": {
-            "code": "legacy_stage4_demo_inactive",
-            "message_key": "legacy_stage4_demo_inactive",
-        },
-    }
-
-
-def test_public_stage4_workflow_source_boxes_compose_with_builtin_runtime(tmp_path: Path) -> None:
-    from scripts.run_public_stage4_demo import run
-
-    result = run(tmp_path / "reweave_stage4_workflow_integration", case="workflow")
-
-    assert result["ok"] is False
-    assert result["error"]["code"] == "legacy_stage4_demo_inactive"
-
-
-def test_public_stage4_data_source_boxes_compose_with_builtin_runtime(tmp_path: Path) -> None:
-    from scripts.run_public_stage4_demo import run
-
-    result = run(tmp_path / "reweave_stage4_data_integration", case="data")
-
-    assert result["ok"] is False
-    assert result["error"]["code"] == "legacy_stage4_demo_inactive"
-
-
 def test_stage4_structured_data_composition_requires_data_and_matching_fields(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     capsules = tmp_path / "capsules"

@@ -1,15 +1,5 @@
 # Roadmap
 
-Reweave-lite is a local-first public alpha.
+The authoritative Reweave product roadmap is [Reweave Product North Star](docs/REWEAVE_PRODUCT_NORTH_STAR.md).
 
-## Next
-
-- More public Source Box demos.
-- Better desktop packaging.
-- More stable Task Pack previews.
-
-## Not Now
-
-- No automatic multi-file project writes.
-- No overwrite/delete flow.
-- No cloud service requirement.
+This file remains only as a stable compatibility link. It does not define a second roadmap.
