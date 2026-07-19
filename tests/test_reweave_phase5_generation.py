@@ -353,6 +353,10 @@ def _seed_capsule(
     capability_key: str = "quote_calculation",
     suffix: str | None = None,
     status: str = "active",
+    payload: dict[str, object] | None = None,
+    canonical_hash_override: str | None = None,
+    activation_json_override: str | None = None,
+    validation_contract_version_override: str | None = None,
 ) -> tuple[str, str]:
     identity = suffix or kind
     capsule_id = f"capsule_{identity}"
@@ -364,7 +368,7 @@ def _seed_capsule(
     }[kind]
     if suffix:
         role_key = f"{role_key}_{suffix}"
-    payload = _capsule_payload(kind)
+    payload = _capsule_payload(kind) if payload is None else payload
     canonical = canonicalize_capsule(payload)
     evidence = _version_evidence(kind)
     with store.transaction() as connection:
@@ -408,8 +412,8 @@ def _seed_capsule(
                 _json(evidence["extraction"]),
                 REDACTION_RULES_VERSION,
                 CANONICALIZATION_VERSION,
-                canonical.sha256,
-                _json(payload["activation"]),
+                canonical_hash_override or canonical.sha256,
+                activation_json_override or _json(payload["activation"]),
                 _json(payload["input_contract"]),
                 _json(payload["output_contract"]),
                 _json(payload["error_contract"]),
@@ -427,7 +431,7 @@ def _seed_capsule(
                 NOW,
                 _json(evidence["supervision"]),
                 hashlib.sha256(_json(evidence["supervision"]).encode()).hexdigest(),
-                VALIDATION_CONTRACT_VERSION,
+                validation_contract_version_override or VALIDATION_CONTRACT_VERSION,
                 _json(evidence["validation"]),
                 NOW,
             ),
@@ -507,6 +511,290 @@ def _composition_stub(**kwargs: object) -> dict[str, object]:
 
 class _NoLegacyEngine:
     pass
+
+
+class CapsuleCoreCodeProjectionTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self._temporary.name)
+        self.state = self.root / "state"
+        self._environment = patch.dict(
+            os.environ, {"REWEAVE_STATE_DIR": str(self.state)}
+        )
+        self._environment.start()
+        self.store = CapsuleWarehouseStore(self.state / "capsule_warehouse.sqlite3")
+        self.store.initialize()
+        self.service = ReweaveAppService(
+            _NoLegacyEngine(), capsule_store=self.store
+        )
+
+        self.source = self.root / "formal-source"
+        self.source.mkdir()
+        (self.source / "index.html").write_text(
+            '<main data-capsule-root="projection"></main>\n', encoding="utf-8"
+        )
+        root = self.service._capsule_intake.bind_source_root(
+            self.source, root_kind="single_project"
+        )
+        discovered = self.service._capsule_intake.discover_projects(str(root["root_id"]))
+        project = self.service._capsule_intake.confirm_project(
+            str(discovered[0]["project_id"])
+        )
+        self.project_id = str(project["project_id"])
+
+        self.helper_canary = "CORE_CODE_HELPER_CANARY_MUST_NOT_LEAK"
+        self.payload = _capsule_payload("presentation")
+        self.payload["javascript_modules"].append(  # type: ignore[union-attr]
+            {
+                "path": "helper.js",
+                "source": f'export const helper = "{self.helper_canary}";\n',
+            }
+        )
+        self.capsule_id, self.version_id = _seed_capsule(
+            self.store,
+            "presentation",
+            capability_key="core_code_projection",
+            suffix="core_code_projection",
+            payload=self.payload,
+        )
+        self.canonical = canonicalize_capsule(self.payload)
+        self._link_source(self.version_id, self.canonical.sha256, "core-code-source")
+
+    def tearDown(self) -> None:
+        self.service.close()
+        self._environment.stop()
+        self._temporary.cleanup()
+
+    def _request(self, **overrides: object) -> dict[str, object]:
+        payload: dict[str, object] = {
+            "capsule_id": self.capsule_id,
+            "version_id": self.version_id,
+            "project_id": self.project_id,
+        }
+        payload.update(overrides)
+        return self.service.get_capsule_core_code_projection(payload)
+
+    def _link_source(
+        self, version_id: str, canonical_hash: str, source_link_id: str
+    ) -> None:
+        with self.store.transaction() as connection:
+            connection.execute(
+                "INSERT INTO capsule_sources "
+                "(source_link_id, version_id, project_id, source_identity, source_kind, "
+                "source_relpath, source_hash, candidate_canonical_hash, relationship, read_at) "
+                "VALUES (?, ?, ?, ?, 'project', 'index.html', ?, ?, 'exact', ?)",
+                (
+                    source_link_id,
+                    version_id,
+                    self.project_id,
+                    f"project:{self.project_id}",
+                    hashlib.sha256((self.source / "index.html").read_bytes()).hexdigest(),
+                    canonical_hash,
+                    NOW,
+                ),
+            )
+
+    def _assert_payload_unavailable(self, payload: dict[str, object]) -> None:
+        revision = self.store.current_revision()
+        result = self.service.get_capsule_core_code_projection(payload)
+        self.assertFalse(result["ok"], result)
+        self.assertEqual(
+            result["error"]["code"],  # type: ignore[index]
+            "capsule_core_code_projection_unavailable",
+        )
+        self.assertEqual(self.store.current_revision(), revision)
+
+    def _assert_unavailable(self, **overrides: object) -> None:
+        payload: dict[str, object] = {
+            "capsule_id": self.capsule_id,
+            "version_id": self.version_id,
+            "project_id": self.project_id,
+        }
+        payload.update(overrides)
+        self._assert_payload_unavailable(payload)
+
+    def test_projection_returns_only_real_entry_module_and_writes_nothing(self) -> None:
+        revision = self.store.current_revision()
+        result = self._request()
+        self.assertTrue(result["ok"], result)
+        projection = result["data"]
+        entry = self.payload["javascript_modules"][0]  # type: ignore[index]
+        self.assertEqual(
+            set(projection),  # type: ignore[arg-type]
+            {
+                "schema_version",
+                "capsule_id",
+                "version_id",
+                "project_id",
+                "source_identity",
+                "canonical_hash",
+                "capability_kind",
+                "validation",
+                "core_code",
+            },
+        )
+        self.assertEqual(projection["schema_version"], "capsule_core_code_projection.v1")
+        self.assertEqual(projection["capsule_id"], self.capsule_id)
+        self.assertEqual(projection["version_id"], self.version_id)
+        self.assertEqual(projection["project_id"], self.project_id)
+        self.assertEqual(projection["source_identity"], f"project:{self.project_id}")
+        self.assertEqual(projection["canonical_hash"], self.canonical.sha256)
+        self.assertEqual(projection["capability_kind"], "presentation")
+        self.assertEqual(
+            set(projection["validation"]),  # type: ignore[arg-type]
+            {"contract_version", "schema_version", "status", "acceptance_scope"},
+        )
+        core_code = projection["core_code"]
+        self.assertEqual(core_code["kind"], "javascript_entry_module")
+        self.assertEqual(core_code["logical_path"], "presentation.js")
+        self.assertEqual(core_code["language"], "javascript")
+        self.assertEqual(core_code["content"], entry["source"])
+        self.assertEqual(
+            core_code["sha256"],
+            hashlib.sha256(str(entry["source"]).encode("utf-8")).hexdigest(),
+        )
+        serialized = json.dumps(projection, ensure_ascii=False)
+        self.assertNotIn(self.helper_canary, serialized)
+        for forbidden in (
+            "html_text",
+            "css_text",
+            "javascript_modules_json",
+            "assets",
+            str(self.root.resolve()),
+        ):
+            self.assertNotIn(forbidden, serialized)
+        self.assertEqual(self.store.current_revision(), revision)
+
+    def test_projection_fails_closed_for_identity_status_and_eligibility(self) -> None:
+        self._assert_unavailable(version_id="version_wrong")
+        self._assert_unavailable(project_id="project_wrong")
+
+        for status in ("disabled", "pending_revalidation"):
+            with self.subTest(status=status):
+                with self.store.transaction() as connection:
+                    connection.execute(
+                        "UPDATE capsules SET status = ? WHERE capsule_id = ?",
+                        (status, self.capsule_id),
+                    )
+                self._assert_unavailable()
+                with self.store.transaction() as connection:
+                    connection.execute(
+                        "UPDATE capsules SET status = 'active' WHERE capsule_id = ?",
+                        (self.capsule_id,),
+                    )
+
+        stale_capsule, stale_version = _seed_capsule(
+            self.store,
+            "presentation",
+            capability_key="stale_core_code_projection",
+            suffix="stale_core_code_projection",
+            validation_contract_version_override="stale",
+        )
+        stale_hash = canonicalize_capsule(_capsule_payload("presentation")).sha256
+        self._link_source(stale_version, stale_hash, "stale-core-code-source")
+        self._assert_payload_unavailable(
+            {
+                "capsule_id": stale_capsule,
+                "version_id": stale_version,
+                "project_id": self.project_id,
+            }
+        )
+
+    def test_projection_fails_closed_for_contract_hash_and_entry_corruption(self) -> None:
+        forged_hash = "f" * 64
+        forged_capsule, forged_version = _seed_capsule(
+            self.store,
+            "presentation",
+            capability_key="forged_core_code_projection",
+            suffix="forged_core_code_projection",
+            canonical_hash_override=forged_hash,
+        )
+        self._link_source(forged_version, forged_hash, "forged-core-code-source")
+        self._assert_payload_unavailable(
+            {
+                "capsule_id": forged_capsule,
+                "version_id": forged_version,
+                "project_id": self.project_id,
+            }
+        )
+
+        duplicate_capsule, duplicate_version = _seed_capsule(
+            self.store,
+            "presentation",
+            capability_key="duplicate_json_core_code_projection",
+            suffix="duplicate_json_core_code_projection",
+            activation_json_override='{"mode":"one","mode":"two"}',
+        )
+        duplicate_hash = canonicalize_capsule(_capsule_payload("presentation")).sha256
+        self._link_source(
+            duplicate_version, duplicate_hash, "duplicate-json-core-code-source"
+        )
+        self._assert_payload_unavailable(
+            {
+                "capsule_id": duplicate_capsule,
+                "version_id": duplicate_version,
+                "project_id": self.project_id,
+            }
+        )
+
+        no_entry = dict(self.payload["activation"])  # type: ignore[arg-type]
+        no_entry.pop("entry_module")
+        no_entry_payload = {**self.payload, "activation": no_entry}
+        no_entry_canonical = canonicalize_capsule(no_entry_payload)
+        no_entry_capsule, no_entry_version = _seed_capsule(
+            self.store,
+            "presentation",
+            capability_key="no_entry_core_code_projection",
+            suffix="no_entry_core_code_projection",
+            payload=no_entry_payload,
+        )
+        self._link_source(
+            no_entry_version, no_entry_canonical.sha256, "no-entry-core-code-source"
+        )
+        self._assert_payload_unavailable(
+            {
+                "capsule_id": no_entry_capsule,
+                "version_id": no_entry_version,
+                "project_id": self.project_id,
+            }
+        )
+
+        empty_entry_payload = json.loads(_json(self.payload))
+        empty_entry_payload["javascript_modules"][0]["source"] = ""
+        empty_entry_canonical = canonicalize_capsule(empty_entry_payload)
+        empty_entry_capsule, empty_entry_version = _seed_capsule(
+            self.store,
+            "presentation",
+            capability_key="empty_entry_core_code_projection",
+            suffix="empty_entry_core_code_projection",
+            payload=empty_entry_payload,
+        )
+        self._link_source(
+            empty_entry_version,
+            empty_entry_canonical.sha256,
+            "empty-entry-core-code-source",
+        )
+        self._assert_payload_unavailable(
+            {
+                "capsule_id": empty_entry_capsule,
+                "version_id": empty_entry_version,
+                "project_id": self.project_id,
+            }
+        )
+
+    def test_projection_required_identities_are_explicit(self) -> None:
+        complete = {
+            "capsule_id": self.capsule_id,
+            "version_id": self.version_id,
+            "project_id": self.project_id,
+        }
+        for field in complete:
+            with self.subTest(field=field):
+                payload = dict(complete)
+                payload.pop(field)
+                result = self.service.get_capsule_core_code_projection(payload)
+                self.assertFalse(result["ok"], result)
+                self.assertEqual(result["error"]["code"], f"{field}_required")
 
 
 @unittest.skipUnless(shutil.which("node"), "Node is required for Phase 5 generation")

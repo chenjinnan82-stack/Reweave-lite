@@ -1,0 +1,332 @@
+{
+  "schema_version": "reweave_capsule_warehouse_scene_acceptance.v1",
+  "completed_date": "2026-07-19",
+  "verdict": "PASS",
+  "verdict_reason": "The warehouse scene and its previously missing code-page fact are now complete: capsule_core_code_projection.v1 proves an active/current/eligible capsule, exact version and project source identity, canonical hash, validation evidence, and the real JavaScript entry module before the existing code page renders it.",
+  "verdict_transition": {
+    "previous_verdict": "PARTIAL",
+    "previous_reason": "The only remaining gap is the absence of a formal, exact-version-bound verified core-code projection in the current capsule detail contract. Speculative snippet flags and kinds are rejected, so the code page correctly stays in its explicit empty state; all browse, multi-project layout, safety, and fail-closed gates passed.",
+    "resolution": "capsule_core_code_projection.v1 resolved that sole gap without changing the earlier browse, layout, source-identity, or failure-closed evidence.",
+    "resolved_date": "2026-07-20"
+  },
+  "baseline": {
+    "main_commit": "91caa16750ba361956672a824169cabfb2cadaa3",
+    "warehouse_scene_commit": "be0da04db567b7ccf66b46cfe69dcf4d5d87be6d",
+    "core_code_projection_stage_baseline": "be0da04db567b7ccf66b46cfe69dcf4d5d87be6d",
+    "target_workflow_extraction_commit": "5f64fb6",
+    "frontend_runtime": "native_html_css_javascript_qwebengine",
+    "warehouse": "temporary_sqlite_formal_capsule_warehouse",
+    "app_service": "real_ReweaveAppService",
+    "bridge": "real_QWebChannel_bridge",
+    "ui": "real_QWebEngine"
+  },
+  "implemented_flow": [
+    "open_capsule_warehouse_scene",
+    "render_formal_source_project_overview",
+    "keyboard_enter_project",
+    "center_source_project_and_expand_formal_capsules",
+    "keyboard_enter_capsule_code_page",
+    "render_verified_real_javascript_entry_module",
+    "switch_simple_to_developer_mode_on_same_capsule",
+    "return_to_capsule_constellation_with_view_and_focus_restored",
+    "return_to_source_project_overview_with_view_and_focus_restored",
+    "return_to_main_entry_with_focus_restored"
+  ],
+  "real_input": {
+    "source_projects": {
+      "count": 3,
+      "display_names": [
+        "Readonly source A",
+        "Readonly source B",
+        "Readonly source C"
+      ],
+      "identity": "each exact runtime project_id",
+      "source_identity_contract": "project:<project_id>",
+      "source_relpath": "index.html"
+    },
+    "capsules": [
+      {
+        "capsule_id": "capsule_alpha_presentation",
+        "version_id": "version_alpha_presentation_1",
+        "capability_kind": "presentation",
+        "formal_version": true,
+        "status": "active",
+        "relationship_fixture": "exact_project"
+      },
+      {
+        "capsule_id": "capsule_alpha_interaction",
+        "version_id": "version_alpha_interaction_1",
+        "capability_kind": "interaction",
+        "formal_version": true,
+        "status": "active",
+        "relationship_fixture": "exact_project"
+      },
+      {
+        "capsule_id": "capsule_beta_presentation",
+        "version_id": "version_beta_presentation_1",
+        "capability_kind": "presentation",
+        "formal_version": true,
+        "status": "active",
+        "relationship_fixture": "exact_project"
+      },
+      {
+        "capsule_id": "capsule_beta_computation",
+        "version_id": "version_beta_computation_1",
+        "capability_kind": "computation",
+        "formal_version": true,
+        "status": "active",
+        "relationship_fixture": "exact_project"
+      },
+      {
+        "capsule_id": "capsule_gamma_interaction",
+        "version_id": "version_gamma_interaction_1",
+        "capability_kind": "interaction",
+        "formal_version": true,
+        "status": "active",
+        "relationship_fixture": "exact_project"
+      },
+      {
+        "capsule_id": "capsule_gamma_computation",
+        "version_id": "version_gamma_computation_1",
+        "capability_kind": "computation",
+        "formal_version": true,
+        "status": "active",
+        "relationship_fixture": "exact_project"
+      },
+      {
+        "capsule_id": "capsule_missing_version",
+        "version_id": "version_missing_version_1",
+        "capability_kind": "presentation",
+        "formal_version": true,
+        "status": "active",
+        "relationship_fixture": "nonmatching_version_must_fail_closed"
+      },
+      {
+        "capsule_id": "capsule_missing_identity",
+        "version_id": "version_missing_identity_1",
+        "capability_kind": "interaction",
+        "formal_version": true,
+        "status": "active",
+        "relationship_fixture": "display_label_only_must_not_link"
+      }
+    ],
+    "layout_smoke": {
+      "exact_project_groups": 3,
+      "exactly_linked_capsules": 6,
+      "fail_closed_fallback_groups": 2,
+      "total_source_groups": 5,
+      "graph_engine_added": false
+    },
+    "fail_closed_canaries": {
+      "speculative_snippet": "verified=true, validation_status=passed, and verified_core_code kind are not proof",
+      "missing_exact_version_source_relation": "a source_id remains a stable browse-group key, but a different returned version and its source relation are rejected",
+      "missing_formal_source_identity": "a display-only source label is visible but produces no fact line",
+      "core_projection_wrong_schema_version_or_project": "the code page retains the explicit empty state",
+      "core_projection_absolute_logical_path": "the response is rejected before DOM rendering",
+      "core_projection_helper_module": "only activation.entry_module can pass; helper content is neither returned by the real service nor rendered from a forged response"
+    },
+    "formal_relationship": "capsule_sources.source_kind=project and source_identity=project:<project_id>",
+    "fictional_graph_relationships_added": false
+  },
+  "formal_fields_consumed": {
+    "initial_state": [
+      "capsule_id",
+      "version_id",
+      "name",
+      "capability kind",
+      "status",
+      "formal_version",
+      "source_id when present, only as a fallback browse-group key",
+      "source label when present, only as a fallback browse-group key and display text"
+    ],
+    "capsule_ingestion_projects": [
+      "project_id",
+      "display_name"
+    ],
+    "capsule_detail": [
+      "sources.project_id",
+      "sources.source_identity",
+      "sources.source_kind",
+      "sources.source_relpath",
+      "sources.relationship",
+      "exact version identity and contracts",
+      "validation and supervision results",
+      "status events"
+    ],
+    "capsule_core_code_projection": [
+      "schema_version",
+      "capsule_id",
+      "version_id",
+      "project_id",
+      "source_identity",
+      "canonical_hash",
+      "capability_kind",
+      "validation contract, schema, status and acceptance scope",
+      "core_code kind, safe logical path, language, content and sha256"
+    ],
+    "explicitly_not_consumed": [
+      "source_roots.current_path",
+      "html_text",
+      "css_text",
+      "javascript_modules_json",
+      "non-entry JavaScript helper modules",
+      "after_content",
+      "raw source content",
+      "snippet flags or kinds as verified core-code proof",
+      "nonmatching version details or source relations"
+    ]
+  },
+  "scene_contract": {
+    "single_formal_capsule_state_owner": true,
+    "second_warehouse": false,
+    "second_formal_capsule_list": false,
+    "persistent_graph_state": false,
+    "force_simulation": false,
+    "project_to_project_data_edges": false,
+    "source_project_to_capsule_edges_require_formal_identity": true,
+    "source_project_to_capsule_edges_require_exact_version_relation": true,
+    "missing_exact_version_falls_back_to_latest": false,
+    "unproven_source_fact_lines": false,
+    "source_evidence_statuses": [
+      "formal_exact_version_source",
+      "missing_exact_version_source_relation",
+      "missing_formal_source_identity"
+    ],
+    "source_id_fallback_group_key_only": true,
+    "source_id_used_as_project_identity": false,
+    "fallback_group_project_id_is_null": true,
+    "fallback_group_developer_relationships_are_empty": true,
+    "fallback_group_visible_note": "来源证据不足",
+    "fallback_source_label_is_marked_missing_formal_identity": true,
+    "multi_project_multi_capsule_layout_smoke_passed": true,
+    "stable_repeatable_layout": true,
+    "wheel_zoom": true,
+    "focusable_zoom_controls": true,
+    "keyboard_pan": true,
+    "search_project_and_capsule": true,
+    "search_clear_restores_view": true,
+    "reduced_motion_supported": true
+  },
+  "code_page": {
+    "full_page": true,
+    "simple_and_developer_modes_share_capsule_id": true,
+    "canvas_scale_independent_from_code_scale": true,
+    "formal_exact_version_core_code_projection_present": true,
+    "speculative_snippet_validation_rules_enabled": false,
+    "verified_core_code_available_from_current_formal_service": true,
+    "previous_partial_reason_resolved": "formal exact-version-bound verified core-code projection is now provided by capsule_core_code_projection.v1",
+    "projection_scope": "one verified JavaScript activation.entry_module only",
+    "empty_state": "暂无经验证的核心代码",
+    "empty_state_retained_for_failed_or_unproven_projection": true,
+    "metadata_used_as_code": false,
+    "receipt_used_as_code": false,
+    "developer_projection_is_whitelisted_and_path_sanitized": true
+  },
+  "bridge_evidence": {
+    "browse_calls": [
+      "get_capsule_detail",
+      "get_capsule_detail",
+      "get_capsule_detail",
+      "get_capsule_detail",
+      "get_capsule_detail",
+      "get_capsule_detail",
+      "get_capsule_detail",
+      "get_capsule_detail"
+    ],
+    "core_code_projection_calls": [
+      "get_capsule_core_code_projection",
+      "get_capsule_core_code_projection",
+      "get_capsule_core_code_projection",
+      "get_capsule_core_code_projection",
+      "get_capsule_core_code_projection",
+      "get_capsule_core_code_projection"
+    ],
+    "write_calls": [],
+    "warehouse_scene_stage_new_bridge_method": false,
+    "core_code_projection_stage_new_read_bridge_method": true,
+    "management_entry_retained": true,
+    "management_entry_priority": "developer_or_empty_state_only"
+  },
+  "display_safety": {
+    "backend_strings_rendered_with_textContent": true,
+    "uncontrolled_innerHTML_in_new_module": false,
+    "absolute_source_path_canary_in_dom": false,
+    "after_content_canary_in_dom": false,
+    "after_content_executed": false,
+    "speculative_snippet_code_canary_in_dom": false,
+    "helper_module_canary_in_dom": false,
+    "invalid_schema_version_project_or_logical_path_content_in_dom": false,
+    "raw_source_rendered": false,
+    "browser_state_persisted": false
+  },
+  "zero_write_evidence": {
+    "source_project_tree_unchanged": true,
+    "unselected_user_target_tree_unchanged": true,
+    "warehouse_revision_unchanged": true,
+    "capsules_table_unchanged": true,
+    "capsule_versions_table_unchanged": true,
+    "capsule_sources_table_unchanged": true,
+    "product_capsule_usage_unchanged": true,
+    "product_catalog_representation": "products directory; the warehouse schema has no product_catalog SQLite table",
+    "product_directory_unchanged": true,
+    "target_apply": false,
+    "target_commit": false,
+    "target_rollback": false
+  },
+  "target_workflow_regression": {
+    "fixed_repository": "https://github.com/MasiaAntoine/snake-js",
+    "fixed_commit": "894e7dc8549b0aa347ecbe985704a3c32fbbc767",
+    "target_snapshot_sha256": "26ac34b1bc41102c9846d7899dca5d3ce5b4709ab988899cc30ab1fb800e1e5d",
+    "plan_id": "weave_dd8dc1dc965daa0085d897e4f481815e7e465cf6d770652893e27591a030b54f",
+    "patch_sha256": "ae85f9bd49ec8a0d5f25f70fa8dccc07809319dbfcdd1e80874f2f4fb891d76f",
+    "real_service_bridge_qwebengine_passed": true,
+    "reference": "docs/reports/REWEAVE_STATIC_WEB_TARGET_REAL_E2E_ACCEPTANCE.json"
+  },
+  "verification": {
+    "javascript_syntax": {
+      "passed": 3,
+      "failed": 0
+    },
+    "frontend_static_release": {
+      "passed": 24,
+      "failed": 0
+    },
+    "release_surface_audit": {
+      "passed": 5,
+      "failed": 0
+    },
+    "focused_qwebengine": {
+      "passed": 5,
+      "failed": 0,
+      "execution": "each desktop test in an isolated process"
+    },
+    "repository_without_phase6_desktop": {
+      "passed": 785,
+      "failed": 0,
+      "subtests_passed": 188
+    },
+    "phase6_same_process_aggregation": {
+      "passed": false,
+      "product_failure": false,
+      "reason": "Qt default-profile native segmentation fault when multiple QWebEngine acceptance windows are aggregated in one macOS process; every test passed independently."
+    },
+    "git_diff_check": "passed"
+  },
+  "scope_limit": {
+    "warehouse_scene_stage_backend_changed": false,
+    "core_code_projection_stage_read_backend_changed": true,
+    "sqlite_schema_changed": false,
+    "target_workflow_semantics_changed": false,
+    "model_call_added": false,
+    "dependency_added": false,
+    "planning_assistant_implemented": false,
+    "product_ide_implemented": false,
+    "line_level_provenance_implemented": false,
+    "react_vite_supported": false,
+    "node_target_supported": false,
+    "apply_supported": false,
+    "commit_supported": false,
+    "rollback_supported": false,
+    "release_tag_moved": false
+  }
+}

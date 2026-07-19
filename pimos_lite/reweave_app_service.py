@@ -117,6 +117,7 @@ CAPSULE_MANAGEMENT_ACTIONS = frozenset(
         "list_capability_groups",
         "rename_capability_group",
         "get_capsule_detail",
+        "get_capsule_core_code_projection",
         "set_capsule_status",
         "create_backup",
         "list_backups",
@@ -2377,6 +2378,171 @@ class ReweaveAppService:
             )
         except (CapsuleStoreError, OSError, ValueError) as exc:
             return self._exception_error(exc, "get_capsule_detail_failed")
+
+    @_serialized_management
+    def get_capsule_core_code_projection(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+        except ValueError:
+            return self._error("capsule_core_code_projection_unavailable")
+        identities: dict[str, str] = {}
+        for field in ("capsule_id", "version_id", "project_id"):
+            raw = request.get(field)
+            if raw is None or (type(raw) is str and not raw.strip()):
+                return self._error(f"{field}_required")
+            if type(raw) is str and raw == raw.strip():
+                identities[field] = raw
+            else:
+                return self._error("capsule_core_code_projection_unavailable")
+
+        try:
+            if not self._capsule_store.path.is_file():
+                return self._error("capsule_core_code_projection_unavailable")
+            capsule_id = identities["capsule_id"]
+            version_id = identities["version_id"]
+            project_id = identities["project_id"]
+            source_identity = f"project:{project_id}"
+            with self._capsule_store.read_connection() as connection:
+                connection.execute("BEGIN")
+                stored = connection.execute(
+                    "SELECT c.status, c.current_version_id, c.capability_kind, cv.* "
+                    "FROM capsules c JOIN capsule_versions cv "
+                    "ON cv.capsule_id = c.capsule_id "
+                    "WHERE c.capsule_id = ? AND cv.version_id = ?",
+                    (capsule_id, version_id),
+                ).fetchone()
+                if stored is None:
+                    return self._error("capsule_core_code_projection_unavailable")
+                row = dict(stored)
+
+                parsed: dict[str, Any] = {}
+                for source, target in (
+                    ("extraction_summary_json", "extraction_summary"),
+                    ("activation_json", "activation"),
+                    ("input_contract_json", "input_contract"),
+                    ("output_contract_json", "output_contract"),
+                    ("error_contract_json", "error_contract"),
+                    ("runtime_allowlist_json", "runtime_allowlist"),
+                    ("dom_scope_json", "dom_scope"),
+                    ("usage_scope_json", "usage_scope"),
+                    ("javascript_modules_json", "javascript_modules"),
+                    ("cleaning_summary_json", "cleaning_summary"),
+                    ("supervision_result_json", "supervision_result"),
+                    ("validation_result_json", "validation_result"),
+                ):
+                    parsed[target] = _strict_json_bytes(
+                        str(row[source]).encode("utf-8")
+                    )
+
+                if not self._capsule_stage3._eligible_exact(row):
+                    return self._error("capsule_core_code_projection_unavailable")
+                source = connection.execute(
+                    "SELECT 1 FROM capsule_sources WHERE version_id = ? "
+                    "AND project_id = ? AND source_kind = 'project' "
+                    "AND source_identity = ? LIMIT 1",
+                    (version_id, project_id, source_identity),
+                ).fetchone()
+                if source is None:
+                    return self._error("capsule_core_code_projection_unavailable")
+
+                assets = [
+                    {
+                        "logical_path": str(asset["logical_path"]),
+                        "media_type": str(asset["media_type"]),
+                        "sha256": str(asset["sha256"]),
+                    }
+                    for asset in connection.execute(
+                        "SELECT logical_path, media_type, sha256 FROM capsule_assets "
+                        "WHERE version_id = ? ORDER BY logical_path",
+                        (version_id,),
+                    )
+                ]
+
+            canonical = canonicalize_capsule(
+                {
+                    "capability_kind": row["capability_kind"],
+                    "activation": parsed["activation"],
+                    "input_contract": parsed["input_contract"],
+                    "output_contract": parsed["output_contract"],
+                    "error_contract": parsed["error_contract"],
+                    "runtime_allowlist": parsed["runtime_allowlist"],
+                    "dom_scope": parsed["dom_scope"],
+                    "usage_scope": parsed["usage_scope"],
+                    "html": row["html_text"],
+                    "css": row["css_text"],
+                    "javascript_modules": parsed["javascript_modules"],
+                    "assets": assets,
+                }
+            )
+            if canonical.sha256 != row["canonical_hash"]:
+                return self._error("capsule_core_code_projection_unavailable")
+
+            activation = canonical.payload["activation"]
+            entry_module = activation.get("entry_module")
+            if (
+                type(entry_module) is not str
+                or PurePosixPath(entry_module).suffix.lower() not in {".js", ".mjs"}
+            ):
+                return self._error("capsule_core_code_projection_unavailable")
+            entries = [
+                module
+                for module in canonical.payload["javascript_modules"]
+                if module["path"] == entry_module
+            ]
+            if len(entries) != 1 or not entries[0]["source"].strip():
+                return self._error("capsule_core_code_projection_unavailable")
+
+            validation = parsed["validation_result"]
+            validation_fields = (
+                row["validation_contract_version"],
+                validation.get("schema_version") if type(validation) is dict else None,
+                validation.get("status") if type(validation) is dict else None,
+                validation.get("acceptance_scope") if type(validation) is dict else None,
+            )
+            if (
+                any(type(value) is not str or not value for value in validation_fields)
+                or validation_fields[2] != "passed"
+            ):
+                return self._error("capsule_core_code_projection_unavailable")
+
+            content = entries[0]["source"]
+            return self._ok(
+                {
+                    "schema_version": "capsule_core_code_projection.v1",
+                    "capsule_id": capsule_id,
+                    "version_id": version_id,
+                    "project_id": project_id,
+                    "source_identity": source_identity,
+                    "canonical_hash": canonical.sha256,
+                    "capability_kind": row["capability_kind"],
+                    "validation": {
+                        "contract_version": validation_fields[0],
+                        "schema_version": validation_fields[1],
+                        "status": validation_fields[2],
+                        "acceptance_scope": validation_fields[3],
+                    },
+                    "core_code": {
+                        "kind": "javascript_entry_module",
+                        "logical_path": entry_module,
+                        "language": "javascript",
+                        "content": content,
+                        "sha256": hashlib.sha256(content.encode("utf-8")).hexdigest(),
+                    },
+                }
+            )
+        except (
+            CapsuleStoreError,
+            KeyError,
+            OSError,
+            TypeError,
+            UnicodeError,
+            ValueError,
+            json.JSONDecodeError,
+            sqlite3.Error,
+        ):
+            return self._error("capsule_core_code_projection_unavailable")
 
     @_serialized_management
     def set_capsule_status(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:

@@ -14,7 +14,7 @@
 
 ## Known coupling retained
 
-- `reweave_frontend/app.js` remains a large desktop controller. It is stable and covered by static/desktop smoke tests; splitting it now would add risk without improving the product flow.
+- The Static Web Target Workflow has been extracted from `reweave_frontend/app.js` into `reweave_frontend/target_workflow.js`, including its state, contract validation, rendering, events, invalidation, developer mode, in-memory confirmation, and target state projection. `app.js` remains a large desktop controller for the other retained responsibilities.
 - `isLumoLiteReadOnly()` remains as a compatibility helper name. Its product meaning is source-project read-only, not no-write-everywhere.
 - Local preview, app state, audit, and capsule authoring writes remain separate from source-project writes.
 

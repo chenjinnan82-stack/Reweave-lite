@@ -67,7 +67,7 @@
         <button type="button" id="btn-lumo-artifacts" class="btn-ghost btn-collapsed hidden" aria-expanded="false" aria-controls="lumo-artifacts-popover">
           <span class="btn-icon" aria-hidden="true">◎</span> <span data-i18n="artifacts">Build notes</span>
         </button>
-        <button type="button" id="btn-capsule-warehouse" class="btn-ghost btn-collapsed hidden" aria-expanded="false" aria-controls="capsule-warehouse-popover">
+        <button type="button" id="btn-capsule-warehouse" class="btn-ghost btn-collapsed hidden" aria-controls="screen-capsule-warehouse">
           <span class="btn-icon" aria-hidden="true">▦</span> <span data-i18n="capsuleWarehouse">Capsule Warehouse</span>
         </button>
         <button type="button" id="btn-history" class="btn-ghost btn-collapsed" aria-expanded="false" aria-controls="history-popover">
@@ -180,6 +180,71 @@ preview: pending</div>
         <span data-i18n="privacy">All local. Nothing leaves your machine.</span>
       </p>
     </footer>
+  </section>
+
+  <!-- Read-only Capsule Warehouse browser. Formal data remains owned by the desktop state. -->
+  <section id="screen-capsule-warehouse" class="screen screen-capsule-warehouse hidden" aria-label="Capsule Warehouse">
+    <header class="warehouse-scene-bar">
+      <button type="button" id="btn-warehouse-scene-back" class="btn-ghost warehouse-scene-back" data-i18n="back">Back</button>
+      <div class="warehouse-scene-identity">
+        <span class="warehouse-scene-kicker" data-i18n="warehouseReadOnly">READ-ONLY WAREHOUSE</span>
+        <strong data-i18n="capsuleWarehouse">Capsule Warehouse</strong>
+      </div>
+      <label class="warehouse-scene-search" for="warehouse-scene-query">
+        <span class="sr-only" data-i18n="searchWarehouse">Search projects or capsules</span>
+        <input id="warehouse-scene-query" type="search" autocomplete="off" spellcheck="false" data-i18n-placeholder="searchWarehouse">
+      </label>
+      <div class="warehouse-scene-zoom" aria-label="Canvas zoom" data-i18n-aria-label="canvasZoom">
+        <button type="button" id="btn-warehouse-zoom-out" class="btn-ghost" data-i18n-aria-label="zoomOut">−</button>
+        <output id="warehouse-zoom-value" for="btn-warehouse-zoom-out btn-warehouse-zoom-in">100%</output>
+        <button type="button" id="btn-warehouse-zoom-in" class="btn-ghost" data-i18n-aria-label="zoomIn">+</button>
+        <button type="button" id="btn-warehouse-zoom-reset" class="btn-ghost" data-i18n="resetView">Reset</button>
+      </div>
+    </header>
+
+    <main class="warehouse-scene-stage">
+      <section id="warehouse-browser-view" class="warehouse-browser-view" aria-labelledby="warehouse-browser-title">
+        <h1 id="warehouse-browser-title" class="sr-only" data-i18n="sourceProjectOverview">Source project overview</h1>
+        <p id="warehouse-scene-breadcrumb" class="warehouse-scene-breadcrumb" aria-live="polite"></p>
+        <div id="warehouse-scene-canvas" class="warehouse-scene-canvas" tabindex="0" role="region" data-i18n-aria-label="warehouseCanvasHelp">
+          <div class="warehouse-web-atmosphere" aria-hidden="true"></div>
+          <div id="warehouse-scene-world" class="warehouse-scene-world">
+            <svg id="warehouse-scene-links" class="warehouse-scene-links" viewBox="0 0 1200 760" aria-hidden="true"></svg>
+            <div id="warehouse-scene-nodes" class="warehouse-scene-nodes"></div>
+          </div>
+          <p id="warehouse-scene-empty" class="warehouse-scene-empty hidden" aria-live="polite"></p>
+        </div>
+      </section>
+
+      <section id="warehouse-code-view" class="warehouse-code-view hidden" aria-labelledby="warehouse-code-title">
+        <header class="warehouse-code-head">
+          <div>
+            <p id="warehouse-code-path" class="warehouse-code-path"></p>
+            <h1 id="warehouse-code-title" tabindex="-1"></h1>
+          </div>
+          <label class="warehouse-code-mode" for="warehouse-code-developer-mode">
+            <input type="checkbox" id="warehouse-code-developer-mode">
+            <span data-i18n="developerMode">Developer mode</span>
+          </label>
+        </header>
+        <div class="warehouse-code-toolbar" aria-label="Code zoom" data-i18n-aria-label="codeZoom">
+          <button type="button" id="btn-warehouse-code-zoom-out" class="btn-ghost" data-i18n-aria-label="zoomOut">−</button>
+          <output id="warehouse-code-zoom-value" for="btn-warehouse-code-zoom-out btn-warehouse-code-zoom-in">100%</output>
+          <button type="button" id="btn-warehouse-code-zoom-in" class="btn-ghost" data-i18n-aria-label="zoomIn">+</button>
+          <button type="button" id="btn-warehouse-code-zoom-reset" class="btn-ghost" data-i18n="resetCodeSize">Reset code size</button>
+        </div>
+        <div class="warehouse-code-surface">
+          <pre id="warehouse-core-code" class="warehouse-core-code hidden"><code></code></pre>
+          <p id="warehouse-core-code-empty" class="warehouse-core-code-empty" data-i18n="noVerifiedCoreCode">No verified core code is available.</p>
+        </div>
+        <section id="warehouse-developer-details" class="warehouse-developer-details hidden" aria-labelledby="warehouse-developer-title">
+          <h2 id="warehouse-developer-title" data-i18n="developerEvidence">Developer evidence</h2>
+          <pre id="warehouse-developer-evidence"></pre>
+        </section>
+      </section>
+
+      <button type="button" id="btn-open-capsule-ingestion" class="btn-ghost warehouse-ingestion-entry hidden" aria-expanded="false" aria-controls="capsule-warehouse-popover" data-i18n="warehouseManagement">Ingestion management</button>
+    </main>
   </section>
 
   <!-- Static Web target integration. The target remains review-only. -->
@@ -404,6 +469,7 @@ preview: pending</div>
   <script src="artifacts.js"></script>
   <script src="source_workflow.js"></script>
   <script src="capsule_reader.js"></script>
+  <script src="capsule_warehouse_scene.js"></script>
   <script src="target_workflow.js"></script>
   <script src="app.js"></script>
 </body>

@@ -300,6 +300,12 @@ class ReweaveBridge:
                 return self._phase4_call("get_capsule_detail", payload_json)
 
             @Slot(str, result=str)
+            def get_capsule_core_code_projection(self, payload_json: str = "") -> str:
+                return self._phase4_call(
+                    "get_capsule_core_code_projection", payload_json
+                )
+
+            @Slot(str, result=str)
             def set_capsule_status(self, payload_json: str = "") -> str:
                 return self._phase4_call("set_capsule_status", payload_json)
 

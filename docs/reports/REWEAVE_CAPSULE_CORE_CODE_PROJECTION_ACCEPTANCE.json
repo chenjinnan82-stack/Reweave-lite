@@ -1,0 +1,245 @@
+{
+  "schema_version": "reweave_capsule_core_code_projection_acceptance.v1",
+  "completed_date": "2026-07-20",
+  "verdict": "PASS",
+  "verdict_reason": "A real formal capsule entry module is projected only after exact capsule, current version, exact project source identity, Stage 3 eligibility, strict persisted JSON, canonical hash, validation and safe entry-module checks all pass. The existing QWebEngine code page renders that one module with textContent; every tested mismatch fails closed with zero writes.",
+  "baseline": {
+    "branch": "codex/capsule-core-code-projection",
+    "head": "be0da04db567b7ccf66b46cfe69dcf4d5d87be6d",
+    "main": "91caa16750ba361956672a824169cabfb2cadaa3",
+    "origin_main": "91caa16750ba361956672a824169cabfb2cadaa3",
+    "v0_3_0": "e9b2ccd68439c3d5fddae7fa260888b7a5b788c8",
+    "warehouse_scene_acceptance": "docs/reports/REWEAVE_CAPSULE_WAREHOUSE_SCENE_ACCEPTANCE.json"
+  },
+  "request_contract": {
+    "service_method": "get_capsule_core_code_projection",
+    "required_exact_fields": [
+      "capsule_id",
+      "version_id",
+      "project_id"
+    ],
+    "guessing_or_fallback": false,
+    "missing_identity_error_codes": [
+      "capsule_id_required",
+      "version_id_required",
+      "project_id_required"
+    ],
+    "uniform_failure_code": "capsule_core_code_projection_unavailable"
+  },
+  "response_contract": {
+    "schema_version": "capsule_core_code_projection.v1",
+    "fields": [
+      "schema_version",
+      "capsule_id",
+      "version_id",
+      "project_id",
+      "source_identity",
+      "canonical_hash",
+      "capability_kind",
+      "validation",
+      "core_code"
+    ],
+    "validation_fields": [
+      "contract_version",
+      "schema_version",
+      "status",
+      "acceptance_scope"
+    ],
+    "core_code_fields": [
+      "kind",
+      "logical_path",
+      "language",
+      "content",
+      "sha256"
+    ],
+    "core_code_kind": "javascript_entry_module",
+    "language": "javascript",
+    "verified_boolean_added": false
+  },
+  "exact_identity": {
+    "capsule_must_exist": true,
+    "requested_version_must_belong_to_capsule": true,
+    "requested_version_must_equal_current_version": true,
+    "capsule_status_must_be_active": true,
+    "source_kind": "project",
+    "source_version_must_equal_requested_version": true,
+    "source_project_must_equal_requested_project": true,
+    "source_identity_contract": "project:<project_id>",
+    "historical_or_first_version_fallback": false
+  },
+  "eligibility_and_canonical": {
+    "eligibility_function": "ReweaveCapsuleStage3._eligible_exact",
+    "additional_eligibility_system_added": false,
+    "strict_json_parser": "_strict_json_bytes",
+    "strict_json_fields": [
+      "extraction_summary_json",
+      "activation_json",
+      "input_contract_json",
+      "output_contract_json",
+      "error_contract_json",
+      "runtime_allowlist_json",
+      "dom_scope_json",
+      "usage_scope_json",
+      "javascript_modules_json",
+      "cleaning_summary_json",
+      "supervision_result_json",
+      "validation_result_json"
+    ],
+    "canonicalizer": "canonicalize_capsule",
+    "canonical_hash_recomputed": true,
+    "stored_hash_must_match": true,
+    "entry_path_must_be_safe_relative_js_or_mjs": true,
+    "entry_selected_from": "activation.entry_module",
+    "entry_module_match_count": 1,
+    "entry_content_must_be_nonempty": true,
+    "content_sha256_computed_from_returned_utf8": true
+  },
+  "actual_entry_module": {
+    "capsule_id": "capsule_alpha_presentation",
+    "version_id": "version_alpha_presentation_1",
+    "project_id": "00000000-0000-4000-8000-000000000101",
+    "logical_path": "presentation.js",
+    "canonical_hash": "de369a0cc2e0e69ebeb15439544217dcb023bf2fd64b1d97f788f578200fae8f",
+    "sha256": "00591523c3e3a02c092f0e92d0c7b4e4e318dcf3b3c380156fc23d0d303a60f2",
+    "utf8_bytes": 141,
+    "content_matches_storage": true,
+    "stored_helper_module_present": true,
+    "stored_helper_module_returned": false
+  },
+  "fail_closed_cases": {
+    "service": [
+      "missing_capsule_version_or_project_identity",
+      "wrong_version_without_current_version_fallback",
+      "wrong_project_or_missing_formal_source_relation",
+      "disabled_capsule",
+      "pending_revalidation_capsule",
+      "stale_validation_contract_evidence",
+      "canonical_hash_mismatch",
+      "duplicate_key_strict_json",
+      "missing_entry_module",
+      "empty_entry_module_content"
+    ],
+    "qwebengine_response_validation": [
+      "wrong_schema_version",
+      "wrong_version_id",
+      "wrong_project_id_and_source_identity",
+      "absolute_logical_path",
+      "helper_module_substituted_for_activation_entry"
+    ],
+    "fallback_groups_with_zero_projection_calls": [
+      "missing_exact_version_source_relation",
+      "missing_formal_source_identity"
+    ]
+  },
+  "bridge_evidence": {
+    "new_slots": [
+      "get_capsule_core_code_projection"
+    ],
+    "forwarding_wrapper": "existing ReweaveBridge._phase4_call",
+    "detail_calls_before_code_navigation": 8,
+    "projection_calls_before_code_navigation": 0,
+    "formal_code_page_projection_calls": 6,
+    "fallback_code_page_projection_calls": 0,
+    "write_calls": 0,
+    "background_worker_added": false
+  },
+  "frontend_evidence": {
+    "request_gate": "formal_exact_version_source",
+    "cache_identity": [
+      "capsule_id",
+      "version_id",
+      "project_id",
+      "request_revision"
+    ],
+    "late_or_stale_response_rejected": true,
+    "deferred_a_then_b_then_late_a_regression_passed": true,
+    "strict_response_shape_rebuilt": true,
+    "render_api": "textContent",
+    "simple_mode_renders_real_entry_content": true,
+    "developer_mode_reuses_same_capsule_version_project": true,
+    "developer_metadata_contains_content": false,
+    "empty_state_retained_on_failure": "暂无经验证的核心代码",
+    "get_state_verified_only_for_current_valid_projection": true,
+    "return_focus_and_code_zoom_preserved": true
+  },
+  "dom_safety": {
+    "inner_html_used_for_projection": false,
+    "entry_module_executed_by_code_page": false,
+    "helper_canary_in_dom": false,
+    "absolute_path_canary_in_dom": false,
+    "after_content_canary_in_dom": false,
+    "speculative_snippet_canary_in_dom": false,
+    "html_or_css_body_returned": false,
+    "complete_javascript_modules_returned": false,
+    "asset_content_returned": false
+  },
+  "zero_write_evidence": {
+    "read_path_calls_management_recovery_or_rule_migration": false,
+    "warehouse_revision_unchanged": true,
+    "capsules_table_unchanged": true,
+    "capsule_versions_table_unchanged": true,
+    "capsule_sources_table_unchanged": true,
+    "product_capsule_usage_table_unchanged": true,
+    "product_catalog_representation": "products directory; this schema has no product_catalog SQLite table",
+    "product_directory_unchanged": true,
+    "source_project_tree_unchanged": true,
+    "unselected_user_target_tree_unchanged": true,
+    "apply": false,
+    "commit": false,
+    "rollback": false
+  },
+  "target_workflow_golden_regression": {
+    "repository": "https://github.com/MasiaAntoine/snake-js",
+    "commit": "894e7dc8549b0aa347ecbe985704a3c32fbbc767",
+    "target_snapshot_sha256": "26ac34b1bc41102c9846d7899dca5d3ce5b4709ab988899cc30ab1fb800e1e5d",
+    "plan_id": "weave_dd8dc1dc965daa0085d897e4f481815e7e465cf6d770652893e27591a030b54f",
+    "patch_sha256": "ae85f9bd49ec8a0d5f25f70fa8dccc07809319dbfcdd1e80874f2f4fb891d76f",
+    "unchanged": true
+  },
+  "verification": {
+    "javascript_syntax": {
+      "passed": 3,
+      "failed": 0
+    },
+    "focused_service_bridge_static_and_release": {
+      "passed": 38,
+      "failed": 0,
+      "subtests_passed": 5
+    },
+    "frontend_static_release": {
+      "passed": 24,
+      "failed": 0
+    },
+    "release_surface_audit": {
+      "passed": 5,
+      "failed": 0
+    },
+    "qwebengine_isolated_processes": {
+      "passed": 5,
+      "failed": 0
+    },
+    "repository_without_phase6_desktop": {
+      "passed": 785,
+      "failed": 0,
+      "subtests_passed": 188,
+      "runtime": "authorized local loopback and macOS GUI environment"
+    },
+    "git_diff_check": "passed",
+    "json_parse": "passed"
+  },
+  "scope_limit": {
+    "sqlite_schema_changed": false,
+    "database_migration_added": false,
+    "model_call_added": false,
+    "dependency_added": false,
+    "target_workflow_changed": false,
+    "full_source_browser_implemented": false,
+    "html_css_projection_implemented": false,
+    "product_ide_implemented": false,
+    "planning_assistant_implemented": false,
+    "line_level_provenance_implemented": false,
+    "user_project_write_implemented": false,
+    "react_vite_or_node_target_added": false,
+    "release_or_tag_changed": false
+  }
+}
