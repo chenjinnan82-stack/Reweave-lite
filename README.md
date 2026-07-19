@@ -35,7 +35,9 @@ Replace the example IDs with IDs shown by the desktop warehouse. Use `--state-di
 
 The CLI does not scan, promote, select a model, or choose capsules implicitly. No capsule ID means no generation.
 
-**Boundary:** Source Boxes remain read-only. Generated products live in Reweave application state and never overwrite the source project.
+The Static Web target Patch contract is currently a backend service capability; it is not yet exposed through this CLI or a desktop target-integration page.
+
+**Boundary:** Source Boxes and selected target projects remain read-only. Generated products live in Reweave application state; target integration returns review-only Patch data and never applies it.
 
 ## Current Mainline
 
@@ -44,6 +46,16 @@ Source Box -> read-only snapshot -> atomic extraction -> review
 -> one formal SQLite warehouse -> one module_native composer
 -> index.html / styles.css / app.js -> quality and runtime gates
 -> immutable manifest and product usage
+```
+
+The same formal warehouse and composer also support a separate backend-only target branch:
+
+```text
+Eligible formal capsules + authorized Static Web target snapshot
+-> path, direct HTML resource, and JavaScript module checks
+-> one module_native result -> static_web_iframe_embed.v1
+-> structured review-only Patch + text Diff + evidence
+-> zero target, product-store, and usage writes
 ```
 
 Supervision model selection belongs to the desktop warehouse workflow and has no hardcoded CLI default. Product generation consumes only eligible active/current formal versions.
@@ -76,6 +88,7 @@ The inspiration is a spider spinning silk: old project threads are cleaned, join
 - Uses one `module_native` composer with in-memory formal capsule objects.
 - Lets the CLI generate only from explicitly selected formal capsule IDs through `ReweaveAppService`.
 - Produces runnable `index.html`, `styles.css`, `app.js`, a manifest, provenance, quality evidence, and exact product usage records.
+- Analyzes one explicitly selected Static Web target entry and returns a deterministic, snapshot-bound Weave Plan and complete review-only Patch through `ReweaveAppService`.
 - Keeps real source project writes off by default.
 
 ## Screenshots
@@ -196,6 +209,8 @@ Reweave is not a full autopilot IDE.
 
 It does **not** currently promise arbitrary production-grade project generation, automatic multi-file writes, overwrites, deletes, or frontend write buttons.
 
+The Static Web target backend returns Patch data only. It has no target-integration UI, does not apply the Patch, does not commit, and does not claim automatic legal-license authorization.
+
 This repo publishes a safe Reweave-lite path for building inspectable Small Project Packs from old project context, not an automatic IDE that edits your project for you.
 
 Generated product writes are confined to a new application-state product directory; Source Boxes remain read-only.
@@ -207,6 +222,7 @@ Desktop UI                         reweave_frontend/
 Application service                pimos_lite/reweave_app_service.py
 Formal SQLite warehouse            pimos_lite/reweave_capsule_store.py
 Read-only intake                   pimos_lite/reweave_capsule_intake.py
+Static Web target Patch planner    pimos_lite/reweave_static_web_target.py
 Safety and validation              pimos_lite/reweave_capsule_stage3.py
 Single composer                    pimos_lite/composer/module_native.py
 Public samples                     examples/source_boxes/
@@ -218,7 +234,7 @@ See [Architecture](docs/ARCHITECTURE.md) for the Source Box -> Capsule -> Task P
 
 ## Roadmap
 
-The single authoritative product roadmap is [Reweave Product North Star](docs/REWEAVE_PRODUCT_NORTH_STAR.md). It keeps four independently accepted plans and separates the upcoming Static Web backend work from the later frontend interaction loop.
+The single authoritative product roadmap is [Reweave Product North Star](docs/REWEAVE_PRODUCT_NORTH_STAR.md). It keeps four independently accepted plans: the Static Web backend slice is complete, while the separate frontend interaction loop remains pending.
 
 ## License
 
