@@ -157,16 +157,9 @@ python -m pip install -r pimos_lite/requirements-desktop.txt
 
 PySide6 只安装在独立 `.venv-reweave`，不进入核心依赖。启动脚本不会自动安装依赖，也不会自动连接软件包仓库。Ollama 监督只允许 loopback，并要求用户显式选择本机已安装模型；Reweave 没有硬编码默认模型。
 
-### 历史 demo
+### 已退役的 Stage 4 demo
 
-以下脚本仅保留为非活跃迁移历史，不是当前产品生成路径，也不是 CI 直接入口：
-
-```bash
-python scripts/run_public_stage4_demo.py
-python scripts/run_public_stage4_demo.py --case data
-```
-
-它们不读取正式 SQLite 生成路径。Windows 桌面壳仍是 experimental；CLI 帮助入口和测试套件已纳入 Windows CI。
+旧 Stage 4 公开 demo 入口在证明不属于正式产品、桌面、发布和 CI 调用图后已经删除。基于应用服务的正式 CLI 是唯一公开 CLI 入口。Windows 桌面壳仍是 experimental；CLI 帮助入口和测试套件已纳入 Windows CI。
 
 可选 runtime bridge：
 
@@ -180,7 +173,7 @@ REWEAVE_RUNTIME_STATE_PATH=/path/to/frontend_runtime_state.json \
 - GitHub Actions 会运行 Reweave 测试。
 - GitHub Actions 会在 Ubuntu 和 Windows 上检查 service-backed 公开 CLI 的帮助入口。
 - GitHub Actions 会检查前端 JavaScript 语法。
-- 历史 demo 脚本不是 CI 直接入口。
+- CI 只检查基于应用服务的唯一正式公开 CLI 入口。
 - 默认启动不依赖私有工作区路径。
 - Source project writes 默认保持关闭。
 
@@ -225,11 +218,7 @@ Source Box -> Capsule -> Task Pack 的主链见 [Architecture](docs/ARCHITECTURE
 
 ## 后续方向
 
-- 更多公开 Source Box demo。
-- 更好的桌面打包。
-- 更稳定的 Task Pack preview。
-
-见 [Roadmap](ROADMAP.md)。
+唯一权威产品路线图是 [Reweave 产品北极星](docs/REWEAVE_PRODUCT_NORTH_STAR.md)。其中保留四个可独立验收的计划，并明确拆分后续 Static Web 后端工作与前端交互闭环。
 
 ## 开源协议
 

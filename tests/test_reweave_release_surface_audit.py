@@ -67,7 +67,6 @@ def test_stage5_formal_and_historical_surfaces_are_separate() -> None:
         "pimos_lite/reweave_promote.py",
         "pimos_lite/reweave_stage4_composer.py",
         "scripts/analyze_reweave_behavior.mjs",
-        "scripts/run_public_stage4_demo.py",
     } <= historical
     assert included.isdisjoint(historical)
 
@@ -75,7 +74,6 @@ def test_stage5_formal_and_historical_surfaces_are_separate() -> None:
         row["path"]: row["release_disposition"] for row in audit["entrypoints"]
     }
     assert dispositions["scripts/run_public_reweave_demo.py"] == "included"
-    assert dispositions["scripts/run_public_stage4_demo.py"] == "historical_excluded"
     assert dispositions["pimos_lite/reweave_llm_pack.py"] == "historical_excluded"
 
     javascript_source = next(

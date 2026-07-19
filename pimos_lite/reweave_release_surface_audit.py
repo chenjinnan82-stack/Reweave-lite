@@ -82,7 +82,6 @@ HISTORICAL_EXCLUDED_SURFACE_FILES = (
     "pimos_lite/reweave_task_plan.py",
     "pimos_lite/safe_preview_write.py",
     "scripts/analyze_reweave_behavior.mjs",
-    "scripts/run_public_stage4_demo.py",
 )
 
 SURFACE_GLOBS = (

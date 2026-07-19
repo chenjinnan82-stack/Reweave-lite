@@ -157,16 +157,9 @@ python -m pip install -r pimos_lite/requirements-desktop.txt
 
 PySide6 remains isolated in `.venv-reweave`; it is not a core dependency. The launcher never installs dependencies or contacts a package index automatically. Ollama supervision is loopback-only and requires an explicitly selected installed model; Reweave has no hardcoded default model.
 
-### Historical demos
+### Retired Stage 4 demo
 
-The following scripts remain as inactive migration history and are not the current product-generation path or direct CI entrypoints:
-
-```bash
-python scripts/run_public_stage4_demo.py
-python scripts/run_public_stage4_demo.py --case data
-```
-
-They do not read from the formal SQLite generation path. Windows desktop shell support remains experimental; CLI help and the test suite are checked on Windows.
+The former public Stage 4 demo entry was removed after its absence from the active product, desktop, release, and CI call graphs was proved. The service-backed formal CLI is the only public CLI entry. Windows desktop shell support remains experimental; CLI help and the test suite are checked on Windows.
 
 Optional runtime bridge:
 
@@ -180,7 +173,7 @@ REWEAVE_RUNTIME_STATE_PATH=/path/to/frontend_runtime_state.json \
 - GitHub Actions runs the Reweave test suite.
 - GitHub Actions checks the service-backed public CLI help on Ubuntu and Windows.
 - GitHub Actions checks frontend JavaScript syntax.
-- Historical demo scripts are not direct CI entrypoints.
+- The service-backed formal CLI is the only public CLI entry checked by CI.
 - Local default launch does not depend on private workspace paths.
 - Source project writes stay off by default.
 
@@ -225,11 +218,7 @@ See [Architecture](docs/ARCHITECTURE.md) for the Source Box -> Capsule -> Task P
 
 ## Roadmap
 
-- More public Source Box demos
-- Better desktop packaging
-- More stable Task Pack previews
-
-See [Roadmap](ROADMAP.md).
+The single authoritative product roadmap is [Reweave Product North Star](docs/REWEAVE_PRODUCT_NORTH_STAR.md). It keeps four independently accepted plans and separates the upcoming Static Web backend work from the later frontend interaction loop.
 
 ## License
 
