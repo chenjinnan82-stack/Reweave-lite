@@ -38,6 +38,7 @@ REQUIRED_SURFACE_FILES = (
     "reweave_frontend/mock-data.json",
     "reweave_frontend/renderers.js",
     "reweave_frontend/source_workflow.js",
+    "reweave_frontend/target_workflow.js",
     "reweave_frontend/styles.css",
     "reweave_frontend/assets/reweave-icon.svg",
     "start_reweave_static.sh",
