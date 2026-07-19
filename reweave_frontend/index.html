@@ -58,6 +58,10 @@
         <span class="engine-sep" aria-hidden="true">·</span>
         <span class="engine-label engine-label-sub" data-i18n="sourceReadOnly">source project read-only</span>
       </div>
+      <nav class="delivery-switch" aria-label="Delivery mode" data-i18n-aria-label="deliveryMode">
+        <button type="button" class="delivery-switch-button active" aria-current="page" data-i18n="standaloneProduct">Standalone product</button>
+        <button type="button" id="btn-open-target" class="delivery-switch-button hidden" disabled data-i18n="targetIntegration">Target integration</button>
+      </nav>
       <div class="top-bar-right">
         <button type="button" id="btn-lang" class="btn-ghost btn-lang" aria-label="Switch language" data-i18n-aria-label="switchLanguage">中 / EN</button>
         <button type="button" id="btn-lumo-artifacts" class="btn-ghost btn-collapsed hidden" aria-expanded="false" aria-controls="lumo-artifacts-popover">
@@ -176,6 +180,92 @@ preview: pending</div>
         <span data-i18n="privacy">All local. Nothing leaves your machine.</span>
       </p>
     </footer>
+  </section>
+
+  <!-- Static Web target integration. The target remains review-only. -->
+  <section id="screen-target" class="screen screen-target hidden" aria-label="Target integration">
+    <header class="top-bar">
+      <div class="top-bar-left">
+        <img class="logo-mark tiny" src="assets/reweave-icon.svg" alt="" aria-hidden="true">
+        <span class="brand-name-inline">Reweave</span>
+        <span class="engine-dot" aria-hidden="true">●</span>
+        <span class="engine-label" data-i18n="targetReadOnly">review-only target</span>
+      </div>
+      <nav class="delivery-switch" aria-label="Delivery mode" data-i18n-aria-label="deliveryMode">
+        <button type="button" id="btn-target-back" class="delivery-switch-button" data-i18n="standaloneProduct">Standalone product</button>
+        <button type="button" class="delivery-switch-button active" aria-current="page" data-i18n="targetIntegration">Target integration</button>
+      </nav>
+      <div class="top-bar-right">
+        <label class="target-mode-toggle" for="target-developer-mode">
+          <input type="checkbox" id="target-developer-mode">
+          <span data-i18n="developerMode">Developer mode</span>
+        </label>
+        <button type="button" id="btn-target-lang" class="btn-ghost btn-lang" data-i18n-aria-label="switchLanguage">中 / EN</button>
+      </div>
+    </header>
+
+    <main class="target-stage">
+      <div class="target-heading">
+        <div>
+          <p class="target-kicker" data-i18n="targetKicker">STATIC WEB · REVIEW-ONLY PATCH</p>
+          <h1 data-i18n="targetTitle">Integrate capsules into an existing site</h1>
+          <p data-i18n="targetSubtitle">Analyze one explicit HTML entry, review every file change, then confirm the result. Reweave never writes the target.</p>
+        </div>
+        <span class="target-read-only-badge" data-i18n="zeroTargetWrites">Target writes: 0</span>
+      </div>
+
+      <div class="target-grid">
+        <section class="target-card" aria-labelledby="target-source-title">
+          <span class="target-step">1</span>
+          <h2 id="target-source-title" data-i18n="chooseTarget">Choose target</h2>
+          <button type="button" id="btn-select-target" class="btn-primary" data-i18n="selectTargetFolder">Select Static Web folder</button>
+          <p id="target-selected-name" class="target-selection" data-i18n="noTargetSelected">No target selected</p>
+          <label class="target-field" for="target-entry-relpath">
+            <span data-i18n="targetEntry">HTML entry</span>
+            <input type="text" id="target-entry-relpath" value="index.html" autocomplete="off" spellcheck="false">
+          </label>
+          <button type="button" id="btn-analyze-target" class="btn-secondary" disabled data-i18n="analyzeTarget">Analyze target</button>
+          <p id="target-analysis-status" class="target-status" aria-live="polite"></p>
+          <div id="target-profile-summary" class="target-summary hidden"></div>
+          <pre id="target-profile-developer" class="target-developer-only target-raw hidden"></pre>
+        </section>
+
+        <section class="target-card" aria-labelledby="target-compose-title">
+          <span class="target-step">2</span>
+          <h2 id="target-compose-title" data-i18n="composePatch">Compose Patch</h2>
+          <label class="target-field" for="target-task">
+            <span data-i18n="targetTask">What should be added?</span>
+            <textarea id="target-task" rows="3" maxlength="500" data-i18n-placeholder="targetTaskPlaceholder"></textarea>
+          </label>
+          <p class="target-label" data-i18n="chooseCapsules">Choose formal capsules</p>
+          <div id="target-capsule-cards" class="target-capsule-cards" role="list"></div>
+          <button type="button" id="btn-generate-target-patch" class="btn-primary" disabled data-i18n="generateReviewPatch">Generate review Patch</button>
+          <p id="target-patch-status" class="target-status" aria-live="polite"></p>
+          <pre id="target-rejection-evidence" class="target-developer-only target-raw hidden"></pre>
+        </section>
+      </div>
+
+      <section id="target-review" class="target-review hidden" aria-labelledby="target-review-title">
+        <div class="target-review-head">
+          <div>
+            <span class="target-step">3</span>
+            <h2 id="target-review-title" data-i18n="reviewPatch">Review Patch</h2>
+          </div>
+          <span id="target-review-badge" class="target-read-only-badge"></span>
+        </div>
+        <div id="target-evidence-summary" class="target-evidence"></div>
+        <div id="target-file-diffs" class="target-file-diffs"></div>
+        <details class="target-developer-only target-developer-details">
+          <summary data-i18n="developerEvidence">Developer evidence</summary>
+          <pre id="target-patch-developer" class="target-raw"></pre>
+        </details>
+        <div class="target-confirmation">
+          <p data-i18n="confirmPatchBoundary">Confirmation records your review only. It does not apply, write, or commit anything.</p>
+          <button type="button" id="btn-confirm-target-patch" class="btn-primary" disabled data-i18n="confirmPatch">Confirm reviewed Patch</button>
+          <p id="target-confirmation-receipt" class="target-status" aria-live="polite"></p>
+        </div>
+      </section>
+    </main>
   </section>
 
   <!-- Capsule reader popover -->

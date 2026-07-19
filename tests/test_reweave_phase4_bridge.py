@@ -63,6 +63,8 @@ def test_phase4_bridge_forwards_json_payloads_to_app_service() -> None:
         "restore_backup",
         "start_legacy_import",
         "generate_product",
+        "analyze_static_web_target",
+        "generate_static_web_patch",
     )
     try:
         for method in methods:
@@ -178,5 +180,49 @@ def test_choose_source_root_only_forwards_selected_directory() -> None:
             "path": "/tmp/source-root",
             "root_kind": "project_collection",
         }
+    finally:
+        desktop.ReweaveBridge._qobject_cls = None
+
+
+def test_static_web_target_bridge_is_review_only() -> None:
+    class Service:
+        def __getattr__(self, name: str):
+            raise AssertionError(f"chooser must not call service method {name}")
+
+    class FileDialog:
+        @staticmethod
+        def getExistingDirectory(*_args, **_kwargs) -> str:
+            return "/tmp/example-site"
+
+    class CancelDialog:
+        @staticmethod
+        def getExistingDirectory(*_args, **_kwargs) -> str:
+            return ""
+
+    bridge = _bridge(Service())
+    try:
+        with patch.object(
+            desktop,
+            "import_qt_webengine",
+            return_value=(object, object, object, object, object, FileDialog),
+        ):
+            assert json.loads(bridge.choose_static_web_target()) == {
+                "ok": True,
+                "target_path": "/tmp/example-site",
+                "display_name": "example-site",
+            }
+        with patch.object(
+            desktop,
+            "import_qt_webengine",
+            return_value=(object, object, object, object, object, CancelDialog),
+        ):
+            assert json.loads(bridge.choose_static_web_target()) == {
+                "ok": False,
+                "cancelled": True,
+            }
+
+        assert not hasattr(bridge, "apply_static_web_patch")
+        assert not hasattr(bridge, "commit_static_web_patch")
+        assert not hasattr(bridge, "write_static_web_target")
     finally:
         desktop.ReweaveBridge._qobject_cls = None

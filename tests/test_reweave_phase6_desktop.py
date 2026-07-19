@@ -299,6 +299,390 @@ def test_simple_mode_scans_multiply_without_creating_candidate(
         service.close()
 
 
+def test_static_web_target_review_ui_never_writes_or_calls_confirm_service(
+    tmp_path: Path, monkeypatch
+) -> None:
+    if sys.platform.startswith("linux") and not (
+        os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    ):
+        pytest.skip("A desktop GUI session is required")
+    pytest.importorskip("PySide6.QtWebEngineCore")
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from PySide6.QtWebEngineCore import QWebEngineProfile
+
+    target = tmp_path / "target-site"
+    target.mkdir()
+    (target / "index.html").write_text(
+        "<!doctype html><html><body><h1>Existing target</h1></body></html>\n",
+        encoding="utf-8",
+    )
+
+    def target_tree() -> dict[str, tuple[bytes, int]]:
+        return {
+            path.relative_to(target).as_posix(): (
+                path.read_bytes(),
+                path.stat().st_mtime_ns,
+            )
+            for path in target.rglob("*")
+            if path.is_file()
+        }
+
+    target_before = target_tree()
+    snapshot = "a" * 64
+    plan_id = "static_web_plan_test"
+    profile_data = {
+        "schema_version": "static_web_target_profile.v1",
+        "target_kind": "static_web",
+        "entry_path": "index.html",
+        "snapshot_sha256": snapshot,
+        "files": [
+            {
+                "path": "index.html",
+                "kind": "text",
+                "size_bytes": 72,
+                "sha256": "b" * 64,
+            }
+        ],
+        "resources": [],
+        "javascript": {
+            "schema_version": "source_graph.v1",
+            "entry_modules": [],
+            "reachable_module_count": 0,
+            "graph_sha256": None,
+        },
+        "checks": [{"name": "stable_snapshot", "passed": True}],
+        "permissions": {
+            "target_read": True,
+            "target_write": False,
+            "apply": False,
+            "commit": False,
+            "store_write": False,
+            "network_access": False,
+            "model_call": False,
+        },
+        "source_unchanged": True,
+    }
+    patch_data = {
+        "schema_version": "static_web_target_patch.v1",
+        "status": "ready_for_review",
+        "plan_id": plan_id,
+        "strategy": "static_web_iframe_embed.v1",
+        "target": {
+            "entry_path": "index.html",
+            "snapshot_sha256": snapshot,
+            "profile": profile_data,
+        },
+        "authorization": {
+            "mode": "review_patch_only",
+            "target_snapshot_sha256": snapshot,
+            "usage_scope": {"kind": "general"},
+            "usage_scope_match": True,
+            "target_project_write": False,
+            "apply": False,
+            "commit": False,
+        },
+        "weave_plan": {
+            "schema_version": "static_web_weave_plan.v1",
+            "plan_id": plan_id,
+            "adapter_version": "static_web_iframe_embed.v1",
+            "task": "Add quote card",
+            "capsules": [
+                {
+                    "capsule_id": "capsule_presentation",
+                    "version_id": "version_presentation_1",
+                    "canonical_hash": "d" * 64,
+                    "capability_key": "quote",
+                    "role_key": "presentation",
+                    "variant_key": "default",
+                    "capability_kind": "presentation",
+                    "usage_scope": {"kind": "general"},
+                }
+            ],
+            "failure_policy": "stop_without_target_write",
+            "affected_files": [{"path": "index.html", "operation": "modify"}],
+            "validation_steps": [
+                "target_snapshot_match",
+                "target_path_and_resource_boundaries",
+                "capsule_usage_scope",
+                "module_native_composition",
+                "target_output_collision",
+                "target_snapshot_unchanged",
+            ],
+        },
+        "composer": {
+            "composer_version": "module_native_formal_product.v1",
+            "connections": [],
+            "provenance": {},
+            "output_mapping": [],
+        },
+        "changes": [
+            {
+                "path": "index.html",
+                "operation": "modify",
+                "origin": "static_web_iframe_embed.v1",
+                "before_sha256": "b" * 64,
+                "after_sha256": "c" * 64,
+                "size_bytes": 96,
+                "content_encoding": "utf-8",
+                "after_content": "never render this field",
+                "diff": "@@ -1 +1 @@\n-Existing target\n+Existing target with capsule\n",
+            }
+        ],
+        "text_unified_diff": "@@ -1 +1 @@\n-Existing target\n+Existing target with capsule\n",
+        "evidence": {
+            "schema_version": "static_web_target_patch_evidence.v1",
+            "status": "passed",
+            "checks": [{"name": "target_snapshot_unchanged", "passed": True}],
+            "target_project_write": False,
+            "product_store_write": False,
+            "usage_registration_write": False,
+        },
+    }
+
+    class Service:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+            self.analysis_attempts = 0
+
+        def get_initial_state(self) -> dict[str, object]:
+            return {
+                "skipWelcome": True,
+                "sourceBoxes": [],
+                "warehouseCapsules": [
+                    {
+                        "id": "capsule_presentation",
+                        "capsule_id": "capsule_presentation",
+                        "version_id": "version_presentation_1",
+                        "name": "Quote card",
+                        "type": "presentation",
+                        "role": "presentation",
+                        "status": "active",
+                        "formal_version": True,
+                        "generation_eligible": True,
+                        "tags": ["quote"],
+                        "preview": "A reusable quote card.",
+                    }
+                ],
+                "history": [],
+            }
+
+        def analyze_static_web_target(
+            self, payload: dict[str, object]
+        ) -> dict[str, object]:
+            assert payload == {
+                "target_path": str(target),
+                "entry_relpath": "index.html",
+            }
+            self.calls.append(("analyze_static_web_target", payload))
+            self.analysis_attempts += 1
+            if self.analysis_attempts == 1:
+                return {
+                    "ok": True,
+                    "data": {**profile_data, "target_path": str(target)},
+                }
+            return {"ok": True, "data": profile_data}
+
+        def generate_static_web_patch(
+            self, payload: dict[str, object]
+        ) -> dict[str, object]:
+            assert payload == {
+                "target_path": str(target),
+                "entry_relpath": "index.html",
+                "task": "Add quote card",
+                "capsule_ids": ["capsule_presentation"],
+                "selection_mode": "manual",
+                "authorization": {
+                    "mode": "review_patch_only",
+                    "target_snapshot_sha256": snapshot,
+                },
+            }
+            self.calls.append(("generate_static_web_patch", payload))
+            return {"ok": True, "data": patch_data}
+
+        def close(self) -> None:
+            return None
+
+    class FixedDirectoryDialog:
+        @staticmethod
+        def getExistingDirectory(*_args, **_kwargs) -> str:
+            return str(target)
+
+    from pimos_lite import desktop_reweave_static as desktop
+
+    service = Service()
+    qt_parts = desktop.import_qt_webengine()
+    QApplication = qt_parts[0]
+    app = QApplication.instance() or QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
+    profile = QWebEngineProfile.defaultProfile()
+    profile.setCachePath(str(tmp_path / "qweb-cache"))
+    profile.setPersistentStoragePath(str(tmp_path / "qweb-storage"))
+    window = None
+
+    def pump(seconds: float = 0.03) -> None:
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.005)
+
+    try:
+        with (
+            patch.object(
+                desktop,
+                "import_qt_webengine",
+                return_value=(*qt_parts[:5], FixedDirectoryDialog),
+            ),
+            patch.object(desktop, "ReweaveAppService", return_value=service),
+        ):
+            window, _bridge = desktop.create_reweave_window()
+            page = window.centralWidget().page()
+            window.show()
+
+            def js(expression: str, timeout: float = 10.0) -> object:
+                result: list[object] = []
+                page.runJavaScript(expression, result.append)
+                deadline = time.monotonic() + timeout
+                while not result and time.monotonic() < deadline:
+                    pump()
+                if not result:
+                    raise TimeoutError("javascript_callback_timeout")
+                return result[0]
+
+            def wait_js(expression: str, timeout: float, label: str) -> object:
+                deadline = time.monotonic() + timeout
+                last: object = None
+                while time.monotonic() < deadline:
+                    last = js(expression)
+                    if last:
+                        return last
+                    pump(0.08)
+                raise TimeoutError(f"{label}:{last!r}")
+
+            wait_js(
+                "document.readyState === 'complete' && !!window.reweaveBridge && "
+                "!document.getElementById('screen-main').classList.contains('hidden')",
+                30,
+                "desktop_bridge",
+            )
+            js("document.getElementById('task-input').value='Keep standalone task'; true")
+            js("document.getElementById('btn-open-target').click(); true")
+            wait_js(
+                "!document.getElementById('screen-target').classList.contains('hidden')",
+                10,
+                "target_screen",
+            )
+            js("document.getElementById('btn-select-target').click(); true")
+            wait_js(
+                "document.getElementById('target-selected-name').textContent.includes('target-site')",
+                10,
+                "target_selection",
+            )
+            js("document.getElementById('btn-analyze-target').click(); true")
+            wait_js(
+                "document.getElementById('target-analysis-status').textContent.includes("
+                "'frontend_contract_rejected')",
+                10,
+                "malformed_profile_rejected",
+            )
+            assert str(target) not in str(js("document.body.textContent"))
+            js("document.getElementById('btn-analyze-target').click(); true")
+            wait_js(
+                "!document.getElementById('target-profile-summary').classList.contains('hidden')",
+                10,
+                "target_profile",
+            )
+            wait_js(
+                "!!document.querySelector('#target-capsule-cards input[type=checkbox]')",
+                10,
+                "target_capsule",
+            )
+            js(
+                "(() => {"
+                "const checkbox=document.querySelector('#target-capsule-cards input[type=checkbox]');"
+                "checkbox.click();"
+                "const task=document.getElementById('target-task');"
+                "task.value='Add quote card';"
+                "task.dispatchEvent(new Event('input',{bubbles:true}));"
+                "return true;})()"
+            )
+            wait_js(
+                "!document.getElementById('btn-generate-target-patch').disabled",
+                10,
+                "generate_enabled",
+            )
+            js(
+                "(() => {"
+                "document.getElementById('btn-generate-target-patch').click();"
+                "const task=document.getElementById('target-task');"
+                "task.value='Changed while response is pending';"
+                "task.dispatchEvent(new Event('input',{bubbles:true}));"
+                "return true;})()"
+            )
+            deadline = time.monotonic() + 10
+            while len(service.calls) < 3 and time.monotonic() < deadline:
+                pump(0.08)
+            assert len(service.calls) == 3
+            pump(0.2)
+            assert js(
+                "document.getElementById('target-review').classList.contains('hidden')"
+            )
+            js(
+                "(() => {"
+                "const task=document.getElementById('target-task');"
+                "task.value='Add quote card';"
+                "task.dispatchEvent(new Event('input',{bubbles:true}));"
+                "document.getElementById('btn-generate-target-patch').click();"
+                "return true;})()"
+            )
+            wait_js(
+                "!document.getElementById('target-review').classList.contains('hidden') && "
+                "document.getElementById('target-file-diffs').textContent.includes('Existing target') && "
+                "document.getElementById('target-evidence-summary').textContent.trim().length > 0",
+                10,
+                "patch_review",
+            )
+            assert "never render this field" not in str(
+                js("document.getElementById('target-review').textContent")
+            )
+            assert str(target) not in str(js("document.body.textContent"))
+            js("document.getElementById('target-developer-mode').click(); true")
+            assert js(
+                "document.getElementById('screen-target').classList.contains('developer-mode')"
+            )
+            calls_before_confirm = len(service.calls)
+            js("document.getElementById('btn-confirm-target-patch').click(); true")
+            wait_js(
+                "document.getElementById('target-confirmation-receipt').textContent.trim().length > 0",
+                10,
+                "confirmation_receipt",
+            )
+            pump(0.2)
+            assert len(service.calls) == calls_before_confirm == 4
+            assert [name for name, _payload in service.calls] == [
+                "analyze_static_web_target",
+                "analyze_static_web_target",
+                "generate_static_web_patch",
+                "generate_static_web_patch",
+            ]
+            js("document.getElementById('btn-target-back').click(); true")
+            wait_js(
+                "!document.getElementById('screen-main').classList.contains('hidden')",
+                10,
+                "standalone_screen",
+            )
+            assert js("document.getElementById('task-input').value") == (
+                "Keep standalone task"
+            )
+            assert target_tree() == target_before
+    finally:
+        if window is not None:
+            window.close()
+            window.deleteLater()
+            pump()
+            QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+            app.processEvents()
+
+
 def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -> None:
     if shutil.which("node") is None:
         pytest.skip("Node is required for Stage 6 generation")

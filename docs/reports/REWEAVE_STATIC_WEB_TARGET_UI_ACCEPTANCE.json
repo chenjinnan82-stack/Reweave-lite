@@ -1,0 +1,91 @@
+{
+  "schema_version": "reweave_static_web_target_ui_acceptance.v1",
+  "completed_date": "2026-07-19",
+  "verdict": "PASS",
+  "backend_contract": {
+    "plan3_acceptance": "docs/reports/REWEAVE_STATIC_WEB_TARGET_PATCH_ACCEPTANCE.json",
+    "profile_schema": "static_web_target_profile.v1",
+    "patch_schema": "static_web_target_patch.v1",
+    "patch_status": "ready_for_review",
+    "strategy": "static_web_iframe_embed.v1",
+    "authorization_mode": "review_patch_only",
+    "frontend_duplicates_backend_rules": false
+  },
+  "desktop_flow": {
+    "acceptance_scope": "real_qwebengine_with_stubbed_plan3_service_contract",
+    "dual_entry": true,
+    "simple_mode_default": true,
+    "developer_mode": true,
+    "eligible_capsule_cards": true,
+    "validation_evidence": true,
+    "rejection_evidence": true,
+    "malformed_profile_rejected": true,
+    "stale_patch_response_discarded": true,
+    "standalone_state_preserved_across_entry_switch": true,
+    "text_file_diff": true,
+    "binary_metadata_only": true,
+    "service_calls": [
+      "analyze_static_web_target",
+      "generate_static_web_patch"
+    ]
+  },
+  "confirmation": {
+    "kind": "in_memory_review_receipt",
+    "bound_to_plan_id": true,
+    "bound_to_target_snapshot_sha256": true,
+    "bridge_call": false,
+    "write_authorization": false,
+    "invalidated_by_input_change": true
+  },
+  "display_safety": {
+    "backend_strings_rendered_as_text": true,
+    "after_content_rendered": false,
+    "base64_decoded_or_executed": false,
+    "target_absolute_path_in_dom": false,
+    "target_absolute_path_in_log": false,
+    "target_absolute_path_persisted": false
+  },
+  "zero_writes": {
+    "target_project_write": false,
+    "target_tree_unchanged": true,
+    "product_store_write": false,
+    "usage_registration_write": false,
+    "warehouse_write": false,
+    "apply": false,
+    "commit": false
+  },
+  "verification": {
+    "bridge_and_frontend_static": {
+      "passed": 23,
+      "failed": 0
+    },
+    "static_web_target_backend": {
+      "passed": 19,
+      "failed": 0
+    },
+    "static_web_target_service_integration": {
+      "passed": 1,
+      "failed": 0
+    },
+    "qt_webengine_ui": {
+      "passed": 1,
+      "failed": 0,
+      "deselected": 2
+    },
+    "full_repository": {
+      "passed": 775,
+      "failed": 0,
+      "skipped": 3,
+      "subtests_passed": 183
+    }
+  },
+  "scope_limit": {
+    "third_party_backend_acceptance_reused_from_plan3": true,
+    "qt_service_is_stubbed": true,
+    "target_apply_supported": false,
+    "target_commit_supported": false,
+    "react_vite_supported": false,
+    "node_target_supported": false,
+    "release_tag_moved": false
+  }
+}

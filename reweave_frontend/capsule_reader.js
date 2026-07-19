@@ -8,6 +8,8 @@
     var sourceId = c.source_id || (src && src.source_id) || "";
     return {
       id: c.id,
+      capsule_id: c.capsule_id,
+      version_id: c.version_id,
       name: c.name,
       type: c.type,
       serial: c.serial,

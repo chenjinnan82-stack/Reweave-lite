@@ -6310,3 +6310,30 @@ UTF-8 内容、before/after hash 与统一 Diff，对二进制携带完整 base6
 
 计划三到此停止。新页面、双入口、简单/开发者模式、胶囊卡片、文件 Diff 和最终确认属于独立计划四；真实工作树 apply、
 commit、回滚事务、临时副本构建/行为验证，以及 React + Vite / Node 目标适配均不在本阶段。
+
+### S.26 计划四 Static Web review-only 目标 Patch 桌面交互闭环（2026-07-19）
+
+计划四只把 S.25 已封板的后端契约接入现有桌面前端，不修改目标画像、路径、资源、授权、Patch 生成、SQLite、
+`module_native` 或 Stage G 契约，也不新增前端框架、依赖、仓库、组合器或 Patch 应用器。公开 CLI 仍没有目标接入入口。
+
+桌面保留两个清楚分离的入口：既有独立产品模式和新的目标接入模式。目标接入页默认使用简单模式，用户可显式切换到
+开发者模式；两种模式共用同一份进程内工作流状态和同一组后端结果，不建立第二条生成路径。页面只允许选择满足现有资格门
+的正式胶囊卡片，并依次完成目标选择、只读画像、任务与胶囊选择、review-only Patch 生成、文件审阅和最终确认。
+
+桌面桥接只增加三个窄槽位：`choose_static_web_target` 仅返回原生目录选择器选中的路径，不扫描或写入该目录；
+`analyze_static_web_target` 和 `generate_static_web_patch` 只转发到 S.25 已有的应用服务动作。分析请求只提交
+`target_path + entry_relpath`；Patch 请求只提交目标、任务、明确胶囊 ID、`selection_mode=manual`，以及
+`mode=review_patch_only` 且绑定精确 `target_snapshot_sha256` 的授权。前端不复制目标路径、资源闭包、授权或 Patch 规则。
+
+成功结果在进入审阅界面前失败关闭地核对画像、Patch schema、`ready_for_review` 状态、固定 adapter、目标快照、授权零写入
+字段和全部验证证据。简单模式显示审阅所需摘要；开发者模式额外显示 hash、Weave Plan、映射、连接与验证细节。UTF-8 变更
+以文本 Diff 展示；base64 二进制变更只展示路径、操作、大小与 hash 元数据，不渲染内容，也不伪造文本 Diff。结构化拒绝
+保留固定错误码与证据，不把异常文本或目标绝对路径扩散到日志、DOM 或持久化状态。
+
+最终确认只在当前页面内存中记录绑定 `plan_id + target snapshot SHA-256` 的审阅回执。该动作不调用任何 bridge，也不导出、
+应用、commit 或写入目标项目；目标项目、产品仓和 `product_capsule_usage` 继续保持零写入。目标或入口变化会使画像、Patch 和
+确认失效，任务或胶囊变化会使 Patch 和确认失效，简单/开发者模式切换只使确认失效；用户必须重新通过对应门禁。
+
+计划四到此停止。真实工作树 apply/commit/回滚事务、临时副本构建与行为验证、目标接入 CLI，以及 React + Vite / Node
+目标适配均不在本阶段。最终测试与托管 CI 结果以独立验收记录和 GitHub 实际 run 为准，不在本节写死单次测试数字。
+结构化摘要见 `docs/reports/REWEAVE_STATIC_WEB_TARGET_UI_ACCEPTANCE.json`。

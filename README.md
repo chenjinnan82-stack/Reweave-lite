@@ -35,7 +35,7 @@ Replace the example IDs with IDs shown by the desktop warehouse. Use `--state-di
 
 The CLI does not scan, promote, select a model, or choose capsules implicitly. No capsule ID means no generation.
 
-The Static Web target Patch contract is currently a backend service capability; it is not yet exposed through this CLI or a desktop target-integration page.
+The desktop app now exposes the Static Web target Patch contract as a review-only interaction loop. The public CLI still has no target-integration entry.
 
 **Boundary:** Source Boxes and selected target projects remain read-only. Generated products live in Reweave application state; target integration returns review-only Patch data and never applies it.
 
@@ -48,7 +48,7 @@ Source Box -> read-only snapshot -> atomic extraction -> review
 -> immutable manifest and product usage
 ```
 
-The same formal warehouse and composer also support a separate backend-only target branch:
+The same formal warehouse and composer also support a separate review-only target branch:
 
 ```text
 Eligible formal capsules + authorized Static Web target snapshot
@@ -57,6 +57,8 @@ Eligible formal capsules + authorized Static Web target snapshot
 -> structured review-only Patch + text Diff + evidence
 -> zero target, product-store, and usage writes
 ```
+
+The desktop keeps standalone product generation and target integration as distinct entries. Its target page offers simple and developer modes, eligible capsule cards, text Diffs, binary metadata, validation or rejection evidence, and an in-memory final confirmation bound to `plan_id` plus the target snapshot. That confirmation makes no bridge call and grants no write, apply, or commit authority.
 
 Supervision model selection belongs to the desktop warehouse workflow and has no hardcoded CLI default. Product generation consumes only eligible active/current formal versions.
 
@@ -88,7 +90,7 @@ The inspiration is a spider spinning silk: old project threads are cleaned, join
 - Uses one `module_native` composer with in-memory formal capsule objects.
 - Lets the CLI generate only from explicitly selected formal capsule IDs through `ReweaveAppService`.
 - Produces runnable `index.html`, `styles.css`, `app.js`, a manifest, provenance, quality evidence, and exact product usage records.
-- Analyzes one explicitly selected Static Web target entry and returns a deterministic, snapshot-bound Weave Plan and complete review-only Patch through `ReweaveAppService`.
+- Uses a separate desktop target-integration page to analyze one explicitly selected Static Web target entry and review the deterministic, snapshot-bound Weave Plan and complete review-only Patch returned by `ReweaveAppService`.
 - Keeps real source project writes off by default.
 
 ## Screenshots
@@ -209,7 +211,7 @@ Reweave is not a full autopilot IDE.
 
 It does **not** currently promise arbitrary production-grade project generation, automatic multi-file writes, overwrites, deletes, or frontend write buttons.
 
-The Static Web target backend returns Patch data only. It has no target-integration UI, does not apply the Patch, does not commit, and does not claim automatic legal-license authorization.
+The Static Web target desktop flow only reviews Patch data. It does not apply the Patch, commit, write the selected target, or claim automatic legal-license authorization. Its final confirmation is an in-memory review receipt, not target-write authorization; the public CLI still has no target-integration entry.
 
 This repo publishes a safe Reweave-lite path for building inspectable Small Project Packs from old project context, not an automatic IDE that edits your project for you.
 
@@ -234,7 +236,7 @@ See [Architecture](docs/ARCHITECTURE.md) for the Source Box -> Capsule -> Task P
 
 ## Roadmap
 
-The single authoritative product roadmap is [Reweave Product North Star](docs/REWEAVE_PRODUCT_NORTH_STAR.md). It keeps four independently accepted plans: the Static Web backend slice is complete, while the separate frontend interaction loop remains pending.
+The single authoritative product roadmap is [Reweave Product North Star](docs/REWEAVE_PRODUCT_NORTH_STAR.md). Its four independently accepted plans are complete; later target types remain separately sequenced work.
 
 ## License
 
