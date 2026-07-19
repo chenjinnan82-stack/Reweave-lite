@@ -185,7 +185,7 @@ def test_capsule_core_code_late_response_cannot_replace_current_revision() -> No
     script = r"""
 const fs = require("fs");
 global.window = {};
-let source = fs.readFileSync(process.argv[1], "utf8");
+let source = fs.readFileSync(process.argv[1], "utf8").replace(/\r\n?/g, "\n");
 const needle = `    return {
       bind: bind,
       sync: sync,
