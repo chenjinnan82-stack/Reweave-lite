@@ -36,7 +36,10 @@ from pimos_lite.reweave_capsule_stage3 import (
     sanitize_html,
 )
 from pimos_lite.reweave_capsule_store import CapsuleWarehouseStore
-from pimos_lite.reweave_javascript_source import JavascriptSourceService
+from pimos_lite.reweave_javascript_source import (
+    JavascriptSourceService,
+    _descriptor_relative_snapshot_supported,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -2113,6 +2116,10 @@ class Stage3PySideFlowTest(unittest.TestCase):
         )
 
 
+@unittest.skipUnless(
+    _descriptor_relative_snapshot_supported(),
+    "descriptor-relative snapshot primitives are unavailable",
+)
 @unittest.skipUnless(shutil.which("node"), "Node is required for Stage E capture")
 class StageECaptureTest(unittest.TestCase):
     def setUp(self) -> None:
