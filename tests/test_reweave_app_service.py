@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from pimos_lite.reweave_app_service import (
     APP_SERVICE_VERSION,
+    CAPSULE_MANAGEMENT_ACTIONS,
     LEGACY_WORKBENCH_ACTIONS,
     PUBLIC_PRODUCT_ACTIONS,
     SUPPORT_VIEWER_ACTIONS,
@@ -25,9 +26,11 @@ class ReweaveAppServiceTest(unittest.TestCase):
         service = ReweaveAppService(engine=LocalReweaveEngine())
         state = service.get_initial_state()
         self.assertEqual(state["appService"], APP_SERVICE_VERSION)
-        self.assertEqual(state["engine"], "local")
+        self.assertEqual(state["engine"], "sqlite_capsule_warehouse")
         self.assertIn("engineStatus", state)
         self.assertTrue(state["engineStatus"]["available"])
+        self.assertTrue(state["canGenerateProduct"])
+        self.assertFalse(state["canGeneratePreview"])
 
     def test_lumo_engine_via_service_when_env_set(self) -> None:
         class DownClient:
@@ -44,8 +47,8 @@ class ReweaveAppServiceTest(unittest.TestCase):
 
             service = ReweaveAppService(engine=LumoReweaveEngine(luna_client=DownClient()))
             state = service.get_initial_state()
-            self.assertEqual(state["backend"], "lumo")
-            self.assertFalse(state["engineStatus"]["available"])
+            self.assertEqual(state["backend"], "sqlite_capsule_warehouse")
+            self.assertTrue(state["engineStatus"]["available"])
 
     def test_lumo_lite_blocked_service_actions_share_release_boundary_shape(self) -> None:
         service = ReweaveAppService(engine=LumoLiteReweaveEngine())
@@ -77,11 +80,33 @@ class ReweaveAppServiceTest(unittest.TestCase):
         self.assertFalse(PUBLIC_PRODUCT_ACTIONS & LEGACY_WORKBENCH_ACTIONS)
         self.assertFalse(PUBLIC_PRODUCT_ACTIONS & SUPPORT_VIEWER_ACTIONS)
         self.assertFalse(LEGACY_WORKBENCH_ACTIONS & SUPPORT_VIEWER_ACTIONS)
-        self.assertEqual(release_boundary_for_action("generate_preview"), "public_product")
+        self.assertFalse(CAPSULE_MANAGEMENT_ACTIONS & PUBLIC_PRODUCT_ACTIONS)
+        self.assertFalse(CAPSULE_MANAGEMENT_ACTIONS & LEGACY_WORKBENCH_ACTIONS)
+        self.assertFalse(CAPSULE_MANAGEMENT_ACTIONS & SUPPORT_VIEWER_ACTIONS)
+        self.assertEqual(release_boundary_for_action("generate_product"), "public_product")
+        self.assertEqual(release_boundary_for_action("generate_preview"), "unknown")
         self.assertEqual(release_boundary_for_action("export_preview_package"), "legacy_workbench")
         self.assertEqual(release_boundary_for_action("get_preview_package"), "support_viewer")
+        self.assertEqual(release_boundary_for_action("list_review_items"), "capsule_management")
+        self.assertEqual(
+            release_boundary_for_action("start_inspect_computation_adapters"),
+            "capsule_management",
+        )
+        self.assertEqual(
+            release_boundary_for_action("start_create_computation_adapter"),
+            "capsule_management",
+        )
+        self.assertEqual(
+            release_boundary_for_action("register_javascript_computation_source"),
+            "capsule_management",
+        )
+        self.assertEqual(
+            release_boundary_for_action("start_scan_javascript_computations"),
+            "capsule_management",
+        )
         self.assertEqual(release_boundary_for_action("made_up_action"), "unknown")
-        self.assertIn("generate_preview", public_product_actions())
+        self.assertIn("generate_product", public_product_actions())
+        self.assertNotIn("generate_preview", public_product_actions())
         self.assertIn("export_preview_package", legacy_workbench_actions())
 
 

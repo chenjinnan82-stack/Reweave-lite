@@ -75,9 +75,9 @@ class ReweaveWarehouseManagementTest(unittest.TestCase):
         service = ReweaveAppService(engine=LocalReweaveEngine())
         state = service.get_initial_state()
         self.assertIn("warehouseCapsules", state)
-        self.assertEqual(len(state["warehouseCapsules"]), 1)
-        self.assertTrue(state["useLocalCapsules"])
-        self.assertEqual(state["capsules"][0]["id"], self.capsule_id)
+        self.assertEqual(state["warehouseCapsules"], [])
+        self.assertFalse(state["useLocalCapsules"])
+        self.assertEqual(state["capsules"], [])
 
     def test_disabled_capsule_not_in_generate_resolve(self) -> None:
         warehouse.update_capsule_status(self.capsule_id, "disabled")

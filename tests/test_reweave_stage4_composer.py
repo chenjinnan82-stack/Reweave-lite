@@ -1077,7 +1077,9 @@ def test_desktop_engine_routes_selected_modules_to_stage4(tmp_path: Path) -> Non
         )
         expected_entry = tmp_path / "previews" / result["generatedPackage"]["folder"] / "index.html"
         assert engine.get_latest_product_entry_path() == str(expected_entry.resolve())
-        assert ReweaveAppService(engine=engine).get_latest_product_entry_path() == str(expected_entry.resolve())
+        service = ReweaveAppService(engine=engine)
+        assert service.get_latest_product_entry_path() is None
+        assert service.generate_preview({"taskText": "legacy"})["error"]["code"] == "legacy_generation_inactive"
         expected_entry.unlink()
         expected_entry.symlink_to(tmp_path / "outside.html")
         assert engine.get_latest_product_entry_path() is None
@@ -1788,13 +1790,13 @@ def test_public_stage4_source_boxes_compose_with_builtin_runtime(tmp_path: Path)
 
     result = run(tmp_path / "reweave_stage4_integration")
 
-    assert result["ok"] is True
-    assert len(result["selected_module_capsule_ids"]) == 3
-    assert result["interaction"] == {"total": "96", "history": "1"}
-    assert result["preview_history_count"] == 1
-    assert "runtime_validation.json" in result["files"]
-    assert "connect-src 'none'" in (Path(str(result["out"])) / "index.html").read_text(encoding="utf-8")
-    assert result["source_project_write"] is False
+    assert result == {
+        "ok": False,
+        "error": {
+            "code": "legacy_stage4_demo_inactive",
+            "message_key": "legacy_stage4_demo_inactive",
+        },
+    }
 
 
 def test_public_stage4_workflow_source_boxes_compose_with_builtin_runtime(tmp_path: Path) -> None:
@@ -1802,12 +1804,8 @@ def test_public_stage4_workflow_source_boxes_compose_with_builtin_runtime(tmp_pa
 
     result = run(tmp_path / "reweave_stage4_workflow_integration", case="workflow")
 
-    assert result["ok"] is True
-    assert len(result["selected_module_capsule_ids"]) == 2
-    assert result["interaction"] == {"status": "approved"}
-    assert result["preview_history_count"] == 1
-    assert "runtime_validation.json" in result["files"]
-    assert result["source_project_write"] is False
+    assert result["ok"] is False
+    assert result["error"]["code"] == "legacy_stage4_demo_inactive"
 
 
 def test_public_stage4_data_source_boxes_compose_with_builtin_runtime(tmp_path: Path) -> None:
@@ -1815,18 +1813,8 @@ def test_public_stage4_data_source_boxes_compose_with_builtin_runtime(tmp_path: 
 
     result = run(tmp_path / "reweave_stage4_data_integration", case="data")
 
-    assert result["ok"] is True
-    assert len(result["selected_module_capsule_ids"]) == 3
-    assert result["interaction"] == {"northTotal": "420", "southTotal": "80", "rows": "3"}
-    assert result["preview_history_count"] == 1
-    assert "runtime_validation.json" in result["files"]
-    assert result["source_project_write"] is False
-    root = Path(__file__).resolve().parents[1]
-    assert "A-101" not in (root / "examples/source_boxes/order-data-view-ui/index.html").read_text(encoding="utf-8")
-    assert "A-101" not in (root / "examples/source_boxes/regional-total-logic/aggregate.js").read_text(encoding="utf-8")
-    provenance = json.loads((Path(str(result["out"])) / "provenance.json").read_text(encoding="utf-8"))
-    app_contributions = provenance["file_provenance"]["app.js"]
-    assert {row.get("contribution") for row in app_contributions} == {"data_records", "pure_logic", "behavior_adapter"}
+    assert result["ok"] is False
+    assert result["error"]["code"] == "legacy_stage4_demo_inactive"
 
 
 def test_stage4_structured_data_composition_requires_data_and_matching_fields(tmp_path: Path) -> None:
@@ -1868,7 +1856,6 @@ def test_stage4_structured_data_composition_requires_data_and_matching_fields(tm
 
 def test_desktop_bridge_runs_structured_data_composition_flow(tmp_path: Path) -> None:
     from pimos_lite import desktop_reweave_static as desktop
-    from scripts.run_public_stage4_demo import DATA_SOURCES, DATA_TASK, _validate_interaction
 
     class QObject:
         def __init__(self, *_args: object, **_kwargs: object) -> None:
@@ -1877,12 +1864,10 @@ def test_desktop_bridge_runs_structured_data_composition_flow(tmp_path: Path) ->
     def Slot(*_args: object, **_kwargs: object):
         return lambda fn: fn
 
-    pending_sources = [str(path) for path in DATA_SOURCES]
-
     class QFileDialog:
         @staticmethod
         def getExistingDirectory(*_args: object, **_kwargs: object) -> str:
-            return pending_sources.pop(0)
+            return ""
 
     state = tmp_path / "state"
     service = ReweaveAppService(engine=LumoLiteReweaveEngine())
@@ -1894,24 +1879,13 @@ def test_desktop_bridge_runs_structured_data_composition_flow(tmp_path: Path) ->
         desktop.ReweaveBridge._qobject_cls = None
         try:
             bridge = desktop.ReweaveBridge.create(service)
-            for _source in DATA_SOURCES:
-                bound = json.loads(bridge.choose_source_folder())
-                source_id = bound["source"]["id"]
-                assert json.loads(bridge.scan_source_box(source_id))["ok"] is True
-                assert json.loads(bridge.draft_capsules(source_id))["ok"] is True
-                assert json.loads(bridge.promote_source_drafts(source_id))["ok"] is True
             generated = json.loads(
-                bridge.notify_generate(json.dumps({"taskText": DATA_TASK, "selectionMode": "auto_behavior"}))
+                bridge.notify_generate(
+                    json.dumps({"taskText": "legacy", "selectionMode": "auto_behavior"})
+                )
             )
         finally:
             desktop.ReweaveBridge._qobject_cls = None
 
-    assert generated["ok"] is True
-    assert generated["taskPack"]["selection_mode"] == "auto_behavior"
-    assert len(generated["taskPack"]["selected_capsule_ids"]) == 3
-    assert generated["source_project_write"] is False
-    assert _validate_interaction(Path(generated["previewPath"]) / "app.js", "data") == {
-        "northTotal": "420",
-        "southTotal": "80",
-        "rows": "3",
-    }
+    assert generated["ok"] is False
+    assert generated["error"]["code"] == "product_task_invalid"

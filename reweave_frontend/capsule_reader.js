@@ -19,6 +19,8 @@
       role: c.role || "",
       preview: c.preview || [],
       status: c.status || "active",
+      formal_version: c.formal_version === undefined ? null : c.formal_version,
+      generation_eligible: c.generation_eligible === true,
       origin: c.origin,
       risk: c.risk,
       content_mode: c.content_mode,

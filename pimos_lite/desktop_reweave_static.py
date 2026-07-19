@@ -16,7 +16,7 @@ REWEAVE_INDEX = REWEAVE_DIR / "index.html"
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
-from pimos_lite.reweave_app_service import ReweaveAppService
+from pimos_lite.reweave_app_service import ReweaveAppService  # noqa: E402
 
 WINDOW_TITLE = "Reweave"
 DEFAULT_WIDTH = 1280
@@ -135,6 +135,29 @@ class ReweaveBridge:
                 self._engine = engine
                 self._parent_widget = parent
 
+            @staticmethod
+            def _phase4_error(code: str, message_key: str) -> str:
+                return json.dumps(
+                    {"ok": False, "error": {"code": code, "message_key": message_key}}
+                )
+
+            def _phase4_call(self, method_name: str, payload_json: str = "") -> str:
+                try:
+                    payload = json.loads(payload_json) if payload_json else {}
+                except json.JSONDecodeError:
+                    return self._phase4_error("invalid_payload", "invalidPayload")
+                if not isinstance(payload, dict):
+                    return self._phase4_error("invalid_payload", "invalidPayload")
+                method = getattr(self._engine, method_name, None)
+                if not callable(method):
+                    return self._phase4_error("service_unavailable", "serviceUnavailable")
+                try:
+                    return json.dumps(method(payload))
+                except Exception:
+                    # Never reflect exception text: it may contain a local path or source content.
+                    logger.error("Phase 4 bridge call failed: %s", method_name)
+                    return self._phase4_error("internal_error", "internalError")
+
             def _lumo_lite_block(self, action: str) -> dict[str, Any] | None:
                 if action in {
                     "choose_source_folder",
@@ -158,6 +181,141 @@ class ReweaveBridge:
             @Slot(result=str)
             def get_initial_state(self) -> str:
                 return json.dumps(self._engine.get_initial_state())
+
+            @Slot(result=str)
+            def choose_source_root(self) -> str:
+                try:
+                    _, _, _, _, _, QFileDialog = import_qt_webengine()
+                    path = QFileDialog.getExistingDirectory(
+                        self._parent_widget, "Select source root"
+                    )
+                except Exception:
+                    logger.error("Phase 4 source root chooser failed")
+                    return self._phase4_error("internal_error", "internalError")
+                if not path:
+                    return json.dumps({"ok": False, "cancelled": True})
+                return self._phase4_call(
+                    "discover_source_root",
+                    json.dumps({"path": path, "root_kind": "project_collection"}),
+                )
+
+            @Slot(str, result=str)
+            def discover_source_root(self, payload_json: str = "") -> str:
+                return self._phase4_call("discover_source_root", payload_json)
+
+            @Slot(str, result=str)
+            def confirm_projects(self, payload_json: str = "") -> str:
+                return self._phase4_call("confirm_projects", payload_json)
+
+            @Slot(str, result=str)
+            def register_javascript_computation_source(
+                self, payload_json: str = ""
+            ) -> str:
+                return self._phase4_call(
+                    "register_javascript_computation_source", payload_json
+                )
+
+            @Slot(str, result=str)
+            def start_scan_javascript_computations(
+                self, payload_json: str = ""
+            ) -> str:
+                return self._phase4_call(
+                    "start_scan_javascript_computations", payload_json
+                )
+
+            @Slot(str, result=str)
+            def start_inspect_computation_adapters(self, payload_json: str = "") -> str:
+                return self._phase4_call(
+                    "start_inspect_computation_adapters", payload_json
+                )
+
+            @Slot(str, result=str)
+            def start_create_computation_adapter(self, payload_json: str = "") -> str:
+                return self._phase4_call(
+                    "start_create_computation_adapter", payload_json
+                )
+
+            @Slot(str, result=str)
+            def start_refresh_project(self, payload_json: str = "") -> str:
+                return self._phase4_call("start_refresh_project", payload_json)
+
+            @Slot(str, result=str)
+            def start_refresh_all(self, payload_json: str = "") -> str:
+                return self._phase4_call("start_refresh_all", payload_json)
+
+            @Slot(str, result=str)
+            def get_intake_run(self, payload_json: str = "") -> str:
+                return self._phase4_call("get_intake_run", payload_json)
+
+            @Slot(str, result=str)
+            def cancel_intake_run(self, payload_json: str = "") -> str:
+                return self._phase4_call("cancel_intake_run", payload_json)
+
+            @Slot(str, result=str)
+            def list_supervision_models(self, payload_json: str = "") -> str:
+                return self._phase4_call("list_supervision_models", payload_json)
+
+            @Slot(str, result=str)
+            def select_supervision_model(self, payload_json: str = "") -> str:
+                return self._phase4_call("select_supervision_model", payload_json)
+
+            @Slot(str, result=str)
+            def list_review_items(self, payload_json: str = "") -> str:
+                return self._phase4_call("list_review_items", payload_json)
+
+            @Slot(str, result=str)
+            def decide_review_item(self, payload_json: str = "") -> str:
+                return self._phase4_call("decide_review_item", payload_json)
+
+            @Slot(str, result=str)
+            def list_capability_groups(self, payload_json: str = "") -> str:
+                return self._phase4_call("list_capability_groups", payload_json)
+
+            @Slot(str, result=str)
+            def rename_capability_group(self, payload_json: str = "") -> str:
+                return self._phase4_call("rename_capability_group", payload_json)
+
+            @Slot(str, result=str)
+            def get_capsule_detail(self, payload_json: str = "") -> str:
+                return self._phase4_call("get_capsule_detail", payload_json)
+
+            @Slot(str, result=str)
+            def set_capsule_status(self, payload_json: str = "") -> str:
+                return self._phase4_call("set_capsule_status", payload_json)
+
+            @Slot(str, result=str)
+            def create_backup(self, payload_json: str = "") -> str:
+                return self._phase4_call("create_backup", payload_json)
+
+            @Slot(str, result=str)
+            def list_backups(self, payload_json: str = "") -> str:
+                return self._phase4_call("list_backups", payload_json)
+
+            @Slot(str, result=str)
+            def inspect_backup(self, payload_json: str = "") -> str:
+                return self._phase4_call("inspect_backup", payload_json)
+
+            @Slot(str, result=str)
+            def inspect_restore(self, payload_json: str = "") -> str:
+                return self._phase4_call("inspect_backup", payload_json)
+
+            @Slot(str, result=str)
+            def restore_backup(self, payload_json: str = "") -> str:
+                return self._phase4_call("restore_backup", payload_json)
+
+            @Slot(str, result=str)
+            def start_legacy_import(self, payload_json: str = "") -> str:
+                return self._phase4_call("start_legacy_import", payload_json)
+
+            @Slot(str, result=str)
+            def generate_product(self, payload_json: str = "") -> str:
+                return self._phase4_call("generate_product", payload_json)
+
+            @Slot(str, result=str)
+            def retry_product_usage_registration(self, payload_json: str = "") -> str:
+                return self._phase4_call(
+                    "retry_product_usage_registration", payload_json
+                )
 
             @Slot(result=str)
             def choose_source_folder(self) -> str:
@@ -629,32 +787,12 @@ class ReweaveBridge:
 
             @Slot(str, result=str)
             def notify_generate(self, payload_json: str = "") -> str:
-                blocked = self._lumo_lite_block("notify_generate")
-                if blocked:
-                    return json.dumps(blocked)
-                payload: dict[str, Any] = {}
-                if payload_json:
-                    try:
-                        payload = json.loads(payload_json)
-                    except json.JSONDecodeError:
-                        payload = {"raw": payload_json}
-                try:
-                    result = self._engine.generate_preview(payload)
-                    logger.info(
-                        "generate_preview: ok=%s path=%s",
-                        result.get("ok"),
-                        result.get("previewPath"),
-                    )
-                    return json.dumps(result)
-                except Exception as exc:
-                    logger.exception("generate_preview failed")
-                    return json.dumps({"ok": False, "mock": False, "error": str(exc)[:200]})
+                # Historical QWebChannel alias only. The active frontend calls
+                # generate_product and neither path can reach generate_preview.
+                return self._phase4_call("generate_product", payload_json)
 
             @Slot(result=str)
             def open_generated_product(self) -> str:
-                blocked = self._lumo_lite_block("open_generated_product")
-                if blocked:
-                    return json.dumps(blocked)
                 path = self._engine.get_latest_product_entry_path() if hasattr(self._engine, "get_latest_product_entry_path") else None
                 if not path:
                     return json.dumps({"ok": False, "error": "product_entry_unavailable"})
@@ -666,17 +804,10 @@ class ReweaveBridge:
 
             @Slot(str, result=str)
             def open_preview_folder(self, path: str = "") -> str:
-                blocked = self._lumo_lite_block("open_preview_folder")
-                if blocked:
-                    return json.dumps(blocked)
-                from PySide6.QtCore import QUrl
-                from PySide6.QtGui import QDesktopServices
-
-                target = Path((path or "").strip())
-                if not target.is_dir():
-                    return json.dumps({"ok": False, "error": "preview folder not found"})
-                opened = QDesktopServices.openUrl(QUrl.fromLocalFile(str(target.resolve())))
-                return json.dumps({"ok": bool(opened), "path": str(target.resolve())})
+                del path
+                return self._phase4_error(
+                    "legacy_preview_open_inactive", "legacyPreviewOpenInactive"
+                )
 
         cls._qobject_cls = _BridgeImpl
         return cls._qobject_cls
@@ -701,7 +832,10 @@ def _setup_web_channel(view, bridge) -> None:
       function connect() {
         if (typeof qt === 'undefined' || !qt.webChannelTransport) return;
         if (typeof QWebChannel === 'undefined') return;
+        if (window.reweaveBridge || window.__reweaveWebChannelConnecting) return;
+        window.__reweaveWebChannelConnecting = true;
         new QWebChannel(qt.webChannelTransport, function (channel) {
+          window.__reweaveWebChannelConnecting = false;
           window.reweaveBridge = channel.objects.reweaveBridge;
           window.dispatchEvent(new Event('reweave-bridge-ready'));
         });
@@ -720,7 +854,10 @@ def _setup_web_channel(view, bridge) -> None:
     (function () {
       if (typeof qt === 'undefined' || !qt.webChannelTransport) return;
       if (typeof QWebChannel === 'undefined') return;
+      if (window.reweaveBridge || window.__reweaveWebChannelConnecting) return;
+      window.__reweaveWebChannelConnecting = true;
       new QWebChannel(qt.webChannelTransport, function (channel) {
+        window.__reweaveWebChannelConnecting = false;
         window.reweaveBridge = channel.objects.reweaveBridge;
         window.dispatchEvent(new Event('reweave-bridge-ready'));
       });
@@ -753,6 +890,25 @@ def create_reweave_window():
 
     window = QMainWindow()
     bridge = ReweaveBridge.create(engine, parent=window)
+    service_closed = False
+
+    def close_service(*_args) -> None:
+        nonlocal service_closed
+        if service_closed:
+            return
+        service_closed = True
+        close = getattr(engine, "close", None)
+        if callable(close):
+            try:
+                close()
+            except Exception:
+                logger.error("Reweave service close failed")
+
+    app = QApplication.instance()
+    if app is not None:
+        app.aboutToQuit.connect(close_service)
+    window.destroyed.connect(close_service)
+    window._reweave_close_service = close_service
 
     window.setWindowTitle(WINDOW_TITLE)
     window.resize(DEFAULT_WIDTH, DEFAULT_HEIGHT)

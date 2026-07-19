@@ -227,10 +227,10 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
 
         local_warehouse.assert_not_called()
         self.assertEqual(state["appService"], APP_SERVICE_VERSION)
-        self.assertEqual(state["engine"], "lumo_lite")
-        self.assertEqual(len(state["warehouseCapsules"]), 1)
-        self.assertEqual(state["warehouseCapsules"][0]["origin"], "lumo_lite_capsule_warehouse")
-        self.assertNotEqual(state["warehouseCapsules"][0]["id"], "local-promoted")
+        self.assertEqual(state["engine"], "sqlite_capsule_warehouse")
+        self.assertEqual(state["warehouseCapsules"], [])
+        self.assertTrue(state["canGenerateProduct"])
+        self.assertFalse(state["canGeneratePreview"])
 
     def test_app_service_lumo_lite_blocks_local_warehouse_management(self) -> None:
         service = ReweaveAppService(engine=LumoLiteReweaveEngine(runtime_state_path=str(self._runtime_state)))
@@ -1002,22 +1002,17 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
                 scanned = json.loads(bridge.scan_source_box(bound["source"]["id"]))
                 drafted = json.loads(bridge.draft_capsules(bound["source"]["id"]))
                 stored = json.loads(bridge.promote_source_drafts(bound["source"]["id"]))
-                content = json.loads(bridge.get_capsule_content(stored["capsules"][0]["id"]))
-                selected = stored["capsules"][:2]
                 generated = json.loads(
                     bridge.notify_generate(
                         json.dumps(
                             {
-                                "taskText": "Build a desktop small project pack",
-                                "capsuleIds": [cap["id"] for cap in selected],
-                                "capsules": selected,
-                                "selectionMode": "manual",
-                                "useEnrichedContent": True,
+                                "task": "Build a desktop small project pack",
+                                "capsule_ids": [],
+                                "selection_mode": "manual",
                             }
                         )
                     )
                 )
-                latest = json.loads(bridge.get_latest_preview_package())
             finally:
                 desktop.ReweaveBridge._qobject_cls = None
 
@@ -1026,31 +1021,11 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
         self.assertTrue(scanned["ok"])
         self.assertTrue(drafted["ok"])
         self.assertTrue(stored["ok"])
-        self.assertGreater(len(stored["capsules"]), 0)
-        self.assertTrue(content["ok"])
-        self.assertGreater(content["snippet_count"], 0)
-        self.assertTrue(generated["ok"])
-        self.assertEqual(generated["taskPack"]["selection_mode"], "manual")
-        self.assertFalse(generated["taskPack"]["source_project_write"])
-        self.assertIn("index.html", generated["generatedPackage"]["files"])
-        self.assertIn("styles.css", generated["generatedPackage"]["files"])
-        self.assertIn("app.js", generated["generatedPackage"]["files"])
-        self.assertIn("task_intent.json", generated["generatedPackage"]["files"])
-        self.assertIn("task_plan.json", generated["generatedPackage"]["files"])
-        self.assertIn("quality_gate.json", generated["generatedPackage"]["files"])
-        self.assertIn("task_pack.json", generated["generatedPackage"]["files"])
-        self.assertIn("capsules_used.json", generated["generatedPackage"]["files"])
-        self.assertIn("provenance.json", generated["generatedPackage"]["files"])
-        self.assertIn("snippets_used.json", generated["generatedPackage"]["files"])
-        self.assertEqual(generated["taskPack"]["task_intent_path"], "task_intent.json")
-        self.assertEqual(generated["taskPack"]["task_plan_path"], "task_plan.json")
-        self.assertEqual(generated["taskPack"]["quality_gate_path"], "quality_gate.json")
-        self.assertEqual(generated["taskPack"]["quality_gate"]["status"], "passed")
-        self.assertTrue(latest["ok"])
-        self.assertIn("task_intent.json", latest["package"]["files"])
-        self.assertIn("task_plan.json", latest["package"]["files"])
-        self.assertIn("quality_gate.json", latest["package"]["files"])
-        self.assertIn("task_pack.json", latest["package"]["files"])
+        self.assertEqual(stored["capsules"], [])
+        self.assertFalse(generated["ok"])
+        self.assertEqual(
+            generated["error"]["code"], "formal_capsule_selection_required"
+        )
         self.assertEqual((source / "index.html").read_text(encoding="utf-8"), original)
 
     def test_desktop_bridge_lumo_lite_export_does_not_open_folder_chooser(self) -> None:
@@ -1119,7 +1094,7 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
                 desktop.ReweaveBridge._qobject_cls = None
 
         self.assertFalse(result["ok"])
-        self.assertEqual(result["error"], "lumo_lite_read_only")
+        self.assertEqual(result["error"]["code"], "legacy_preview_open_inactive")
 
     def test_desktop_bridge_lumo_lite_unknown_artifact_does_not_open_current_directory(self) -> None:
         from pimos_lite import desktop_reweave_static as desktop
@@ -1193,10 +1168,8 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
             finally:
                 desktop.ReweaveBridge._qobject_cls = None
 
-        self.assertTrue(result["ok"])
-        self.assertEqual(result["mode"], "task_pack_preview")
-        self.assertFalse(result["source_project_write"])
-        self.assertEqual(result["previewAcceptance"]["verdict"], "needs_review")
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["error"]["code"], "product_task_invalid")
 
 
 if __name__ == "__main__":

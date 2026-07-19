@@ -19,88 +19,45 @@ Old project -> Source Box -> Capsules -> Small Project Pack -> New Web
 
 </div>
 
-## 30-Second Demo
+## 30-Second Start
 
-```bash
-python3 scripts/run_public_reweave_demo.py
-```
-
-The JSON result prints the output folder and files. Expected output includes runnable `index.html`, `styles.css`, `app.js`, plus `task_intent.json`, `task_plan.json`, `quality_gate.json`, `task_pack.json`, `capsules_used.json`, `provenance.json`, and `snippets_used.json`.
-
-**Boundary:** source projects are read-only by default. Reweave-lite previews small project packs; it does not auto-write or overwrite your project.
-
-Copyable public demo flow:
-
-```bash
-python3 scripts/run_public_reweave_demo.py --list-capsules
-python3 scripts/run_public_reweave_demo.py --select-capsule "Style Sheet" --select-capsule "Script Module"
-python3 scripts/run_public_reweave_demo.py --source examples/source_boxes/support-ticket-triage --task "Build a support dashboard"
-```
-
-The first command shows available capsules. The second builds a Small Project Pack from manually selected capsules. The third runs the same chain on another public Source Box.
-
-Use your own old project with a plain task:
+Use the desktop Capsule Warehouse first: bind a Source Box, refresh it, review the cleaned candidates, and publish the required capsules to the formal SQLite warehouse. Then generate from explicit active capsule IDs:
 
 ```bash
 python3 scripts/run_public_reweave_demo.py \
-  --source /path/to/your/old-project \
-  --task "Build a customer quote dashboard from this old project"
+  --task "Build a quote summary card" \
+  --capsule-id cap_11111111111111111111111111111111 \
+  --capsule-id cap_22222222222222222222222222222222 \
+  --capsule-id cap_33333333333333333333333333333333
 ```
 
-The public product path is task-driven: describe what you want, let Reweave retrieve capsules from the Source Box, then inspect the generated pack and provenance.
+Replace the example IDs with IDs shown by the desktop warehouse. Use `--state-dir /path/to/reweave-state` only when the warehouse is outside the default application state directory. The JSON result is the raw `ReweaveAppService` product result, including the product ID, manifest digest, product path, exact capsule versions, quality result, and runtime acceptance.
 
-Open `index.html` to see the generated small project. Open `review.html` to inspect the capsules, source excerpts, and trace behind that output.
+The CLI does not scan, promote, select a model, or choose capsules implicitly. No capsule ID means no generation.
 
-## Local Small Model
+**Boundary:** Source Boxes remain read-only. Generated products live in Reweave application state and never overwrite the source project.
 
-Without Ollama, Reweave runs the deterministic demo:
+## Current Mainline
 
-```bash
-python3 scripts/run_public_reweave_demo.py
+```text
+Source Box -> read-only snapshot -> atomic extraction -> review
+-> one formal SQLite warehouse -> one module_native composer
+-> index.html / styles.css / app.js -> quality and runtime gates
+-> immutable manifest and product usage
 ```
 
-With Ollama, Reweave asks a local small model to refine the same Small Project Pack:
+Supervision model selection belongs to the desktop warehouse workflow and has no hardcoded CLI default. Product generation consumes only eligible active/current formal versions.
 
-```bash
-ollama pull qwen2.5-coder:1.5b
-python3 scripts/run_public_reweave_demo.py \
-  --source examples/source_boxes/customer-quote-widget \
-  --task "Build a styled quote interaction" \
-  --select-capsule "Style Sheet" \
-  --select-capsule "Script Module" \
-  --llm ollama \
-  --model qwen2.5-coder:1.5b
-```
+### Static Web V1 support
 
-If you want strict proof that the model participated, add `--require-llm`:
+| Supported | Not supported in V1 |
+| --- | --- |
+| One confirmed HTML entry | Classic `<script src>`, inline scripts, or automatic multi-page inference |
+| A self-contained local ES module closure using `.js` / `.mjs` and static relative imports | CommonJS, TypeScript, JSX, React/Vue/Svelte component source, dynamic imports, or bare package imports |
+| Sources that need no dependency install or build step | `node_modules`, build-required projects, and unapproved `dist` / `build` output |
+| Independently provable presentation, interaction, and computation roles | SVG, fonts, or code whose atomic role and local asset closure cannot be proven |
 
-```bash
-python3 scripts/run_public_reweave_demo.py \
-  --source examples/source_boxes/customer-quote-widget \
-  --task "Build a styled quote interaction" \
-  --select-capsule "Style Sheet" \
-  --select-capsule "Script Module" \
-  --llm ollama \
-  --model qwen2.5-coder:1.5b \
-  --require-llm
-```
-
-Expected proof in the JSON / provenance:
-
-```json
-{
-  "llm": {
-    "provider": "ollama",
-    "model": "qwen2.5-coder:1.5b",
-    "applied": true,
-    "source_project_write": false
-  }
-}
-```
-
-Reweave was reproduced with `qwen2.5-coder:1.5b` on all 5 public Source Boxes. See [P7 Local Ollama Reproduction](docs/reports/P7_LOCAL_OLLAMA_REPRODUCTION.md).
-
-If Ollama is not running, Reweave falls back to the deterministic Small Project Pack unless `--require-llm` is set. Provenance records whether the local model was actually used.
+Vite is judged by the executable source, not its name: an already self-contained native module entry may qualify, but a project that must run Vite or install dependencies does not.
 
 ## Why
 
@@ -113,24 +70,17 @@ The inspiration is a spider spinning silk: old project threads are cleaned, join
 ## What It Does Today
 
 - Binds an old project folder as a local Source Box.
-- Scans and drafts capsule candidates without writing to the source project.
-- Stores approved capsules in a local Capsule Warehouse.
-- Lets the desktop workbench select capsules for a task.
-- Lets the CLI list capsules and manually select the ones to reuse.
-- Uses the built-in Stage4 composer to combine a compatible UI + logic pair or UI + logic + state chain.
-- Optionally lets a local Ollama model refine the Small Project Pack.
-- Builds a Small Project Pack preview with:
-  - `task_intent.json`
-  - `task_plan.json`
-  - `quality_gate.json`
-  - runnable `index.html`, `styles.css`, `app.js`
-  - `task_pack.json`
-  - `capsules_used.json`
-  - `provenance.json`
-  - `snippets_used.json`
+- For supported Static Web V1 sources, takes a read-only snapshot and extracts independently verifiable presentation, interaction, and computation capsules.
+- Uses the desktop workflow for review, model supervision, validation, publishing, backup, and restore.
+- Stores formal immutable versions in one local SQLite Capsule Warehouse.
+- Uses one `module_native` composer with in-memory formal capsule objects.
+- Lets the CLI generate only from explicitly selected formal capsule IDs through `ReweaveAppService`.
+- Produces runnable `index.html`, `styles.css`, `app.js`, a manifest, provenance, quality evidence, and exact product usage records.
 - Keeps real source project writes off by default.
 
 ## Screenshots
+
+The repository images below are interface illustrations. Release acceptance uses the separately recorded real-QWeb interaction and model-assisted screenshot evidence in the design document; these images are not pixel-level sign-off.
 
 ### Source Box
 
@@ -146,40 +96,41 @@ Use local capsules to plan a new web task while keeping trace and source-write s
 
 ## Quick Start
 
-Run the public Task Pack demo:
+After publishing capsules in the desktop warehouse, run the public CLI:
 
 ```bash
 python3 scripts/run_public_reweave_demo.py \
-  --source examples/source_boxes/customer-quote-widget \
-  --task "Build a quote summary card"
+  --task "Build a quote summary card" \
+  --capsule-id cap_11111111111111111111111111111111 \
+  --capsule-id cap_22222222222222222222222222222222
 ```
 
 Windows PowerShell:
 
 ```powershell
 py -3 scripts\run_public_reweave_demo.py `
-  --source examples\source_boxes\customer-quote-widget `
-  --task "Build a quote summary card"
+  --task "Build a quote summary card" `
+  --capsule-id cap_11111111111111111111111111111111 `
+  --capsule-id cap_22222222222222222222222222222222
 ```
 
-The script writes to your system temp folder by default, for example `/tmp/reweave_public_demo` on macOS/Linux or `%TEMP%\reweave_public_demo` on Windows.
+The returned `previewPath` points to the generated product. `productId`, `manifestDigest`, and `capsulesUsed` provide exact local traceability.
 
-In the output folder, `index.html` is the user-facing result. `review.html` is the build notes page for capsules, source excerpts, and trace files.
-
-Try a public Source Box in the desktop app:
+Use the versioned ESM developer fixture for the current positive flow:
 
 ```text
-examples/source_boxes/customer-quote-widget
-examples/source_boxes/ops-status-card
+tests/fixtures/reweave_phase6_quote
 ```
+
+The public `customer-quote-widget` and `ops-status-card` examples use classic scripts. They are retained as V1 boundary examples and are expected to stop at `classic_script_unsupported_v1`, not complete the positive intake flow.
 
 Desktop loop:
 
 ```text
-Bind Source Box -> Scan -> Prepare -> Store -> describe task -> Build Small Project Pack -> View provenance
+Bind Source Box -> Discover and confirm -> Refresh -> Review and publish -> Generate -> View provenance
 ```
 
-Desktop smoke verified on macOS: the app opens on Source Box onboarding, Generate / Export / Open Folder actions stay hidden until eligible, and the bridge flow can build a Task Pack preview without source writes.
+Desktop management keeps Source Box intake, review, publishing, backup, and restore on the same SQLite mainline. The CLI uses the same application service for generation.
 
 See [Desktop User Flow](docs/DESKTOP_USER_FLOW.md).
 
@@ -197,28 +148,25 @@ node --check reweave_frontend/app.js
 Optional desktop shell on macOS/Linux:
 
 ```bash
+npm ci
 python3 -m venv .venv-reweave
 . .venv-reweave/bin/activate
 python -m pip install -r pimos_lite/requirements-desktop.txt
 ./start_reweave_static.sh
 ```
 
-The launcher never installs dependencies or contacts a package index automatically.
+PySide6 remains isolated in `.venv-reweave`; it is not a core dependency. The launcher never installs dependencies or contacts a package index automatically. Ollama supervision is loopback-only and requires an explicitly selected installed model; Reweave has no hardcoded default model.
 
-Multi-capsule behavior composition is built in. A single clone is enough:
+### Historical demos
+
+The following scripts remain as inactive migration history and are not the current product-generation path or direct CI entrypoints:
 
 ```bash
 python scripts/run_public_stage4_demo.py
 python scripts/run_public_stage4_demo.py --case data
 ```
 
-It runs the single built-in Stage4 module-native composer, combines `order-form-ui`, `order-total-logic`, and `result-history-state`, verifies the generated interaction (`12 × 8 = 96`, history `1`), writes the standard evidence and runtime validation files, and leaves all three Source Boxes unchanged.
-
-The `data` case separately combines a record-list capsule, a table UI capsule, and a pure aggregation capsule. It renders three rows and verifies `North → 420` and `South → 80`; neither the UI nor the aggregation logic contains the order records.
-
-Reweave-lite owns this canonical composer source. The former Stage4 baseline `ab8e62d` is migration history only; there is no second runtime copy to synchronize.
-
-Windows desktop shell support is experimental; the CLI demo and tests are CI-checked on Windows.
+They do not read from the formal SQLite generation path. Windows desktop shell support remains experimental; CLI help and the test suite are checked on Windows.
 
 Optional runtime bridge:
 
@@ -230,12 +178,22 @@ REWEAVE_RUNTIME_STATE_PATH=/path/to/frontend_runtime_state.json \
 ## Public Reproducibility
 
 - GitHub Actions runs the Reweave test suite.
-- GitHub Actions runs the public Task Pack demo on Ubuntu and Windows.
-- GitHub Actions runs the built-in UI + logic + state composition demo.
-- GitHub Actions checks `task_intent.json`, `task_plan.json`, `quality_gate.json`, `task_pack.json`, `capsules_used.json`, and `provenance.json`.
+- GitHub Actions checks the service-backed public CLI help on Ubuntu and Windows.
 - GitHub Actions checks frontend JavaScript syntax.
+- Historical demo scripts are not direct CI entrypoints.
 - Local default launch does not depend on private workspace paths.
 - Source project writes stay off by default.
+
+Runtime evidence labels are intentionally distinct:
+
+| Label | What it proves |
+| --- | --- |
+| `synthetic_declared_interaction` | Declared-interaction simulation only; it is not browser acceptance. |
+| `real_qwebengine_render` / `real_qwebengine_interaction` | Candidate render or interaction in an isolated real QWebEngine. |
+| `real_qwebengine_product_bootstrap` | The generated product starts in real QWebEngine; it is not a complete business interaction. |
+| `real_qwebengine_product_interaction` | External input and click reached the expected product result in real QWebEngine; it is not pixel-level or human visual sign-off. |
+
+Hosted CI uses Python 3.11 and Node 24 on Ubuntu and Windows. It does not install PySide6 or replace the local macOS real-QWeb desktop gate. Windows desktop packaging remains experimental.
 
 Historical internal workbench notes are not required for this public repo.
 
@@ -247,20 +205,19 @@ It does **not** currently promise arbitrary production-grade project generation,
 
 This repo publishes a safe Reweave-lite path for building inspectable Small Project Packs from old project context, not an automatic IDE that edits your project for you.
 
-The safe write direction remains manual, single-file, create-only, and rollback-aware.
+Generated product writes are confined to a new application-state product directory; Source Boxes remain read-only.
 
 ## Project Shape
 
 ```text
 Desktop UI                         reweave_frontend/
-Runtime bridge                     pimos_lite/reweave_engine/lumo_lite.py
-Source Box intake                  pimos_lite/reweave_source_registry.py
-Source Box scanner                 pimos_lite/reweave_source_scanner.py
-Capsules                           pimos_lite/reweave_capsule_draft.py
-Warehouse                          pimos_lite/reweave_capsule_warehouse.py
-Task Pack / provenance             pimos_lite/reweave_preview_pack.py
+Application service                pimos_lite/reweave_app_service.py
+Formal SQLite warehouse            pimos_lite/reweave_capsule_store.py
+Read-only intake                   pimos_lite/reweave_capsule_intake.py
+Safety and validation              pimos_lite/reweave_capsule_stage3.py
+Single composer                    pimos_lite/composer/module_native.py
 Public samples                     examples/source_boxes/
-Public demo                        scripts/run_public_reweave_demo.py
+Public CLI                         scripts/run_public_reweave_demo.py
 Tests                              tests/
 ```
 

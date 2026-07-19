@@ -1,71 +1,88 @@
 from __future__ import annotations
 
+import ast
+import re
 from pathlib import Path
 from typing import Any
 
 
-AUDIT_VERSION = "reweave_release_surface_audit.v1"
-SUMMARY_VERSION = "lumo_reweave_release_surface_summary.v1"
-PUBLIC_ALPHA_SUMMARY_VERSION = "reweave_public_alpha_release_summary.v1"
+AUDIT_VERSION = "reweave_release_surface_audit.v2"
+SUMMARY_VERSION = "reweave_release_surface_summary.v2"
+PUBLIC_ALPHA_SUMMARY_VERSION = "reweave_public_alpha_release_summary.v2"
 
 
 REQUIRED_SURFACE_FILES = (
+    "pimos_lite/desktop_reweave_static.py",
+    "pimos_lite/reweave_app_service.py",
+    "pimos_lite/composer/module_native.py",
+    "pimos_lite/reweave_capsule_store.py",
+    "pimos_lite/reweave_capsule_intake.py",
+    "pimos_lite/reweave_capsule_stage3.py",
+    "pimos_lite/reweave_capsule_worker.py",
+    "pimos_lite/reweave_data_contract.py",
+    "pimos_lite/reweave_process_environment.py",
+    "pimos_lite/reweave_javascript_source.py",
+    "pimos_lite/reweave_source_registry.py",
+    "pimos_lite/reweave_source_scanner.py",
+    "scripts/analyze_reweave_extraction.mjs",
+    "scripts/analyze_reweave_security.mjs",
+    "scripts/analyze_reweave_source_graph.mjs",
+    "scripts/validate_reweave_compute.mjs",
+    "scripts/run_public_reweave_demo.py",
+    "reweave_frontend/app.js",
+    "reweave_frontend/artifacts.js",
+    "reweave_frontend/bridge.js",
+    "reweave_frontend/capsule_reader.js",
+    "reweave_frontend/index.html",
+    "reweave_frontend/mock-data.json",
+    "reweave_frontend/renderers.js",
+    "reweave_frontend/source_workflow.js",
+    "reweave_frontend/styles.css",
+    "reweave_frontend/assets/reweave-icon.svg",
+    "start_reweave_static.sh",
+)
+RELEASE_INCLUDED_SURFACE_FILES = REQUIRED_SURFACE_FILES
+
+HISTORICAL_EXCLUDED_SURFACE_FILES = (
     "pimos_lite/capability_registry.py",
     "pimos_lite/capsule_module/__init__.py",
     "pimos_lite/capsule_module/contract.py",
     "pimos_lite/capsule_module/source_extract.py",
     "pimos_lite/composer/__init__.py",
     "pimos_lite/composer/intent.py",
-    "pimos_lite/composer/module_native.py",
-    "pimos_lite/desktop_reweave_static.py",
-    "pimos_lite/reweave_app_service.py",
     "pimos_lite/reweave_behavior_runtime.py",
     "pimos_lite/reweave_capsule_content.py",
     "pimos_lite/reweave_capsule_draft.py",
+    "pimos_lite/reweave_capsule_verifier.py",
     "pimos_lite/reweave_capsule_warehouse.py",
+    "pimos_lite/reweave_engine/__init__.py",
     "pimos_lite/reweave_engine/factory.py",
+    "pimos_lite/reweave_engine/local.py",
+    "pimos_lite/reweave_engine/lumo.py",
     "pimos_lite/reweave_engine/lumo_lite.py",
+    "pimos_lite/reweave_engine/status.py",
+    "pimos_lite/reweave_governance_preview.py",
     "pimos_lite/reweave_llm_pack.py",
     "pimos_lite/reweave_lumo_lite_artifacts.py",
     "pimos_lite/reweave_lumo_lite_state.py",
+    "pimos_lite/reweave_luna_client.py",
+    "pimos_lite/reweave_preview_export.py",
     "pimos_lite/reweave_preview_pack.py",
     "pimos_lite/reweave_preview_viewer.py",
     "pimos_lite/reweave_project_graph.py",
     "pimos_lite/reweave_project_renderer.py",
+    "pimos_lite/reweave_promote.py",
     "pimos_lite/reweave_quality_gate.py",
     "pimos_lite/reweave_react_preview.py",
+    "pimos_lite/reweave_reuse_suggestions.py",
+    "pimos_lite/reweave_review_queue.py",
     "pimos_lite/reweave_snippet_context.py",
-    "pimos_lite/reweave_source_registry.py",
-    "pimos_lite/reweave_source_scanner.py",
     "pimos_lite/reweave_stage4_composer.py",
     "pimos_lite/reweave_task_intent.py",
     "pimos_lite/reweave_task_plan.py",
     "pimos_lite/safe_preview_write.py",
-    "reweave_frontend/app.js",
-    "reweave_frontend/artifacts.js",
-    "reweave_frontend/bridge.js",
-    "reweave_frontend/capsule_reader.js",
-    "reweave_frontend/index.html",
-    "reweave_frontend/renderers.js",
-    "reweave_frontend/source_workflow.js",
-    "scripts/run_public_reweave_demo.py",
+    "scripts/analyze_reweave_behavior.mjs",
     "scripts/run_public_stage4_demo.py",
-    "start_reweave_static.sh",
-)
-RELEASE_INCLUDED_SURFACE_FILES = REQUIRED_SURFACE_FILES
-RELEASE_SUPPORT_RUNTIME_FILES = (
-    "pimos_lite/reweave_engine/local.py",
-    "pimos_lite/reweave_engine/lumo.py",
-    "pimos_lite/reweave_engine/__init__.py",
-    "pimos_lite/reweave_engine/status.py",
-    "pimos_lite/reweave_capsule_verifier.py",
-    "pimos_lite/reweave_governance_preview.py",
-    "pimos_lite/reweave_luna_client.py",
-    "pimos_lite/reweave_preview_export.py",
-    "pimos_lite/reweave_promote.py",
-    "pimos_lite/reweave_release_surface_audit.py",
-    "pimos_lite/reweave_reuse_suggestions.py",
-    "pimos_lite/reweave_review_queue.py",
 )
 
 SURFACE_GLOBS = (
@@ -75,63 +92,71 @@ SURFACE_GLOBS = (
     "pimos_lite/desktop_reweave_static.py",
     "pimos_lite/reweave*.py",
     "pimos_lite/reweave_engine/*.py",
+    "pimos_lite/safe_preview_write.py",
     "reweave_frontend/*.js",
     "reweave_frontend/*.html",
+    "reweave_frontend/*.css",
+    "reweave_frontend/*.json",
+    "reweave_frontend/assets/*",
+    "scripts/analyze_reweave*.mjs",
+    "scripts/validate_reweave_compute.mjs",
     "scripts/run_public_*.py",
-    "pimos_lite/safe_preview_write.py",
     "start_reweave_static.sh",
 )
 
 
-def build_reweave_release_surface_audit(root: str | Path | None = None) -> dict[str, Any]:
+def build_reweave_release_surface_audit(
+    root: str | Path | None = None,
+) -> dict[str, Any]:
     base = Path(root).resolve() if root else Path(__file__).resolve().parents[1]
-    relatives = _surface_paths(base)
-    entries = [_entry(base, relative) for relative in relatives]
-    missing_product = [relative for relative in REQUIRED_SURFACE_FILES if not (base / relative).is_file()]
-    missing_runtime = [relative for relative in RELEASE_SUPPORT_RUNTIME_FILES if not (base / relative).is_file()]
-    missing = missing_product + missing_runtime
-    mock_fallback = any(row["mock_fallback_present"] for row in entries)
+    entries = [_entry(base, relative) for relative in _surface_paths(base)]
+    missing = [relative for relative in REQUIRED_SURFACE_FILES if not (base / relative).is_file()]
     checks = _release_checks(base)
+    unknown = [
+        row["path"]
+        for row in entries
+        if row["release_disposition"] == "unknown_release_surface"
+    ]
+    blockers = [name for name, passed in checks.items() if not passed]
+    blockers.extend(f"unknown_release_surface:{path}" for path in unknown)
+    status = "passed" if not missing and not blockers else "partial"
+    included = [
+        row["path"] for row in entries if row["release_disposition"] == "included"
+    ]
+    historical = [
+        row["path"]
+        for row in entries
+        if row["release_disposition"] == "historical_excluded"
+    ]
     launcher = _read(base / "start_reweave_static.sh")
-    frontend_write_buttons_blocked = checks.get("lumo_lite_hides_preview_export_actions") is True and checks.get("lumo_lite_blocks_preview_export_handler") is True
-    unknown = [row["path"] for row in entries if row["release_disposition"] == "unknown_release_surface"]
-    blockers = [name for name, passed in checks.items() if not passed] + [f"unknown_release_surface:{path}" for path in unknown]
-    release_status = "passed" if not missing and not blockers else "partial"
     return {
         "audit_version": AUDIT_VERSION,
-        "scope": "core_reweave_surface_glob",
-        "status": release_status,
-        "release_surface_status": release_status,
-        "stage4_coverage": "builtin_module_native",
-        "backend_mode": "lumo_lite_bridge_first",
+        "scope": "reweave_stage5_release_surface",
+        "status": status,
+        "release_surface_status": status,
+        "backend_mode": "sqlite_capsule_warehouse",
+        "composer_mode": "module_native_memory_input",
         "source_write_allowed": False,
-        "frontend_write_buttons_allowed": not frontend_write_buttons_blocked,
-        "frontend_write_buttons_blocked_by_lumo_lite": frontend_write_buttons_blocked,
-        "legacy_workbench_available_with_token": True,
-        "mock_fallback_present": mock_fallback,
-        "browser_demo_status": "partial_mock_fallback_present" if mock_fallback else "passed",
-        "artifact_trust_boundary": "runtime_state_allowed_roots",
-        "launcher_bootstrap_side_effects": {
-            "venv_write": ".venv-reweave" in launcher and "python3 -m venv" in launcher,
-            "pip_network_install": "pip\" install" in launcher,
-        },
-        "launcher_bootstrap_policy": "explicit_user_install_only",
+        "legacy_generation_active": False,
+        "stage4_coverage": "historical_excluded",
         "release_checks": checks,
         "release_blockers": blockers,
         "missing_surface_files": missing,
         "entrypoint_count": len(entries),
-        "release_included_files": list(RELEASE_INCLUDED_SURFACE_FILES) + list(RELEASE_SUPPORT_RUNTIME_FILES),
+        "release_included_files": list(RELEASE_INCLUDED_SURFACE_FILES),
         "release_default_entrypoint_files": list(RELEASE_INCLUDED_SURFACE_FILES),
-        "release_support_runtime_files": list(RELEASE_SUPPORT_RUNTIME_FILES),
-        "missing_runtime_dependency_files": missing_runtime,
-        "release_excluded_support_files": [],
-        "release_included_entrypoints": [row["path"] for row in entries if row["release_disposition"] == "included"],
-        "release_support_entrypoints": [row["path"] for row in entries if row["release_disposition"] == "included_support_runtime"],
-        "release_excluded_entrypoints": [],
+        "release_included_entrypoints": included,
+        "release_historical_excluded_files": historical,
+        "release_excluded_entrypoints": historical,
         "release_unknown_entrypoints": unknown,
         "entrypoints": entries,
-        "public_alpha_status": release_status,
-        "overall_release_status": release_status,
+        "launcher_bootstrap_side_effects": {
+            "venv_write": "python3 -m venv" in launcher,
+            "pip_network_install": 'pip" install' in launcher,
+        },
+        "launcher_bootstrap_policy": "explicit_user_install_only",
+        "public_alpha_status": status,
+        "overall_release_status": status,
     }
 
 
@@ -147,8 +172,11 @@ def build_reweave_public_alpha_release_summary(
         "overall_status": status,
         "release_surface_status": status,
         "source_project_write_allowed": False,
-        "frontend_write_buttons_allowed": bool(audit.get("frontend_write_buttons_allowed") is True),
-        "boundary_line": "Reweave-lite public alpha: no source project write; preview/report/runtime artifact writes are classified separately",
+        "generation_backend": "sqlite_capsule_warehouse",
+        "boundary_line": (
+            "Reweave stage 5: read-only Source Boxes; formal SQLite capsules; "
+            "one module_native product path"
+        ),
     }
 
 
@@ -158,83 +186,74 @@ def build_lumo_reweave_release_surface_summary(
     reweave_audit: dict[str, Any] | None = None,
     root: str | Path | None = None,
 ) -> dict[str, Any]:
+    del stage4_audit
     reweave = reweave_audit or build_reweave_release_surface_audit(root)
-    stage4 = dict(stage4_audit or {})
-    stage4_status = str(
-        stage4.get("stage4_status")
-        or stage4.get("status")
-        or reweave.get("stage4_coverage")
-        or "missing"
+    status = str(
+        reweave.get("release_surface_status") or reweave.get("status") or "missing"
     )
-    reweave_status = str(reweave.get("release_surface_status") or reweave.get("status") or "missing")
-    overall = "passed" if stage4_status in {"passed", "builtin_module_native"} and reweave_status == "passed" else "partial"
     return {
         "summary_version": SUMMARY_VERSION,
-        "overall_status": overall,
-        "stage4_status": stage4_status,
-        "reweave_status": reweave_status,
+        "overall_status": status,
+        "stage4_status": "historical_excluded",
+        "reweave_status": status,
         "source_project_write_allowed": False,
-        "frontend_write_buttons_allowed": bool(reweave.get("frontend_write_buttons_allowed") is True),
-        "boundary_line": "no source project write; preview/report/runtime artifact writes are classified separately",
+        "generation_backend": "sqlite_capsule_warehouse",
+        "boundary_line": "no source project write; legacy generation is inactive",
         "known_limitations": [
-            "browser-only mock fallback is not a release backend",
-            "legacy Reweave local/lumo workbench remains token-gated support surface",
+            "historical implementation files remain on disk but are excluded from release entrypoints"
         ],
     }
 
 
 def _entry(base: Path, relative: str) -> dict[str, Any]:
     path = base / relative
-    text = path.read_text(encoding="utf-8") if path.is_file() else ""
     return {
         "path": relative,
         "exists": path.is_file(),
         "release_role": _role(relative),
         "release_disposition": _disposition(relative),
-        "lumo_lite_bridge_only": "lumo_lite" in text or relative.startswith("reweave_frontend/"),
-        "write_source_folder_disabled": "write_source_folder" in text and "False" in text,
-        "mock_fallback_present": "mock" in text.lower(),
     }
 
 
 def _role(relative: str) -> str:
-    if relative.startswith(("pimos_lite/capsule_module/", "pimos_lite/composer/")) or relative in {
-        "pimos_lite/capability_registry.py",
-        "pimos_lite/safe_preview_write.py",
-    }:
-        return "builtin_stage4_composer"
-    if relative.endswith("reweave_stage4_composer.py"):
-        return "stage4_composer_bridge"
-    if relative.endswith("reweave_engine/factory.py"):
-        return "engine_factory"
-    if relative.endswith("desktop_reweave_static.py"):
+    if relative in HISTORICAL_EXCLUDED_SURFACE_FILES:
+        return "historical_legacy_surface"
+    if relative == "pimos_lite/desktop_reweave_static.py":
         return "desktop_bridge"
-    if relative.endswith("reweave_app_service.py"):
-        return "service_facade"
-    if relative.endswith("reweave_behavior_runtime.py"):
-        return "runtime_behavior_validator"
-    if "lumo_lite" in relative:
-        return "lumo_lite_bridge"
-    if relative.endswith("reweave_llm_pack.py"):
-        return "optional_local_model_pack"
-    if relative in RELEASE_INCLUDED_SURFACE_FILES and relative.startswith("pimos_lite/reweave"):
-        return "product_core"
+    if relative == "pimos_lite/reweave_app_service.py":
+        return "application_service"
+    if relative == "pimos_lite/composer/module_native.py":
+        return "formal_composer"
+    if relative == "pimos_lite/reweave_capsule_store.py":
+        return "formal_sqlite_warehouse"
+    if relative.startswith("pimos_lite/reweave_capsule_") or relative.endswith(
+        "reweave_data_contract.py"
+    ):
+        return "capsule_ingestion"
+    if relative in {
+        "pimos_lite/reweave_javascript_source.py",
+        "pimos_lite/reweave_source_registry.py",
+        "pimos_lite/reweave_source_scanner.py",
+    }:
+        return "read_only_source_intake"
+    if relative.startswith("scripts/analyze_reweave") or relative.endswith(
+        "validate_reweave_compute.mjs"
+    ):
+        return "safety_analyzer"
+    if relative == "scripts/run_public_reweave_demo.py":
+        return "public_cli"
     if relative.startswith("reweave_frontend/"):
         return "frontend_shell"
-    if relative.startswith("scripts/run_public_"):
-        return "public_cli"
-    if relative.endswith("start_reweave_static.sh"):
+    if relative == "start_reweave_static.sh":
         return "launcher"
-    if "reweave_engine/local.py" in relative or "reweave_engine/lumo.py" in relative:
-        return "legacy_workbench"
-    return "artifact_viewer"
+    return "unknown"
 
 
 def _disposition(relative: str) -> str:
     if relative in RELEASE_INCLUDED_SURFACE_FILES:
         return "included"
-    if relative in RELEASE_SUPPORT_RUNTIME_FILES:
-        return "included_support_runtime"
+    if relative in HISTORICAL_EXCLUDED_SURFACE_FILES:
+        return "historical_excluded"
     return "unknown_release_surface"
 
 
@@ -244,44 +263,140 @@ def _surface_paths(base: Path) -> list[str]:
         for path in base.glob(pattern):
             if path.is_file():
                 paths.add(path.relative_to(base).as_posix())
+    paths.discard("pimos_lite/reweave_release_surface_audit.py")
     paths.update(REQUIRED_SURFACE_FILES)
+    paths.update(
+        relative
+        for relative in HISTORICAL_EXCLUDED_SURFACE_FILES
+        if (base / relative).is_file()
+    )
     return sorted(paths)
 
 
 def _release_checks(base: Path) -> dict[str, bool]:
-    factory = _read(base / "pimos_lite/reweave_engine/factory.py")
     app_service = _read(base / "pimos_lite/reweave_app_service.py")
-    artifacts = _read(base / "pimos_lite/reweave_lumo_lite_artifacts.py")
+    composer = _read(base / "pimos_lite/composer/module_native.py")
+    desktop = _read(base / "pimos_lite/desktop_reweave_static.py")
     frontend = _read(base / "reweave_frontend/app.js")
-    llm_pack = _read(base / "pimos_lite/reweave_llm_pack.py")
-    launcher = _read(base / "start_reweave_static.sh")
-    export_controls_removed = all(
-        token not in frontend
-        for token in (
-            "btn-artifact-open",
-            "btn-export-zip",
-            "btn-export-copy",
-            "chooseExportFolderAndExport",
-        )
+    public_cli = _read(base / "scripts/run_public_reweave_demo.py")
+
+    preview_method = _python_function_source(app_service, "generate_preview")
+    compose_method = _python_function_source(composer, "compose_capsule_product")
+    desktop_method = _python_function_source(desktop, "generate_product")
+    frontend_generation = _between(
+        frontend,
+        "function pollProductRun",
+        "function applyGenerateResult",
     )
-    export_controls_guarded = (
-        "currentPreviewPackageId && !isLumoLiteReadOnly()" in frontend
-        and "!currentPreviewPackageId || isLumoLiteReadOnly()" in frontend
-    )
-    return {
-        "default_backend_is_lumo_lite": 'DEFAULT_BACKEND = "lumo_lite"' in factory,
-        "legacy_workbench_requires_token": "REWEAVE_ENABLE_LEGACY_WORKBENCH" in factory and "LEGACY_WORKBENCH_TOKEN" in factory,
-        "unknown_backend_fails_closed": "return LumoLiteReweaveEngine()" in factory,
-        "static_launcher_forces_lumo_lite": 'export REWEAVE_ENGINE="lumo_lite"' in launcher,
-        "static_launcher_clears_legacy_workbench_env": "unset REWEAVE_ENABLE_LEGACY_WORKBENCH" in launcher,
-        "lumo_lite_service_blocks_mutators": "_lumo_lite_disabled" in app_service and "bind_source_folder" in app_service and "generate_preview" in app_service,
-        "artifact_viewer_enforces_root_allowlist": "root_allowlist_enforced" in artifacts and "_is_under_allowed_roots" in artifacts,
-        "lumo_lite_hides_preview_export_actions": export_controls_removed or export_controls_guarded,
-        "lumo_lite_blocks_preview_export_handler": export_controls_removed or export_controls_guarded,
-        "optional_llm_pack_is_local_and_fallback_safe": "external_network_call" in llm_pack
-        and "source_project_write" in llm_pack
-        and "fallback_used" in llm_pack,
+    service_calls = set(re.findall(r"\bservice\.([A-Za-z_][A-Za-z0-9_]*)\(", public_cli))
+    compose_lower = compose_method.casefold()
+    eager_imports = _top_level_imports(app_service) | _top_level_imports(composer)
+    historical_modules = {
+        relative.removesuffix(".py").replace("/", ".")
+        for relative in HISTORICAL_EXCLUDED_SURFACE_FILES
+        if relative.startswith("pimos_lite/")
+        and relative.endswith(".py")
+        and not relative.endswith("/__init__.py")
     }
+    historical_prefixes = ("pimos_lite.capsule_module", "pimos_lite.reweave_engine")
+    return {
+        "app_service_legacy_preview_is_inactive": (
+            bool(preview_method)
+            and 'self._error("legacy_generation_inactive")' in preview_method
+        ),
+        "public_cli_uses_formal_app_service_only": (
+            "ReweaveAppService" in public_cli
+            and service_calls
+            == {"generate_product", "get_intake_run", "close"}
+            and all(
+                token not in public_cli
+                for token in (
+                    "create_reweave_engine",
+                    "generate_preview",
+                    "promote_source",
+                    "LumoLiteReweaveEngine",
+                    "ollama",
+                    "fallback",
+                )
+            )
+        ),
+        "frontend_uses_formal_generation_only": (
+            bool(frontend_generation)
+            and 'bridgeCall("generate_product"' in frontend_generation
+            and 'bridgeCall("get_intake_run"' in frontend_generation
+            and 'selection_mode: "manual"' in frontend_generation
+            and "usedCapsuleIds.length === 0" in frontend
+            and "auto_match" not in frontend
+            and "generate_preview" not in frontend
+            and "stage4_module_native" not in frontend
+            and re.search(r"\borigin\b", frontend, re.IGNORECASE) is None
+            and "model" not in frontend_generation.casefold()
+        ),
+        "sqlite_generation_is_active": (
+            '"generationActive": True' in app_service
+            and '"generationFromSqlite": True' in app_service
+        ),
+        "module_native_formal_composer_present": bool(compose_method),
+        "module_native_formal_composer_is_memory_only": (
+            bool(compose_method)
+            and "capsules" in compose_method
+            and all(
+                token not in compose_lower
+                for token in (
+                    "capsule_path",
+                    "sqlite3",
+                    "read_connection",
+                    "capsulewarehousestore",
+                    "load_module_capsules",
+                )
+            )
+        ),
+        "formal_startup_avoids_eager_legacy_imports": not any(
+            module in historical_modules
+            or any(
+                module == prefix or module.startswith(prefix + ".")
+                for prefix in historical_prefixes
+            )
+            for module in eager_imports
+        ),
+        "desktop_bridge_exposes_formal_generation": (
+            bool(desktop_method)
+            and '_phase4_call("generate_product"' in desktop_method
+        ),
+    }
+
+
+def _top_level_imports(source: str) -> set[str]:
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return set()
+    modules: set[str] = set()
+    for node in tree.body:
+        if isinstance(node, ast.Import):
+            modules.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            modules.add(node.module)
+    return modules
+
+
+def _python_function_source(source: str, function_name: str) -> str:
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return ""
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function_name:
+            return ast.get_source_segment(source, node) or ""
+    return ""
+
+
+def _between(source: str, start: str, end: str) -> str:
+    start_index = source.find(start)
+    if start_index < 0:
+        return ""
+    end_index = source.find(end, start_index + len(start))
+    return source[start_index:] if end_index < 0 else source[start_index:end_index]
 
 
 def _read(path: Path) -> str:

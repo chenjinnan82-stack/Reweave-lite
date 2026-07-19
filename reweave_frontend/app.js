@@ -9,6 +9,28 @@
   var mainEventsBound = false;
   var locale = localStorage.getItem("reweave_locale") || "zh";
   var lastPreviewAcceptance = null;
+  var ingestionManagement = {
+    available: false,
+    loaded: false,
+    loading: false,
+    projects: [],
+    discovery: null,
+    models: [],
+    selectedModel: null,
+    reviewItems: [],
+    capabilityGroups: [],
+    backups: [],
+    recoverableProducts: [],
+    historicalProducts: [],
+    legacy: null,
+    adapterOffers: {},
+    captureResume: {},
+    captureReviewContext: {},
+    developerMode: false,
+    sourceRoots: [],
+    runs: {},
+    errorKey: "",
+  };
 
   var STR = {
     zh: {
@@ -32,13 +54,14 @@
       buildSmallProjectPack: "生成小项目包",
       generationInput: "生成输入",
       usedPlaceholder: "选中的胶囊会出现在这里",
-      generationAuto: "未手动选择时，系统会自动匹配胶囊。",
+      generationAuto: "请先选择至少一个可生成的正式胶囊。",
       generationManual: "已选择 {count} 个胶囊；本次生成只使用这些胶囊。",
       generationResolved: "系统已匹配 {count} 个胶囊。",
       draftsReadyStore: "胶囊草稿已就绪，请在来源箱中确认入仓。",
       selecting: "正在选择胶囊…",
       readyResponse: "已使用 {count} 个胶囊生成本地项目预览。",
       acceptanceUsable: "可用 · 交互行为已验证",
+      acceptanceRealBootstrap: "真实 QWebEngine 已完成产品启动；完整交互仍需验收。",
       acceptanceNeedsBehavior: "需复核 · 未找到完整行为模块",
       acceptanceNeedsQuality: "需复核 · 质量检查结果缺失",
       acceptanceNeedsRuntime: "需复核 · 等待运行验证",
@@ -49,6 +72,9 @@
       localPreview: "本地预览",
       newTask: "新任务",
       docked: "已加入本次任务。",
+      removeCapsule: "移除 {name}",
+      formalSelectionInvalid: "所选正式胶囊无法组成同一项能力。",
+      formalSelectionNeedsDomRole: "正式胶囊组合至少需要一个展示或交互角色。",
       useInTask: "用于任务",
       readOnly: "只读",
       sourceReadOnly: "源项目只读",
@@ -130,12 +156,203 @@
       enrichContent: "补充内容",
       copied: "已复制",
       enrichedContentPreview: "使用补充内容预览",
-      localModelRefinement: "本地模型优化",
-      localModelOff: "关闭",
-      localModelReady: "就绪",
-      localModelRunning: "处理中",
-      localModelApplied: "已应用",
-      localModelFallback: "已回退",
+      capsuleWarehouse: "胶囊仓库",
+      warehousePurpose: "管理只读来源、提取候选、人工复核并发布正式胶囊。",
+      developerMode: "开发者模式",
+      developerModeHelp: "显示输入类型、枚举、复核 ID、备份和任务等开发信息。",
+      sourceProjects: "来源项目",
+      discoverSource: "发现来源",
+      discoverSourceHelp: "选择一个来源目录并只读发现其中的项目。",
+      refreshAll: "全部刷新",
+      refreshAllHelp: "重新扫描全部已登记来源；仅开发者模式显示。",
+      supervisionModel: "监督模型",
+      supervisionModelHelp: "选择本机 Ollama 模型；模型只做监督和命名，不决定代码边界。",
+      refreshModelsHelp: "重新读取本机可用的监督模型。",
+      saveModelHelp: "保存本次胶囊监督使用的模型和精确摘要。",
+      saveBrandHelp: "保存当前项目的品牌继承、清除或替换设置。",
+      selectModel: "选择模型",
+      modelTimeoutNote: "已安装不等于已通过监督验证；冷启动或较大模型可能在固定超时后进入等待模型状态。",
+      save: "保存",
+      reviewItems: "待复核项",
+      capabilityGroups: "能力分组",
+      backupRestore: "备份与恢复",
+      createBackup: "创建备份",
+      importLegacy: "导入旧仓",
+      intakeRuns: "入库任务",
+      managementLoading: "正在载入胶囊仓库…",
+      managementUnavailable: "胶囊仓库管理当前不可用。",
+      managementReady: "胶囊仓库管理已就绪。",
+      noItems: "暂无项目。",
+      noReviews: "暂无待复核项。",
+      noCapabilities: "暂无正式能力。",
+      noBackups: "暂无备份。",
+      noRuns: "暂无入库任务。",
+      confirmProjects: "确认所选项目",
+      brandMode: "品牌范围",
+      brandInherit: "继承来源根配置",
+      brandClear: "清除品牌",
+      brandReplace: "替换品牌配置",
+      brandProfile: "品牌配置 JSON",
+      brandProfileInvalid: "品牌配置必须是 JSON 对象。",
+      projectConfirmationPartial: "部分项目未能确认，请查看项目状态。",
+      refreshProject: "刷新项目",
+      registerJavascriptSource: "登记 JavaScript 计算来源",
+      registerJavascriptSourceHelp: "把所选来源根或子目录登记为只读 JavaScript 计算来源。",
+      javascriptSourceRoot: "来源根",
+      javascriptSourceRootHelp: "选择已经绑定的只读来源目录。",
+      javascriptProjectRelpath: "项目或子目录（. 表示整个来源根）",
+      javascriptProjectRelpathHelp: "限定计算函数扫描范围；不会修改该目录。",
+      javascriptDisplayName: "计算来源名称",
+      javascriptDisplayNameHelp: "给此计算来源一个便于识别的本地名称；留空时使用目录名。",
+      javascriptSourceType: "JavaScript 计算来源",
+      staticWebSourceType: "静态网页来源",
+      unknownSourceType: "未知来源类型",
+      refreshProjectHelp: "重新只读扫描这个来源项目。",
+      scanJavascriptComputations: "查找可复用的计算功能",
+      scanJavascriptComputationsHelp: "只读检查这个项目中的 JavaScript 函数。不会运行、修改或构建来源项目，也不会立即发布胶囊。",
+      scanJavascriptRunning: "正在只读分析 JavaScript 函数……",
+      scanJavascriptFound: "找到 {count} 个可进一步验证的计算功能。",
+      noJavascriptComputations: "没有找到符合当前安全范围的纯计算函数。来源项目没有被修改。",
+      projectScanReady: "已准备好，可以只读查找计算功能。",
+      projectScanPending: "项目尚未确认，请先确认来源项目。",
+      projectScanSourceMissing: "来源目录当前不可访问，请重新选择原目录。",
+      projectScanStaticUnsupported: "不能作为 Static Web 提取，但可以尝试查找纯计算函数。",
+      projectScanPlatformUnsupported: "当前平台不支持旧 JavaScript 计算抓取；没有读取来源。",
+      projectScanIncomplete: "项目记录不完整，请重新发现或登记该项目。",
+      projectScanUnknownType: "来源类型无法识别，请重新发现或登记该项目。",
+      projectScanUnknownState: "项目状态未知，请刷新项目列表后重试。",
+      adapterInputKind: "输入类型",
+      adapterInputKindHelp: "简单模式固定为整数；布尔和枚举只在开发者模式配置。",
+      adapterEnumValues: "枚举值（每行一个）",
+      adapterEnumValuesHelp: "列出允许的精确字符串值，每行一个。",
+      captureNeedsDecision: "等待你的安全确认；模型监督和运行验证尚未执行。",
+      captureResubmitRequired: "决定已保存。返回原函数并点击“继续验证”，系统会从当前来源重新构建。",
+      captureResumeReview: "恢复待确认项（可选）",
+      captureResumeReviewHelp: "开发者恢复入口；普通流程会自动关联当前待确认项。",
+      adapterCreationPathRetired: "旧版计算入口已退役，请重新扫描计算功能。",
+      adapterContractVersionExpired: "旧版候选已过期，请重新扫描。不能继续处理或发布这个旧候选。",
+      adapterInputField: "输入字段",
+      adapterInputFieldHelp: "产品使用的字段名；例如旧参数 x 可以映射为 quantity。",
+      adapterInputSourceLabel: "输入 {index}（源码参数：{parameter}）",
+      adapterInputFieldVisibleHelp: "这是该输入在新产品中的名称。例如 quantity 可以表示数量。",
+      adapterMinimum: "最小值",
+      adapterMinimumHelp: "该输入允许的最小安全整数。必须依据实际业务填写。",
+      adapterMaximum: "最大值",
+      adapterMaximumHelp: "该输入允许的最大安全整数。必须依据实际业务填写。",
+      adapterResultField: "输出字段",
+      adapterResultFieldHelp: "产品接收计算结果时使用的字段名，例如 total。",
+      adapterResultFieldVisibleHelp: "这是计算结果在新产品中的名称。例如 total 可以表示总价。",
+      adapterExample: "业务样例",
+      adapterExampleHelp: "填写一组你知道正确的输入，值必须位于声明范围内。",
+      adapterExpected: "期望结果",
+      adapterExpectedHelp: "旧函数处理上方业务样例时应得到的真实整数结果。",
+      adapterSimpleHelp: "旧参数映射为产品字段；范围是允许输入；业务样例和期望结果用于核对真实函数。",
+      adapterMappingPreview: "将提交：{mapping}",
+      adapterMappingConfirmation: "我确认这里只证明参数映射与指定样例，不代表完全等价。",
+      adapterMappingConfirmShort: "我确认",
+      createComputationAdapter: "创建计算胶囊候选",
+      continueCaptureValidation: "继续验证",
+      adapterMappingInvalid: "请填写合法、唯一的 snake_case 字段和安全整数范围。",
+      adapterInspectionComplete: "计算函数检查完成。",
+      adapterCandidateCreated: "计算胶囊候选已创建，请继续复核。",
+      captureWaitingModel: "等待本地监督模型；尚未完成验证。",
+      captureWaitingValidation: "等待 Node 运行验证；尚未入仓。",
+      captureRejected: "候选已拒绝，没有写入正式胶囊仓库。",
+      captureReviewRequired: "安全、模型和运行验证已通过，等待发布复核。",
+      captureDuplicate: "已确认与当前正式版本精确重复，并关联来源。",
+      captureOutcomeUnknown: "候选返回了无法识别的状态，已停止。",
+      captureOfferStale: "来源或函数列表已变化，请重新扫描后再提交。",
+      captureExampleMismatch: "业务样例与旧函数的真实结果不一致，请核对输入和期望结果。",
+      captureSourceChanged: "扫描期间来源发生变化；未保存候选，请重新扫描。",
+      captureWorkerTimeout: "计算验证超时；未保存候选，请检查函数范围后重试。",
+      captureSecurityRejected: "函数未通过安全边界，未保存候选。开发者模式可查看诊断。",
+      captureRequestInvalid: "提交信息不完整或已过期，请重新扫描并填写。",
+      managementOperationFailed: "操作未完成；没有写入正式胶囊。请重试或在开发者模式查看诊断。",
+      reviewStatusWaitingUser: "等待用户确认",
+      reviewStatusWaitingModel: "等待模型",
+      reviewStatusWaitingValidation: "等待运行验证",
+      reviewStatusReviewRequired: "等待发布复核",
+      reviewStatusDuplicate: "精确重复",
+      reviewStatusRejected: "已拒绝",
+      captureReview: "计算函数安全确认",
+      captureSafetySummary: "安全扫描：模糊项 {ambiguous}，品牌项 {brand}，枚举参数 {enums}。",
+      capabilityKeyLabel: "能力标识",
+      capabilityKeyHelp: "同一完整能力共享的稳定 snake_case 标识，例如 quote_calculation。",
+      roleKeyLabel: "角色标识",
+      roleKeyHelp: "该原子胶囊在能力中的稳定角色标识，例如 total_price。",
+      variantKeyLabel: "变体标识",
+      variantKeyHelp: "同一角色不同实现的稳定标识；首个通常为 default。",
+      displayNameLabel: "展示名称",
+      displayNameHelp: "仅用于界面展示，可在发布后修改。",
+      retainedVersionLabel: "保留的正式版本",
+      retainedVersionHelp: "选择人工确认后继续保留的现有正式版本。",
+      targetCapsuleLabel: "目标胶囊",
+      targetCapsuleHelp: "选择要替换或作为语义拆分来源的现有胶囊。",
+      decisionConfirmFictional: "虚构样例",
+      decisionConfirmFictionalHelp: "仅在你确认命中内容不是客户或其他真实记录时使用。",
+      decisionRejectRealRecord: "真实记录：拒绝",
+      decisionRejectRealRecordHelp: "确认包含真实记录并终止此候选，不会写入正式仓库。",
+      decisionConfirmSafeRedaction: "确认脱敏",
+      decisionConfirmSafeRedactionHelp: "确认清洗后的候选不再包含真实记录。",
+      decisionRetainBrand: "品牌限定",
+      decisionRetainBrandHelp: "仅允许当前品牌配置使用此胶囊。",
+      decisionRemoveBrand: "移除品牌",
+      decisionRemoveBrandHelp: "按当前清洗规则移除品牌内容后重新处理。",
+      decisionConfirmEnum: "确认枚举",
+      decisionConfirmEnumHelp: "确认这些字符串是业务枚举，不是真实记录。",
+      decisionConfirmAssets: "确认图片",
+      decisionConfirmAssetsHelp: "人工确认图片像素中不含客户截图或其他真实记录。",
+      decisionPublishGeneral: "发布（通用）",
+      decisionPublishGeneralHelp: "以当前身份发布，可用于符合契约的产品。",
+      decisionPublishBrand: "发布（品牌）",
+      decisionPublishBrandHelp: "以当前身份发布，仅供当前品牌范围使用。",
+      decisionCreateVariant: "新建变体",
+      decisionCreateVariantHelp: "保留现有实现，并把当前实现发布为另一个变体。",
+      decisionMergeExisting: "合并现有",
+      decisionMergeExistingHelp: "人工确认等价关系，默认保留现有正式实现。",
+      decisionReplaceCurrent: "替换当前",
+      decisionReplaceCurrentHelp: "发布不可变新版本，并切换当前正式版本。",
+      decisionSemanticSplit: "拆分身份",
+      decisionSemanticSplitHelp: "把当前候选作为新的能力身份发布，旧身份不删除。",
+      decisionReject: "拒绝",
+      decisionRejectHelp: "终止当前候选，不写入正式胶囊仓库。",
+      decisionProcessCandidate: "继续验证",
+      decisionProcessCandidateHelp: "继续现有安全、模型和运行验证；不会自动发布。",
+      createBackupHelp: "备份当前本地胶囊仓库、品牌配置和使用历史。",
+      importLegacyHelp: "逐条重新清洗旧仓内容；不会直接信任或恢复旧实现。",
+      restoreHelp: "把整个本地胶囊仓库恢复到所选备份时点。",
+      mapLegacyHelp: "把旧胶囊记录关联到已人工确认的正式版本。",
+      retryUsageHelp: "重新核对产品 manifest 并登记其精确胶囊版本。",
+      cancelRunHelp: "请求取消当前后台任务；已提交的完整事务不会被拆开。",
+      renameCapabilityHelp: "只修改展示名称，不改变稳定能力标识。",
+      viewDetailsHelp: "查看此胶囊的当前正式版本摘要。",
+      disableCapsuleHelp: "停用当前胶囊；历史版本不会被物理删除。",
+      enableCapsuleHelp: "重新启用已验证且规则仍有效的当前胶囊。",
+      cancelRun: "取消",
+      restore: "恢复",
+      viewDetails: "查看详情",
+      renameCapability: "修改名称",
+      renameCapabilityPrompt: "输入新的能力展示名称",
+      manifestDigest: "Manifest 摘要",
+      preRestoreBackup: "恢复前备份",
+      backupUnavailable: "不可用",
+      disableCapsule: "停用",
+      enableCapsule: "启用",
+      restoreConfirm: "恢复会把本地仓库回退到该备份时点。是否继续？",
+      decisionSaved: "决定已保存。",
+      modelSaved: "监督模型已保存。",
+      backupCreated: "备份已创建。",
+      retryUsage: "补登记产品记录",
+      usageRetryComplete: "产品使用记录已补登记。",
+      restoreComplete: "仓库恢复完成。",
+      importStarted: "旧仓重新清洗任务已启动。",
+      legacyNotFound: "未发现旧胶囊仓。",
+      legacyWarehouse: "旧胶囊仓",
+      legacyAliases: "迁移关系",
+      legacyPending: "待人工映射",
+      legacyRelationship: "关系",
+      legacyTarget: "新胶囊版本",
+      mapLegacy: "确认映射",
       warnings: "警告",
       truncated: "已截断",
       redacted: "已脱敏",
@@ -172,13 +389,14 @@
       buildSmallProjectPack: "Build Small Project Pack",
       generationInput: "Generation input",
       usedPlaceholder: "Selected capsules dock here",
-      generationAuto: "Generate will auto-pick capsules if none are selected.",
+      generationAuto: "Select at least one eligible formal capsule before generating.",
       generationManual: "Generation input: {count} selected. Generate will use exactly these capsules.",
       generationResolved: "Reweave matched {count} capsules.",
       draftsReadyStore: "Capsule drafts are ready. Review the Source Box and store them.",
       selecting: "Reweave is selecting capsules…",
       readyResponse: "Reweave used {count} capsules and prepared a local preview package.",
       acceptanceUsable: "Usable · Interaction verified",
+      acceptanceRealBootstrap: "Product bootstrapped in real QWebEngine; full interaction still needs review.",
       acceptanceNeedsBehavior: "Needs review · No closed behavior module",
       acceptanceNeedsQuality: "Needs review · Quality result missing",
       acceptanceNeedsRuntime: "Needs review · Runtime validation required",
@@ -189,6 +407,9 @@
       localPreview: "local preview",
       newTask: "New task",
       docked: "docked for this task.",
+      removeCapsule: "Remove {name}",
+      formalSelectionInvalid: "The selected formal capsules cannot form one capability.",
+      formalSelectionNeedsDomRole: "A formal selection needs at least one presentation or interaction role.",
       useInTask: "Use in task",
       readOnly: "Read-only",
       sourceReadOnly: "Source project read-only",
@@ -270,12 +491,203 @@
       enrichContent: "Enrich content",
       copied: "Copied",
       enrichedContentPreview: "Use enriched content preview",
-      localModelRefinement: "Local model refinement",
-      localModelOff: "Off",
-      localModelReady: "Ready",
-      localModelRunning: "Running",
-      localModelApplied: "Applied",
-      localModelFallback: "Fallback",
+      capsuleWarehouse: "Capsule Warehouse",
+      warehousePurpose: "Manage read-only sources, capture candidates, review them, and publish formal capsules.",
+      developerMode: "Developer mode",
+      developerModeHelp: "Show input types, enums, review IDs, backups, and task diagnostics.",
+      sourceProjects: "Source projects",
+      discoverSource: "Discover source",
+      discoverSourceHelp: "Choose a source directory and discover projects read-only.",
+      refreshAll: "Refresh all",
+      refreshAllHelp: "Rescan every registered source; shown only in developer mode.",
+      supervisionModel: "Supervision model",
+      supervisionModelHelp: "Choose a local Ollama model; it supervises and names but never chooses code boundaries.",
+      refreshModelsHelp: "Reload locally available supervision models.",
+      saveModelHelp: "Save the model and exact digest used for capsule supervision.",
+      saveBrandHelp: "Save this project's inherited, cleared, or replacement brand settings.",
+      selectModel: "Select a model",
+      modelTimeoutNote: "Installed does not mean supervision-verified; cold or large models may enter waiting-model after the fixed timeout.",
+      save: "Save",
+      reviewItems: "Review items",
+      capabilityGroups: "Capability groups",
+      backupRestore: "Backup and restore",
+      createBackup: "Create backup",
+      importLegacy: "Import legacy warehouse",
+      intakeRuns: "Intake runs",
+      managementLoading: "Loading Capsule Warehouse…",
+      managementUnavailable: "Capsule Warehouse management is unavailable.",
+      managementReady: "Capsule Warehouse management is ready.",
+      noItems: "No projects.",
+      noReviews: "No review items.",
+      noCapabilities: "No formal capabilities.",
+      noBackups: "No backups.",
+      noRuns: "No intake runs.",
+      confirmProjects: "Confirm selected projects",
+      brandMode: "Brand scope",
+      brandInherit: "Inherit source-root profile",
+      brandClear: "Remove brand",
+      brandReplace: "Replace brand profile",
+      brandProfile: "Brand profile JSON",
+      brandProfileInvalid: "Brand profile must be a JSON object.",
+      projectConfirmationPartial: "Some projects could not be confirmed; review their status.",
+      refreshProject: "Refresh project",
+      registerJavascriptSource: "Register JavaScript computation source",
+      registerJavascriptSourceHelp: "Register a source root or subdirectory as a read-only JavaScript computation source.",
+      javascriptSourceRoot: "Source root",
+      javascriptSourceRootHelp: "Choose an already bound read-only source directory.",
+      javascriptProjectRelpath: "Project or subdirectory (. means source root)",
+      javascriptProjectRelpathHelp: "Limit the computation scan scope; this directory is never modified.",
+      javascriptDisplayName: "Computation source name",
+      javascriptDisplayNameHelp: "Give this computation source a recognizable local name; leave blank to use the directory name.",
+      javascriptSourceType: "JavaScript computation source",
+      staticWebSourceType: "Static web source",
+      unknownSourceType: "Unknown source type",
+      refreshProjectHelp: "Rescan this source project read-only.",
+      scanJavascriptComputations: "Find reusable calculations",
+      scanJavascriptComputationsHelp: "Inspect JavaScript functions in this project read-only. Reweave will not run, modify, or build the source project, and it will not publish a capsule yet.",
+      scanJavascriptRunning: "Analyzing JavaScript functions read-only…",
+      scanJavascriptFound: "Found {count} calculations that can be validated further.",
+      noJavascriptComputations: "No pure calculation matched the current safety scope. The source project was not modified.",
+      projectScanReady: "Ready for a read-only calculation scan.",
+      projectScanPending: "This project is not confirmed yet. Confirm the source project first.",
+      projectScanSourceMissing: "The source directory is unavailable. Select the original directory again.",
+      projectScanStaticUnsupported: "Static Web extraction is unsupported, but Reweave can still look for pure calculations.",
+      projectScanPlatformUnsupported: "Legacy JavaScript capture is unsupported on this platform; the source was not read.",
+      projectScanIncomplete: "This project record is incomplete. Discover or register the project again.",
+      projectScanUnknownType: "The source type is unknown. Discover or register the project again.",
+      projectScanUnknownState: "The project state is unknown. Refresh the project list and try again.",
+      adapterInputKind: "Input type",
+      adapterInputKindHelp: "Simple mode uses integers; configure booleans and enums in developer mode.",
+      adapterEnumValues: "Enum values (one per line)",
+      adapterEnumValuesHelp: "List exact allowed string values, one per line.",
+      captureNeedsDecision: "Waiting for your safety decision; model supervision and runtime validation have not run.",
+      captureResubmitRequired: "Decision saved. Return to the function and click Continue validation to rebuild from current source.",
+      captureResumeReview: "Resume waiting review (optional)",
+      captureResumeReviewHelp: "Developer recovery control; the normal flow links the current review automatically.",
+      adapterCreationPathRetired: "The legacy calculation entry point is retired. Scan for calculations again.",
+      adapterContractVersionExpired: "This legacy candidate has expired. Scan again; it can no longer be processed or published.",
+      adapterInputField: "Input field",
+      adapterInputFieldHelp: "The product-facing field; for example, map source parameter x to quantity.",
+      adapterInputSourceLabel: "Input {index} (source parameter: {parameter})",
+      adapterInputFieldVisibleHelp: "This is the input name used by the new product. For example, quantity can mean an item count.",
+      adapterMinimum: "Minimum",
+      adapterMinimumHelp: "The smallest allowed safe integer. Enter a real business limit.",
+      adapterMaximum: "Maximum",
+      adapterMaximumHelp: "The largest allowed safe integer. Enter a real business limit.",
+      adapterResultField: "Result field",
+      adapterResultFieldHelp: "The field used by products to receive this result, for example total.",
+      adapterResultFieldVisibleHelp: "This is the result name used by the new product. For example, total can mean a total price.",
+      adapterExample: "Business example",
+      adapterExampleHelp: "Enter an input whose correct result you know; it must be within the declared range.",
+      adapterExpected: "Expected result",
+      adapterExpectedHelp: "The actual integer result the old function should return for the example above.",
+      adapterSimpleHelp: "Map source parameters to product fields; ranges define accepted input; the example and expected result check the real function.",
+      adapterMappingPreview: "Will submit: {mapping}",
+      adapterMappingConfirmation: "I confirm this proves only the mapping and specified examples, not total equivalence.",
+      adapterMappingConfirmShort: "I confirm",
+      createComputationAdapter: "Create computation candidate",
+      continueCaptureValidation: "Continue validation",
+      adapterMappingInvalid: "Enter unique snake_case fields and safe integer ranges.",
+      adapterInspectionComplete: "Computation function inspection completed.",
+      adapterCandidateCreated: "Computation candidate created; continue review.",
+      captureWaitingModel: "Waiting for the local supervision model; validation is incomplete.",
+      captureWaitingValidation: "Waiting for Node runtime validation; nothing was published.",
+      captureRejected: "Candidate rejected; no formal capsule was written.",
+      captureReviewRequired: "Security, model, and runtime validation passed; publication review is required.",
+      captureDuplicate: "Matched the active formal version exactly and linked its source.",
+      captureOutcomeUnknown: "The candidate returned an unknown status and was stopped.",
+      captureOfferStale: "The source or function list changed. Scan again before submitting.",
+      captureExampleMismatch: "The business example does not match the old function's real result. Check the input and expected result.",
+      captureSourceChanged: "The source changed during scanning. Nothing was saved; scan again.",
+      captureWorkerTimeout: "Computation validation timed out. Nothing was saved; review the function scope and retry.",
+      captureSecurityRejected: "The function did not pass the safety boundary. Nothing was saved; developer mode shows diagnostics.",
+      captureRequestInvalid: "The submission is incomplete or expired. Scan again and refill it.",
+      managementOperationFailed: "The operation did not complete and no formal capsule was written. Retry or inspect diagnostics in developer mode.",
+      reviewStatusWaitingUser: "Waiting for user decision",
+      reviewStatusWaitingModel: "Waiting for model",
+      reviewStatusWaitingValidation: "Waiting for runtime validation",
+      reviewStatusReviewRequired: "Waiting for publication review",
+      reviewStatusDuplicate: "Exact duplicate",
+      reviewStatusRejected: "Rejected",
+      captureReview: "Computation safety decision",
+      captureSafetySummary: "Safety scan: {ambiguous} ambiguous, {brand} brand, {enums} enum parameters.",
+      capabilityKeyLabel: "Capability key",
+      capabilityKeyHelp: "Stable snake_case identity shared by one complete capability, for example quote_calculation.",
+      roleKeyLabel: "Role key",
+      roleKeyHelp: "Stable identity for this atomic role, for example total_price.",
+      variantKeyLabel: "Variant key",
+      variantKeyHelp: "Stable identity for another implementation of the same role; the first is usually default.",
+      displayNameLabel: "Display name",
+      displayNameHelp: "A user-facing label that can be renamed after publication.",
+      retainedVersionLabel: "Retained formal version",
+      retainedVersionHelp: "Choose the existing formal version to retain after manual equivalence review.",
+      targetCapsuleLabel: "Target capsule",
+      targetCapsuleHelp: "Choose the existing capsule to replace or use as the semantic-split source.",
+      decisionConfirmFictional: "Fictional example",
+      decisionConfirmFictionalHelp: "Use only when you know the matched content is not a customer or other real record.",
+      decisionRejectRealRecord: "Real record: reject",
+      decisionRejectRealRecordHelp: "Confirm a real record is present and stop this candidate without publishing it.",
+      decisionConfirmSafeRedaction: "Confirm redaction",
+      decisionConfirmSafeRedactionHelp: "Confirm the cleaned candidate no longer contains real records.",
+      decisionRetainBrand: "Brand-limited",
+      decisionRetainBrandHelp: "Allow this capsule only for the current brand profile.",
+      decisionRemoveBrand: "Remove brand",
+      decisionRemoveBrandHelp: "Apply current cleaning rules to remove brand content and process again.",
+      decisionConfirmEnum: "Confirm enum",
+      decisionConfirmEnumHelp: "Confirm these strings are business enums, not real records.",
+      decisionConfirmAssets: "Confirm images",
+      decisionConfirmAssetsHelp: "Confirm image pixels contain no customer screenshots or other real records.",
+      decisionPublishGeneral: "Publish (general)",
+      decisionPublishGeneralHelp: "Publish under the current identity for contract-compatible products.",
+      decisionPublishBrand: "Publish (brand)",
+      decisionPublishBrandHelp: "Publish under the current identity for the current brand scope only.",
+      decisionCreateVariant: "New variant",
+      decisionCreateVariantHelp: "Keep the current implementation and publish this one as another variant.",
+      decisionMergeExisting: "Merge existing",
+      decisionMergeExistingHelp: "Confirm equivalence manually and keep the existing formal implementation.",
+      decisionReplaceCurrent: "Replace current",
+      decisionReplaceCurrentHelp: "Publish an immutable new version and switch the current formal version.",
+      decisionSemanticSplit: "Split identity",
+      decisionSemanticSplitHelp: "Publish this candidate as a new capability identity without deleting the old one.",
+      decisionReject: "Reject",
+      decisionRejectHelp: "Stop this candidate without writing a formal capsule.",
+      decisionProcessCandidate: "Continue validation",
+      decisionProcessCandidateHelp: "Continue the existing security, model, and runtime gates; this never auto-publishes.",
+      createBackupHelp: "Back up the local capsule warehouse, brand configuration, and usage history.",
+      importLegacyHelp: "Reclean old warehouse entries one by one; old implementations are never trusted directly.",
+      restoreHelp: "Restore the complete local capsule warehouse to the selected backup point.",
+      mapLegacyHelp: "Link an old capsule record to a manually confirmed formal version.",
+      retryUsageHelp: "Recheck the product manifest and register its exact capsule versions.",
+      cancelRunHelp: "Request cancellation of this background task; completed transactions remain atomic.",
+      renameCapabilityHelp: "Change only the display name without changing the stable capability key.",
+      viewDetailsHelp: "View the current formal-version summary for this capsule.",
+      disableCapsuleHelp: "Disable the current capsule without physically deleting version history.",
+      enableCapsuleHelp: "Enable a current capsule whose validation evidence remains valid.",
+      cancelRun: "Cancel",
+      restore: "Restore",
+      viewDetails: "View details",
+      renameCapability: "Rename",
+      renameCapabilityPrompt: "Enter a new capability display name",
+      manifestDigest: "Manifest digest",
+      preRestoreBackup: "Pre-restore backup",
+      backupUnavailable: "Unavailable",
+      disableCapsule: "Disable",
+      enableCapsule: "Enable",
+      restoreConfirm: "Restore rewinds the local warehouse to this backup. Continue?",
+      decisionSaved: "Decision saved.",
+      modelSaved: "Supervision model saved.",
+      backupCreated: "Backup created.",
+      retryUsage: "Register product usage",
+      usageRetryComplete: "Product usage registration completed.",
+      restoreComplete: "Warehouse restore complete.",
+      importStarted: "Legacy recleaning run started.",
+      legacyNotFound: "No legacy capsule warehouse found.",
+      legacyWarehouse: "Legacy capsule warehouse",
+      legacyAliases: "Migration relationships",
+      legacyPending: "Pending human mapping",
+      legacyRelationship: "Relationship",
+      legacyTarget: "New capsule version",
+      mapLegacy: "Confirm mapping",
       warnings: "Warnings",
       truncated: "truncated",
       redacted: "redacted",
@@ -306,7 +718,6 @@
   var lastReactPreview = null;
   var pendingGeneratePromise = null;
   var useEnrichedContentPreview = false;
-  var useBoundedLocalModel = false;
   var usedCapsuleSelectionMode = "manual";
   var previewViewerMode = "view";
   var lumoLiteArtifacts = [];
@@ -371,6 +782,10 @@
       : false;
   }
 
+  function canGenerateProduct() {
+    return desktopCapability("canGenerateProduct");
+  }
+
   function clearLumoLiteMockState() {
     delete data.generatedPackage;
     delete data.lastPreview;
@@ -427,7 +842,7 @@
     bindBtn.textContent = t("bindSourceBox");
     bindBtn.disabled = !canBind;
     bindBtn.setAttribute("aria-disabled", canBind ? "false" : "true");
-    bindBtn.title = canBind ? "" : t("sourceBoxBindingDisabled");
+    setOptionalTitle(bindBtn, canBind ? "" : t("sourceBoxBindingDisabled"));
     if (note) {
       note.textContent = readOnly ? t("sourceBoxReadOnlyNote") : t("sourceBoxNote");
     }
@@ -466,7 +881,7 @@
       return;
     }
     var summary = getLumoLiteRuntimeSummary() || {};
-    var taskPackPreview = canBuildTaskPackPreview();
+    var taskPackPreview = canGenerateProduct() || canBuildTaskPackPreview();
     if (els.btnLumoArtifacts) {
       els.btnLumoArtifacts.classList.toggle("hidden", lumoLiteArtifacts.length === 0);
     }
@@ -501,7 +916,9 @@
     );
     var capability =
       lastPreviewAcceptance && hasTaskPackPreview
-        ? lastPreviewAcceptance.verdict === "usable"
+        ? lastPreviewAcceptance.reason === "real_qwebengine_product_bootstrap"
+          ? t("capabilityReview")
+          : lastPreviewAcceptance.verdict === "usable"
           ? t("capabilityReady")
           : lastPreviewAcceptance.verdict === "needs_review"
             ? t("capabilityReview")
@@ -695,11 +1112,20 @@
     }
 
     function connectQtBridge() {
-      if (finished || connecting || typeof qt === "undefined" || !qt.webChannelTransport || typeof QWebChannel === "undefined") {
+      if (
+        finished ||
+        connecting ||
+        window.__reweaveWebChannelConnecting ||
+        typeof qt === "undefined" ||
+        !qt.webChannelTransport ||
+        typeof QWebChannel === "undefined"
+      ) {
         return false;
       }
       connecting = true;
+      window.__reweaveWebChannelConnecting = true;
       new QWebChannel(qt.webChannelTransport, function (channel) {
+        window.__reweaveWebChannelConnecting = false;
         window.reweaveBridge = channel.objects.reweaveBridge;
         connecting = false;
         attach();
@@ -750,17 +1176,18 @@
 
   function isCapsuleGenerateEligible(cap) {
     if (!cap) return false;
-    if (cap.origin === "lumo_lite_capsule_warehouse") return canBuildTaskPackPreview();
     var status = cap.status || "active";
+    if (cap.formal_version) {
+      return status === "active" && cap.generation_eligible === true;
+    }
     return status === "active" || status === "ready";
   }
 
   function isCapsuleManageEligible(cap) {
     return !!(
       cap &&
+      !cap.formal_version &&
       !isLumoLiteReadOnly() &&
-      cap.origin !== "lumo_lite_capsule_warehouse" &&
-      cap.origin !== "stage4_module_native" &&
       isCapsuleGenerateEligible(cap)
     );
   }
@@ -772,16 +1199,32 @@
     data.generateCapsuleIds = data.capsules.filter(isCapsuleGenerateEligible).map(function (cap) {
       return cap.id;
     });
+    usedCapsuleIds = usedCapsuleIds.filter(function (id) {
+      return data.generateCapsuleIds.indexOf(id) !== -1;
+    });
+    if (selectedCapsuleId && data.generateCapsuleIds.indexOf(selectedCapsuleId) === -1) {
+      selectedCapsuleId = null;
+      if (els.reader) hideCapsuleReader();
+    }
     if (els.capsuleStrip) {
       renderCapsuleStrip();
     }
+    if (els.usedCapsuleDock && els.usedCount) renderUsedChips();
     updateEnrichedContentToggle();
   }
 
   function applyDesktopInitialState(state) {
     if (!hasDesktopBridge() || !state || !data) return;
+    clearLumoLiteMockState();
+    delete data.lumoLiteMode;
+    delete data.lumoLiteRuntimeSummary;
+    lastPreviewAcceptance = null;
+    lastReactPreview = null;
+    delete data.qualityGate;
+    data.generatedTraceVerified = false;
+    delete data.lunaPack;
+    delete data.contentAwareGenerate;
     if (isLumoLiteState(state)) {
-      clearLumoLiteMockState();
       data.lumoLiteRuntimeSummary = state.lumoLiteRuntimeSummary || null;
     }
     if (Array.isArray(state.sourceBoxes)) {
@@ -795,26 +1238,1782 @@
       applyWarehouseCapsules(state.capsules);
     }
     if (Array.isArray(state.history)) data.history = state.history.slice();
+    applyIngestionInitialState(state.capsuleIngestionV1 || null);
     if (state.generatedPackage) {
       data.generatedPackage = state.generatedPackage;
+    } else {
+      delete data.generatedPackage;
     }
-    if (Array.isArray(state.lumoLiteArtifacts)) {
-      lumoLiteArtifacts = state.lumoLiteArtifacts.slice();
-      if (els.btnLumoArtifacts) {
-        els.btnLumoArtifacts.classList.toggle("hidden", lumoLiteArtifacts.length === 0);
-      }
+    lumoLiteArtifacts = Array.isArray(state.lumoLiteArtifacts)
+      ? state.lumoLiteArtifacts.slice()
+      : [];
+    if (els.btnLumoArtifacts) {
+      els.btnLumoArtifacts.classList.toggle("hidden", lumoLiteArtifacts.length === 0);
     }
     if (state.previewPath) {
       lastPreviewPath = state.previewPath;
     } else if (state.lastPreview && state.lastPreview.previewPath) {
       lastPreviewPath = state.lastPreview.previewPath;
+    } else {
+      lastPreviewPath = "";
     }
     if ($("sources-count")) {
       renderSources();
     }
     syncSourceControls();
     syncWelcomeSourceBoxMode();
+    if ($("history-list")) renderHistory();
+    if (els.reweaveResponse) els.reweaveResponse.textContent = "";
+    if (els.generatedTree && els.generatedPreview) syncGeneratedPackageView();
+    if (!isLumoLiteReadOnly()) {
+      var canGenerate = canGenerateProduct();
+      if (els.taskInput) {
+        els.taskInput.disabled = !canGenerate;
+        els.taskInput.placeholder = t("taskPlaceholder");
+      }
+      if (els.btnGenerate) {
+        els.btnGenerate.disabled = !canGenerate;
+        els.btnGenerate.classList.toggle("hidden", !canGenerate);
+        els.btnGenerate.setAttribute("aria-disabled", canGenerate ? "false" : "true");
+      }
+    }
     applyLumoLiteRuntimeView();
+  }
+
+  function managementPayload(result) {
+    if (!result || result.ok === false) return null;
+    return result.data && typeof result.data === "object" ? result.data : result;
+  }
+
+  function managementList(result, names) {
+    var payload = managementPayload(result);
+    if (!payload) return [];
+    if (Array.isArray(payload)) return payload.slice();
+    for (var i = 0; i < names.length; i += 1) {
+      if (Array.isArray(payload[names[i]])) return payload[names[i]].slice();
+    }
+    return [];
+  }
+
+  function managementError(result) {
+    var error = result && result.error;
+    var code = error && (error.message_key || error.code) ? String(error.message_key || error.code) : "internal_error";
+    if (STR[locale][code]) return code;
+    return {
+      offer_stale: "captureOfferStale",
+      adapter_offer_stale: "captureOfferStale",
+      adapter_mapping_invalid: "adapterMappingInvalid",
+      adapter_example_mismatch: "captureExampleMismatch",
+      source_changed: "captureSourceChanged",
+      candidate_boundary_changed: "captureSourceChanged",
+      source_unavailable: "projectScanSourceMissing",
+      source_platform_unsupported_v1: "projectScanPlatformUnsupported",
+      worker_timeout: "captureWorkerTimeout",
+      bundle_security_rejected: "captureSecurityRejected",
+      adapter_security_rejected: "captureSecurityRejected",
+      capture_request_invalid: "captureRequestInvalid",
+      capture_resubmission_required: "captureResubmitRequired",
+      adapter_creation_path_retired: "adapterCreationPathRetired",
+      adapter_contract_version_expired: "adapterContractVersionExpired",
+    }[code] || "managementOperationFailed";
+  }
+
+  function applyIngestionInitialState(block) {
+    if (!block || typeof block !== "object") return;
+    var payload = block.data && typeof block.data === "object" ? block.data : block;
+    ingestionManagement.available = payload.available !== false;
+    if (Array.isArray(payload.sourceRoots)) ingestionManagement.sourceRoots = payload.sourceRoots.slice();
+    if (Array.isArray(payload.projects)) ingestionManagement.projects = payload.projects.slice();
+    if (Array.isArray(payload.review_items)) ingestionManagement.reviewItems = payload.review_items.slice();
+    if (Array.isArray(payload.capability_groups)) ingestionManagement.capabilityGroups = payload.capability_groups.slice();
+    if (Array.isArray(payload.backups)) ingestionManagement.backups = payload.backups.slice();
+    if (Array.isArray(payload.recoverableProducts)) {
+      ingestionManagement.recoverableProducts = payload.recoverableProducts.slice();
+    }
+    if (Array.isArray(payload.historicalProducts)) {
+      ingestionManagement.historicalProducts = payload.historicalProducts.slice();
+    }
+    if (payload.legacy && typeof payload.legacy === "object") ingestionManagement.legacy = payload.legacy;
+    if (payload.selected_model || payload.selectedSupervisionModel) {
+      ingestionManagement.selectedModel = payload.selected_model || payload.selectedSupervisionModel;
+    }
+    ingestionManagement.loaded = false;
+    var button = $("btn-capsule-warehouse");
+    if (button) button.classList.toggle("hidden", !ingestionManagement.available);
+    renderIngestionManagement();
+  }
+
+  function setManagementStatus(key) {
+    ingestionManagement.errorKey = key || "";
+    var status = $("capsule-warehouse-status");
+    if (!status) return;
+    status.textContent = key ? (STR[locale][key] || key) : t("managementReady");
+    var waiting = captureStatusIsWaiting(key);
+    status.classList.toggle("is-waiting", waiting);
+    status.classList.toggle("is-error", !!key && !waiting && [
+      "managementLoading",
+      "decisionSaved",
+      "modelSaved",
+      "backupCreated",
+      "adapterInspectionComplete",
+      "adapterCandidateCreated",
+      "captureDuplicate",
+      "restoreComplete",
+      "importStarted",
+    ].indexOf(key) < 0);
+  }
+
+  function captureOutcomeStatusKey(outcome) {
+    var status = outcome && typeof outcome === "object" ? String(outcome.status || "") : "";
+    return {
+      waiting_user: "captureNeedsDecision",
+      waiting_model: "captureWaitingModel",
+      waiting_validation: "captureWaitingValidation",
+      rejected: "captureRejected",
+      review_required: "captureReviewRequired",
+      duplicate: "captureDuplicate",
+    }[status] || "captureOutcomeUnknown";
+  }
+
+  function captureStatusIsWaiting(key) {
+    return [
+      "captureNeedsDecision",
+      "captureResubmitRequired",
+      "captureWaitingModel",
+      "captureWaitingValidation",
+      "captureReviewRequired",
+    ].indexOf(key) >= 0;
+  }
+
+  function setOptionalTitle(element, value) {
+    if (!element) return element;
+    var title = String(value || "").trim();
+    if (title) element.title = title;
+    else element.removeAttribute("title");
+    return element;
+  }
+
+  function controlHelp(element, key) {
+    var help = key && ((STR[locale] && STR[locale][key]) || STR.en[key]);
+    setOptionalTitle(element, help);
+    return element;
+  }
+
+  function syncWarehouseMode() {
+    var popover = $("capsule-warehouse-popover");
+    var toggle = $("warehouse-developer-mode");
+    if (toggle) toggle.checked = ingestionManagement.developerMode === true;
+    if (popover) popover.classList.toggle("developer-mode", ingestionManagement.developerMode === true);
+  }
+
+  function reviewStatusLabel(status) {
+    var key = {
+      waiting_user: "reviewStatusWaitingUser",
+      waiting_model: "reviewStatusWaitingModel",
+      waiting_validation: "reviewStatusWaitingValidation",
+      review_required: "reviewStatusReviewRequired",
+      duplicate: "reviewStatusDuplicate",
+      rejected: "reviewStatusRejected",
+    }[String(status || "")];
+    return key ? t(key) : String(status || t("unknown"));
+  }
+
+  function reviewDecisionCopy(decision) {
+    return {
+      process_candidate: ["decisionProcessCandidate", "decisionProcessCandidateHelp"],
+      confirm_fictional_fixture: ["decisionConfirmFictional", "decisionConfirmFictionalHelp"],
+      confirm_safe_redaction: ["decisionConfirmSafeRedaction", "decisionConfirmSafeRedactionHelp"],
+      confirm_real_record_reject: ["decisionRejectRealRecord", "decisionRejectRealRecordHelp"],
+      remove_brand: ["decisionRemoveBrand", "decisionRemoveBrandHelp"],
+      retain_brand_limited: ["decisionRetainBrand", "decisionRetainBrandHelp"],
+      confirm_selected_string_enumeration: ["decisionConfirmEnum", "decisionConfirmEnumHelp"],
+      confirm_assets_contain_no_real_records: ["decisionConfirmAssets", "decisionConfirmAssetsHelp"],
+      publish_general: ["decisionPublishGeneral", "decisionPublishGeneralHelp"],
+      publish_brand_limited: ["decisionPublishBrand", "decisionPublishBrandHelp"],
+      create_variant: ["decisionCreateVariant", "decisionCreateVariantHelp"],
+      merge_existing: ["decisionMergeExisting", "decisionMergeExistingHelp"],
+      replace_current: ["decisionReplaceCurrent", "decisionReplaceCurrentHelp"],
+      semantic_split: ["decisionSemanticSplit", "decisionSemanticSplitHelp"],
+      reject: ["decisionReject", "decisionRejectHelp"],
+    }[decision] || null;
+  }
+
+  function stableSnakeKey(value, fallback) {
+    var text = String(value || "")
+      .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, "_")
+      .replace(/^_+|_+$/g, "")
+      .replace(/_+/g, "_");
+    if (!/^[a-z_][a-z0-9_]*$/.test(text)) return fallback;
+    return text;
+  }
+
+  function reviewIdentityDefaults(item, candidate, reviewName) {
+    var payload = candidate && candidate.ephemeral_capture_payload;
+    var selected = payload && payload.selected_function;
+    var mapping = payload && payload.mapping;
+    var exportName = selected && selected.export_name;
+    var base = stableSnakeKey(exportName || reviewName, "captured_calculation");
+    var result = stableSnakeKey(mapping && mapping.result_field, base);
+    if (result === "result") result = base;
+    var display = String(exportName || reviewName || "Captured calculation")
+      .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
+      .replace(/[_-]+/g, " ")
+      .trim();
+    if (!display) display = "Captured calculation";
+    return {
+      capability_key: stableSnakeKey(candidate && candidate.suggested_capability_key, base + "_calculation"),
+      role_key: stableSnakeKey(candidate && candidate.suggested_role_key, result),
+      variant_key: "default",
+      display_name: String(candidate && candidate.suggested_display_name || display),
+    };
+  }
+
+  function emptyManagementList(container, key) {
+    if (!container) return;
+    var item = document.createElement("p");
+    item.className = "warehouse-empty";
+    item.textContent = t(key);
+    container.appendChild(item);
+  }
+
+  function managementBrandProfile(project) {
+    var profile = project && project.brand_profile_json;
+    if (profile && typeof profile === "object" && !Array.isArray(profile)) return profile;
+    if (typeof profile === "string") {
+      try {
+        var parsed = JSON.parse(profile);
+        if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) return parsed;
+      } catch (_error) {
+        return {};
+      }
+    }
+    return {};
+  }
+
+  function createBrandEditor(project) {
+    var wrap = document.createElement("div");
+    wrap.className = "warehouse-actions warehouse-brand-editor";
+    var modeLabel = document.createElement("label");
+    modeLabel.className = "warehouse-field";
+    modeLabel.appendChild(document.createTextNode(t("brandMode")));
+    var mode = document.createElement("select");
+    [
+      ["inherit", "brandInherit"],
+      ["clear", "brandClear"],
+      ["replace", "brandReplace"],
+    ].forEach(function (definition) {
+      var option = document.createElement("option");
+      option.value = definition[0];
+      option.textContent = t(definition[1]);
+      mode.appendChild(option);
+    });
+    var savedMode = String((project && project.brand_mode) || "inherit");
+    mode.value = ["inherit", "clear", "replace"].indexOf(savedMode) >= 0
+      ? savedMode
+      : "inherit";
+    modeLabel.appendChild(mode);
+    wrap.appendChild(modeLabel);
+
+    var profileLabel = document.createElement("label");
+    profileLabel.className = "warehouse-field warehouse-brand-profile";
+    profileLabel.appendChild(document.createTextNode(t("brandProfile")));
+    var profile = document.createElement("textarea");
+    profile.rows = 3;
+    profile.maxLength = 32768;
+    profile.spellcheck = false;
+    profile.value = JSON.stringify(managementBrandProfile(project), null, 2);
+    profileLabel.appendChild(profile);
+    wrap.appendChild(profileLabel);
+
+    function sync() {
+      profileLabel.classList.toggle("hidden", mode.value !== "replace");
+    }
+    mode.addEventListener("change", sync);
+    sync();
+    return {
+      element: wrap,
+      read: function () {
+        var result = { brand_mode: mode.value };
+        if (mode.value === "replace") {
+          try {
+            var parsed = JSON.parse(profile.value || "{}");
+            if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) throw new Error("object required");
+            result.brand_profile = parsed;
+          } catch (_error) {
+            setManagementStatus("brandProfileInvalid");
+            profile.focus();
+            return null;
+          }
+        }
+        return result;
+      },
+    };
+  }
+
+  function submitProjectConfirmations(entries, onComplete) {
+    bridgeCall("confirm_projects", JSON.stringify({ projects: entries })).then(function (raw) {
+      var result = parseBridgeJson(raw);
+      var payload = managementPayload(result);
+      if (!payload) {
+        setManagementStatus(managementError(result));
+        return;
+      }
+      var errors = Array.isArray(payload.errors) ? payload.errors : [];
+      if (errors.length) setManagementStatus("projectConfirmationPartial");
+      if (typeof onComplete === "function") onComplete(errors);
+      if (!trackManagementRuns(result)) refreshIngestionManagement();
+    });
+  }
+
+  function adapterSafeInteger(control) {
+    var text = String(control.value || "").trim();
+    var value = Number(text);
+    if (!text || !Number.isSafeInteger(value)) {
+      if (typeof control.reportValidity === "function") control.reportValidity();
+      return null;
+    }
+    return value;
+  }
+
+  function refreshAdapterReviewItems(onComplete) {
+    bridgeCall("list_review_items", JSON.stringify({})).then(function (raw) {
+      var result = parseBridgeJson(raw);
+      if (!managementPayload(result)) {
+        setManagementStatus(managementError(result));
+        return;
+      }
+      ingestionManagement.reviewItems = managementList(result, ["review_items", "items"]);
+      renderManagementReviews();
+      if (typeof onComplete === "function") onComplete(ingestionManagement.reviewItems);
+    });
+  }
+
+  function renderJavascriptComputationOffers(projectBlock, project, inspection) {
+    if (!inspection || inspection.schema !== "computation_capture_offers.v2") return;
+    var offers = Array.isArray(inspection.offers) ? inspection.offers : [];
+    var resumableReviews = ingestionManagement.reviewItems.filter(function (item) {
+      return item && item.adapter_contract_version_expired !== true &&
+        String(item.project_id || "") === String(inspection.project_id || "") &&
+        item.candidate_status === "waiting_user" &&
+        item.resume_contract === "resubmit_ephemeral_capture.v1";
+    });
+    var panel = document.createElement("div");
+    panel.className = "warehouse-project-config";
+    if (!offers.length) {
+      emptyManagementList(panel, "noJavascriptComputations");
+      projectBlock.appendChild(panel);
+      return;
+    }
+    offers.forEach(function (offer) {
+      var resumeKey = String(offer.offer_id || "");
+      var parameters = Array.isArray(offer.parameters) ? offer.parameters : [];
+      var details = document.createElement("details");
+      details.className = "warehouse-review";
+      details.title = t("adapterSimpleHelp");
+      var summary = document.createElement("summary");
+      summary.appendChild(document.createTextNode(String(offer.export_name || "function")));
+      var signatureMeta = document.createElement("span");
+      signatureMeta.className = "warehouse-developer-only warehouse-meta";
+      signatureMeta.textContent = "(" + parameters.map(function (item) {
+        return String(item.name || "parameter");
+      }).join(", ") + ")";
+      summary.appendChild(signatureMeta);
+      var sourceMeta = document.createElement("span");
+      sourceMeta.className = "warehouse-developer-only warehouse-meta";
+      sourceMeta.textContent = " · " + [offer.module_relpath, String(offer.dependency_count || 0)].filter(Boolean).join(" · ");
+      summary.appendChild(sourceMeta);
+      details.appendChild(summary);
+
+      var resumeReview = controlHelp(document.createElement("select"), "captureResumeReviewHelp");
+      var newReview = document.createElement("option");
+      newReview.value = "";
+      newReview.textContent = t("captureResumeReview");
+      resumeReview.appendChild(newReview);
+      resumableReviews.forEach(function (item, reviewIndex) {
+        var option = document.createElement("option");
+        option.value = String(item.review_id || "");
+        option.textContent = t("captureReview") + " · " + String(item.created_at || reviewIndex + 1);
+        option.title = String(item.review_id || "");
+        if (option.value === ingestionManagement.captureResume[resumeKey]) option.selected = true;
+        resumeReview.appendChild(option);
+      });
+      if (!resumeReview.value && resumableReviews.length === 1 && offers.length === 1) {
+        resumeReview.value = String(resumableReviews[0].review_id || "");
+        ingestionManagement.captureResume[resumeKey] = resumeReview.value;
+      }
+      var resumeLabel = document.createElement("label");
+      resumeLabel.className = "warehouse-field" +
+        (resumableReviews.length > 0 && !(resumableReviews.length === 1 && offers.length === 1)
+          ? ""
+          : " warehouse-developer-only");
+      resumeLabel.textContent = t("captureResumeReview");
+      resumeLabel.title = t("captureResumeReviewHelp");
+      resumeLabel.appendChild(resumeReview);
+      details.appendChild(resumeLabel);
+
+      var argumentControls = [];
+      parameters.forEach(function (parameter, parameterIndex) {
+        var row = document.createElement("div");
+        row.className = "warehouse-actions";
+        var name = document.createElement("strong");
+        name.className = "warehouse-meta";
+        name.textContent = formatText("adapterInputSourceLabel", {
+          index: parameterIndex + 1,
+          parameter: String(parameter.name || "parameter"),
+        });
+        name.title = t("adapterInputFieldHelp");
+        row.appendChild(name);
+
+        var field = controlHelp(document.createElement("input"), "adapterInputFieldHelp");
+        field.type = "text";
+        field.required = true;
+        field.pattern = "[a-z][a-z0-9]*(?:_[a-z0-9]+)*";
+        field.autocomplete = "off";
+        field.spellcheck = false;
+        if (/^[a-z][a-z0-9]*(?:_[a-z0-9]+)*$/.test(String(parameter.name || ""))) field.value = String(parameter.name);
+        var fieldLabel = document.createElement("label");
+        fieldLabel.className = "warehouse-field";
+        fieldLabel.textContent = t("adapterInputField");
+        fieldLabel.title = t("adapterInputFieldHelp");
+        fieldLabel.appendChild(field);
+        row.appendChild(fieldLabel);
+        var fieldHelp = document.createElement("span");
+        fieldHelp.id = "adapter-input-help-" + resumeKey.slice(0, 12) + "-" + parameterIndex;
+        fieldHelp.className = "warehouse-meta";
+        fieldHelp.textContent = t("adapterInputFieldVisibleHelp");
+        field.setAttribute("aria-describedby", fieldHelp.id);
+        row.appendChild(fieldHelp);
+
+        var kind = controlHelp(document.createElement("select"), "adapterInputKindHelp");
+        [["integer", "integer"], ["boolean", "boolean"], ["enum", "enum"]].forEach(function (entry) {
+          var option = document.createElement("option");
+          option.value = entry[0];
+          option.textContent = entry[1];
+          kind.appendChild(option);
+        });
+        var kindLabel = document.createElement("label");
+        kindLabel.className = "warehouse-field warehouse-developer-only";
+        kindLabel.textContent = t("adapterInputKind");
+        kindLabel.title = t("adapterInputKindHelp");
+        kindLabel.appendChild(kind);
+        row.appendChild(kindLabel);
+
+        var minimum = controlHelp(document.createElement("input"), "adapterMinimumHelp");
+        minimum.type = "number";
+        minimum.step = "1";
+        minimum.placeholder = "0";
+        var minimumLabel = document.createElement("label");
+        minimumLabel.className = "warehouse-field";
+        minimumLabel.textContent = t("adapterMinimum");
+        minimumLabel.title = t("adapterMinimumHelp");
+        minimumLabel.appendChild(minimum);
+        row.appendChild(minimumLabel);
+        var maximum = controlHelp(document.createElement("input"), "adapterMaximumHelp");
+        maximum.type = "number";
+        maximum.step = "1";
+        maximum.placeholder = "10000";
+        var maximumLabel = document.createElement("label");
+        maximumLabel.className = "warehouse-field";
+        maximumLabel.textContent = t("adapterMaximum");
+        maximumLabel.title = t("adapterMaximumHelp");
+        maximumLabel.appendChild(maximum);
+        row.appendChild(maximumLabel);
+        var values = controlHelp(document.createElement("textarea"), "adapterEnumValuesHelp");
+        values.rows = 2;
+        var valuesLabel = document.createElement("label");
+        valuesLabel.className = "warehouse-field warehouse-developer-only";
+        valuesLabel.textContent = t("adapterEnumValues");
+        valuesLabel.title = t("adapterEnumValuesHelp");
+        valuesLabel.appendChild(values);
+        row.appendChild(valuesLabel);
+        var example = controlHelp(document.createElement("input"), "adapterExampleHelp");
+        example.type = "text";
+        example.required = true;
+        example.placeholder = "4";
+        var exampleLabel = document.createElement("label");
+        exampleLabel.className = "warehouse-field";
+        exampleLabel.textContent = t("adapterExample");
+        exampleLabel.title = t("adapterExampleHelp");
+        exampleLabel.appendChild(example);
+        row.appendChild(exampleLabel);
+        var controls = {
+          parameter_binding_id: String(parameter.parameter_binding_id || ""),
+          source_name: String(parameter.name || "parameter"),
+          field: field,
+          kind: kind,
+          minimum: minimum,
+          minimumLabel: minimumLabel,
+          maximum: maximum,
+          maximumLabel: maximumLabel,
+          values: values,
+          valuesLabel: valuesLabel,
+          example: example,
+        };
+        function syncKind() {
+          var integer = kind.value === "integer";
+          var enumeration = kind.value === "enum";
+          minimumLabel.classList.toggle("hidden", !integer);
+          maximumLabel.classList.toggle("hidden", !integer);
+          valuesLabel.classList.toggle("hidden", !enumeration);
+          minimum.required = integer;
+          maximum.required = integer;
+          values.required = enumeration;
+        }
+        kind.addEventListener("change", syncKind);
+        syncKind();
+        argumentControls.push(controls);
+        details.appendChild(row);
+      });
+
+      var resultRow = document.createElement("div");
+      resultRow.className = "warehouse-actions";
+      var resultField = controlHelp(document.createElement("input"), "adapterResultFieldHelp");
+      resultField.type = "text";
+      resultField.pattern = "[a-z][a-z0-9]*(?:_[a-z0-9]+)*";
+      resultField.required = true;
+      resultField.value = "result";
+      var resultLabel = document.createElement("label");
+      resultLabel.className = "warehouse-field";
+      resultLabel.textContent = t("adapterResultField");
+      resultLabel.title = t("adapterResultFieldHelp");
+      resultLabel.appendChild(resultField);
+      resultRow.appendChild(resultLabel);
+      var resultHelp = document.createElement("span");
+      resultHelp.id = "adapter-result-help-" + resumeKey.slice(0, 12);
+      resultHelp.className = "warehouse-meta";
+      resultHelp.textContent = t("adapterResultFieldVisibleHelp");
+      resultField.setAttribute("aria-describedby", resultHelp.id);
+      resultRow.appendChild(resultHelp);
+      var expected = controlHelp(document.createElement("input"), "adapterExpectedHelp");
+      expected.type = "number";
+      expected.step = "1";
+      expected.required = true;
+      expected.placeholder = "20";
+      var expectedLabel = document.createElement("label");
+      expectedLabel.className = "warehouse-field";
+      expectedLabel.textContent = t("adapterExpected");
+      expectedLabel.title = t("adapterExpectedHelp");
+      expectedLabel.appendChild(expected);
+      resultRow.appendChild(expectedLabel);
+      details.appendChild(resultRow);
+
+      var preview = document.createElement("p");
+      preview.className = "warehouse-meta warehouse-mapping-preview warehouse-developer-only";
+      preview.title = t("adapterSimpleHelp");
+      details.appendChild(preview);
+      function updatePreview() {
+        var parts = argumentControls.map(function (control) {
+          var fieldName = String(control.field.value || "?").trim() || "?";
+          var domain = control.kind.value === "integer"
+            ? String(control.minimum.value || "?") + "…" + String(control.maximum.value || "?")
+            : (control.kind.value === "enum" ? String(control.values.value || "?").split(/\r?\n/).filter(Boolean).join("|") : "boolean");
+          return control.source_name + " → " + fieldName + " [" + domain + "] = " + String(control.example.value || "?");
+        });
+        parts.push(String(resultField.value || "result") + " = " + String(expected.value || "?"));
+        preview.textContent = formatText("adapterMappingPreview", { mapping: parts.join("；") });
+      }
+      argumentControls.forEach(function (control) {
+        [control.field, control.kind, control.minimum, control.maximum, control.values, control.example].forEach(function (input) {
+          input.addEventListener("input", updatePreview);
+          input.addEventListener("change", updatePreview);
+        });
+      });
+      [resultField, expected].forEach(function (input) { input.addEventListener("input", updatePreview); });
+      updatePreview();
+
+      var confirmationLabel = document.createElement("label");
+      confirmationLabel.className = "warehouse-project-choice";
+      confirmationLabel.title = t("adapterMappingConfirmation");
+      var confirmation = document.createElement("input");
+      confirmation.type = "checkbox";
+      confirmation.required = true;
+      confirmation.title = t("adapterMappingConfirmation");
+      confirmationLabel.appendChild(confirmation);
+      confirmationLabel.appendChild(document.createTextNode(" " + t("adapterMappingConfirmShort")));
+      details.appendChild(confirmationLabel);
+
+      var offerStatus = document.createElement("p");
+      offerStatus.className = "warehouse-status";
+      offerStatus.setAttribute("aria-live", "polite");
+      details.appendChild(offerStatus);
+      var create = controlHelp(document.createElement("button"), "createComputationAdapter");
+      create.type = "button";
+      create.className = "btn-ghost";
+      create.setAttribute("data-action", "create-javascript-computation-capture");
+      function syncCreateLabel() {
+        create.textContent = resumeReview.value ? t("continueCaptureValidation") : t("createComputationAdapter");
+        create.dataset.resumeReviewId = String(resumeReview.value || "");
+        var selectedReview = resumableReviews.find(function (item) {
+          return String(item.review_id || "") === String(resumeReview.value || "");
+        });
+        var decisionsRemaining = selectedReview && Array.isArray(selectedReview.allowed_decisions)
+          ? selectedReview.allowed_decisions.length > 0
+          : false;
+        create.disabled = Boolean(resumeReview.value && decisionsRemaining);
+        if (selectedReview) {
+          var resumeStatus = decisionsRemaining ? "captureNeedsDecision" : "captureResubmitRequired";
+          offerStatus.textContent = t(resumeStatus);
+          offerStatus.classList.add("is-waiting");
+          offerStatus.classList.remove("is-error");
+        }
+        if (resumeReview.value) {
+          ingestionManagement.captureResume[resumeKey] = String(resumeReview.value);
+          ingestionManagement.captureReviewContext[String(resumeReview.value)] = {
+            offer_name: String(offer.export_name || "function") + "(" + parameters.map(function (item) {
+              return String(item.name || "parameter");
+            }).join(", ") + ")",
+          };
+        }
+      }
+      resumeReview.addEventListener("change", function () {
+        syncCreateLabel();
+        renderManagementReviews();
+      });
+      syncCreateLabel();
+      create.addEventListener("click", function () {
+        if (!confirmation.checked) {
+          confirmation.reportValidity();
+          return;
+        }
+        var argumentsPayload = [];
+        var exampleInput = {};
+        var fields = {};
+        for (var index = 0; index < argumentControls.length; index += 1) {
+          var control = argumentControls[index];
+          var fieldName = String(control.field.value || "").trim();
+          var kindName = String(control.kind.value || "");
+          if (!control.field.checkValidity() || fields[fieldName]) {
+            setManagementStatus("adapterMappingInvalid");
+            return;
+          }
+          var argument = {
+            parameter_binding_id: control.parameter_binding_id,
+            input_field: fieldName,
+            kind: kindName,
+          };
+          var exampleValue;
+          if (kindName === "integer") {
+            var minimumValue = adapterSafeInteger(control.minimum);
+            var maximumValue = adapterSafeInteger(control.maximum);
+            var integerExample = Number(String(control.example.value || "").trim());
+            if (minimumValue === null || maximumValue === null || !Number.isSafeInteger(integerExample) || minimumValue > maximumValue || integerExample < minimumValue || integerExample > maximumValue) {
+              setManagementStatus("adapterMappingInvalid");
+              return;
+            }
+            argument.minimum = minimumValue;
+            argument.maximum = maximumValue;
+            exampleValue = integerExample;
+          } else if (kindName === "boolean") {
+            if (!["true", "false"].includes(String(control.example.value).trim())) {
+              setManagementStatus("adapterMappingInvalid");
+              return;
+            }
+            exampleValue = String(control.example.value).trim() === "true";
+          } else if (kindName === "enum") {
+            var enumValues = String(control.values.value || "").split(/\r?\n/).filter(function (value) { return value !== ""; });
+            exampleValue = String(control.example.value || "");
+            if (!enumValues.length || enumValues.indexOf(exampleValue) < 0) {
+              setManagementStatus("adapterMappingInvalid");
+              return;
+            }
+            argument.values = enumValues;
+          } else {
+            setManagementStatus("adapterMappingInvalid");
+            return;
+          }
+          fields[fieldName] = true;
+          argumentsPayload.push(argument);
+          exampleInput[fieldName] = exampleValue;
+        }
+        var resultName = String(resultField.value || "").trim();
+        var expectedValue = adapterSafeInteger(expected);
+        if (!resultField.checkValidity() || fields[resultName] || expectedValue === null) {
+          setManagementStatus("adapterMappingInvalid");
+          return;
+        }
+        startManagementRun("start_create_computation_adapter", {
+          project_id: String(inspection.project_id || project.project_id || ""),
+          offer_id: String(offer.offer_id || ""),
+          review_id: String(resumeReview.value || "") || null,
+          arguments: argumentsPayload,
+          result_field: resultName,
+          examples: [{ input: exampleInput, expected: expectedValue }],
+        }, function (run) {
+          var outcome = run && run.data && typeof run.data === "object" ? run.data : {};
+          var statusKey = captureOutcomeStatusKey(outcome);
+          offerStatus.textContent = t(statusKey);
+          offerStatus.classList.toggle("is-waiting", captureStatusIsWaiting(statusKey));
+          offerStatus.classList.toggle("is-error", ["captureRejected", "captureOutcomeUnknown"].indexOf(statusKey) >= 0);
+          if (outcome.status === "waiting_user" && outcome.review_id) {
+            ingestionManagement.captureResume[resumeKey] = String(outcome.review_id);
+            ingestionManagement.captureReviewContext[String(outcome.review_id)] = {
+              offer_name: String(offer.export_name || "function") + "(" + parameters.map(function (item) {
+                return String(item.name || "parameter");
+              }).join(", ") + ")",
+            };
+            if (!Array.prototype.some.call(resumeReview.options, function (option) { return option.value === String(outcome.review_id); })) {
+              var resumeOption = document.createElement("option");
+              resumeOption.value = String(outcome.review_id);
+              resumeOption.textContent = t("captureReview") + " · " + String(outcome.review_id).slice(0, 8);
+              resumeOption.title = String(outcome.review_id);
+              resumeReview.appendChild(resumeOption);
+            }
+            resumeReview.value = String(outcome.review_id);
+            syncCreateLabel();
+            create.disabled = true;
+            setManagementStatus("captureNeedsDecision");
+          } else {
+            delete ingestionManagement.captureResume[resumeKey];
+            resumeReview.value = "";
+            syncCreateLabel();
+            setManagementStatus(statusKey);
+          }
+          refreshAdapterReviewItems();
+        }, false);
+      });
+      details.appendChild(create);
+      panel.appendChild(details);
+    });
+    projectBlock.appendChild(panel);
+  }
+
+  function computationScanEligibility(project) {
+    var sourceType = String(project && project.source_type || "");
+    var status = String(project && project.project_state || "");
+    var knownType = sourceType === "javascript_computation_source" || sourceType === "static_web";
+    if (!project || !project.project_id) {
+      return { enabled: false, messageKey: "projectScanIncomplete" };
+    }
+    if (!knownType) {
+      return { enabled: false, messageKey: "projectScanUnknownType" };
+    }
+    if (["source_platform_unsupported_v1", "platform_unsupported"].indexOf(status) >= 0) {
+      return { enabled: false, messageKey: "projectScanPlatformUnsupported" };
+    }
+    if (status === "source_missing") {
+      return { enabled: false, messageKey: "projectScanSourceMissing" };
+    }
+    if (["discovered_unconfirmed", "pending_confirmation"].indexOf(status) >= 0) {
+      return { enabled: false, messageKey: "projectScanPending" };
+    }
+    if (status === "ready") {
+      return { enabled: true, messageKey: "projectScanReady" };
+    }
+    if (sourceType === "static_web" && status === "unsupported_v1") {
+      return { enabled: true, messageKey: "projectScanStaticUnsupported" };
+    }
+    return { enabled: false, messageKey: "projectScanUnknownState" };
+  }
+
+  function renderManagementProjects() {
+    var container = $("warehouse-projects");
+    if (!container) return;
+    container.innerHTML = "";
+    if (ingestionManagement.sourceRoots.length) {
+      var registration = document.createElement("div");
+      registration.className = "warehouse-project-config";
+      var rootSelect = controlHelp(document.createElement("select"), "javascriptSourceRootHelp");
+      ingestionManagement.sourceRoots.forEach(function (root) {
+        var option = document.createElement("option");
+        option.value = String(root.root_id || "");
+        option.textContent = String(root.current_path || root.root_id || "source root");
+        rootSelect.appendChild(option);
+      });
+      var rootLabel = document.createElement("label");
+      rootLabel.className = "warehouse-field";
+      rootLabel.textContent = t("javascriptSourceRoot");
+      rootLabel.title = t("javascriptSourceRootHelp");
+      rootLabel.appendChild(rootSelect);
+      var relpath = controlHelp(document.createElement("input"), "javascriptProjectRelpathHelp");
+      relpath.type = "text";
+      relpath.value = ".";
+      relpath.placeholder = t("javascriptProjectRelpath");
+      var relpathLabel = document.createElement("label");
+      relpathLabel.className = "warehouse-field warehouse-developer-only";
+      relpathLabel.textContent = t("javascriptProjectRelpath");
+      relpathLabel.title = t("javascriptProjectRelpathHelp");
+      relpathLabel.appendChild(relpath);
+      var displayName = controlHelp(document.createElement("input"), "javascriptDisplayNameHelp");
+      displayName.type = "text";
+      displayName.placeholder = t("javascriptDisplayName");
+      displayName.maxLength = 200;
+      var displayNameLabel = document.createElement("label");
+      displayNameLabel.className = "warehouse-field warehouse-developer-only";
+      displayNameLabel.textContent = t("javascriptDisplayName");
+      displayNameLabel.title = t("javascriptDisplayNameHelp");
+      displayNameLabel.appendChild(displayName);
+      var register = controlHelp(document.createElement("button"), "registerJavascriptSourceHelp");
+      register.type = "button";
+      register.className = "btn-ghost";
+      register.setAttribute("data-action", "register-javascript-computation-source");
+      register.textContent = t("registerJavascriptSource");
+      register.addEventListener("click", function () {
+        var relpathValue = String(relpath.value || ".").trim() || ".";
+        var rootName = rootSelect.options[rootSelect.selectedIndex]
+          ? String(rootSelect.options[rootSelect.selectedIndex].textContent || "source")
+          : "source";
+        var inferredName = relpathValue === "."
+          ? rootName.split(/[\\/]/).filter(Boolean).pop()
+          : relpathValue.split("/").filter(Boolean).pop();
+        var name = String(displayName.value || inferredName || "source").trim();
+        bridgeCall("register_javascript_computation_source", JSON.stringify({
+          source_root_id: String(rootSelect.value || ""),
+          project_relpath: relpathValue,
+          display_name: name,
+        })).then(function (raw) {
+          var result = parseBridgeJson(raw);
+          if (!managementPayload(result)) {
+            setManagementStatus(managementError(result));
+            return;
+          }
+          refreshIngestionManagement();
+        });
+      });
+      registration.appendChild(rootLabel);
+      registration.appendChild(relpathLabel);
+      registration.appendChild(displayNameLabel);
+      registration.appendChild(register);
+      container.appendChild(registration);
+    }
+    var discovery = ingestionManagement.discovery;
+    var discovered = discovery && Array.isArray(discovery.projects) ? discovery.projects : [];
+    if (discovered.length) {
+      var form = document.createElement("div");
+      form.className = "warehouse-discovery";
+      discovered.forEach(function (project) {
+        var projectConfig = document.createElement("div");
+        projectConfig.className = "warehouse-project-config";
+        var label = document.createElement("label");
+        label.className = "warehouse-project-choice";
+        var input = document.createElement("input");
+        input.type = "checkbox";
+        input.checked = project.selected === true ||
+          (project.selected == null && discovered.length === 1);
+        input.value = String(project.project_id || project.id || "");
+        input.title = t("confirmProjects");
+        label.appendChild(input);
+        label.appendChild(document.createTextNode(" " + String(project.display_name || project.name || project.root_relpath || input.value)));
+        projectConfig.appendChild(label);
+        var brandEditor = createBrandEditor(project);
+        brandEditor.element.classList.add("warehouse-developer-only");
+        input._brandEditor = brandEditor;
+        projectConfig.appendChild(brandEditor.element);
+        form.appendChild(projectConfig);
+      });
+      var confirm = document.createElement("button");
+      confirm.type = "button";
+      confirm.className = "btn-ghost";
+      confirm.textContent = t("confirmProjects");
+      confirm.title = t("confirmProjects");
+      confirm.addEventListener("click", function () {
+        var entries = [];
+        var checked = Array.prototype.slice.call(form.querySelectorAll('input[type="checkbox"]:checked'));
+        for (var index = 0; index < checked.length; index += 1) {
+          var brand = checked[index]._brandEditor.read();
+          if (!brand) return;
+          entries.push(Object.assign({ project_id: checked[index].value }, brand));
+        }
+        submitProjectConfirmations(entries, function (errors) {
+          if (!errors.length) ingestionManagement.discovery = null;
+        });
+      });
+      form.appendChild(confirm);
+      container.appendChild(form);
+    }
+    var scanHelp = document.createElement("p");
+    scanHelp.id = "javascript-computation-scan-help";
+    scanHelp.className = "warehouse-meta warehouse-project-scan-help";
+    scanHelp.textContent = t("scanJavascriptComputationsHelp");
+    if (ingestionManagement.projects.length) container.appendChild(scanHelp);
+    ingestionManagement.projects.slice().sort(function (left, right) {
+      function rank(project) {
+        return project.source_type === "javascript_computation_source" && project.project_state === "ready" ? 0 : 1;
+      }
+      return rank(left) - rank(right) || String(left.display_name || left.project_id || "").localeCompare(String(right.display_name || right.project_id || ""));
+    }).forEach(function (project) {
+      var row = document.createElement("div");
+      row.className = "warehouse-row";
+      var projectStatus = project.project_state || project.status || "";
+      var text = document.createElement("span");
+      var sourceType = project.source_type === "javascript_computation_source"
+        ? t("javascriptSourceType")
+        : (project.source_type === "static_web" ? t("staticWebSourceType") : t("unknownSourceType"));
+      var sourceRelpath = String(project.project_relpath || project.root_relpath || ".");
+      var projectName = String(project.display_name || project.name || project.project_key || sourceRelpath || project.project_id || "project");
+      text.textContent = projectName + " · " + sourceType;
+      text.title = [projectName, sourceType, sourceRelpath, String(projectStatus)].join(" · ");
+      row.appendChild(text);
+      var projectMeta = document.createElement("span");
+      projectMeta.className = "warehouse-meta warehouse-developer-only";
+      projectMeta.textContent = " · " + sourceRelpath + " · " + String(projectStatus);
+      row.appendChild(projectMeta);
+      var refresh = document.createElement("button");
+      refresh.type = "button";
+      refresh.className = "btn-ghost";
+      refresh.setAttribute("data-action", "refresh-project");
+      refresh.textContent = t("refreshProject");
+      refresh.title = t("refreshProjectHelp");
+      refresh.classList.add("warehouse-developer-only");
+      refresh.disabled = !project.project_id || projectStatus !== "ready" || project.source_type === "javascript_computation_source";
+      refresh.addEventListener("click", function () {
+        startManagementRun("start_refresh_project", { project_id: project.project_id });
+      });
+      row.appendChild(refresh);
+      var scanJavascript = document.createElement("button");
+      scanJavascript.type = "button";
+      scanJavascript.className = "btn-ghost";
+      scanJavascript.setAttribute("data-action", "scan-javascript-computations");
+      scanJavascript.textContent = t("scanJavascriptComputations");
+      scanJavascript.title = t("scanJavascriptComputationsHelp");
+      var scanEligibility = computationScanEligibility(project);
+      scanJavascript.disabled = !scanEligibility.enabled;
+      var scanStatus = document.createElement("span");
+      scanStatus.id = "project-scan-status-" + String(project.project_id || "unknown").replace(/[^a-zA-Z0-9_-]/g, "");
+      scanStatus.className = "warehouse-meta warehouse-project-scan-status";
+      var existingInspection = ingestionManagement.adapterOffers[String(project.project_id || "")];
+      if (!scanEligibility.enabled) {
+        scanStatus.textContent = t(scanEligibility.messageKey);
+      } else if (existingInspection && existingInspection.schema === "computation_capture_offers.v2") {
+        var existingOffers = Array.isArray(existingInspection.offers) ? existingInspection.offers : [];
+        scanStatus.textContent = existingOffers.length
+          ? formatText("scanJavascriptFound", { count: existingOffers.length })
+          : t("noJavascriptComputations");
+      } else {
+        scanStatus.textContent = t(scanEligibility.messageKey);
+      }
+      scanJavascript.setAttribute("aria-describedby", scanHelp.id + " " + scanStatus.id);
+      scanJavascript.addEventListener("click", function () {
+        scanStatus.textContent = t("scanJavascriptRunning");
+        startManagementRun(
+          "start_scan_javascript_computations",
+          { project_id: project.project_id },
+          function (run) {
+            var inspection = run && run.data;
+            if (!inspection || inspection.schema !== "computation_capture_offers.v2") {
+              scanStatus.textContent = t("managementOperationFailed");
+              return;
+            }
+            ingestionManagement.adapterOffers[String(project.project_id)] = inspection;
+            setManagementStatus("adapterInspectionComplete");
+            renderManagementProjects();
+            renderManagementReviews();
+          },
+          false,
+          function (errorKey) {
+            scanStatus.textContent = t(errorKey || "managementOperationFailed");
+          }
+        );
+      });
+      row.appendChild(scanJavascript);
+      row.appendChild(scanStatus);
+      var projectBlock = document.createElement("div");
+      projectBlock.className = "warehouse-project-config";
+      projectBlock.appendChild(row);
+      if (project.source_type !== "javascript_computation_source") {
+        var existingBrand = createBrandEditor(project);
+        existingBrand.element.classList.add("warehouse-developer-only");
+        var saveBrand = document.createElement("button");
+        saveBrand.type = "button";
+        saveBrand.className = "btn-ghost";
+        saveBrand.textContent = t("save");
+        saveBrand.title = t("saveBrandHelp");
+        saveBrand.addEventListener("click", function () {
+          var brand = existingBrand.read();
+          if (!brand) return;
+          submitProjectConfirmations([
+            Object.assign({ project_id: project.project_id }, brand),
+          ]);
+        });
+        existingBrand.element.appendChild(saveBrand);
+        projectBlock.appendChild(existingBrand.element);
+      }
+      renderJavascriptComputationOffers(
+        projectBlock,
+        project,
+        ingestionManagement.adapterOffers[String(project.project_id)]
+      );
+      container.appendChild(projectBlock);
+    });
+    if (!discovered.length && !ingestionManagement.projects.length) emptyManagementList(container, "noItems");
+  }
+
+  function renderManagementModels() {
+    var select = $("supervision-model-select");
+    if (!select) return;
+    select.innerHTML = "";
+    var empty = document.createElement("option");
+    empty.value = "";
+    empty.textContent = t("selectModel");
+    select.appendChild(empty);
+    ingestionManagement.models.forEach(function (model, index) {
+      var option = document.createElement("option");
+      option.value = String(index);
+      option.textContent = String(model.name || "") + (model.digest ? " · " + String(model.digest).slice(0, 12) : "");
+      if (
+        ingestionManagement.selectedModel &&
+        model.name === ingestionManagement.selectedModel.name &&
+        model.digest === ingestionManagement.selectedModel.digest
+      ) option.selected = true;
+      select.appendChild(option);
+    });
+  }
+
+  function managementReviewDecisionPayload(reviewId, decision, controls) {
+    var payload = { review_id: reviewId, decision: decision };
+    var identityDecisions = ["publish_general", "publish_brand_limited", "create_variant", "semantic_split"];
+    var names = identityDecisions.indexOf(decision) >= 0
+      ? ["capability_key", "role_key", "variant_key", "display_name"]
+      : [];
+    if (decision === "merge_existing") names.push("retained_version_id");
+    if (decision === "replace_current" || decision === "semantic_split") names.push("target_capsule_id");
+    for (var i = 0; i < names.length; i += 1) {
+      var control = controls[names[i]];
+      var value = control ? String(control.value || "").trim() : "";
+      if (!value || (typeof control.checkValidity === "function" && !control.checkValidity())) {
+        if (control && typeof control.reportValidity === "function") control.reportValidity();
+        return null;
+      }
+      payload[names[i]] = value;
+    }
+    return payload;
+  }
+
+  function renderManagementReviews() {
+    var container = $("warehouse-review-items");
+    var count = $("warehouse-review-count");
+    if (!container || !count) return;
+    count.textContent = String(ingestionManagement.reviewItems.length);
+    container.innerHTML = "";
+    if (!ingestionManagement.reviewItems.length) {
+      emptyManagementList(container, "noReviews");
+      return;
+    }
+    ingestionManagement.reviewItems.forEach(function (item) {
+      var candidate = item.candidate && typeof item.candidate === "object" ? item.candidate : {};
+      var adapterContractExpired = item.adapter_contract_version_expired === true;
+      var reviewContext = ingestionManagement.captureReviewContext[String(item.review_id || "")] || {};
+      var details = document.createElement("details");
+      details.className = "warehouse-review";
+      details.title = t("reviewItems");
+      var summary = document.createElement("summary");
+      var reviewName = reviewContext.offer_name || item.display_name || item.suggested_name || candidate.suggested_display_name || t("captureReview");
+      var hasServerDecisions = Array.isArray(item.allowed_decisions) && item.allowed_decisions.length > 0;
+      var reviewState = adapterContractExpired
+        ? t("adapterContractVersionExpired")
+        : (item.candidate_status === "waiting_user" &&
+          item.resume_contract === "resubmit_ephemeral_capture.v1" && !hasServerDecisions
+          ? t("captureResubmitRequired")
+          : reviewStatusLabel(item.candidate_status || item.status));
+      summary.appendChild(document.createTextNode(String(reviewName) + " · " + reviewState));
+      var reviewId = document.createElement("span");
+      reviewId.className = "warehouse-developer-only warehouse-meta";
+      reviewId.textContent = " · " + String(item.review_id || "");
+      summary.appendChild(reviewId);
+      details.appendChild(summary);
+      var meta = document.createElement("p");
+      meta.className = "warehouse-meta warehouse-developer-only";
+      meta.textContent = [item.capability_kind || candidate.capability_kind, item.reason_code || item.error_code].filter(Boolean).join(" · ");
+      details.appendChild(meta);
+      if (adapterContractExpired) {
+        var expiredStatus = document.createElement("p");
+        expiredStatus.className = "warehouse-status is-error";
+        expiredStatus.textContent = t("adapterContractVersionExpired");
+        details.appendChild(expiredStatus);
+      }
+      var captureSummary = item.capture_summary && typeof item.capture_summary === "object" ? item.capture_summary : null;
+      if (captureSummary) {
+        var safeSummary = document.createElement("p");
+        safeSummary.className = "warehouse-meta";
+        safeSummary.textContent = formatText("captureSafetySummary", {
+          ambiguous: Number(captureSummary.ambiguous_count || 0),
+          brand: Number(captureSummary.brand_count || 0),
+          enums: Number(captureSummary.enumeration_parameter_count || 0),
+        });
+        safeSummary.title = safeSummary.textContent;
+        details.appendChild(safeSummary);
+      }
+      var decisions = adapterContractExpired ? [] :
+        (Array.isArray(item.allowed_decisions) ? item.allowed_decisions :
+          (Array.isArray(item.decisions) ? item.decisions : []));
+      if (!adapterContractExpired && !decisions.length && item.candidate_status === "waiting_user") {
+        var codes = item.redaction && Array.isArray(item.redaction.codes) ? item.redaction.codes : [];
+        var stage3Code = candidate.stage3_failure && candidate.stage3_failure.error_code;
+        if (
+          item.sensitivity_decision == null &&
+          (codes.indexOf("sensitivity_confirmation_required") >= 0 || stage3Code === "sensitivity_confirmation_required_stage3")
+        ) {
+          decisions = decisions.concat([
+            "confirm_fictional_fixture",
+            "confirm_safe_redaction",
+            "confirm_real_record_reject",
+          ]);
+        }
+        if (item.brand_decision == null && codes.indexOf("brand_confirmation_required") >= 0) {
+          decisions = decisions.concat(["remove_brand", "retain_brand_limited"]);
+        }
+        if (item.asset_decision == null && stage3Code === "asset_content_confirmation_required_stage3") {
+          decisions.push("confirm_assets_contain_no_real_records");
+        }
+      }
+      var controls = {};
+      var identityDecisions = ["publish_general", "publish_brand_limited", "create_variant", "semantic_split"];
+      if (decisions.some(function (decision) { return identityDecisions.indexOf(decision) >= 0; })) {
+        var identityDefaults = reviewIdentityDefaults(item, candidate, reviewName);
+        var identityFields = document.createElement("div");
+        identityFields.className = "warehouse-actions";
+        ["capability_key", "role_key", "variant_key", "display_name"].forEach(function (name) {
+          var labelKey = {
+            capability_key: "capabilityKeyLabel",
+            role_key: "roleKeyLabel",
+            variant_key: "variantKeyLabel",
+            display_name: "displayNameLabel",
+          }[name];
+          var helpKey = {
+            capability_key: "capabilityKeyHelp",
+            role_key: "roleKeyHelp",
+            variant_key: "variantKeyHelp",
+            display_name: "displayNameHelp",
+          }[name];
+          var label = document.createElement("label");
+          label.className = "warehouse-field" + (name === "variant_key" ? " warehouse-developer-only" : "");
+          label.textContent = t(labelKey);
+          label.title = t(helpKey);
+          var input = controlHelp(document.createElement("input"), helpKey);
+          input.type = "text";
+          input.name = name;
+          input.required = true;
+          input.autocomplete = "off";
+          input.spellcheck = false;
+          if (name !== "display_name") input.pattern = "[a-z_][a-z0-9_]*";
+          input.value = String(identityDefaults[name] || "");
+          if (name === "display_name") input.maxLength = 200;
+          controls[name] = input;
+          label.appendChild(input);
+          identityFields.appendChild(label);
+        });
+        details.appendChild(identityFields);
+      }
+      var comparison = item.comparison && typeof item.comparison === "object" ? item.comparison : {};
+      var comparisonCandidates = Array.isArray(comparison.candidates) ? comparison.candidates : [];
+      [
+        { name: "retained_version_id", enabled: decisions.indexOf("merge_existing") >= 0, value: "version_id" },
+        {
+          name: "target_capsule_id",
+          enabled: decisions.indexOf("replace_current") >= 0 || decisions.indexOf("semantic_split") >= 0,
+          value: "capsule_id",
+        },
+      ].forEach(function (definition) {
+        if (!definition.enabled) return;
+        var labelKey = definition.name === "retained_version_id" ? "retainedVersionLabel" : "targetCapsuleLabel";
+        var helpKey = definition.name === "retained_version_id" ? "retainedVersionHelp" : "targetCapsuleHelp";
+        var label = document.createElement("label");
+        label.className = "warehouse-field";
+        label.textContent = t(labelKey);
+        label.title = t(helpKey);
+        var select = controlHelp(document.createElement("select"), helpKey);
+        select.name = definition.name;
+        select.required = true;
+        var empty = document.createElement("option");
+        empty.value = "";
+        empty.textContent = definition.name;
+        select.appendChild(empty);
+        var seen = {};
+        comparisonCandidates.forEach(function (candidateOption) {
+          var value = candidateOption && candidateOption[definition.value];
+          if (!value || seen[value]) return;
+          seen[value] = true;
+          var option = document.createElement("option");
+          option.value = String(value);
+          option.textContent = [
+            candidateOption.capability_key,
+            candidateOption.role_key,
+            candidateOption.variant_key,
+            candidateOption.version_id,
+          ].filter(Boolean).join(" · ") || String(value);
+          select.appendChild(option);
+        });
+        controls[definition.name] = select;
+        label.appendChild(select);
+        details.appendChild(label);
+      });
+      var actions = document.createElement("div");
+      actions.className = "warehouse-actions";
+      decisions.forEach(function (decision) {
+        var copy = reviewDecisionCopy(decision);
+        var button = controlHelp(document.createElement("button"), copy ? copy[1] : "reviewItems");
+        button.type = "button";
+        button.className = "btn-ghost";
+        button.dataset.decision = String(decision);
+        button.textContent = copy ? t(copy[0]) : String(decision);
+        if (!copy) button.classList.add("warehouse-developer-only");
+        button.addEventListener("click", function () {
+          var decisionPayload = managementReviewDecisionPayload(item.review_id, decision, controls);
+          if (!decisionPayload) return;
+          bridgeCall("decide_review_item", JSON.stringify(decisionPayload)).then(function (raw) {
+            var result = parseBridgeJson(raw);
+            var decided = managementPayload(result);
+            if (!decided) {
+              setManagementStatus(managementError(result));
+              return;
+            }
+            if (
+              decided.capture_resubmission_required === true &&
+              decided.resume_contract === "resubmit_ephemeral_capture.v1"
+            ) {
+              refreshAdapterReviewItems(function (items) {
+                var current = items.find(function (candidateItem) {
+                  return String(candidateItem.review_id || "") === String(item.review_id || "");
+                });
+                var decisionsRemaining = current && Array.isArray(current.allowed_decisions)
+                  ? current.allowed_decisions.length > 0
+                  : false;
+                var nextStatus = decisionsRemaining ? "captureNeedsDecision" : "captureResubmitRequired";
+                Array.prototype.forEach.call(
+                  document.querySelectorAll("[data-resume-review-id]"),
+                  function (captureButton) {
+                    if (String(captureButton.dataset.resumeReviewId || "") !== String(item.review_id || "")) return;
+                    captureButton.disabled = decisionsRemaining;
+                    captureButton.textContent = t("continueCaptureValidation");
+                    var card = captureButton.closest(".warehouse-review");
+                    var cardStatus = card && card.querySelector(".warehouse-status");
+                    if (cardStatus) {
+                      cardStatus.textContent = t(nextStatus);
+                      cardStatus.classList.add("is-waiting");
+                      cardStatus.classList.remove("is-error");
+                    }
+                  }
+                );
+                setManagementStatus(nextStatus);
+              });
+              return;
+            }
+            if (!trackManagementRuns(result, function () {
+              setManagementStatus("decisionSaved");
+            })) {
+              setManagementStatus("decisionSaved");
+              refreshIngestionManagement();
+            }
+          });
+        });
+        actions.appendChild(button);
+      });
+      details.appendChild(actions);
+      container.appendChild(details);
+    });
+  }
+
+  function renderManagementGroups() {
+    var container = $("warehouse-capability-groups");
+    if (!container) return;
+    container.innerHTML = "";
+    if (!ingestionManagement.capabilityGroups.length) {
+      emptyManagementList(container, "noCapabilities");
+      return;
+    }
+    ingestionManagement.capabilityGroups.forEach(function (group) {
+      var details = document.createElement("details");
+      details.className = "warehouse-capability";
+      details.title = t("capabilityGroups");
+      var summary = document.createElement("summary");
+      summary.textContent = String(group.display_name || group.capability_key || "capability");
+      details.appendChild(summary);
+      var rename = document.createElement("button");
+      rename.type = "button";
+      rename.className = "btn-ghost";
+      rename.textContent = t("renameCapability");
+      rename.title = t("renameCapabilityHelp");
+      rename.addEventListener("click", function () {
+        var next = window.prompt(
+          t("renameCapabilityPrompt"),
+          String(group.display_name || group.capability_key || "")
+        );
+        if (next === null) return;
+        bridgeCall(
+          "rename_capability_group",
+          JSON.stringify({ capability_key: group.capability_key, display_name: next })
+        ).then(function (raw) {
+          var result = parseBridgeJson(raw);
+          var renamed = managementPayload(result);
+          if (!renamed) {
+            setManagementStatus(managementError(result));
+            return;
+          }
+          group.display_name = renamed.display_name;
+          summary.textContent = renamed.display_name;
+          refreshIngestionManagement();
+        });
+      });
+      details.appendChild(rename);
+      var capsules = Array.isArray(group.capsules) ? group.capsules : (Array.isArray(group.roles) ? group.roles : []);
+      capsules.forEach(function (capsule) {
+        var row = document.createElement("div");
+        row.className = "warehouse-row";
+        var label = document.createElement("span");
+        label.textContent = [capsule.role_key, capsule.variant_key, capsule.capability_kind, capsule.status].filter(Boolean).join(" · ");
+        row.appendChild(label);
+        if (capsule.capsule_id) {
+          var view = document.createElement("button");
+          view.type = "button";
+          view.className = "btn-ghost";
+          view.textContent = t("viewDetails");
+          view.title = t("viewDetailsHelp");
+          view.addEventListener("click", function () {
+            bridgeCall("get_capsule_detail", JSON.stringify({ capsule_id: capsule.capsule_id })).then(function (raw) {
+              var result = parseBridgeJson(raw);
+              var detail = managementPayload(result);
+              if (!detail) {
+                setManagementStatus(managementError(result));
+                return;
+              }
+              var detailCapsule = detail.capsule || detail;
+              var latestVersion = Array.isArray(detail.versions) && detail.versions.length ? detail.versions[0] : {};
+              label.textContent = [
+                detailCapsule.role_key || capsule.role_key,
+                detailCapsule.variant_key || capsule.variant_key,
+                detailCapsule.capability_kind || capsule.capability_kind,
+                detailCapsule.status || capsule.status,
+                latestVersion.version_number != null ? "v" + latestVersion.version_number : "",
+              ].filter(Boolean).join(" · ");
+            });
+          });
+          row.appendChild(view);
+          var statusButton = document.createElement("button");
+          statusButton.type = "button";
+          statusButton.className = "btn-ghost";
+          statusButton.textContent = capsule.status === "active" ? t("disableCapsule") : t("enableCapsule");
+          statusButton.title = capsule.status === "active" ? t("disableCapsuleHelp") : t("enableCapsuleHelp");
+          statusButton.addEventListener("click", function () {
+            var status = capsule.status === "active" ? "disabled" : "active";
+            bridgeCall("set_capsule_status", JSON.stringify({ capsule_id: capsule.capsule_id, status: status })).then(function (raw) {
+              var result = parseBridgeJson(raw);
+              if (!managementPayload(result)) setManagementStatus(managementError(result));
+              else refreshIngestionManagement();
+            });
+          });
+          row.appendChild(statusButton);
+        }
+        details.appendChild(row);
+      });
+      container.appendChild(details);
+    });
+  }
+
+  function renderManagementLegacy() {
+    var container = $("warehouse-legacy");
+    var importButton = $("btn-warehouse-import");
+    if (!container) return;
+    container.innerHTML = "";
+    var legacy = ingestionManagement.legacy;
+    if (importButton) importButton.disabled = !(legacy && legacy.present);
+    if (!legacy || !legacy.present) {
+      emptyManagementList(container, "legacyNotFound");
+      return;
+    }
+    var summary = document.createElement("p");
+    summary.className = "warehouse-meta";
+    summary.textContent = [
+      t("legacyWarehouse"),
+      legacy.status,
+      String(legacy.recognizableEntries || 0),
+      legacy.path,
+    ].filter(Boolean).join(" · ");
+    container.appendChild(summary);
+    var aliases = Array.isArray(legacy.aliases) ? legacy.aliases : [];
+    if (!aliases.length) return;
+    aliases.forEach(function (alias) {
+      var row = document.createElement("div");
+      row.className = "warehouse-legacy-alias";
+      var label = document.createElement("span");
+      label.textContent = [
+        alias.legacy_capsule_id,
+        alias.relationship === "pending" ? t("legacyPending") : alias.relationship,
+        alias.reason_code,
+      ].filter(Boolean).join(" · ");
+      row.appendChild(label);
+      var targets = Array.isArray(alias.eligible_targets) ? alias.eligible_targets : [];
+      if (alias.relationship === "pending" && targets.length) {
+        var controls = document.createElement("div");
+        controls.className = "warehouse-actions";
+        var relationship = document.createElement("select");
+        relationship.setAttribute("aria-label", t("legacyRelationship"));
+        relationship.title = t("legacyRelationship");
+        ["cleaned_successor", "merged", "variant"].forEach(function (value) {
+          var option = document.createElement("option");
+          option.value = value;
+          option.textContent = value;
+          relationship.appendChild(option);
+        });
+        var target = document.createElement("select");
+        target.setAttribute("aria-label", t("legacyTarget"));
+        target.title = t("legacyTarget");
+        targets.forEach(function (value, index) {
+          var option = document.createElement("option");
+          option.value = String(index);
+          option.textContent = [
+            value.display_name || value.capability_key,
+            value.role_key,
+            value.variant_key,
+          ].filter(Boolean).join(" · ");
+          target.appendChild(option);
+        });
+        var map = document.createElement("button");
+        map.type = "button";
+        map.className = "btn-ghost";
+        map.textContent = t("mapLegacy");
+        map.title = t("mapLegacyHelp");
+        map.addEventListener("click", function () {
+          var selected = targets[Number(target.value)];
+          if (!selected) return;
+          startManagementRun("start_legacy_import", {
+            links: [
+              {
+                legacy_capsule_id: alias.legacy_capsule_id,
+                relationship: relationship.value,
+                capsule_id: selected.capsule_id,
+                version_id: selected.version_id,
+              },
+            ],
+          });
+        });
+        controls.appendChild(relationship);
+        controls.appendChild(target);
+        controls.appendChild(map);
+        row.appendChild(controls);
+      }
+      container.appendChild(row);
+    });
+  }
+
+  function renderManagementBackups() {
+    var container = $("warehouse-backups");
+    if (!container) return;
+    container.innerHTML = "";
+    if (
+      !ingestionManagement.backups.length &&
+      !ingestionManagement.recoverableProducts.length &&
+      !ingestionManagement.historicalProducts.length
+    ) {
+      emptyManagementList(container, "noBackups");
+      return;
+    }
+    ingestionManagement.backups.forEach(function (backup) {
+      var row = document.createElement("div");
+      row.className = "warehouse-row";
+      var label = document.createElement("span");
+      label.textContent = [backup.created_at, backup.kind, backup.sha256 ? String(backup.sha256).slice(0, 12) : ""].filter(Boolean).join(" · ");
+      row.appendChild(label);
+      var restore = document.createElement("button");
+      restore.type = "button";
+      restore.className = "btn-ghost";
+      restore.textContent = t("restore");
+      restore.title = t("restoreHelp");
+      restore.disabled = backup.valid === false || !backup.path || !backup.sha256;
+      restore.addEventListener("click", function () {
+        inspectAndRestoreBackup(backup);
+      });
+      row.appendChild(restore);
+      container.appendChild(row);
+    });
+    ingestionManagement.recoverableProducts.forEach(function (product) {
+      var row = document.createElement("div");
+      row.className = "warehouse-row";
+      var label = document.createElement("span");
+      label.textContent = String(product.product_id) + " · " + String(product.status);
+      row.appendChild(label);
+      var retry = document.createElement("button");
+      retry.type = "button";
+      retry.className = "btn-ghost";
+      retry.textContent = t("retryUsage");
+      retry.title = t("retryUsageHelp");
+      retry.addEventListener("click", function () {
+        bridgeCall(
+          "retry_product_usage_registration",
+          JSON.stringify({ product_id: product.product_id })
+        ).then(function (raw) {
+          var result = parseBridgeJson(raw);
+          if (!managementPayload(result)) setManagementStatus(managementError(result));
+          else {
+            setManagementStatus("usageRetryComplete");
+            refreshIngestionManagement();
+          }
+        });
+      });
+      row.appendChild(retry);
+      container.appendChild(row);
+    });
+    ingestionManagement.historicalProducts.forEach(function (product) {
+      var details = document.createElement("details");
+      details.className = "warehouse-capability";
+      details.dataset.historicalProductId = String(product.product_id || "");
+      var summary = document.createElement("summary");
+      summary.textContent = String(product.product_id) + " · " + String(product.status);
+      details.appendChild(summary);
+      var digest = document.createElement("p");
+      digest.className = "warehouse-meta";
+      digest.textContent = t("manifestDigest") + ": " + String(product.manifest_digest || "");
+      details.appendChild(digest);
+      var backup = document.createElement("p");
+      backup.className = "warehouse-meta";
+      backup.textContent =
+        t("preRestoreBackup") + ": " +
+        String(product.pre_restore_backup_path || t("backupUnavailable"));
+      details.appendChild(backup);
+      container.appendChild(details);
+    });
+  }
+
+  function renderManagementRuns() {
+    var container = $("warehouse-runs");
+    if (!container) return;
+    container.innerHTML = "";
+    var runIds = Object.keys(ingestionManagement.runs);
+    if (!runIds.length) {
+      emptyManagementList(container, "noRuns");
+      return;
+    }
+    runIds.forEach(function (runId) {
+      var run = ingestionManagement.runs[runId] || {};
+      var row = document.createElement("div");
+      row.className = "warehouse-row";
+      var label = document.createElement("span");
+      label.textContent = String(runId) + " · " + String(run.status || "queued");
+      row.appendChild(label);
+      if (run.status === "queued" || run.status === "running") {
+        var cancel = document.createElement("button");
+        cancel.type = "button";
+        cancel.className = "btn-ghost";
+        cancel.textContent = t("cancelRun");
+        cancel.title = t("cancelRunHelp");
+        cancel.addEventListener("click", function () {
+          bridgeCall("cancel_intake_run", JSON.stringify({ run_id: runId }));
+        });
+        row.appendChild(cancel);
+      }
+      container.appendChild(row);
+    });
+  }
+
+  function renderIngestionManagement() {
+    if (!$("capsule-warehouse-popover")) return;
+    syncWarehouseMode();
+    renderManagementProjects();
+    renderManagementModels();
+    renderManagementReviews();
+    renderManagementGroups();
+    renderManagementLegacy();
+    renderManagementBackups();
+    renderManagementRuns();
+    setManagementStatus(ingestionManagement.errorKey);
+  }
+
+  function refreshIngestionManagement() {
+    if (!hasDesktopBridge()) {
+      setManagementStatus("managementUnavailable");
+      return Promise.resolve();
+    }
+    if (ingestionManagement.loading) return Promise.resolve();
+    ingestionManagement.loading = true;
+    setManagementStatus("managementLoading");
+    return Promise.all([
+      bridgeCall("get_initial_state"),
+      bridgeCall("list_supervision_models", JSON.stringify({})),
+      bridgeCall("list_review_items", JSON.stringify({})),
+      bridgeCall("list_capability_groups", JSON.stringify({})),
+      bridgeCall("list_backups", JSON.stringify({})),
+    ]).then(function (rawResults) {
+      var results = rawResults.map(parseBridgeJson);
+      if (results[0] && results[0].ok !== false) {
+        desktopShellState = results[0];
+        applyDesktopInitialState(desktopShellState);
+      }
+      ingestionManagement.reviewItems = managementList(results[2], ["review_items", "items"]);
+      ingestionManagement.capabilityGroups = managementList(results[3], ["capability_groups", "groups", "items"]);
+      ingestionManagement.backups = managementList(results[4], ["backups", "items"]);
+      var modelPayload = managementPayload(results[1]);
+      if (modelPayload && modelPayload.run_id) {
+        trackManagementRuns(results[1], function (run) {
+          ingestionManagement.models = managementList({ ok: true, data: run.data || {} }, ["models", "items"]);
+          renderManagementModels();
+        }, false);
+      } else {
+        ingestionManagement.models = managementList(results[1], ["models", "items"]);
+      }
+      ingestionManagement.loading = false;
+      ingestionManagement.loaded = true;
+      var failed = results.slice(2).find(function (result) {
+        return !result || result.ok === false;
+      });
+      ingestionManagement.errorKey = failed ? managementError(failed) : "";
+      renderIngestionManagement();
+    });
+  }
+
+  function collectRunIds(result) {
+    var payload = managementPayload(result);
+    if (!payload) return [];
+    var ids = [];
+    if (payload.run_id) ids.push(String(payload.run_id));
+    (payload.run_ids || []).forEach(function (id) {
+      if (id) ids.push(String(id));
+    });
+    return ids;
+  }
+
+  function rememberManagementRun(runId, run) {
+    delete ingestionManagement.runs[runId];
+    ingestionManagement.runs[runId] = run;
+    // ponytail: UI receipts only; persist them if users ever need older history.
+    var terminal = Object.keys(ingestionManagement.runs).filter(function (id) {
+      var status = ingestionManagement.runs[id].status;
+      return status !== "queued" && status !== "running";
+    });
+    terminal.slice(0, -100).forEach(function (id) {
+      delete ingestionManagement.runs[id];
+    });
+  }
+
+  function pollManagementRun(runId, onComplete, refreshAfter, onFailure) {
+    bridgeCall("get_intake_run", JSON.stringify({ run_id: runId })).then(function (raw) {
+      var result = parseBridgeJson(raw);
+      var payload = managementPayload(result);
+      if (!payload) {
+        var missingPayloadKey = managementError(result);
+        rememberManagementRun(runId, { status: "failed" });
+        setManagementStatus(missingPayloadKey);
+        if (typeof onFailure === "function") onFailure(missingPayloadKey);
+        renderManagementRuns();
+        return;
+      }
+      var run = payload.run && typeof payload.run === "object" ? payload.run : payload;
+      rememberManagementRun(runId, run);
+      renderManagementRuns();
+      if (run.status === "queued" || run.status === "running") {
+        setTimeout(function () { pollManagementRun(runId, onComplete, refreshAfter, onFailure); }, 750);
+      } else {
+        if (run.status === "completed") {
+          if (typeof onComplete === "function") onComplete(run);
+        } else {
+          var failureKey = run.error
+            ? managementError({ error: run.error })
+            : "managementOperationFailed";
+          setManagementStatus(failureKey);
+          if (typeof onFailure === "function") onFailure(failureKey);
+        }
+        if (refreshAfter !== false) refreshIngestionManagement();
+      }
+    });
+  }
+
+  function trackManagementRuns(result, onComplete, refreshAfter, onFailure) {
+    var ids = collectRunIds(result);
+    ids.forEach(function (runId) {
+      rememberManagementRun(runId, { status: "queued" });
+      pollManagementRun(runId, onComplete, refreshAfter, onFailure);
+    });
+    renderManagementRuns();
+    return ids.length > 0;
+  }
+
+  function startManagementRun(method, payload, onComplete, refreshAfter, onFailure) {
+    return bridgeCall(method, JSON.stringify(payload || {})).then(function (raw) {
+      var result = parseBridgeJson(raw);
+      if (!trackManagementRuns(result, onComplete, refreshAfter, onFailure)) {
+        var errorKey = managementError(result);
+        setManagementStatus(errorKey);
+        if (typeof onFailure === "function") onFailure(errorKey);
+      }
+      return result;
+    });
+  }
+
+  function inspectAndRestoreBackup(backup) {
+    bridgeCall("inspect_backup", JSON.stringify({ path: backup.path })).then(function (raw) {
+      var result = parseBridgeJson(raw);
+      if (!managementPayload(result)) {
+        setManagementStatus(managementError(result));
+        return;
+      }
+      var inspection = managementPayload(result);
+      var counts = inspection.counts && typeof inspection.counts === "object" ? inspection.counts : inspection;
+      var impact = Object.keys(counts).filter(function (key) {
+        return typeof counts[key] === "number";
+      }).map(function (key) {
+        return key + ": " + counts[key];
+      }).join(" · ");
+      if (!window.confirm(t("restoreConfirm") + (impact ? "\n" + impact : ""))) return;
+      startManagementRun("restore_backup", {
+        path: inspection.path || backup.path,
+        expected_sha256: inspection.sha256 || backup.sha256,
+      }, function () {
+        setManagementStatus("restoreComplete");
+      });
+    });
+  }
+
+  function bindIngestionManagementEvents() {
+    var developerMode = $("warehouse-developer-mode");
+    if (developerMode) developerMode.addEventListener("change", function () {
+      ingestionManagement.developerMode = developerMode.checked === true;
+      syncWarehouseMode();
+    });
+    syncWarehouseMode();
+    var discover = $("btn-warehouse-discover");
+    if (discover) discover.addEventListener("click", function () {
+      bridgeCall("choose_source_root").then(function (raw) {
+        var result = parseBridgeJson(raw);
+        var payload = managementPayload(result);
+        if (!payload) {
+          if (!(result && result.cancelled)) setManagementStatus(managementError(result));
+          return;
+        }
+        if (!trackManagementRuns(result, function (run) {
+          ingestionManagement.discovery = run.data || null;
+          renderManagementProjects();
+        }, false)) {
+          ingestionManagement.discovery = payload.discovery || payload;
+          renderManagementProjects();
+        }
+      });
+    });
+    var refreshAll = $("btn-warehouse-refresh-all");
+    if (refreshAll) refreshAll.addEventListener("click", function () {
+      startManagementRun("start_refresh_all", {});
+    });
+    var refreshModels = $("btn-supervision-model-refresh");
+    if (refreshModels) refreshModels.addEventListener("click", refreshIngestionManagement);
+    var saveModel = $("btn-supervision-model-save");
+    if (saveModel) saveModel.addEventListener("click", function () {
+      var select = $("supervision-model-select");
+      var model = select && select.value !== "" ? ingestionManagement.models[Number(select.value)] : null;
+      if (!model) return;
+      bridgeCall("select_supervision_model", JSON.stringify({ name: model.name, digest: model.digest })).then(function (raw) {
+        var result = parseBridgeJson(raw);
+        if (!managementPayload(result)) setManagementStatus(managementError(result));
+        else if (!trackManagementRuns(result, function () {
+          ingestionManagement.selectedModel = { name: model.name, digest: model.digest };
+          renderManagementModels();
+          setManagementStatus("modelSaved");
+        }, false)) {
+          ingestionManagement.selectedModel = { name: model.name, digest: model.digest };
+          renderManagementModels();
+          setManagementStatus("modelSaved");
+        }
+      });
+    });
+    var backup = $("btn-warehouse-backup");
+    if (backup) backup.addEventListener("click", function () {
+      startManagementRun("create_backup", { kind: "manual" }, function () {
+        setManagementStatus("backupCreated");
+      });
+    });
+    var legacyImport = $("btn-warehouse-import");
+    if (legacyImport) legacyImport.addEventListener("click", function () {
+      startManagementRun("start_legacy_import", {}, function () {
+        setManagementStatus("importStarted");
+      });
+    });
   }
 
   function addBoundSource(source) {
@@ -1407,10 +3606,7 @@
   }
 
   function getGenerateCandidateIds() {
-    if (usedCapsuleSelectionMode === "manual" && usedCapsuleIds.length > 0) return usedCapsuleIds.slice();
-    return (data.capsules || []).filter(isCapsuleGenerateEligible).map(function (cap) {
-      return cap.id;
-    });
+    return usedCapsuleIds.slice();
   }
 
   function anyEnrichedInIds(ids) {
@@ -1432,24 +3628,40 @@
     }
   }
 
-  function setLocalModelStatus(key) {
-    var status = $("local-model-status");
-    if (!status) return;
-    status.setAttribute("data-i18n", key);
-    status.textContent = t(key);
+  function failedProductResult(code) {
+    return {
+      ok: false,
+      error: { code: code || "product_generation_failed", message_key: "generationFailed" },
+    };
   }
 
-  function updateLocalModelToggle() {
-    var wrap = $("local-model-toggle-wrap");
-    var checkbox = $("use-local-model");
-    if (!wrap || !checkbox) return;
-    var supported = hasDesktopBridge() && desktopCapability("canUseBoundedLocalModel");
-    wrap.classList.toggle("hidden", !supported);
-    if (!supported) {
-      useBoundedLocalModel = false;
-      checkbox.checked = false;
-      setLocalModelStatus("localModelOff");
-    }
+  function pollProductRun(runId) {
+    return new Promise(function (resolve) {
+      function poll() {
+        bridgeCall("get_intake_run", JSON.stringify({ run_id: runId })).then(function (raw) {
+          var result = parseBridgeJson(raw);
+          var payload = managementPayload(result);
+          var task = payload && payload.run && typeof payload.run === "object" ? payload.run : payload;
+          if (!task || !task.status) {
+            resolve(result || failedProductResult("product_run_unavailable"));
+            return;
+          }
+          if (task.status === "queued" || task.status === "running") {
+            setTimeout(poll, 750);
+            return;
+          }
+          if (task.status === "completed" && task.data && typeof task.data === "object") {
+            resolve(task.data);
+            return;
+          }
+          var code = task.error && (task.error.code || task.error.message_key);
+          resolve(failedProductResult(code || "product_generation_failed"));
+        }).catch(function () {
+          resolve(failedProductResult("product_run_unavailable"));
+        });
+      }
+      poll();
+    });
   }
 
   function notifyDesktopGenerate(text, ids) {
@@ -1457,22 +3669,17 @@
       pendingGeneratePromise = null;
       return Promise.resolve(null);
     }
-    var candidates = ids.length ? ids : getGenerateCandidateIds();
     var payload = {
-      taskText: text,
-      capsuleIds: ids,
-      capsules: ids.map(findCapsule).filter(Boolean),
-      selectionMode: usedCapsuleSelectionMode,
-      useEnrichedContent: !!(useEnrichedContentPreview && anyEnrichedInIds(candidates)),
-      validateRuntime: true,
-      localModel: useBoundedLocalModel
-        ? { enabled: true, provider: "ollama", model: "qwen2.5-coder:1.5b" }
-        : { enabled: false },
-      sourceBoxes: (data.sourceBoxes || []).map(function (s) {
-        return { id: s.id, label: s.label, path: s.path || "", status: s.status };
-      }),
+      task: text,
+      capsule_ids: ids,
+      selection_mode: "manual",
     };
-    pendingGeneratePromise = bridgeCall("notify_generate", JSON.stringify(payload));
+    pendingGeneratePromise = bridgeCall("generate_product", JSON.stringify(payload)).then(function (raw) {
+      var result = parseBridgeJson(raw);
+      var started = managementPayload(result);
+      if (!started || !started.run_id) return result || failedProductResult("product_run_unavailable");
+      return pollProductRun(String(started.run_id));
+    });
     return pendingGeneratePromise;
   }
 
@@ -1515,20 +3722,19 @@
       data.contentAwareGenerate = result.contentAwareGenerate;
     }
     if (Array.isArray(result.capsulesUsed)) {
-      usedCapsuleIds = result.capsulesUsed.map(function (cap) { return cap.id; }).filter(Boolean);
-      var resolvedMode = result.taskPack && result.taskPack.selection_mode;
-      usedCapsuleSelectionMode = resolvedMode === "auto_match" || resolvedMode === "auto_behavior" ? resolvedMode : "manual";
+      usedCapsuleIds = result.capsulesUsed.map(function (cap) {
+        return cap.id || cap.capsule_id;
+      }).filter(Boolean);
+      usedCapsuleSelectionMode = "manual";
       renderUsedChips();
-    }
-    if (result.localModel && result.localModel.enabled) {
-      setLocalModelStatus(result.localModel.applied ? "localModelApplied" : "localModelFallback");
-    } else if (useBoundedLocalModel) {
-      setLocalModelStatus("localModelFallback");
     }
   }
 
   function previewAcceptanceText(acceptance) {
     if (!acceptance) return "";
+    if (acceptance.reason === "real_qwebengine_product_bootstrap") {
+      return t("acceptanceRealBootstrap");
+    }
     if (
       acceptance.verdict === "usable" &&
       (acceptance.reason === "runtime_behavior_verified" || acceptance.reason === "react_runtime_verified")
@@ -1651,8 +3857,16 @@
     });
     document.querySelectorAll("[data-i18n-aria-label]").forEach(function (el) {
       var key = el.getAttribute("data-i18n-aria-label");
-      if (key && t(key)) el.setAttribute("aria-label", t(key));
+      if (key && t(key)) {
+        el.setAttribute("aria-label", t(key));
+        el.title = t(key);
+      }
     });
+    document.querySelectorAll("[data-i18n-title]").forEach(function (el) {
+      var key = el.getAttribute("data-i18n-title");
+      controlHelp(el, key);
+    });
+    syncWarehouseMode();
     var input = $("task-input");
     if (input) input.placeholder = t("taskPlaceholder");
     var langBtn = $("btn-lang");
@@ -1678,6 +3892,7 @@
       renderHistory();
       renderSources();
     }
+    renderIngestionManagement();
     if (selectedCapsuleId && els.reader && !els.reader.classList.contains("hidden")) {
       var selected = findCapsule(selectedCapsuleId);
       if (selected) showCapsuleReader(selected);
@@ -1696,6 +3911,8 @@
   }
 
   function initWelcome() {
+    cacheElements();
+    bindMainEvents();
     applyLocale();
     syncWelcomeSourceBoxMode();
     $("btn-select-folder").addEventListener("click", function () {
@@ -1758,7 +3975,7 @@
     isGenerating = false;
     applyLocale();
     renderCapsuleStrip();
-    renderGeneratedPackage(!!lastPreviewPath);
+    syncGeneratedPackageView();
     renderHistory();
     renderSources();
     bindMainEvents();
@@ -1799,10 +4016,11 @@
     els.btnLumoArtifacts = $("btn-lumo-artifacts");
     els.lumoArtifactsPopover = $("lumo-artifacts-popover");
     els.lumoArtifactsBody = $("lumo-artifacts-body");
+    els.btnCapsuleWarehouse = $("btn-capsule-warehouse");
+    els.capsuleWarehousePopover = $("capsule-warehouse-popover");
     els.runtimeSidecarMode = $("runtime-sidecar-mode");
     els.runtimeSidecarSource = $("runtime-sidecar-source");
     els.runtimeSidecarStatus = $("runtime-sidecar-status");
-    updateLocalModelToggle();
   }
 
   function shortName(name) {
@@ -2070,10 +4288,22 @@
         '<span class="reuse-chip-name">' +
         escapeHtml(shortName(cap.name)) +
         "</span>";
+      var remove = document.createElement("button");
+      remove.type = "button";
+      remove.className = "reuse-chip-remove";
+      remove.textContent = "×";
+      remove.setAttribute("aria-label", formatText("removeCapsule", { name: cap.name }));
+      remove.addEventListener("click", function () {
+        usedCapsuleIds = usedCapsuleIds.filter(function (selectedId) {
+          return selectedId !== id;
+        });
+        renderUsedChips();
+      });
+      chip.appendChild(remove);
       els.usedCapsuleDock.appendChild(chip);
     });
     if (els.generationInputNote) {
-      els.generationInputNote.textContent = formatText(usedCapsuleSelectionMode !== "manual" ? "generationResolved" : "generationManual", {
+      els.generationInputNote.textContent = formatText("generationManual", {
         count: usedCapsuleIds.length,
       });
     }
@@ -2101,7 +4331,10 @@
       els.generatedPackage.classList.remove("runtime-read-only");
       els.generatedPackage.classList.toggle("is-ready", !!showPreview);
     }
-    var count = usedCapsuleIds.length;
+    var packageCount = pkg.stats && Number(pkg.stats.capsulesUsed);
+    var count = Number.isInteger(packageCount) && packageCount >= 0
+      ? packageCount
+      : usedCapsuleIds.length;
     els.genCapsulesUsed.innerHTML =
       '<span class="meta-icon" aria-hidden="true">◫</span> ' + count + " " + t("capsulesUsed");
     if (data.lunaPack && data.lunaPack.pack_id && els.genCapsulesUsed) {
@@ -2123,8 +4356,61 @@
         sn +
         "</span>";
     }
+    if (els.workflowStatus) {
+      els.workflowStatus.innerHTML =
+        '<span class="meta-icon" aria-hidden="true">↳</span> ' +
+        escapeHtml(t("workflow")) +
+        ": " +
+        escapeHtml(currentWorkflowStep(!!showPreview));
+    }
+    var metaLines = document.querySelectorAll(".generated-meta .meta-line");
+    if (metaLines[2]) {
+      metaLines[2].innerHTML =
+        '<span class="meta-icon" aria-hidden="true">◎</span> ' +
+        escapeHtml(t(showPreview ? "previewReady" : "previewNotReady"));
+    }
+    if (metaLines[3]) {
+      metaLines[3].innerHTML =
+        '<span class="meta-icon" aria-hidden="true">⛓</span> ' +
+        escapeHtml(t(showPreview ? "traceAvailable" : "traceUnavailable"));
+    }
     updatePreviewPackageActions(!!showPreview);
     applyLumoLiteRuntimeView();
+  }
+
+  function syncGeneratedPackageView() {
+    if (data.generatedPackage) {
+      renderGeneratedPackage(!!lastPreviewPath);
+      return;
+    }
+    if (els.generatedTree) els.generatedTree.innerHTML = "";
+    if (els.generatedPreview) els.generatedPreview.classList.add("hidden");
+    if (els.generatedPackage) els.generatedPackage.classList.remove("is-ready");
+    if (els.workflowStatus) {
+      els.workflowStatus.innerHTML =
+        '<span class="meta-icon" aria-hidden="true">↳</span> ' +
+        escapeHtml(t("workflow")) +
+        ": " +
+        escapeHtml(currentWorkflowStep(false));
+    }
+    if (els.genCapsulesUsed) {
+      els.genCapsulesUsed.innerHTML =
+        '<span class="meta-icon" aria-hidden="true">◫</span> 0 ' +
+        escapeHtml(t("capsulesUsed"));
+    }
+    var metaLines = document.querySelectorAll(".generated-meta .meta-line");
+    if (metaLines[2]) {
+      metaLines[2].innerHTML =
+        '<span class="meta-icon" aria-hidden="true">◎</span> ' +
+        escapeHtml(t("previewNotReady"));
+    }
+    if (metaLines[3]) {
+      metaLines[3].innerHTML =
+        '<span class="meta-icon" aria-hidden="true">⛓</span> ' +
+        escapeHtml(t("traceUnavailable"));
+    }
+    if (els.reweaveResponse) els.reweaveResponse.textContent = "";
+    updatePreviewPackageActions(false);
   }
 
   function localPreviewFileUrl(relativePath) {
@@ -2153,7 +4439,7 @@
 
   function updatePreviewPackageActions(show) {
     if (!els.previewPackageActions) return;
-    var visible = !!(show && hasDesktopBridge() && (!isLumoLiteReadOnly() || canBuildTaskPackPreview()));
+    var visible = !!(show && hasDesktopBridge() && canGenerateProduct());
     els.previewPackageActions.classList.toggle("hidden", !visible);
   }
 
@@ -2338,25 +4624,11 @@
 
   function handleViewPreviewPackage() {
     if (!hasDesktopBridge()) return;
-    if (data.generatedPackage && data.generatedPackage.mode === "stage4_behavior_composition_preview") {
-      bridgeCall("open_generated_product").then(function (raw) {
-        var opened = parseBridgeJson(raw);
-        if ((!opened || !opened.ok) && els.reweaveResponse) {
-          els.reweaveResponse.textContent = (opened && opened.error) || t("noPreviewPackage");
-        }
-      });
-      return;
-    }
-    bridgeCall("get_latest_preview_package").then(function (raw) {
-      var result = parseBridgeJson(raw);
-      if (!result || !result.ok) {
-        if (els.reweaveResponse) {
-          els.reweaveResponse.textContent = (result && result.error) || t("noPreviewPackage");
-        }
-        return;
+    bridgeCall("open_generated_product").then(function (raw) {
+      var opened = parseBridgeJson(raw);
+      if ((!opened || !opened.ok) && els.reweaveResponse) {
+        els.reweaveResponse.textContent = t("noPreviewPackage");
       }
-      renderPreviewViewerPayload(result);
-      openPreviewPackageViewer("Preview package");
     });
   }
 
@@ -2558,13 +4830,6 @@
         useEnrichedContentPreview = !!enrichedCheckbox.checked;
       });
     }
-    var localModelCheckbox = $("use-local-model");
-    if (localModelCheckbox) {
-      localModelCheckbox.addEventListener("change", function () {
-        useBoundedLocalModel = !!localModelCheckbox.checked;
-        setLocalModelStatus(useBoundedLocalModel ? "localModelReady" : "localModelOff");
-      });
-    }
     els.taskInput.addEventListener("keydown", function (e) {
       if (e.key === "Enter") {
         e.preventDefault();
@@ -2598,6 +4863,14 @@
       togglePopover("history");
     });
 
+    if (els.btnCapsuleWarehouse) {
+      els.btnCapsuleWarehouse.addEventListener("click", function (e) {
+        e.stopPropagation();
+        togglePopover("capsule-warehouse");
+        if (!ingestionManagement.loaded && !ingestionManagement.loading) refreshIngestionManagement();
+      });
+    }
+
     $("btn-sources").addEventListener("click", function (e) {
       e.stopPropagation();
       togglePopover("sources");
@@ -2613,6 +4886,7 @@
         handleLumoArtifactAction(e.target);
       });
     }
+    bindIngestionManagementEvents();
 
     document.querySelectorAll(".popover-close[data-close]").forEach(function (btn) {
       btn.addEventListener("click", function () {
@@ -2683,6 +4957,7 @@
     var historyOpen = !els.historyPopover.classList.contains("hidden");
     var sourcesOpen = !els.sourcesPopover.classList.contains("hidden");
     var artifactsOpen = els.lumoArtifactsPopover && !els.lumoArtifactsPopover.classList.contains("hidden");
+    var warehouseOpen = els.capsuleWarehousePopover && !els.capsuleWarehousePopover.classList.contains("hidden");
     if (els.reader && !els.reader.classList.contains("hidden")) hideCapsuleReader();
     closeAllPopovers();
     if (which === "history" && !historyOpen) {
@@ -2697,6 +4972,10 @@
       openLumoArtifactsPopover();
       els.backdrop.classList.remove("hidden");
       if (els.btnLumoArtifacts) els.btnLumoArtifacts.setAttribute("aria-expanded", "true");
+    } else if (which === "capsule-warehouse" && !warehouseOpen) {
+      els.capsuleWarehousePopover.classList.remove("hidden");
+      els.backdrop.classList.remove("hidden");
+      els.btnCapsuleWarehouse.setAttribute("aria-expanded", "true");
     }
   }
 
@@ -2704,10 +4983,12 @@
     els.historyPopover.classList.add("hidden");
     els.sourcesPopover.classList.add("hidden");
     if (els.lumoArtifactsPopover) els.lumoArtifactsPopover.classList.add("hidden");
+    if (els.capsuleWarehousePopover) els.capsuleWarehousePopover.classList.add("hidden");
     els.backdrop.classList.add("hidden");
     $("btn-history").setAttribute("aria-expanded", "false");
     $("btn-sources").setAttribute("aria-expanded", "false");
     if (els.btnLumoArtifacts) els.btnLumoArtifacts.setAttribute("aria-expanded", "false");
+    if (els.btnCapsuleWarehouse) els.btnCapsuleWarehouse.setAttribute("aria-expanded", "false");
   }
 
   function ensureCapsuleElement(id) {
@@ -2728,25 +5009,24 @@
 
   function runGenerate() {
     if (isGenerating) return;
-    if (!desktopCapability("canGeneratePreview")) {
+    if (!canGenerateProduct()) {
       els.reweaveResponse.textContent = t("runtimeReadOnlyMessage");
       return;
     }
-    var text = els.taskInput.value.trim() || data.sampleTask || t("newTask");
-    var behaviorModuleCount = (data.capsules || []).filter(function (cap) {
-      return cap.origin === "stage4_module_native";
-    }).length;
-    usedCapsuleSelectionMode = usedCapsuleSelectionMode === "manual" && usedCapsuleIds.length > 0
-      ? "manual"
-      : (behaviorModuleCount >= 2 ? "auto_behavior" : "auto_match");
-    var ids = usedCapsuleSelectionMode === "manual" ? usedCapsuleIds.slice() : [];
-    if (!ids.length && !canBuildTaskPackPreview()) {
-      els.reweaveResponse.textContent = t("selecting");
+    if (usedCapsuleIds.length === 0) {
+      els.reweaveResponse.textContent = t("generationAuto");
       return;
     }
+    var selectionError = formalSelectionError(usedCapsuleIds, true);
+    if (selectionError) {
+      els.reweaveResponse.textContent = t(selectionError);
+      return;
+    }
+    var text = els.taskInput.value.trim() || data.sampleTask || t("newTask");
+    usedCapsuleSelectionMode = "manual";
+    var ids = usedCapsuleIds.slice();
 
     notifyDesktopGenerate(text, ids);
-    if (useBoundedLocalModel) setLocalModelStatus("localModelRunning");
 
     isGenerating = true;
     setAppState("invoking");
@@ -2841,11 +5121,18 @@
   function dockCapsule(id, single) {
     var cap = findCapsule(id);
     if (!isCapsuleGenerateEligible(cap)) {
-      return;
+      return false;
     }
-    if (usedCapsuleIds.indexOf(id) === -1) {
-      usedCapsuleIds.push(id);
+    var nextIds = usedCapsuleIds.slice();
+    if (nextIds.indexOf(id) === -1) {
+      nextIds.push(id);
     }
+    var selectionError = formalSelectionError(nextIds, false);
+    if (selectionError) {
+      els.reweaveResponse.textContent = t(selectionError);
+      return false;
+    }
+    usedCapsuleIds = nextIds;
     usedCapsuleSelectionMode = "manual";
     renderUsedChips();
     if (single) {
@@ -2861,16 +5148,52 @@
           t("generationManual").replace("{count}", String(usedCapsuleIds.length));
       }
     }
+    return true;
+  }
+
+  function formalSelectionError(ids, requireDomRole) {
+    var capsules = ids.map(findCapsule).filter(Boolean);
+    var formalCapsules = capsules.filter(function (cap) {
+      return cap.formal_version === true;
+    });
+    if (formalCapsules.length === 0) return "";
+    if (
+      capsules.length !== ids.length ||
+      formalCapsules.length !== capsules.length ||
+      formalCapsules.length > 3
+    ) {
+      return "formalSelectionInvalid";
+    }
+    var capabilityKey = "";
+    var seenKinds = {};
+    for (var i = 0; i < formalCapsules.length; i += 1) {
+      var current = formalCapsules[i];
+      var currentCapability = Array.isArray(current.tags) ? String(current.tags[0] || "") : "";
+      var kind = String(current.type || "");
+      if (
+        !currentCapability ||
+        ["presentation", "interaction", "computation"].indexOf(kind) === -1 ||
+        (capabilityKey && currentCapability !== capabilityKey) ||
+        seenKinds[kind]
+      ) {
+        return "formalSelectionInvalid";
+      }
+      capabilityKey = currentCapability;
+      seenKinds[kind] = true;
+    }
+    if (requireDomRole && !seenKinds.presentation && !seenKinds.interaction) {
+      return "formalSelectionNeedsDomRole";
+    }
+    return "";
   }
 
   function finishGenerate(taskText, count, localeOnly) {
     function blockReadyRender(message) {
       isGenerating = false;
       pendingGeneratePromise = null;
-      if (useBoundedLocalModel) setLocalModelStatus("localModelFallback");
       if (els.taskBay) els.taskBay.classList.remove("is-invoking");
       if (isLumoLiteReadOnly()) applyLumoLiteRuntimeView();
-      if (els.btnGenerate) els.btnGenerate.disabled = !canBuildTaskPackPreview();
+      if (els.btnGenerate) els.btnGenerate.disabled = !canGenerateProduct();
       if (els.reweaveResponse) els.reweaveResponse.textContent = message;
       setAppState("error");
     }
@@ -2902,11 +5225,11 @@
     if (pendingGeneratePromise) {
       pendingGeneratePromise.then(function (raw) {
         var result = parseBridgeJson(raw);
-        if ((isLumoLiteReadOnly() && !canBuildTaskPackPreview()) || !result || result.ok === false) {
+        if (!result || result.ok === false) {
           blockReadyRender(
             result && result.previewAcceptance
               ? previewAcceptanceText(result.previewAcceptance)
-              : (isLumoLiteReadOnly() ? t("taskPackUnavailable") : t("generationFailed"))
+              : t("generationFailed")
           );
           return;
         }
@@ -2918,7 +5241,7 @@
       });
       return;
     }
-    if (isLumoLiteReadOnly() && !canBuildTaskPackPreview()) {
+    if (!canGenerateProduct()) {
       blockReadyRender(t("runtimeReadOnlyMessage"));
       return;
     }

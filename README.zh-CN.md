@@ -19,88 +19,45 @@
 
 </div>
 
-## 30 秒 demo
+## 30 秒开始
 
-```bash
-python3 scripts/run_public_reweave_demo.py
-```
-
-输出 JSON 会打印产物目录和文件列表。预期输出包含可运行的 `index.html`、`styles.css`、`app.js`，以及 `task_intent.json`、`task_plan.json`、`quality_gate.json`、`task_pack.json`、`capsules_used.json`、`provenance.json` 和 `snippets_used.json`。
-
-**边界：** 源项目默认只读。Reweave-lite 生成小项目包 preview，不自动写入或覆盖你的项目。
-
-可直接复制的公开 demo 流程：
-
-```bash
-python3 scripts/run_public_reweave_demo.py --list-capsules
-python3 scripts/run_public_reweave_demo.py --select-capsule "Style Sheet" --select-capsule "Script Module"
-python3 scripts/run_public_reweave_demo.py --source examples/source_boxes/support-ticket-triage --task "Build a support dashboard"
-```
-
-第一条列出可选胶囊。第二条用手动选择的胶囊生成 Small Project Pack。第三条换一个公开 Source Box 跑同一条链路。
-
-用你自己的旧项目跑一句真实任务：
+先在桌面 Capsule Warehouse 中绑定 Source Box、刷新、复核清洗后的候选，并把所需胶囊发布到正式 SQLite 仓库。然后用明确的 active 胶囊 ID 生成产品：
 
 ```bash
 python3 scripts/run_public_reweave_demo.py \
-  --source /path/to/your/old-project \
-  --task "Build a customer quote dashboard from this old project"
+  --task "Build a quote summary card" \
+  --capsule-id cap_11111111111111111111111111111111 \
+  --capsule-id cap_22222222222222222222222222222222 \
+  --capsule-id cap_33333333333333333333333333333333
 ```
 
-公开产品主线是 task-driven：描述你要做什么，Reweave 从 Source Box 检索胶囊，再生成可检查来源的 Small Project Pack。
+请把示例 ID 替换为桌面仓库中显示的正式 ID。只有仓库不在默认应用状态目录时才需要 `--state-dir /path/to/reweave-state`。输出 JSON 是 `ReweaveAppService` 的原始产品结果，包含产品 ID、manifest digest、产品路径、精确胶囊版本、质量结果和运行验收。
 
-打开 `index.html` 看生成的小项目成品。打开 `review.html` 看这次构建用到的胶囊、来源摘录和 trace。
+CLI 不扫描来源、不 promote、不选择模型，也不隐式选择胶囊。没有胶囊 ID 就不会生成。
 
-## 本地小模型
+**边界：** Source Box 始终只读。生成产品保存在 Reweave 应用状态目录，不覆盖源项目。
 
-不使用 Ollama 时，Reweave 会跑 deterministic demo：
+## 当前主线
 
-```bash
-python3 scripts/run_public_reweave_demo.py
+```text
+Source Box -> 只读快照 -> 原子提取 -> 人工复核
+-> 一个正式 SQLite 仓库 -> 一个 module_native 组合器
+-> index.html / styles.css / app.js -> 质量与运行门
+-> 不可变 manifest 和产品使用记录
 ```
 
-使用 Ollama 时，Reweave 会让本地小模型优化同一个 Small Project Pack：
+监督模型只在桌面仓库流程中显式选择，CLI 没有硬编码默认模型。生成只使用满足资格的 active/current 正式版本。
 
-```bash
-ollama pull qwen2.5-coder:1.5b
-python3 scripts/run_public_reweave_demo.py \
-  --source examples/source_boxes/customer-quote-widget \
-  --task "Build a styled quote interaction" \
-  --select-capsule "Style Sheet" \
-  --select-capsule "Script Module" \
-  --llm ollama \
-  --model qwen2.5-coder:1.5b
-```
+### Static Web V1 支持范围
 
-如果你要严格证明模型真的参与了，增加 `--require-llm`：
+| 支持 | V1 不支持 |
+| --- | --- |
+| 一个已确认的 HTML 入口 | classic `<script src>`、内联脚本、多页面自动推断 |
+| 由 `.js` / `.mjs` 和静态相对 import 组成的自包含本地 ES module 闭包 | CommonJS、TypeScript、JSX、React/Vue/Svelte 组件源码、动态 import、裸包导入 |
+| 不需要安装来源依赖、不需要构建即可运行的来源 | `node_modules`、必须构建的项目、未单独批准的 `dist` / `build` 输出 |
+| 能独立证明的 presentation、interaction、computation 原子角色 | SVG、字体，以及无法证明原子角色或本地资产闭包的代码 |
 
-```bash
-python3 scripts/run_public_reweave_demo.py \
-  --source examples/source_boxes/customer-quote-widget \
-  --task "Build a styled quote interaction" \
-  --select-capsule "Style Sheet" \
-  --select-capsule "Script Module" \
-  --llm ollama \
-  --model qwen2.5-coder:1.5b \
-  --require-llm
-```
-
-JSON / provenance 里预期能看到：
-
-```json
-{
-  "llm": {
-    "provider": "ollama",
-    "model": "qwen2.5-coder:1.5b",
-    "applied": true,
-    "source_project_write": false
-  }
-}
-```
-
-`qwen2.5-coder:1.5b` 已在 5 个公开 Source Box 上复现通过。见 [P7 Local Ollama Reproduction](docs/reports/P7_LOCAL_OLLAMA_REPRODUCTION.md)。
-
-如果 Ollama 没有运行，Reweave 会回退到稳定的 deterministic Small Project Pack；除非你显式加 `--require-llm`。provenance 会记录本地模型是否真的参与生成。
+Vite 不按名称一刀切：已经形成自包含原生 module 入口的静态来源可以符合条件；必须运行 Vite 或安装依赖的项目不属于 V1。
 
 ## 为什么做
 
@@ -113,25 +70,17 @@ JSON / provenance 里预期能看到：
 ## 现在能做什么
 
 - 绑定旧项目文件夹为 Source Box。
-- 只读扫描，不写源项目。
-- 生成 capsule candidate。
-- 人工 Store 到本地 Capsule Warehouse。
-- 在桌面工作台选择胶囊进入任务。
-- 在 CLI 中列出胶囊，并手动选择要复用的胶囊。
-- 使用仓库内置的 Stage4 composer，组合兼容的“界面 + 逻辑”或“界面 + 逻辑 + 状态”。
-- 可选使用本地 Ollama 小模型优化 Small Project Pack。
-- 生成 Small Project Pack preview，包含：
-  - `task_intent.json`
-  - `task_plan.json`
-  - `quality_gate.json`
-  - 可运行的 `index.html`、`styles.css`、`app.js`
-  - `task_pack.json`
-  - `capsules_used.json`
-  - `provenance.json`
-  - `snippets_used.json`
+- 对符合 Static Web V1 支持条件的来源，通过只读快照提取可独立验证的 presentation、interaction 和 computation 胶囊。
+- 在桌面流程中完成复核、模型监督、验证、发布、备份和恢复。
+- 把正式不可变版本保存在唯一的本地 SQLite Capsule Warehouse。
+- 由唯一 `module_native` 组合器接收内存态正式胶囊。
+- CLI 只经 `ReweaveAppService` 使用明确选择的正式胶囊 ID 生成。
+- 生成可运行的 `index.html`、`styles.css`、`app.js`、manifest、provenance、质量证据和精确产品使用记录。
 - 默认关闭真实源项目写入。
 
 ## 截图
+
+下列仓库图片仅作界面示意。发布验收以设计文档单独记录的真实 QWeb 交互和模型辅助截图证据为准；这些图片不是像素级签字。
 
 ### Source Box
 
@@ -147,40 +96,41 @@ JSON / provenance 里预期能看到：
 
 ## 快速开始
 
-运行公开 Task Pack demo：
+在桌面仓库发布胶囊后，运行公开 CLI：
 
 ```bash
 python3 scripts/run_public_reweave_demo.py \
-  --source examples/source_boxes/customer-quote-widget \
-  --task "Build a quote summary card"
+  --task "Build a quote summary card" \
+  --capsule-id cap_11111111111111111111111111111111 \
+  --capsule-id cap_22222222222222222222222222222222
 ```
 
 Windows PowerShell：
 
 ```powershell
 py -3 scripts\run_public_reweave_demo.py `
-  --source examples\source_boxes\customer-quote-widget `
-  --task "Build a quote summary card"
+  --task "Build a quote summary card" `
+  --capsule-id cap_11111111111111111111111111111111 `
+  --capsule-id cap_22222222222222222222222222222222
 ```
 
-脚本默认写入系统临时目录，例如 macOS/Linux 上的 `/tmp/reweave_public_demo`，或 Windows 上的 `%TEMP%\reweave_public_demo`。
+返回值中的 `previewPath` 指向生成产品；`productId`、`manifestDigest` 和 `capsulesUsed` 提供精确本地追溯。
 
-产物目录里，`index.html` 面向普通使用者；`review.html` 是构建说明页，放胶囊、来源摘录和 trace 文件。
-
-在桌面程序里试用公开 Source Box：
+当前正向流程使用仓库内版本化的 ESM 开发者夹具：
 
 ```text
-examples/source_boxes/customer-quote-widget
-examples/source_boxes/ops-status-card
+tests/fixtures/reweave_phase6_quote
 ```
+
+公开的 `customer-quote-widget` 和 `ops-status-card` 使用 classic script。它们保留为 V1 范围负向样例，预期停在 `classic_script_unsupported_v1`，不会完成正向入库。
 
 桌面闭环：
 
 ```text
-Bind Source Box -> Scan -> Prepare -> Store -> 描述任务 -> Build Small Project Pack -> 查看 provenance
+Bind Source Box -> 发现并确认 -> Refresh -> 复核并发布 -> Generate -> 查看 provenance
 ```
 
-macOS 桌面 smoke 已验证：程序打开后先进入 Source Box 开屏，Generate / Export / Open Folder 在未满足条件前保持隐藏，bridge 主流程可以生成 Task Pack preview，且不写源项目。
+桌面管理把 Source Box 入库、复核、发布、备份和恢复保持在同一条 SQLite 主线上；CLI 通过同一个应用服务生成。
 
 见 [Desktop User Flow](docs/DESKTOP_USER_FLOW.md)。
 
@@ -198,28 +148,25 @@ node --check reweave_frontend/app.js
 macOS/Linux 可选桌面壳：
 
 ```bash
+npm ci
 python3 -m venv .venv-reweave
 . .venv-reweave/bin/activate
 python -m pip install -r pimos_lite/requirements-desktop.txt
 ./start_reweave_static.sh
 ```
 
-启动脚本不会自动安装依赖，也不会自动连接软件包仓库。
+PySide6 只安装在独立 `.venv-reweave`，不进入核心依赖。启动脚本不会自动安装依赖，也不会自动连接软件包仓库。Ollama 监督只允许 loopback，并要求用户显式选择本机已安装模型；Reweave 没有硬编码默认模型。
 
-多胶囊行为组合已内置，clone 一个仓库即可运行：
+### 历史 demo
+
+以下脚本仅保留为非活跃迁移历史，不是当前产品生成路径，也不是 CI 直接入口：
 
 ```bash
 python scripts/run_public_stage4_demo.py
 python scripts/run_public_stage4_demo.py --case data
 ```
 
-该命令调用仓库内唯一的 Stage4 module-native composer，组合 `order-form-ui`、`order-total-logic` 和 `result-history-state`，验证生成交互（`12 × 8 = 96`、历史计数 `1`），写出标准证据和运行验收文件，并确认三个 Source Box 均未改变。
-
-`data` 案例会另行组合记录列表胶囊、表格 UI 胶囊和纯汇总逻辑胶囊，渲染 3 行数据，并验证 `North → 420`、`South → 80`；UI 和汇总逻辑中均不保存订单数据。
-
-Reweave-lite 现在是这份 composer 源码的唯一维护方；原 Stage4 基线 `ab8e62d` 仅保留为迁移历史，不存在需要双向同步的第二份运行源码。
-
-Windows 桌面壳仍是 experimental；CLI demo 和测试已纳入 Windows CI。
+它们不读取正式 SQLite 生成路径。Windows 桌面壳仍是 experimental；CLI 帮助入口和测试套件已纳入 Windows CI。
 
 可选 runtime bridge：
 
@@ -231,12 +178,22 @@ REWEAVE_RUNTIME_STATE_PATH=/path/to/frontend_runtime_state.json \
 ## 公开可复现性
 
 - GitHub Actions 会运行 Reweave 测试。
-- GitHub Actions 会在 Ubuntu 和 Windows 上运行公开 Task Pack demo。
-- GitHub Actions 会运行内置的 UI + logic + state 组合 demo。
-- GitHub Actions 会检查 `task_intent.json`、`task_plan.json`、`quality_gate.json`、`task_pack.json`、`capsules_used.json` 和 `provenance.json`。
+- GitHub Actions 会在 Ubuntu 和 Windows 上检查 service-backed 公开 CLI 的帮助入口。
 - GitHub Actions 会检查前端 JavaScript 语法。
+- 历史 demo 脚本不是 CI 直接入口。
 - 默认启动不依赖私有工作区路径。
 - Source project writes 默认保持关闭。
+
+运行证据标签严格区分：
+
+| 标签 | 能证明什么 |
+| --- | --- |
+| `synthetic_declared_interaction` | 只证明声明交互模拟，不是浏览器验收。 |
+| `real_qwebengine_render` / `real_qwebengine_interaction` | 候选在隔离的真实 QWebEngine 中完成渲染或交互。 |
+| `real_qwebengine_product_bootstrap` | 生成产品能在真实 QWebEngine 启动，不等于完整业务点击。 |
+| `real_qwebengine_product_interaction` | 外部输入和真实点击得到预期产品结果，不等于像素级或人工视觉签字。 |
+
+托管 CI 在 Ubuntu 和 Windows 上使用 Python 3.11、Node 24；它不安装 PySide6，也不能替代 macOS 本地真实 QWeb 桌面门。Windows 桌面打包仍为 experimental。
 
 历史内部工作台笔记，不作为这个公开仓库的运行前提。
 
@@ -248,20 +205,19 @@ REWEAVE_RUNTIME_STATE_PATH=/path/to/frontend_runtime_state.json \
 
 这个仓库公开的是一条安全的 Reweave-lite 路线：从旧项目上下文生成可检查的 Small Project Pack，而不是替你自动编辑原项目的 IDE。
 
-未来真实写入只保留一条安全路线：人工确认、单文件、新建、不覆盖、可回滚。
+生成写入只发生在应用状态目录中新建的产品目录；Source Box 始终只读。
 
 ## 项目结构
 
 ```text
 桌面界面                          reweave_frontend/
-运行时桥接                        pimos_lite/reweave_engine/lumo_lite.py
-Source Box 入口                   pimos_lite/reweave_source_registry.py
-Source Box 扫描                   pimos_lite/reweave_source_scanner.py
-胶囊草稿                          pimos_lite/reweave_capsule_draft.py
-胶囊仓库                          pimos_lite/reweave_capsule_warehouse.py
-Task Pack / provenance            pimos_lite/reweave_preview_pack.py
+应用服务                          pimos_lite/reweave_app_service.py
+正式 SQLite 仓库                  pimos_lite/reweave_capsule_store.py
+只读入库                          pimos_lite/reweave_capsule_intake.py
+安全与验证                        pimos_lite/reweave_capsule_stage3.py
+唯一组合器                        pimos_lite/composer/module_native.py
 公开样例                          examples/source_boxes/
-公开 demo                         scripts/run_public_reweave_demo.py
+公开 CLI                          scripts/run_public_reweave_demo.py
 测试                              tests/
 ```
 
