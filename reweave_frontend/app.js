@@ -157,6 +157,23 @@
       copied: "已复制",
       enrichedContentPreview: "使用补充内容预览",
       capsuleWarehouse: "胶囊仓库",
+      warehouseReadOnly: "只读胶囊仓库",
+      back: "返回",
+      searchWarehouse: "搜索来源项目或胶囊",
+      canvasZoom: "画布缩放",
+      codeZoom: "代码字号",
+      zoomOut: "缩小",
+      zoomIn: "放大",
+      resetView: "复位",
+      resetCodeSize: "复位代码字号",
+      sourceProjectOverview: "来源项目总览",
+      warehouseCanvasHelp: "胶囊仓库画布。方向键平移，加减键缩放，回车打开聚焦节点。",
+      noFormalCapsules: "暂无可浏览的正式胶囊。",
+      warehouseLoadingRelations: "正在读取正式胶囊的来源关系……",
+      noFormalSourceIdentity: "正式胶囊尚未提供可展示的来源项目身份。",
+      insufficientSourceEvidence: "来源证据不足",
+      noVerifiedCoreCode: "暂无经验证的核心代码",
+      warehouseManagement: "入库管理",
       warehousePurpose: "管理只读来源、提取候选、人工复核并发布正式胶囊。",
       developerMode: "开发者模式",
       developerModeHelp: "显示输入类型、枚举、复核 ID、备份和任务等开发信息。",
@@ -533,6 +550,23 @@
       copied: "Copied",
       enrichedContentPreview: "Use enriched content preview",
       capsuleWarehouse: "Capsule Warehouse",
+      warehouseReadOnly: "READ-ONLY WAREHOUSE",
+      back: "Back",
+      searchWarehouse: "Search source projects or capsules",
+      canvasZoom: "Canvas zoom",
+      codeZoom: "Code size",
+      zoomOut: "Zoom out",
+      zoomIn: "Zoom in",
+      resetView: "Reset",
+      resetCodeSize: "Reset code size",
+      sourceProjectOverview: "Source project overview",
+      warehouseCanvasHelp: "Capsule Warehouse canvas. Use arrow keys to pan, plus or minus to zoom, and Enter to open a focused node.",
+      noFormalCapsules: "No formal capsules are available to browse.",
+      warehouseLoadingRelations: "Loading formal capsule source relationships…",
+      noFormalSourceIdentity: "Formal capsules do not provide a displayable source project identity.",
+      insufficientSourceEvidence: "Insufficient source evidence",
+      noVerifiedCoreCode: "No verified core code is available.",
+      warehouseManagement: "Ingestion management",
       warehousePurpose: "Manage read-only sources, capture candidates, review them, and publish formal capsules.",
       developerMode: "Developer mode",
       developerModeHelp: "Show input types, enums, review IDs, backups, and task diagnostics.",
@@ -829,6 +863,28 @@
   var artifactRenderers = window.ReweaveArtifacts || {};
   var sourceWorkflow = window.ReweaveSourceWorkflow || {};
   var capsuleReader = window.ReweaveCapsuleReader || {};
+  var capsuleWarehouseScene = window.ReweaveCapsuleWarehouseScene.create({
+    getCapsules: function () {
+      return data && Array.isArray(data.capsules) ? data.capsules : [];
+    },
+    getProjects: function () {
+      return ingestionManagement.projects;
+    },
+    readCapsuleDetail: function (capsuleId) {
+      return bridgeCall("get_capsule_detail", JSON.stringify({ capsule_id: capsuleId })).then(function (raw) {
+        var result = parseBridgeJson(raw);
+        return managementPayload(result);
+      });
+    },
+    openManagement: function () {
+      togglePopover("capsule-warehouse");
+      if (!ingestionManagement.loaded && !ingestionManagement.loading) refreshIngestionManagement();
+    },
+    capsuleReader: capsuleReader,
+    t: t,
+    showScreen: showScreen,
+    syncAppState: syncAppState,
+  });
   var targetIntegration = window.ReweaveTargetWorkflow.create({
     getBridge: function () {
       return desktopBridge;
@@ -1312,6 +1368,7 @@
       renderCapsuleStrip();
     }
     if (els.usedCapsuleDock && els.usedCount) renderUsedChips();
+    capsuleWarehouseScene.sync();
     targetIntegration.sync();
     updateEnrichedContentToggle();
   }
@@ -1445,6 +1502,7 @@
     var button = $("btn-capsule-warehouse");
     if (button) button.classList.toggle("hidden", !ingestionManagement.available);
     renderIngestionManagement();
+    capsuleWarehouseScene.sync();
   }
 
   function setManagementStatus(key) {
@@ -2122,7 +2180,7 @@
       ingestionManagement.sourceRoots.forEach(function (root) {
         var option = document.createElement("option");
         option.value = String(root.root_id || "");
-        option.textContent = String(root.current_path || root.root_id || "source root");
+        option.textContent = String(root.label || root.root_id || "source root");
         rootSelect.appendChild(option);
       });
       var rootLabel = document.createElement("label");
@@ -3861,7 +3919,7 @@
   }
 
   function showScreen(id) {
-    ["screen-welcome", "screen-cleaning", "screen-main", "screen-target"].forEach(function (sid) {
+    ["screen-welcome", "screen-cleaning", "screen-main", "screen-capsule-warehouse", "screen-target"].forEach(function (sid) {
       $(sid).classList.toggle("hidden", sid !== id);
     });
   }
@@ -4006,6 +4064,7 @@
       if (selected) showCapsuleReader(selected);
     }
     applyLumoLiteRuntimeView();
+    capsuleWarehouseScene.sync();
     targetIntegration.sync();
   }
 
@@ -4094,6 +4153,7 @@
     if (els.reweaveResponse) els.reweaveResponse.textContent = "";
     setAppState("idle");
     applyLumoLiteRuntimeView();
+    capsuleWarehouseScene.sync();
     targetIntegration.sync();
   }
 
@@ -4932,6 +4992,7 @@
   function bindMainEvents() {
     if (mainEventsBound) return;
     mainEventsBound = true;
+    capsuleWarehouseScene.bind();
     targetIntegration.bind();
 
     $("btn-generate").addEventListener("click", runGenerate);
@@ -4973,14 +5034,6 @@
       e.stopPropagation();
       togglePopover("history");
     });
-
-    if (els.btnCapsuleWarehouse) {
-      els.btnCapsuleWarehouse.addEventListener("click", function (e) {
-        e.stopPropagation();
-        togglePopover("capsule-warehouse");
-        if (!ingestionManagement.loaded && !ingestionManagement.loading) refreshIngestionManagement();
-      });
-    }
 
     $("btn-sources").addEventListener("click", function (e) {
       e.stopPropagation();
@@ -5086,7 +5139,8 @@
     } else if (which === "capsule-warehouse" && !warehouseOpen) {
       els.capsuleWarehousePopover.classList.remove("hidden");
       els.backdrop.classList.remove("hidden");
-      els.btnCapsuleWarehouse.setAttribute("aria-expanded", "true");
+      var ingestionEntry = $("btn-open-capsule-ingestion");
+      if (ingestionEntry) ingestionEntry.setAttribute("aria-expanded", "true");
     }
   }
 
@@ -5099,7 +5153,8 @@
     $("btn-history").setAttribute("aria-expanded", "false");
     $("btn-sources").setAttribute("aria-expanded", "false");
     if (els.btnLumoArtifacts) els.btnLumoArtifacts.setAttribute("aria-expanded", "false");
-    if (els.btnCapsuleWarehouse) els.btnCapsuleWarehouse.setAttribute("aria-expanded", "false");
+    var ingestionEntry = $("btn-open-capsule-ingestion");
+    if (ingestionEntry) ingestionEntry.setAttribute("aria-expanded", "false");
   }
 
   function ensureCapsuleElement(id) {
@@ -5380,6 +5435,7 @@
         shell: desktopShellState,
         previewPath: lastPreviewPath || null,
       },
+      warehouse: capsuleWarehouseScene.getState(),
       target: targetIntegration.getState(),
     };
   }

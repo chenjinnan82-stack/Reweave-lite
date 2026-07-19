@@ -34,6 +34,7 @@ REQUIRED_SURFACE_FILES = (
     "reweave_frontend/artifacts.js",
     "reweave_frontend/bridge.js",
     "reweave_frontend/capsule_reader.js",
+    "reweave_frontend/capsule_warehouse_scene.js",
     "reweave_frontend/index.html",
     "reweave_frontend/mock-data.json",
     "reweave_frontend/renderers.js",

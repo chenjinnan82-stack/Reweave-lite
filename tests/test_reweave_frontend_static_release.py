@@ -50,6 +50,159 @@ def test_frontend_locale_copy_is_strictly_partitioned() -> None:
         assert f'data-i18n="{key}"' in (ROOT / "reweave_frontend" / "index.html").read_text(encoding="utf-8")
 
 
+def test_capsule_warehouse_scene_is_one_read_only_release_module() -> None:
+    node = shutil.which("node")
+    index = (ROOT / "reweave_frontend" / "index.html").read_text(encoding="utf-8")
+    app = (ROOT / "reweave_frontend" / "app.js").read_text(encoding="utf-8")
+    scene = (ROOT / "reweave_frontend" / "capsule_warehouse_scene.js").read_text(
+        encoding="utf-8"
+    )
+    styles = (ROOT / "reweave_frontend" / "styles.css").read_text(encoding="utf-8")
+    audit = (ROOT / "pimos_lite" / "reweave_release_surface_audit.py").read_text(
+        encoding="utf-8"
+    )
+
+    if node:
+        for path in (
+            ROOT / "reweave_frontend" / "capsule_warehouse_scene.js",
+            ROOT / "reweave_frontend" / "capsule_reader.js",
+            ROOT / "reweave_frontend" / "app.js",
+        ):
+            subprocess.run([node, "--check", str(path)], check=True)
+
+    assert index.count('<script src="capsule_warehouse_scene.js"></script>') == 1
+    assert index.index('src="capsule_reader.js"') < index.index(
+        'src="capsule_warehouse_scene.js"'
+    )
+    assert index.index('src="capsule_warehouse_scene.js"') < index.index(
+        'src="target_workflow.js"'
+    )
+    assert '"reweave_frontend/capsule_warehouse_scene.js",' in audit
+    assert 'aria-controls="screen-capsule-warehouse"' in index
+    assert 'id="screen-capsule-warehouse"' in index
+    assert 'id="btn-open-capsule-ingestion"' in index
+    assert index.count('id="capsule-warehouse-popover"') == 1
+    assert "window.ReweaveCapsuleWarehouseScene = {" in scene
+    assert """    return {
+      bind: bind,
+      sync: sync,
+      getState: getState,
+    };""" in scene
+    assert "window.ReweaveCapsuleWarehouseScene.create({" in app
+    assert "capsuleWarehouseScene.bind();" in app
+    assert "warehouse: capsuleWarehouseScene.getState()," in app
+    assert "getCapsules: function ()" in app
+    assert "getProjects: function ()" in app
+    assert 'bridgeCall("get_capsule_detail"' in app
+    assert "innerHTML" not in scene
+    assert "localStorage" not in scene
+    assert "sessionStorage" not in scene
+    assert "console." not in scene
+    for forbidden in (
+        "apply_static_web_patch",
+        "commit_static_web_patch",
+        "write_static_web_target",
+        "generate_product",
+        "React",
+        "Vue",
+        "Svelte",
+    ):
+        assert forbidden not in scene
+    assert "cap.formal_version === true" in scene
+    assert 'source.source_identity === "project:" + source.project_id' in scene
+    assert '"missing_formal_source_identity"' in scene
+    assert 'insufficientSourceEvidence: "来源证据不足"' in app
+    assert 'insufficientSourceEvidence: "Insufficient source evidence"' in app
+    assert 'text("insufficientSourceEvidence")' in scene
+    assert 'data-i18n="noVerifiedCoreCode"' in index
+    assert "looksAbsolutePath" in scene
+    assert "safeRelativePath" in scene
+    assert ".warehouse-web-atmosphere" in styles
+    assert ".warehouse-source-link" in styles
+    assert ".warehouse-node.is-match" in styles
+    assert "@media (prefers-reduced-motion: reduce)" in styles
+    assert "targetIntegration.getState()" in app
+
+
+def test_capsule_core_code_fail_closed_without_formal_contract() -> None:
+    node = shutil.which("node")
+    reader_path = ROOT / "reweave_frontend" / "capsule_reader.js"
+    reader = reader_path.read_text(encoding="utf-8")
+    scene = (ROOT / "reweave_frontend" / "capsule_warehouse_scene.js").read_text(
+        encoding="utf-8"
+    )
+
+    assert "verifiedCoreCode" not in reader + scene
+    for speculative_rule in (
+        "snippet.verified",
+        "validation_status",
+        'kind === "verified_core_code"',
+        'kind === "validated_core_code"',
+    ):
+        assert speculative_rule not in reader + scene
+    assert "verified_core_code: false" in scene
+
+    if node:
+        script = (
+            "global.window={};require(" + repr(str(reader_path)) + ");"
+            "console.log(typeof window.ReweaveCapsuleReader.verifiedCoreCode);"
+        )
+        result = subprocess.run([node, "-e", script], check=True, capture_output=True, text=True)
+        assert result.stdout.strip() == "undefined"
+
+
+def test_capsule_detail_fails_closed_without_exact_version() -> None:
+    scene = (ROOT / "reweave_frontend" / "capsule_warehouse_scene.js").read_text(
+        encoding="utf-8"
+    )
+    detail = scene[scene.index("    function projectDetail(") : scene.index(
+        "\n    function addCapsuleToGroup(", scene.index("    function projectDetail(")
+    )]
+
+    assert "versions[0]" not in detail
+    assert "if (!selectedVersion)" in detail
+    assert "exact_version: false" in detail
+    assert 'return String(source.version_id || "") === versionId;' in detail
+    assert "cached.value.exact_version !== true" in detail
+
+
+def test_capsule_source_fact_line_requires_exact_formal_identity() -> None:
+    scene = (ROOT / "reweave_frontend" / "capsule_warehouse_scene.js").read_text(
+        encoding="utf-8"
+    )
+    proof = scene[scene.index("    function hasFormalSourceFact(") : scene.index(
+        "\n    function createNode(", scene.index("    function hasFormalSourceFact(")
+    )]
+    grouping = scene[scene.index("    function addCapsuleToGroup(") : scene.index(
+        "\n    function stableHash(", scene.index("    function addCapsuleToGroup(")
+    )]
+    render = scene[scene.index("    function renderBrowser(") : scene.index(
+        "\n    function selectedCapsule(", scene.index("    function renderBrowser(")
+    )]
+    projection = scene[scene.index("    function developerProjection(") : scene.index(
+        "\n    function applyCodeScale(", scene.index("    function developerProjection(")
+    )]
+    get_state = scene[scene.index("    function getState(") : scene.index(
+        "\n    return {", scene.index("    function getState(")
+    )]
+
+    assert "missingIdentity" not in scene
+    assert 'projectId: evidenceStatus === "formal_exact_version_source"' in grouping
+    assert '"missing_exact_version_source_relation"' in grouping
+    assert '"missing_formal_source_identity"' in grouping
+    assert '"source:" + sourceId' in grouping
+    assert "key.replace" not in grouping
+    assert 'group.evidenceStatus !== "formal_exact_version_source"' in proof
+    assert "exactProjectSources(cap).some" in proof
+    assert "group.projectId === source.project_id" in proof
+    assert 'group.key === "project:" + source.project_id' in proof
+    assert "if (hasFormalSourceFact(group, cap)) appendLine(" in render
+    assert "project_id: formalSource ? group.projectId : null" in projection
+    assert "source_identity_status: sourceStatus" in projection
+    assert "relationships: formalSource ? exactProjectSources(cap).filter" in projection
+    assert 'group.evidenceStatus === "formal_exact_version_source"' in get_state
+
+
 def test_formal_capsule_selection_is_correctable_and_fail_closed() -> None:
     app = (ROOT / "reweave_frontend" / "app.js").read_text(encoding="utf-8")
     styles = (ROOT / "reweave_frontend" / "styles.css").read_text(encoding="utf-8")

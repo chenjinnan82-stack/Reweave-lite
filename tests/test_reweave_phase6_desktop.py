@@ -283,6 +283,13 @@ def test_simple_mode_scans_multiply_without_creating_candidate(
                 js("document.getElementById('btn-lang').click(); true")
             js("document.getElementById('btn-capsule-warehouse').click(); true")
             wait_js(
+                "!document.getElementById('screen-capsule-warehouse').classList.contains('hidden') && "
+                "!document.getElementById('btn-open-capsule-ingestion').classList.contains('hidden')",
+                10,
+                "empty warehouse management entry",
+            )
+            js("document.getElementById('btn-open-capsule-ingestion').click(); true")
+            wait_js(
                 "document.getElementById('warehouse-projects').textContent.includes('Multiply source')",
                 30,
                 "project_row",
@@ -801,6 +808,586 @@ def test_static_web_target_review_ui_never_writes_or_calls_confirm_service(
             window.deleteLater()
             pump()
             QCoreApplication.sendPostedEvents(None, QEvent.DeferredDelete)
+            app.processEvents()
+
+
+def test_capsule_warehouse_read_only_scene_with_real_service(
+    tmp_path: Path, monkeypatch
+) -> None:
+    if sys.platform.startswith("linux") and not (
+        os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    ):
+        pytest.skip("A desktop GUI session is required")
+    pytest.importorskip("PySide6.QtWebEngineCore")
+
+    if os.environ.get("REWEAVE_WAREHOUSE_SCENE_CHILD") != "1":
+        child_env = os.environ.copy()
+        child_env["REWEAVE_WAREHOUSE_SCENE_CHILD"] = "1"
+        child_env.pop("PYTEST_ADDOPTS", None)
+        child = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pytest",
+                "-p",
+                "no:cacheprovider",
+                "-q",
+                (
+                    "tests/test_reweave_phase6_desktop.py::"
+                    "test_capsule_warehouse_read_only_scene_with_real_service"
+                ),
+            ],
+            cwd=ROOT,
+            env=child_env,
+            capture_output=True,
+            text=True,
+            timeout=180,
+        )
+        assert child.returncode == 0, child.stdout + child.stderr
+        return
+
+    from PySide6.QtCore import QCoreApplication, QEvent, Qt
+    from PySide6.QtTest import QTest
+    from PySide6.QtWebEngineCore import QWebEngineProfile
+
+    from pimos_lite import desktop_reweave_static as desktop
+    from pimos_lite.reweave_app_service import ReweaveAppService
+    from pimos_lite.reweave_capsule_store import CapsuleWarehouseStore
+    from tests.test_reweave_phase5_generation import _seed_capsule
+
+    sources_root = tmp_path / "readonly-sources"
+    sources_root.mkdir()
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("REWEAVE_STATE_DIR", str(state_dir))
+    store = CapsuleWarehouseStore(state_dir / "capsule_warehouse.sqlite3")
+    store.initialize()
+
+    absolute_canary = str(sources_root.resolve())
+    after_content_canary = "WAREHOUSE_AFTER_CONTENT_MUST_NOT_RENDER"
+    snippet_code_canary = "WAREHOUSE_SPECULATIVE_SNIPPET_MUST_NOT_RENDER"
+    missing_version_capsule_id = ""
+    missing_version_version_id = ""
+    missing_identity_capsule_id = ""
+
+    class ObservedService(ReweaveAppService):
+        def get_initial_state(self) -> dict[str, object]:
+            result = super().get_initial_state()
+            capsules = result.get("warehouseCapsules")
+            if isinstance(capsules, list):
+                for capsule in capsules:
+                    if not isinstance(capsule, dict):
+                        continue
+                    capsule_id = str(capsule.get("capsule_id") or "")
+                    capsule["snippet"] = {
+                        "kind": "verified_core_code",
+                        "verified": True,
+                        "validation_status": "passed",
+                        "preview": snippet_code_canary,
+                        "language": "js",
+                    }
+                    if capsule_id == missing_version_capsule_id:
+                        capsule["source_id"] = "formal-source-without-exact-version"
+                        capsule["source"] = "Versionless formal source"
+                    elif capsule_id == missing_identity_capsule_id:
+                        capsule["source"] = "Display-only source"
+            return result
+
+        def get_capsule_detail(
+            self, payload: dict[str, object] | None = None
+        ) -> dict[str, object]:
+            result = super().get_capsule_detail(payload)
+            detail = result.get("data") if isinstance(result, dict) else None
+            if isinstance(detail, dict):
+                detail["after_content"] = after_content_canary
+                versions = detail.get("versions")
+                if isinstance(versions, list):
+                    for version in versions:
+                        if not isinstance(version, dict):
+                            continue
+                        validation = version.get("validation_result_json")
+                        if isinstance(validation, dict):
+                            validation["absolute_path_canary"] = absolute_canary
+                requested_id = str((payload or {}).get("capsule_id") or "")
+                if requested_id == missing_version_capsule_id and isinstance(versions, list):
+                    wrong_version = dict(versions[0]) if versions else {}
+                    wrong_version_id = missing_version_version_id + "-other"
+                    wrong_version["version_id"] = wrong_version_id
+                    detail["versions"] = [wrong_version]
+                    detail["sources"] = [
+                        {
+                            "version_id": wrong_version_id,
+                            "project_id": "untrusted-other-version",
+                            "source_identity": "project:untrusted-other-version",
+                            "source_kind": "project",
+                            "source_relpath": "index.html",
+                            "relationship": "exact",
+                        }
+                    ]
+            return result
+
+    service = ObservedService(capsule_store=store)
+    project_rows: list[tuple[Path, str, str]] = []
+    for slug, display_name in (
+        ("source-a", "Readonly source A"),
+        ("source-b", "Readonly source B"),
+        ("source-c", "Readonly source C"),
+    ):
+        source = sources_root / slug
+        source.mkdir()
+        (source / "index.html").write_text(
+            f'<main data-capsule-root="{slug}"></main>\n', encoding="utf-8"
+        )
+        root = service._capsule_intake.bind_source_root(
+            source, root_kind="single_project"
+        )
+        discovered = service._capsule_intake.discover_projects(str(root["root_id"]))
+        project = service._capsule_intake.confirm_project(
+            str(discovered[0]["project_id"])
+        )
+        project_id = str(project["project_id"])
+        with store.transaction() as connection:
+            connection.execute(
+                "UPDATE projects SET display_name = ? WHERE project_id = ?",
+                (display_name, project_id),
+            )
+            store.bump_revision(connection)
+        project_rows.append((source, display_name, project_id))
+
+    capsule_rows: list[tuple[str, str, int]] = []
+    for project_index, kind, suffix, capability_key in (
+        (0, "presentation", "alpha_presentation", "alpha_presentation"),
+        (0, "interaction", "alpha_interaction", "alpha_interaction"),
+        (1, "presentation", "beta_presentation", "beta_presentation"),
+        (1, "computation", "beta_computation", "beta_computation"),
+        (2, "interaction", "gamma_interaction", "gamma_interaction"),
+        (2, "computation", "gamma_computation", "gamma_computation"),
+    ):
+        capsule_id, version_id = _seed_capsule(
+            store, kind, capability_key=capability_key, suffix=suffix
+        )
+        capsule_rows.append((capsule_id, version_id, project_index))
+    missing_version_capsule_id, missing_version_version_id = _seed_capsule(
+        store,
+        "presentation",
+        capability_key="missing_version_capability",
+        suffix="missing_version",
+    )
+    missing_identity_capsule_id, _missing_identity_version_id = _seed_capsule(
+        store,
+        "interaction",
+        capability_key="missing_identity_capability",
+        suffix="missing_identity",
+    )
+
+    with store.transaction() as connection:
+        for index, (_capsule_id, version_id, project_index) in enumerate(capsule_rows):
+            source, _display_name, project_id = project_rows[project_index]
+            source_hash = hashlib.sha256((source / "index.html").read_bytes()).hexdigest()
+            canonical_hash = str(
+                connection.execute(
+                    "SELECT canonical_hash FROM capsule_versions WHERE version_id = ?",
+                    (version_id,),
+                ).fetchone()[0]
+            )
+            connection.execute(
+                "INSERT INTO capsule_sources "
+                "(source_link_id, version_id, project_id, source_identity, source_kind, "
+                "source_relpath, source_hash, candidate_canonical_hash, relationship, read_at) "
+                "VALUES (?, ?, ?, ?, 'project', 'index.html', ?, ?, 'exact', ?)",
+                (
+                    f"warehouse-scene-source-{index}",
+                    version_id,
+                    project_id,
+                    f"project:{project_id}",
+                    source_hash,
+                    canonical_hash,
+                    "2026-07-19T00:00:00Z",
+                ),
+            )
+        store.bump_revision(connection)
+
+    initial_state = service.get_initial_state()
+    assert len(initial_state["warehouseCapsules"]) == 8
+    assert len(initial_state["capsuleIngestionV1"]["projects"]) == 3
+
+    qt_parts = desktop.import_qt_webengine()
+    QApplication = qt_parts[0]
+    app = QApplication.instance() or QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
+    profile = QWebEngineProfile.defaultProfile()
+    profile.setCachePath(str(tmp_path / "qweb-cache"))
+    profile.setPersistentStoragePath(str(tmp_path / "qweb-storage"))
+    window = None
+
+    def pump(seconds: float = 0.03) -> None:
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.005)
+
+    try:
+        with patch.object(desktop, "ReweaveAppService", return_value=service):
+            window, bridge = desktop.create_reweave_window()
+            view = window.centralWidget()
+            page = view.page()
+            window.show()
+
+            def js(expression: str, timeout: float = 15) -> object:
+                result: list[object] = []
+                page.runJavaScript(expression, result.append)
+                deadline = time.monotonic() + timeout
+                while not result and time.monotonic() < deadline:
+                    pump()
+                if not result:
+                    raise TimeoutError("javascript_callback_timeout")
+                return result[0]
+
+            def wait_js(expression: str, timeout: float, label: str) -> object:
+                deadline = time.monotonic() + timeout
+                last: object = None
+                while time.monotonic() < deadline:
+                    last = js(expression)
+                    if last:
+                        return last
+                    pump(0.08)
+                raise TimeoutError(f"{label}:{last!r}")
+
+            def warehouse_state() -> dict[str, object]:
+                return json.loads(
+                    str(js("JSON.stringify(window.ReweavePrototype.getState().warehouse)"))
+                )
+
+            wait_js(
+                "document.readyState === 'complete' && !!window.reweaveBridge && "
+                "!document.getElementById('screen-main').classList.contains('hidden')",
+                30,
+                "desktop main screen",
+            )
+            bridge_calls: list[str] = []
+            original_phase4_call = bridge._phase4_call
+
+            def observe_phase4_call(method_name: str, payload_json: str = "") -> str:
+                bridge_calls.append(method_name)
+                return original_phase4_call(method_name, payload_json)
+
+            bridge._phase4_call = observe_phase4_call
+
+            source_before = _tree_state(sources_root)
+            revision_before = store.current_revision()
+            usage_before = _usage_state(store)
+            products_before = _tree_state(state_dir / "products")
+
+            js("document.getElementById('btn-capsule-warehouse').click(); true")
+            wait_js(
+                "window.ReweavePrototype.getState().warehouse.source_group_count === 5 && "
+                "!window.ReweavePrototype.getState().warehouse.source_relations_loading && "
+                "document.querySelectorAll('#warehouse-scene-nodes [data-project-key]').length === 5",
+                30,
+                "source project overview",
+            )
+            assert warehouse_state()["view"] == "overview"
+            assert js("document.querySelectorAll('#warehouse-scene-links line').length") == 0
+            overview_positions = json.loads(
+                str(
+                    js(
+                        "JSON.stringify(Array.from(document.querySelectorAll("
+                        "'#warehouse-scene-nodes [data-project-key]')).map(function (node) { "
+                        "return [node.dataset.projectKey, node.style.left, node.style.top]; }))"
+                    )
+                )
+            )
+            assert len(overview_positions) == 5
+            assert len({(row[1], row[2]) for row in overview_positions}) == 5
+            overview_text = str(js("document.getElementById('warehouse-scene-nodes').textContent"))
+            for expected_label in (
+                "Readonly source A",
+                "Readonly source B",
+                "Readonly source C",
+                "Versionless formal source",
+                "Display-only source",
+            ):
+                assert expected_label in overview_text
+
+            window.activateWindow()
+            view.setFocus()
+            pump()
+            key_target = view.focusProxy() or view
+            assert js(
+                "(() => { const node = Array.from(document.querySelectorAll("
+                "'#warehouse-scene-nodes [data-project-key]')).find(function (item) { "
+                "return item.textContent.includes('Readonly source A'); }); "
+                "node.focus(); return document.activeElement === node; })()"
+            )
+            QTest.keyClick(key_target, Qt.Key.Key_Return)
+            wait_js(
+                "window.ReweavePrototype.getState().warehouse.view === 'project' && "
+                "document.querySelectorAll('#warehouse-scene-nodes [data-capsule-id]').length === 2",
+                10,
+                "project capsule constellation",
+            )
+            assert js("document.querySelectorAll('#warehouse-scene-links line').length") == 2
+            formal_project_state = warehouse_state()
+            assert formal_project_state["project_id"] == project_rows[0][2]
+            assert not js("!!document.querySelector('.warehouse-node.is-center .warehouse-node-note')")
+
+            js("document.getElementById('btn-warehouse-zoom-in').click(); true")
+            assert js(
+                "(() => { const canvas = document.getElementById('warehouse-scene-canvas'); "
+                "canvas.focus(); return document.activeElement === canvas; })()"
+            )
+            QTest.keyClick(key_target, Qt.Key.Key_Right)
+            pump()
+            project_view = warehouse_state()
+            assert project_view["canvas"]["scale"] > 1
+            assert project_view["canvas"]["x"] < 0
+
+            selected_id = str(
+                js("document.querySelector('#warehouse-scene-nodes [data-capsule-id]').dataset.capsuleId")
+            )
+            assert js(
+                "(() => { const node = document.querySelector('#warehouse-scene-nodes [data-capsule-id]'); "
+                "node.focus(); return document.activeElement === node; })()"
+            )
+            QTest.keyClick(key_target, Qt.Key.Key_Return)
+            wait_js(
+                "window.ReweavePrototype.getState().warehouse.view === 'code'",
+                10,
+                "capsule code page",
+            )
+            simple_state = warehouse_state()
+            assert simple_state["capsule_id"] == selected_id
+            assert simple_state["verified_core_code"] is False
+            assert js(
+                "document.getElementById('warehouse-core-code').classList.contains('hidden') && "
+                "!document.getElementById('warehouse-core-code-empty').classList.contains('hidden') && "
+                "!document.body.textContent.includes(" + json.dumps(snippet_code_canary) + ")"
+            )
+
+            js("document.getElementById('warehouse-code-developer-mode').click(); true")
+            developer_state = warehouse_state()
+            assert developer_state["capsule_id"] == simple_state["capsule_id"]
+            assert developer_state["developer_mode"] is True
+            assert js(
+                "!document.getElementById('warehouse-developer-details').classList.contains('hidden') && "
+                "!document.getElementById('btn-open-capsule-ingestion').classList.contains('hidden')"
+            )
+            assert selected_id in str(js("document.getElementById('warehouse-developer-evidence').textContent"))
+            formal_evidence = json.loads(
+                str(js("document.getElementById('warehouse-developer-evidence').textContent"))
+            )
+            assert formal_evidence["source"]["project_id"] == project_rows[0][2]
+            assert (
+                formal_evidence["source"]["source_identity_status"]
+                == "formal_exact_version_source"
+            )
+            assert len(formal_evidence["source"]["relationships"]) == 1
+            assert js(
+                "!document.documentElement.outerHTML.includes(" + json.dumps(absolute_canary) + ") && "
+                "!document.body.textContent.includes(" + json.dumps(after_content_canary) + ") && "
+                "!document.body.textContent.includes(" + json.dumps(snippet_code_canary) + ")"
+            )
+
+            js("document.getElementById('btn-warehouse-code-zoom-in').click(); true")
+            assert warehouse_state()["code_scale"] > 1
+            js("document.getElementById('btn-warehouse-scene-back').click(); true")
+            wait_js(
+                "window.ReweavePrototype.getState().warehouse.view === 'project'",
+                10,
+                "return to project",
+            )
+            restored_project = warehouse_state()
+            assert restored_project["canvas"] == project_view["canvas"]
+            wait_js(
+                "document.activeElement && document.activeElement.dataset.capsuleId === "
+                + json.dumps(selected_id),
+                10,
+                "capsule focus restored",
+            )
+
+            js("document.getElementById('btn-warehouse-scene-back').click(); true")
+            wait_js(
+                "window.ReweavePrototype.getState().warehouse.view === 'overview'",
+                10,
+                "return to overview",
+            )
+            overview_before_search = warehouse_state()
+            restored_positions = json.loads(
+                str(
+                    js(
+                        "JSON.stringify(Array.from(document.querySelectorAll("
+                        "'#warehouse-scene-nodes [data-project-key]')).map(function (node) { "
+                        "return [node.dataset.projectKey, node.style.left, node.style.top]; }))"
+                    )
+                )
+            )
+            assert restored_positions == overview_positions
+            js(
+                "(() => { const input = document.getElementById('warehouse-scene-query'); "
+                "input.value = 'Readonly source B'; input.dispatchEvent(new Event('input', {bubbles:true})); "
+                "input.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', bubbles:true})); return true; })()"
+            )
+            wait_js(
+                "document.activeElement && document.activeElement.dataset.projectKey",
+                10,
+                "project search focus",
+            )
+            js(
+                "(() => { const input = document.getElementById('warehouse-scene-query'); "
+                "input.value = ''; input.dispatchEvent(new Event('input', {bubbles:true})); return true; })()"
+            )
+            assert warehouse_state()["canvas"] == overview_before_search["canvas"]
+
+            js(
+                "(() => { const input = document.getElementById('warehouse-scene-query'); "
+                "input.value = 'Beta Computation'; input.dispatchEvent(new Event('input', {bubbles:true})); "
+                "input.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', bubbles:true})); return true; })()"
+            )
+            wait_js(
+                "window.ReweavePrototype.getState().warehouse.view === 'project' && "
+                "document.activeElement && document.activeElement.dataset.capsuleId",
+                10,
+                "capsule search focus",
+            )
+            js(
+                "(() => { const input = document.getElementById('warehouse-scene-query'); "
+                "input.value = ''; input.dispatchEvent(new Event('input', {bubbles:true})); return true; })()"
+            )
+            assert warehouse_state()["view"] == "overview"
+            assert warehouse_state()["canvas"] == overview_before_search["canvas"]
+
+            assert js(
+                "(() => { const node = Array.from(document.querySelectorAll("
+                "'#warehouse-scene-nodes [data-project-key]')).find(function (item) { "
+                "return item.textContent.includes('Versionless formal source'); }); "
+                "node.click(); return true; })()"
+            )
+            wait_js(
+                "window.ReweavePrototype.getState().warehouse.view === 'project' && "
+                "window.ReweavePrototype.getState().warehouse.project_key === "
+                + json.dumps("source:formal-source-without-exact-version"),
+                10,
+                "missing exact version fallback group",
+            )
+            missing_version_group_state = warehouse_state()
+            assert missing_version_group_state["project_id"] is None
+            assert js(
+                "document.querySelector('.warehouse-node.is-center .warehouse-node-note').textContent === "
+                + json.dumps("来源证据不足")
+            )
+            assert js("document.querySelectorAll('#warehouse-scene-links line').length") == 0
+            assert js("document.querySelectorAll('#warehouse-scene-nodes [data-capsule-id]').length") == 1
+            js(
+                "document.querySelector('#warehouse-scene-nodes [data-capsule-id]').click(); true"
+            )
+            wait_js(
+                "window.ReweavePrototype.getState().warehouse.view === 'code'",
+                10,
+                "missing exact version code page",
+            )
+            assert warehouse_state()["capsule_id"] == missing_version_capsule_id
+            js(
+                "(() => { const toggle = document.getElementById('warehouse-code-developer-mode'); "
+                "if (!toggle.checked) toggle.click(); return true; })()"
+            )
+            missing_version_evidence = json.loads(
+                str(js("document.getElementById('warehouse-developer-evidence').textContent"))
+            )
+            assert missing_version_evidence["version"] == {}
+            assert missing_version_evidence["source"]["project_id"] is None
+            assert (
+                missing_version_evidence["source"]["source_identity_status"]
+                == "missing_exact_version_source_relation"
+            )
+            assert missing_version_evidence["source"]["relationships"] == []
+            js("document.getElementById('btn-warehouse-scene-back').click(); true")
+            wait_js(
+                "window.ReweavePrototype.getState().warehouse.view === 'project'",
+                10,
+                "return from missing exact version code",
+            )
+            js("document.getElementById('btn-warehouse-scene-back').click(); true")
+            wait_js(
+                "window.ReweavePrototype.getState().warehouse.view === 'overview'",
+                10,
+                "return from missing exact version group",
+            )
+
+            assert js(
+                "(() => { const node = Array.from(document.querySelectorAll("
+                "'#warehouse-scene-nodes [data-project-key]')).find(function (item) { "
+                "return item.textContent.includes('Display-only source'); }); "
+                "node.click(); return true; })()"
+            )
+            wait_js(
+                "window.ReweavePrototype.getState().warehouse.view === 'project' && "
+                "window.ReweavePrototype.getState().warehouse.project_key.startsWith('label:')",
+                10,
+                "missing formal source identity group",
+            )
+            missing_identity_group_state = warehouse_state()
+            assert missing_identity_group_state["project_id"] is None
+            assert js("document.querySelectorAll('#warehouse-scene-links line').length") == 0
+            assert js(
+                "document.querySelector('.warehouse-node.is-center .warehouse-node-note').textContent === "
+                + json.dumps("来源证据不足")
+            )
+            js(
+                "document.querySelector('#warehouse-scene-nodes [data-capsule-id]').click(); true"
+            )
+            wait_js(
+                "window.ReweavePrototype.getState().warehouse.view === 'code'",
+                10,
+                "missing formal source identity code page",
+            )
+            js(
+                "(() => { const toggle = document.getElementById('warehouse-code-developer-mode'); "
+                "if (!toggle.checked) toggle.click(); return true; })()"
+            )
+            missing_identity_evidence = json.loads(
+                str(js("document.getElementById('warehouse-developer-evidence').textContent"))
+            )
+            assert missing_identity_evidence["source"]["project_id"] is None
+            assert (
+                missing_identity_evidence["source"]["source_identity_status"]
+                == "missing_formal_source_identity"
+            )
+            assert missing_identity_evidence["source"]["relationships"] == []
+            js("document.getElementById('btn-warehouse-scene-back').click(); true")
+            wait_js(
+                "window.ReweavePrototype.getState().warehouse.view === 'project'",
+                10,
+                "return from missing formal source identity code",
+            )
+            js("document.getElementById('btn-warehouse-scene-back').click(); true")
+            wait_js(
+                "window.ReweavePrototype.getState().warehouse.view === 'overview'",
+                10,
+                "return from missing formal source identity group",
+            )
+
+            js("document.getElementById('btn-warehouse-zoom-in').click(); true")
+            assert warehouse_state()["canvas"]["scale"] > 1
+            js("document.getElementById('btn-warehouse-zoom-reset').click(); true")
+            assert warehouse_state()["canvas"] == {"scale": 1, "x": 0, "y": 0}
+            js("document.getElementById('btn-warehouse-scene-back').click(); true")
+            wait_js(
+                "!document.getElementById('screen-main').classList.contains('hidden') && "
+                "document.activeElement === document.getElementById('btn-capsule-warehouse')",
+                10,
+                "main entry focus restored",
+            )
+
+            assert bridge_calls == ["get_capsule_detail"] * 8
+            assert _tree_state(sources_root) == source_before
+            assert store.current_revision() == revision_before
+            assert _usage_state(store) == usage_before
+            assert _tree_state(state_dir / "products") == products_before
+    finally:
+        if window is not None:
+            window.close()
+            window.deleteLater()
+            pump()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
             app.processEvents()
 
 
@@ -1584,6 +2171,13 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
             assert window.isVisible()
 
             js("document.getElementById('btn-capsule-warehouse').click(); true")
+            wait_js(
+                "!document.getElementById('screen-capsule-warehouse').classList.contains('hidden') && "
+                "!document.getElementById('btn-open-capsule-ingestion').classList.contains('hidden')",
+                10,
+                "empty warehouse management entry",
+            )
+            js("document.getElementById('btn-open-capsule-ingestion').click(); true")
             assert js(
                 "!document.getElementById('warehouse-developer-mode').checked && "
                 "!document.getElementById('capsule-warehouse-popover').classList.contains('developer-mode')"
