@@ -37,6 +37,7 @@ REQUIRED_SURFACE_FILES = (
     "reweave_frontend/capsule_warehouse_scene.js",
     "reweave_frontend/index.html",
     "reweave_frontend/mock-data.json",
+    "reweave_frontend/product_plan_scene.js",
     "reweave_frontend/renderers.js",
     "reweave_frontend/source_workflow.js",
     "reweave_frontend/target_workflow.js",

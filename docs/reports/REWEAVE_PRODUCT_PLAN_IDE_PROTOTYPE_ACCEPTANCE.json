@@ -1,0 +1,151 @@
+{
+  "schema_version": "reweave_product_plan_ide_prototype_acceptance.v1",
+  "completed_date": "2026-07-20",
+  "verdict": "PASS",
+  "verdict_reason": "The bounded prototype-only UI flow, read-only navigation, state restoration, zero-call measurement, and zero-write invariants passed; this verdict does not claim real product planning, matching, candidate generation, or validation.",
+  "scope": "prototype_only",
+  "baseline": {
+    "branch": "codex/product-plan-ide-prototype",
+    "main": "064a7238e856dd348f856f838512edd62d0ace05",
+    "origin_main": "064a7238e856dd348f856f838512edd62d0ace05",
+    "v0_3_0": "e9b2ccd68439c3d5fddae7fa260888b7a5b788c8"
+  },
+  "implemented_flow": [
+    "enter_product_plan_prototype",
+    "submit_in_memory_product_goal",
+    "render_deterministic_prototype_fixture",
+    "render_frontend_backend_data_infrastructure_sections",
+    "open_read_only_ide_review_skeleton",
+    "focus_existing_formal_capsule_in_existing_warehouse",
+    "return_to_original_review_section_with_state_restored"
+  ],
+  "fixture": {
+    "fixture_id": "reweave_product_plan_fixture.v1",
+    "prototype_id": "product-plan-prototype-001",
+    "always_visibly_labeled_prototype_data": true,
+    "sections": [
+      "frontend",
+      "backend",
+      "data",
+      "infrastructure"
+    ],
+    "stored_or_persisted": false,
+    "formal_backend_contract": false,
+    "formal_matching_claimed": false,
+    "validation_claimed": false,
+    "capsule_identity_use": "navigation target only"
+  },
+  "ide_review_skeleton": {
+    "full_screen": true,
+    "read_only": true,
+    "real_candidate_state": "真实候选尚未生成",
+    "real_files_rendered": false,
+    "real_diff_rendered": false,
+    "real_plan_evidence_rendered": false,
+    "real_validation_result_rendered": false,
+    "developer_projection_scope": "prototype_only"
+  },
+  "state_restore": {
+    "section_id": true,
+    "expanded_sections": true,
+    "developer_mode": true,
+    "overview_scroll": true,
+    "review_scroll": true,
+    "keyboard_focus": true
+  },
+  "zero_call_evidence": {
+    "measurement_scope": "product goal through IDE review, cached warehouse focus, and return",
+    "existing_warehouse_cache_prime_before_measurement": [
+      "get_capsule_detail"
+    ],
+    "measured_bridge_calls": [],
+    "measured_network_calls": 0,
+    "measured_model_calls": 0,
+    "new_bridge_methods": [],
+    "new_network_path": false,
+    "new_model_path": false
+  },
+  "zero_write_evidence": {
+    "source_project_tree_unchanged": true,
+    "unselected_target_tree_unchanged": true,
+    "warehouse_revision_unchanged": true,
+    "capsules_table_unchanged": true,
+    "capsule_versions_table_unchanged": true,
+    "capsule_sources_table_unchanged": true,
+    "product_capsule_usage_unchanged": true,
+    "product_directory_unchanged": true,
+    "persistent_browser_state_added": false,
+    "apply": false,
+    "commit": false,
+    "rollback": false
+  },
+  "regression_evidence": {
+    "capsule_warehouse_and_core_code_qwebengine": "passed",
+    "static_web_target_real_qwebengine": "passed",
+    "target_workflow_contract_changed": false,
+    "capsule_source_or_core_projection_contract_changed": false
+  },
+  "verification": {
+    "javascript_syntax": {
+      "passed": 4,
+      "failed": 0
+    },
+    "frontend_static_release": {
+      "passed": 26,
+      "failed": 0
+    },
+    "release_surface_audit": {
+      "passed": 5,
+      "failed": 0
+    },
+    "qwebengine_isolated_processes": {
+      "passed": 3,
+      "failed": 0,
+      "tests": [
+        "test_product_plan_ide_prototype_round_trip_is_read_only",
+        "test_capsule_warehouse_read_only_scene_with_real_service",
+        "test_static_web_target_review_ui_with_real_service"
+      ]
+    },
+    "repository_without_phase6_desktop": {
+      "passed": 787,
+      "failed": 0,
+      "subtests_passed": 188
+    },
+    "repository_retry_record": {
+      "initial_attempt": {
+        "passed": 786,
+        "failed": 1,
+        "subtests_passed": 188,
+        "failure": "existing Stage E execution_bundle_failed worker result"
+      },
+      "isolated_existing_test_retry": {
+        "passed": 1,
+        "failed": 0
+      },
+      "final_complete_attempt": {
+        "passed": 787,
+        "failed": 0,
+        "subtests_passed": 188
+      }
+    },
+    "json_parse": "passed",
+    "git_diff_check": "passed"
+  },
+  "scope_limit": {
+    "frontend_only": true,
+    "backend_changed": false,
+    "bridge_changed": false,
+    "sqlite_changed": false,
+    "module_native_changed": false,
+    "dependency_added": false,
+    "store_or_router_added": false,
+    "planning_assistant_implemented": false,
+    "model_call_added": false,
+    "real_capsule_matching_implemented": false,
+    "real_candidate_generation_implemented": false,
+    "product_or_patch_generation_implemented": false,
+    "user_project_write_implemented": false,
+    "release_or_tag_changed": false
+  }
+}

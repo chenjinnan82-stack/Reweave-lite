@@ -177,6 +177,93 @@ def test_capsule_core_code_projection_is_exact_formal_and_fail_closed() -> None:
         assert result.stdout.strip() == "undefined"
 
 
+def test_product_plan_ide_prototype_is_one_frontend_only_scene() -> None:
+    node = shutil.which("node")
+    index = (ROOT / "reweave_frontend" / "index.html").read_text(encoding="utf-8")
+    app = (ROOT / "reweave_frontend" / "app.js").read_text(encoding="utf-8")
+    scene = (ROOT / "reweave_frontend" / "product_plan_scene.js").read_text(
+        encoding="utf-8"
+    )
+    styles = (ROOT / "reweave_frontend" / "styles.css").read_text(encoding="utf-8")
+    audit = (ROOT / "pimos_lite" / "reweave_release_surface_audit.py").read_text(
+        encoding="utf-8"
+    )
+
+    if node:
+        subprocess.run(
+            [node, "--check", str(ROOT / "reweave_frontend" / "product_plan_scene.js")],
+            check=True,
+        )
+
+    assert index.count('<script src="product_plan_scene.js"></script>') == 1
+    assert index.index('src="capsule_warehouse_scene.js"') < index.index(
+        'src="product_plan_scene.js"'
+    ) < index.index('src="target_workflow.js"')
+    assert 'id="screen-product-plan"' in index
+    assert 'id="btn-open-product-plan"' in index
+    assert 'id="btn-warehouse-return-product-plan"' in index
+    assert 'id="product-plan-developer-mode"' in index
+    assert 'id="product-review-empty"' in index
+    assert "window.ReweaveProductPlanScene = { create: create };" in scene
+    assert "productPlan: productPlanScene.getState()," in app
+    assert "productPlanScene.bind();" in app
+    assert "productPlanScene.consumeWarehouseReturn()" in app
+    assert '"reweave_frontend/product_plan_scene.js",' in audit
+    assert scene.count('id: "frontend"') == 1
+    assert scene.count('id: "backend"') == 1
+    assert scene.count('id: "data"') == 1
+    assert scene.count('id: "infrastructure"') == 1
+    assert 'scope: "prototype_only"' in scene
+    assert 'evidence_status: "prototype_navigation_only"' in scene
+    assert "formal_match_claimed: false" in scene
+    assert "validation_claimed: false" in scene
+    assert "fixture_label_visible: state.fixtureVisible" in scene
+    assert "真实候选尚未生成" in scene
+    assert "innerHTML" not in scene
+    for forbidden in (
+        "bridgeCall(",
+        "XMLHttpRequest",
+        "fetch(",
+        "WebSocket",
+        "localStorage",
+        "sessionStorage",
+        "apply_static_web_patch",
+        "generate_product",
+        "monaco",
+        "React",
+        "Vite",
+    ):
+        assert forbidden not in scene
+    assert ".product-plan-section" in styles
+    assert ".screen-product-plan.developer-mode .product-plan-developer-only" in styles
+    assert "@media (prefers-reduced-motion: reduce)" in styles
+
+
+def test_product_plan_ide_prototype_acceptance_stays_prototype_only() -> None:
+    report = json.loads(
+        (
+            ROOT
+            / "docs"
+            / "reports"
+            / "REWEAVE_PRODUCT_PLAN_IDE_PROTOTYPE_ACCEPTANCE.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert report["schema_version"] == (
+        "reweave_product_plan_ide_prototype_acceptance.v1"
+    )
+    assert report["scope"] == "prototype_only"
+    assert report["fixture"]["formal_backend_contract"] is False
+    assert report["fixture"]["formal_matching_claimed"] is False
+    assert report["fixture"]["validation_claimed"] is False
+    assert report["ide_review_skeleton"]["real_files_rendered"] is False
+    assert report["ide_review_skeleton"]["real_diff_rendered"] is False
+    assert report["zero_call_evidence"]["measured_bridge_calls"] == []
+    assert report["zero_call_evidence"]["measured_network_calls"] == 0
+    assert report["zero_call_evidence"]["measured_model_calls"] == 0
+    assert report["scope_limit"]["planning_assistant_implemented"] is False
+    assert report["scope_limit"]["real_candidate_generation_implemented"] is False
+
+
 def test_capsule_core_code_late_response_cannot_replace_current_revision() -> None:
     node = shutil.which("node")
     if not node:
