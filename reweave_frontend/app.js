@@ -895,6 +895,30 @@
     showScreen: showScreen,
     syncAppState: syncAppState,
   });
+  var productPlanScene = window.ReweaveProductPlanScene.create({
+    getCapsules: function () {
+      return data && Array.isArray(data.capsules) ? data.capsules : [];
+    },
+    getLocale: function () {
+      return locale;
+    },
+    showScreen: showScreen,
+    getWarehouseState: function () {
+      return capsuleWarehouseScene.getState();
+    },
+    openWarehouse: function (capsuleId) {
+      var entry = $("btn-capsule-warehouse");
+      if (!entry) return;
+      entry.click();
+      window.setTimeout(function () {
+        var query = $("warehouse-scene-query");
+        if (!query) return;
+        query.value = capsuleId;
+        query.dispatchEvent(new Event("input", { bubbles: true }));
+        query.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
+      }, 0);
+    },
+  });
   var targetIntegration = window.ReweaveTargetWorkflow.create({
     getBridge: function () {
       return desktopBridge;
@@ -1379,6 +1403,7 @@
     }
     if (els.usedCapsuleDock && els.usedCount) renderUsedChips();
     capsuleWarehouseScene.sync();
+    productPlanScene.sync();
     targetIntegration.sync();
     updateEnrichedContentToggle();
   }
@@ -1513,6 +1538,7 @@
     if (button) button.classList.toggle("hidden", !ingestionManagement.available);
     renderIngestionManagement();
     capsuleWarehouseScene.sync();
+    productPlanScene.sync();
   }
 
   function setManagementStatus(key) {
@@ -3929,7 +3955,10 @@
   }
 
   function showScreen(id) {
-    ["screen-welcome", "screen-cleaning", "screen-main", "screen-capsule-warehouse", "screen-target"].forEach(function (sid) {
+    if (id === "screen-main" && productPlanScene.consumeWarehouseReturn()) {
+      id = "screen-product-plan";
+    }
+    ["screen-welcome", "screen-cleaning", "screen-main", "screen-product-plan", "screen-capsule-warehouse", "screen-target"].forEach(function (sid) {
       $(sid).classList.toggle("hidden", sid !== id);
     });
   }
@@ -4075,6 +4104,7 @@
     }
     applyLumoLiteRuntimeView();
     capsuleWarehouseScene.sync();
+    productPlanScene.sync();
     targetIntegration.sync();
   }
 
@@ -4164,6 +4194,7 @@
     setAppState("idle");
     applyLumoLiteRuntimeView();
     capsuleWarehouseScene.sync();
+    productPlanScene.sync();
     targetIntegration.sync();
   }
 
@@ -5003,6 +5034,7 @@
     if (mainEventsBound) return;
     mainEventsBound = true;
     capsuleWarehouseScene.bind();
+    productPlanScene.bind();
     targetIntegration.bind();
 
     $("btn-generate").addEventListener("click", runGenerate);
@@ -5446,6 +5478,7 @@
         previewPath: lastPreviewPath || null,
       },
       warehouse: capsuleWarehouseScene.getState(),
+      productPlan: productPlanScene.getState(),
       target: targetIntegration.getState(),
     };
   }

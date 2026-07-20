@@ -60,6 +60,7 @@
       </div>
       <nav class="delivery-switch" aria-label="Delivery mode" data-i18n-aria-label="deliveryMode">
         <button type="button" class="delivery-switch-button active" aria-current="page" data-i18n="standaloneProduct">Standalone product</button>
+        <button type="button" id="btn-open-product-plan" class="delivery-switch-button">Product plan prototype</button>
         <button type="button" id="btn-open-target" class="delivery-switch-button hidden" disabled data-i18n="targetIntegration">Target integration</button>
       </nav>
       <div class="top-bar-right">
@@ -182,10 +183,56 @@ preview: pending</div>
     </footer>
   </section>
 
+  <!-- Prototype-only product planning. No model, bridge, network, candidate, or write path. -->
+  <section id="screen-product-plan" class="screen screen-product-plan hidden" aria-label="Product plan prototype">
+    <header class="product-plan-bar">
+      <button type="button" id="btn-product-plan-back" class="btn-ghost">Back to standalone product</button>
+      <div>
+        <span id="product-plan-kicker" class="product-plan-kicker">READ-ONLY LOW-FIDELITY PROTOTYPE</span>
+        <strong id="product-plan-title">Product plan overview</strong>
+      </div>
+      <label class="product-plan-mode" for="product-plan-developer-mode">
+        <input type="checkbox" id="product-plan-developer-mode">
+        <span id="product-plan-developer-label">Developer mode</span>
+      </label>
+    </header>
+    <main id="product-plan-stage" class="product-plan-stage">
+      <section id="product-plan-overview" class="product-plan-overview" aria-labelledby="product-plan-overview-title">
+        <h1 id="product-plan-overview-title" class="sr-only">Product plan overview</h1>
+        <label class="product-plan-goal-field" for="product-plan-goal">
+          <span id="product-plan-goal-label">Product goal</span>
+          <textarea id="product-plan-goal" rows="3" autocomplete="off"></textarea>
+        </label>
+        <button type="button" id="btn-submit-product-goal" class="btn-amber">Build prototype plan</button>
+        <div id="product-plan-fixture" class="product-plan-fixture hidden">
+          <p id="product-plan-prototype-note" class="prototype-note">Prototype data</p>
+          <div id="product-plan-sections" tabindex="-1"></div>
+        </div>
+      </section>
+      <section id="product-plan-review" class="product-plan-review hidden" aria-labelledby="product-review-title">
+        <button type="button" id="btn-product-review-back" class="btn-ghost">Back to plan overview</button>
+        <p id="product-review-path" class="product-review-path"></p>
+        <h1 id="product-review-title" tabindex="-1"></h1>
+        <p id="product-review-prototype-note" class="prototype-note">Prototype data</p>
+        <p id="product-review-summary" class="product-review-summary"></p>
+        <div id="product-review-items" class="product-review-items"></div>
+        <section class="product-review-empty" aria-live="polite">
+          <h2 id="product-review-empty">Real candidates have not been generated</h2>
+          <p>No files, Diff, plan evidence, or validation result exists in this prototype.</p>
+        </section>
+        <section class="product-plan-developer-only" aria-labelledby="product-plan-developer-title">
+          <h2 id="product-plan-developer-title">Prototype state</h2>
+          <pre id="product-plan-developer-evidence"></pre>
+        </section>
+      </section>
+    </main>
+  </section>
+
   <!-- Read-only Capsule Warehouse browser. Formal data remains owned by the desktop state. -->
   <section id="screen-capsule-warehouse" class="screen screen-capsule-warehouse hidden" aria-label="Capsule Warehouse">
     <header class="warehouse-scene-bar">
       <button type="button" id="btn-warehouse-scene-back" class="btn-ghost warehouse-scene-back" data-i18n="back">Back</button>
+      <button type="button" id="btn-warehouse-return-product-plan" class="btn-ghost hidden">Back to plan Review</button>
       <div class="warehouse-scene-identity">
         <span class="warehouse-scene-kicker" data-i18n="warehouseReadOnly">READ-ONLY WAREHOUSE</span>
         <strong data-i18n="capsuleWarehouse">Capsule Warehouse</strong>
@@ -470,6 +517,7 @@ preview: pending</div>
   <script src="source_workflow.js"></script>
   <script src="capsule_reader.js"></script>
   <script src="capsule_warehouse_scene.js"></script>
+  <script src="product_plan_scene.js"></script>
   <script src="target_workflow.js"></script>
   <script src="app.js"></script>
 </body>
