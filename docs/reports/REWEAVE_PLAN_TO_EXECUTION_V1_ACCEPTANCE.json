@@ -1,13 +1,13 @@
 {
   "schema_version": "reweave_plan_to_execution_v1_acceptance.v1",
   "completed_date": "2026-07-23",
-  "verdict": "PARTIAL",
-  "verdict_reason": "The deterministic confirmed-plan compiler, isolated candidate backend, and read-only thin reviewer passed. The complete product-goal-to-candidate claim remains unproven because no user-approved real strong model was run to produce the confirmed plan used by this gate.",
+  "verdict": "PASS",
+  "verdict_reason": "A user-approved real Qwen3 14B model produced a bounded, zero-gap confirmed product_plan.v1 from the fixed product goal. The deterministic backend compiled it byte-identically to plan_execution.v1, generated one isolated product_candidate.v1 through the sole module_native Composer, passed static and real QWebEngine runtime validation, and proved idempotent and restart recovery without writing the formal warehouse, products, usage, or user trees.",
   "scope": {
     "plan_execution_v1": "PASS",
     "product_candidate_v1": "PASS",
     "thin_review_only_viewer": "PASS",
-    "real_strong_model_goal_to_candidate": "PARTIAL"
+    "real_strong_model_goal_to_candidate": "PASS"
   },
   "authority_boundary": {
     "model_may_propose_plan_semantics": true,
@@ -42,6 +42,134 @@
       "requirement_uncovered",
       "composer_incompatible"
     ]
+  },
+  "real_strong_model_vertical_gate": {
+    "status": "PASS",
+    "scope": "bounded_quote_calculation_goal_to_isolated_candidate",
+    "goal": "构建一个完全本地、无登录、无数据库、无网络的报价计算页面：用户输入 1–10 的商品数量，系统按固定单价 10 计算总价并展示。仅需页面展示、输入交互和本地确定性计算；不需要部署、持久化、账号或后台服务。",
+    "goal_digest": "002cf76499cdd9a0a34b6b1b74aebc598fefd881ae1ad16775e2a9e0a79f4612",
+    "model": {
+      "name": "qwen3:14b-q4_K_M",
+      "manifest_digest": "bdbd181c33f2ed1b31c972991882db3cf4d192569092138a7d29e973cd9debe8",
+      "model_layer_digest": "a8cc1361f3145dc01f6d77c6c82c9116b9ffe3c97b34716fe20418455876c40e",
+      "parameter_count": 14768307200,
+      "parameter_size": "14.8B",
+      "quantization": "Q4_K_M",
+      "temperature": 0,
+      "think": false,
+      "loopback_only": true,
+      "cloud_fallback": false
+    },
+    "schema_probe": {
+      "status": "passed",
+      "duration_ms": 10596,
+      "input_bytes": 681,
+      "output_bytes": 84,
+      "structured_response_digest": "a8ebd4cfb3312421477c3ecd0504b8363261e7e6aff1853ba048dacaace83ff5"
+    },
+    "planning_calls": [
+      {
+        "call_type": "requirements_outline",
+        "duration_ms": 25883,
+        "input_bytes": 3097,
+        "output_bytes": 1027,
+        "structured_response_digest": "e4e23bd8f86702c37884a245bd7e46a87085dc4fa55d80f47f87f7732229c3eb"
+      },
+      {
+        "call_type": "section_frontend",
+        "duration_ms": 30460,
+        "input_bytes": 4822,
+        "output_bytes": 1239,
+        "structured_response_digest": "0757a075386afb8f635cc544ab425f82c73f13d2203d4dc9e2bb24427eaaddeb"
+      },
+      {
+        "call_type": "section_backend",
+        "duration_ms": 25794,
+        "input_bytes": 4819,
+        "output_bytes": 1243,
+        "structured_response_digest": "a8222af603e6530419f39373cba3fb058722a222312f01cf7ebdefab6f7b6b05"
+      },
+      {
+        "call_type": "section_data",
+        "duration_ms": 28674,
+        "input_bytes": 4810,
+        "output_bytes": 1411,
+        "structured_response_digest": "4296a311b3a82b53f409f3fbae5c305f42b581d032691181fa28eb2f131d4ba1"
+      },
+      {
+        "call_type": "section_infrastructure",
+        "duration_ms": 29042,
+        "input_bytes": 4840,
+        "output_bytes": 1247,
+        "structured_response_digest": "d44d3e995dc6fc153e14d6a62f52cf7e5474f90c1ca52063b67c9e9de1c77c09"
+      }
+    ],
+    "confirmed_plan": {
+      "plan_version": 1,
+      "canonical_digest": "8b146a8f03d1269a4fb6191a83225a2952c54aa58e1bf18e25849b7c2f85d028",
+      "sections": 4,
+      "requirements": 6,
+      "work_items": 12,
+      "binding_occurrences": 12,
+      "exact_capsule_versions": 3,
+      "gaps": 0,
+      "requirements_fully_covered": true,
+      "restart_restore": true
+    },
+    "execution_plan": {
+      "schema_version": "plan_execution.v1",
+      "execution_units": 12,
+      "formal_capsules": 3,
+      "execution_digest": "48e73e5f06e94338765d2f493eef4549f96da6c451f8b4d6a751fb8c337c8f4c",
+      "byte_equal_replay": true
+    },
+    "candidate": {
+      "schema_version": "product_candidate.v1",
+      "candidate_digest": "de30602e84f101c16eb5f10c11f34e1d279b570af83abbbf282e6bae8de7f59d",
+      "composer": "module_native_formal_product.v1",
+      "composer_calls": 1,
+      "files": 7,
+      "file_changes": 7,
+      "provenance_files": 7,
+      "static_validation": "passed",
+      "real_qwebengine_runtime": "passed",
+      "blocked_requests": 0,
+      "console_messages": 0,
+      "idempotent_repeat": true,
+      "restart_restore": true,
+      "opaque_token_restore_and_file_read": true
+    },
+    "memory": {
+      "peak_rss_kib": 14046320,
+      "ending_rss_kib": 13924944
+    },
+    "write_boundary": {
+      "warehouse_revision_unchanged": true,
+      "warehouse_formal_tables_unchanged": true,
+      "product_capsule_usage_unchanged": true,
+      "products_directory_absent": true,
+      "source_tree_unchanged": true,
+      "target_tree_unchanged": true,
+      "allowed_application_state_writes": [
+        "product_planning_model_role",
+        "product_workspaces",
+        "product_candidates"
+      ],
+      "candidate_promoted": false
+    },
+    "complex_plan_boundary_check": {
+      "status": "expected_failure_closed",
+      "plan_version": 2,
+      "canonical_digest": "6d24b77e3a19b7bfd35cb908f8f7bf7e157f81fad5ebc2cf82dfe25b25531e14",
+      "requirements": 9,
+      "work_items": 20,
+      "bindings": 9,
+      "gaps": 11,
+      "capability_groups": 4,
+      "failure_code": "plan_execution_gap_present",
+      "candidate_generated": false
+    },
+    "claim_boundary": "PASS applies to the bounded, fully covered quote_calculation goal using three exact formal capsules in one capability group. It does not claim multi-capability composition or gap code generation."
   },
   "candidate_gate": {
     "schema_version": "product_candidate.v1",
@@ -118,15 +246,34 @@
     ]
   },
   "planning_input_evidence": {
-    "kind": "strict_confirmed_plan_protocol_fixture",
-    "real_product_planner_model_used": false,
+    "initial_backend_gate": {
+      "kind": "strict_confirmed_plan_protocol_fixture",
+      "real_product_planner_model_used": false,
+      "status": "PASS"
+    },
+    "real_strong_model_gate": {
+      "kind": "real_qwen3_14b_goal_to_confirmed_plan",
+      "real_product_planner_model_used": true,
+      "status": "PASS"
+    },
     "real_formal_sqlite_capsules_used": true,
     "real_reweave_app_service_used": true,
     "real_module_native_composer_used": true,
-    "claim_boundary": "This proves the deterministic backend from a valid confirmed plan to a real candidate, not a real strong-model goal-to-candidate flow."
+    "claim_boundary": "The original fixture gate remains historical deterministic-backend evidence. The current bounded goal-to-candidate claim is independently proven with the locked real Qwen3 model."
   },
   "tests": {
     "python_compile": "PASS",
+    "current_strong_model_vertical_gate": {
+      "real_qwen3_planning_runs": 1,
+      "real_candidate_composer_runs": 1,
+      "real_qwebengine_runtime_runs": 1,
+      "passed": 1,
+      "failed": 0
+    },
+    "current_plan_execution_and_app_service_regression": {
+      "passed": 8,
+      "failed": 0
+    },
     "plan_execution_direct": {
       "passed": 3,
       "failed": 0
@@ -167,7 +314,6 @@
     "candidate_code_repairer_added": false
   },
   "deferred": [
-    "user_approved_real_strong_model_goal_to_confirmed_plan_gate",
     "multi_capability_composer",
     "gap_code_generation",
     "formal_frontend_candidate_review",
@@ -178,8 +324,9 @@
     "baseline": "f627d039e06b61b2091c8d4641e00d64c4eec07d",
     "v0_3_0": "e9b2ccd68439c3d5fddae7fa260888b7a5b788c8",
     "preexisting_staged_snapshot_preserved": true,
-    "new_changes_staged": false,
-    "commit": false,
+    "new_changes_staged": true,
+    "local_evidence_commit": true,
+    "commit": true,
     "push": false,
     "pull_request": false,
     "release": false,
