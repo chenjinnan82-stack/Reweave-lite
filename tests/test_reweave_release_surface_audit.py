@@ -43,6 +43,7 @@ def test_stage5_formal_and_historical_surfaces_are_separate() -> None:
     assert {
         "pimos_lite/desktop_reweave_static.py",
         "pimos_lite/reweave_app_service.py",
+        "pimos_lite/reweave_product_planner.py",
         "pimos_lite/composer/module_native.py",
         "pimos_lite/reweave_capsule_store.py",
         "pimos_lite/reweave_capsule_intake.py",
@@ -106,6 +107,8 @@ def test_stage5_contract_checks_are_explicit() -> None:
         "module_native_formal_composer_is_memory_only": True,
         "formal_startup_avoids_eager_legacy_imports": True,
         "desktop_bridge_exposes_formal_generation": True,
+        "product_planning_is_local_review_only": True,
+        "desktop_bridge_exposes_product_planning": True,
     }
 
 

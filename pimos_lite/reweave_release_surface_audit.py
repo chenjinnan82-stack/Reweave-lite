@@ -14,6 +14,7 @@ PUBLIC_ALPHA_SUMMARY_VERSION = "reweave_public_alpha_release_summary.v2"
 REQUIRED_SURFACE_FILES = (
     "pimos_lite/desktop_reweave_static.py",
     "pimos_lite/reweave_app_service.py",
+    "pimos_lite/reweave_product_planner.py",
     "pimos_lite/composer/module_native.py",
     "pimos_lite/reweave_capsule_store.py",
     "pimos_lite/reweave_capsule_intake.py",
@@ -225,6 +226,8 @@ def _role(relative: str) -> str:
         return "desktop_bridge"
     if relative == "pimos_lite/reweave_app_service.py":
         return "application_service"
+    if relative == "pimos_lite/reweave_product_planner.py":
+        return "local_product_planner"
     if relative == "pimos_lite/composer/module_native.py":
         return "formal_composer"
     if relative == "pimos_lite/reweave_capsule_store.py":
@@ -282,12 +285,18 @@ def _release_checks(base: Path) -> dict[str, bool]:
     app_service = _read(base / "pimos_lite/reweave_app_service.py")
     composer = _read(base / "pimos_lite/composer/module_native.py")
     desktop = _read(base / "pimos_lite/desktop_reweave_static.py")
+    product_planner = _read(base / "pimos_lite/reweave_product_planner.py")
     frontend = _read(base / "reweave_frontend/app.js")
     public_cli = _read(base / "scripts/run_public_reweave_demo.py")
 
     preview_method = _python_function_source(app_service, "generate_preview")
     compose_method = _python_function_source(composer, "compose_capsule_product")
     desktop_method = _python_function_source(desktop, "generate_product")
+    desktop_plan_method = _python_function_source(desktop, "start_product_plan")
+    desktop_plan_suggestion_method = _python_function_source(
+        desktop,
+        "suggest_product_plan_action",
+    )
     frontend_generation = _between(
         frontend,
         "function pollProductRun",
@@ -367,6 +376,23 @@ def _release_checks(base: Path) -> dict[str, bool]:
         "desktop_bridge_exposes_formal_generation": (
             bool(desktop_method)
             and '_phase4_call("generate_product"' in desktop_method
+        ),
+        "product_planning_is_local_review_only": (
+            "class ProductPlanner" in product_planner
+            and "ProxyHandler({})" in product_planner
+            and "product_workspaces_only" in product_planner
+            and "candidate_generated" in product_planner
+            and "product_generated" in product_planner
+            and "compose_capsule_product" not in product_planner
+            and "product_capsule_usage" not in product_planner
+            and "api.openai.com" not in product_planner
+        ),
+        "desktop_bridge_exposes_product_planning": (
+            bool(desktop_plan_method)
+            and '_phase4_call("start_product_plan"' in desktop_plan_method
+            and bool(desktop_plan_suggestion_method)
+            and "_phase4_call(" in desktop_plan_suggestion_method
+            and '"suggest_product_plan_action"' in desktop_plan_suggestion_method
         ),
     }
 

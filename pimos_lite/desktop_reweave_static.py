@@ -280,6 +280,56 @@ class ReweaveBridge:
                 return self._phase4_call("select_supervision_model", payload_json)
 
             @Slot(str, result=str)
+            def list_product_planning_models(self, payload_json: str = "") -> str:
+                return self._phase4_call(
+                    "list_product_planning_models", payload_json
+                )
+
+            @Slot(str, result=str)
+            def select_product_planning_model(self, payload_json: str = "") -> str:
+                return self._phase4_call(
+                    "select_product_planning_model", payload_json
+                )
+
+            @Slot(str, result=str)
+            def start_product_plan(self, payload_json: str = "") -> str:
+                return self._phase4_call("start_product_plan", payload_json)
+
+            @Slot(str, result=str)
+            def submit_product_plan_answers(self, payload_json: str = "") -> str:
+                return self._phase4_call(
+                    "submit_product_plan_answers", payload_json
+                )
+
+            @Slot(str, result=str)
+            def suggest_product_plan_action(self, payload_json: str = "") -> str:
+                return self._phase4_call(
+                    "suggest_product_plan_action", payload_json
+                )
+
+            @Slot(str, result=str)
+            def revise_product_plan(self, payload_json: str = "") -> str:
+                return self._phase4_call("revise_product_plan", payload_json)
+
+            @Slot(str, result=str)
+            def get_product_plan_run(self, payload_json: str = "") -> str:
+                return self._phase4_call("get_product_plan_run", payload_json)
+
+            @Slot(str, result=str)
+            def cancel_product_plan_run(self, payload_json: str = "") -> str:
+                return self._phase4_call("cancel_product_plan_run", payload_json)
+
+            @Slot(str, result=str)
+            def get_product_plan_workspace(self, payload_json: str = "") -> str:
+                return self._phase4_call(
+                    "get_product_plan_workspace", payload_json
+                )
+
+            @Slot(str, result=str)
+            def confirm_product_plan(self, payload_json: str = "") -> str:
+                return self._phase4_call("confirm_product_plan", payload_json)
+
+            @Slot(str, result=str)
             def list_review_items(self, payload_json: str = "") -> str:
                 return self._phase4_call("list_review_items", payload_json)
 

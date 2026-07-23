@@ -19,7 +19,7 @@ from functools import wraps
 from html.parser import HTMLParser
 from importlib import import_module
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Callable
 
 from pimos_lite.composer.module_native import compose_capsule_product
 from pimos_lite.reweave_capsule_intake import (
@@ -47,6 +47,10 @@ from pimos_lite.reweave_capsule_store import (
     canonicalize_capsule,
 )
 from pimos_lite.reweave_process_environment import restricted_subprocess_environment
+from pimos_lite.reweave_product_planner import (
+    PRODUCT_PLANNING_PHASES,
+    ProductPlanner,
+)
 from pimos_lite.reweave_javascript_source import (
     JAVASCRIPT_SOURCE_TYPE,
     JavascriptScopeSnapshot,
@@ -74,6 +78,16 @@ PUBLIC_PRODUCT_ACTIONS = frozenset(
     {
         "get_initial_state",
         "generate_product",
+        "list_product_planning_models",
+        "select_product_planning_model",
+        "start_product_plan",
+        "submit_product_plan_answers",
+        "suggest_product_plan_action",
+        "revise_product_plan",
+        "get_product_plan_run",
+        "cancel_product_plan_run",
+        "get_product_plan_workspace",
+        "confirm_product_plan",
         "analyze_static_web_target",
         "generate_static_web_patch",
         "get_latest_product_entry_path",
@@ -681,6 +695,7 @@ class ReweaveAppService:
     ) -> None:
         self._engine = engine or _InactiveLegacyEngine()
         self._capsule_store = capsule_store or CapsuleWarehouseStore()
+        self._ollama_base_url = ollama_base_url
         self._capsule_intake = ReweaveCapsuleIntake(self._capsule_store)
         self._capsule_supervisor = OllamaSupervisor(self._capsule_store)
         self._capsule_stage3 = ReweaveCapsuleStage3(
@@ -689,7 +704,10 @@ class ReweaveAppService:
             supervisor=self._capsule_supervisor,
         )
         self._javascript_sources = JavascriptSourceService(self._capsule_store)
-        self._ollama_base_url = ollama_base_url
+        self._product_planner = ProductPlanner(
+            self._capsule_store.path.parent / "product_workspaces",
+            ollama_base_url,
+        )
         self._management_lock = threading.RLock()
         self._capsule_operation_lock = threading.RLock()
         self._management_executor: ThreadPoolExecutor | None = None
@@ -742,6 +760,20 @@ class ReweaveAppService:
         products = [] if restore_pending else self._product_records()
         registered = [item for item in products if item["status"] == "registered"]
         latest = registered[0] if registered else None
+        planning_result = self._product_planner.initial_state()
+        planning = (
+            planning_result.get("data")
+            if planning_result.get("ok") is True
+            and type(planning_result.get("data")) is dict
+            else {
+                "schema_version": "product_planning_state.v1",
+                "available": False,
+                "selected_model": None,
+                "workspaces": [],
+                "candidate_generation_available": False,
+                "product_generation_performed": False,
+            }
+        )
         state: dict[str, Any] = {
             "mode": "desktop_app",
             "backend": "sqlite_capsule_warehouse",
@@ -761,12 +793,14 @@ class ReweaveAppService:
             "canPromoteDrafts": False,
             "canGeneratePreview": False,
             "canGenerateProduct": True,
+            "canPlanProduct": planning["available"] is True,
             "canOpenPreviewFolder": False,
             "sourceBoxes": [],
             "capsules": capsules,
             "warehouseCapsules": capsules,
             "useLocalCapsules": bool(capsules),
             "history": [self._product_history_item(item) for item in registered],
+            "productPlanning": planning,
         }
         if latest is not None:
             state["previewPath"] = str(latest["path"])
@@ -847,6 +881,48 @@ class ReweaveAppService:
                 }
             )
         return result
+
+    def _product_planning_catalog(self) -> dict[str, Any]:
+        """Return an exact, read-only and code-free planning capsule catalog."""
+        if not self._capsule_store.path.is_file():
+            return {"warehouse_revision": 0, "capsules": []}
+        try:
+            with self._capsule_store.read_connection() as connection:
+                revision_row = connection.execute(
+                    "SELECT warehouse_revision FROM warehouse_state "
+                    "WHERE singleton_id = 1"
+                ).fetchone()
+                rows = connection.execute(
+                    "SELECT c.*, g.display_name, cv.* FROM capsules c "
+                    "JOIN capability_groups g ON g.capability_key = c.capability_key "
+                    "JOIN capsule_versions cv ON cv.version_id = c.current_version_id "
+                    "WHERE c.status = 'active' "
+                    "ORDER BY c.capsule_id, cv.version_id"
+                ).fetchall()
+        except (CapsuleStoreError, OSError, RuntimeError, sqlite3.Error) as exc:
+            raise ProductGenerationError("product_planning_catalog_unavailable") from exc
+        capsules: list[dict[str, str]] = []
+        for raw in rows:
+            row = dict(raw)
+            if not self._capsule_stage3._eligible_exact(row):
+                continue
+            capsules.append(
+                {
+                    "capsule_id": str(row["capsule_id"]),
+                    "version_id": str(row["version_id"]),
+                    "display_name": str(row["display_name"]),
+                    "capability_key": str(row["capability_key"]),
+                    "role_key": str(row["role_key"]),
+                    "variant_key": str(row["variant_key"]),
+                    "capability_kind": str(row["capability_kind"]),
+                    "canonical_hash": str(row["canonical_hash"]),
+                    "identity_status": "formal_exact_version",
+                }
+            )
+        return {
+            "warehouse_revision": int(revision_row[0]) if revision_row else 0,
+            "capsules": capsules,
+        }
 
     def close(self) -> None:
         with self._management_lock:
@@ -1310,8 +1386,14 @@ class ReweaveAppService:
         *,
         restore: bool = False,
         cancellable: bool = False,
+        read_only_planning: bool = False,
+        planning_progress: bool = False,
     ) -> dict[str, Any]:
-        if not restore:
+        if read_only_planning and not kind.startswith("product_plan_"):
+            raise ValueError("read_only_planning_kind_invalid")
+        if planning_progress and not read_only_planning:
+            raise ValueError("planning_progress_kind_invalid")
+        if not restore and not read_only_planning:
             try:
                 self._ensure_capsule_management()
             except (CapsuleStoreError, OSError, RuntimeError, sqlite3.Error) as exc:
@@ -1340,11 +1422,19 @@ class ReweaveAppService:
                 "completed_at": None,
                 "data": None,
                 "error": None,
+                "phase": None,
                 "cancellable": cancellable,
                 "cancel_event": cancel_event,
                 "future": None,
             }
             self._management_tasks[task_id] = task
+
+            def report_phase(phase: str) -> None:
+                if phase not in PRODUCT_PLANNING_PHASES:
+                    raise ValueError("product_plan_phase_invalid")
+                with self._management_lock:
+                    if task["status"] == "running":
+                        task["phase"] = phase
 
             def run() -> None:
                 try:
@@ -1354,24 +1444,57 @@ class ReweaveAppService:
                     task["status"] = "running"
                     task["started_at"] = _now()
                     with self._capsule_operation_lock:
-                        task["data"] = action(cancel_event)
+                        task["data"] = (
+                            action(cancel_event, report_phase)
+                            if planning_progress
+                            else action(cancel_event)
+                        )
+                    planner_error = None
+                    if (
+                        kind.startswith("product_plan_")
+                        and type(task["data"]) is dict
+                        and task["data"].get("ok") is False
+                    ):
+                        error = task["data"].get("error")
+                        planner_error = (
+                            error.get("code")
+                            if type(error) is dict and type(error.get("code")) is str
+                            else f"{kind}_failed"
+                        )
                     action_status = (
                         task["data"].get("status")
                         if type(task["data"]) is dict
                         else None
                     )
-                    task["status"] = (
-                        "cancelled"
-                        if cancellable and action_status == "cancelled"
-                        else "completed"
-                    )
+                    if planner_error is not None:
+                        task["status"] = (
+                            "cancelled"
+                            if cancellable and planner_error == "product_plan_cancelled"
+                            else "failed"
+                        )
+                        if task["status"] == "failed":
+                            task["error"] = {
+                                "code": planner_error,
+                                "message_key": planner_error,
+                            }
+                    else:
+                        task["status"] = (
+                            "cancelled"
+                            if cancellable and action_status == "cancelled"
+                            else "completed"
+                        )
                 except BaseException as exc:
                     error_code = getattr(exc, "code", None)
                     task["status"] = (
                         "cancelled"
                         if cancellable
                         and cancel_event.is_set()
-                        and error_code in {"intake_cancelled", "cancelled_by_user"}
+                        and error_code
+                        in {
+                            "intake_cancelled",
+                            "cancelled_by_user",
+                            "product_plan_cancelled",
+                        }
                         else "failed"
                     )
                     if task["status"] == "failed":
@@ -1935,6 +2058,8 @@ class ReweaveAppService:
             with self._management_lock:
                 task = self._management_tasks.get(run_id)
                 if task is not None:
+                    if str(task["kind"]).startswith("product_plan_"):
+                        return self._error("intake_run_not_found")
                     return self._ok(self._task_view(task))
             with self._capsule_operation_lock:
                 self._ensure_capsule_management()
@@ -1966,6 +2091,8 @@ class ReweaveAppService:
             with self._management_lock:
                 task = self._management_tasks.get(run_id)
                 if task is None:
+                    return self._error("intake_run_not_cancellable")
+                if str(task["kind"]).startswith("product_plan_"):
                     return self._error("intake_run_not_cancellable")
                 if not task["cancellable"]:
                     return self._error("intake_run_not_cancellable")
@@ -2005,6 +2132,371 @@ class ReweaveAppService:
             )
         except ValueError as exc:
             return self._exception_error(exc, "select_supervision_model_failed")
+
+    def list_product_planning_models(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if request:
+                return self._error("product_planning_request_invalid")
+            return self._submit_management_task(
+                "product_plan_list_models",
+                lambda _cancel: self._product_planner.list_models(),
+                read_only_planning=True,
+            )
+        except ValueError as exc:
+            return self._exception_error(exc, "product_planning_request_invalid")
+
+    def select_product_planning_model(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if set(request) != {"name", "digest"}:
+                return self._error("product_planning_model_required")
+            name = request["name"]
+            digest = request["digest"]
+            if type(name) is not str or type(digest) is not str:
+                return self._error("product_planning_model_required")
+            return self._submit_management_task(
+                "product_plan_model_probe",
+                lambda _cancel, phase: self._product_planner.select_model(
+                    name,
+                    digest,
+                    phase_callback=phase,
+                ),
+                read_only_planning=True,
+                planning_progress=True,
+            )
+        except ValueError as exc:
+            return self._exception_error(exc, "product_planning_model_required")
+
+    def start_product_plan(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if set(request) not in (
+                {"goal"},
+                {"goal", "supersedes_plan_token"},
+            ):
+                return self._error("product_plan_goal_invalid")
+            goal = request["goal"]
+            supersedes = request.get("supersedes_plan_token")
+            if (
+                type(goal) is not str
+                or not goal.strip()
+                or len(goal) > 4_000
+                or (supersedes is not None and type(supersedes) is not str)
+            ):
+                return self._error("product_plan_goal_invalid")
+
+            def action(
+                cancel: threading.Event,
+                phase: Callable[[str], None],
+            ) -> dict[str, Any]:
+                return self._product_planner.start(
+                    goal.strip(),
+                    self._product_planning_catalog(),
+                    cancel.is_set,
+                    resume_plan_token=supersedes,
+                    phase_callback=phase,
+                )
+
+            return self._submit_management_task(
+                "product_plan_start",
+                action,
+                cancellable=True,
+                read_only_planning=True,
+                planning_progress=True,
+            )
+        except ValueError as exc:
+            return self._exception_error(exc, "product_plan_goal_invalid")
+
+    def submit_product_plan_answers(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if set(request) != {
+                "plan_token",
+                "question_set_digest",
+                "answers",
+            }:
+                return self._error("product_plan_answers_invalid")
+            if (
+                type(request["plan_token"]) is not str
+                or type(request["question_set_digest"]) is not str
+                or type(request["answers"]) is not list
+            ):
+                return self._error("product_plan_answers_invalid")
+            return self._submit_management_task(
+                "product_plan_answers",
+                lambda cancel, phase: self._product_planner.answer(
+                    request["plan_token"],
+                    request["question_set_digest"],
+                    request["answers"],
+                    self._product_planning_catalog(),
+                    cancel.is_set,
+                    phase_callback=phase,
+                ),
+                cancellable=True,
+                read_only_planning=True,
+                planning_progress=True,
+            )
+        except ValueError as exc:
+            return self._exception_error(exc, "product_plan_answers_invalid")
+
+    def revise_product_plan(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            action = request.get("action")
+            selected_action = request.get("selected_action")
+            target_operation = request.get("target_operation")
+            if action == "request" and target_operation in {"add", "update"}:
+                expected = {
+                    "plan_token",
+                    "action",
+                    "message",
+                    "target_section_id",
+                    "target_operation",
+                    (
+                        "requirement_refs"
+                        if target_operation == "add"
+                        else "target_binding_ref"
+                    ),
+                }
+            elif action == "request":
+                expected = (
+                    {
+                        "plan_token",
+                        "action",
+                        "message",
+                        "reviewed_plan",
+                        "selected_action",
+                        "suggestion_receipt",
+                        "suggestion_digest",
+                        "target_section_id",
+                    }
+                    if selected_action == "propose_revision"
+                    else {
+                        "plan_token",
+                        "action",
+                        "message",
+                        "reviewed_plan",
+                        "selected_action",
+                        "suggestion_receipt",
+                        "suggestion_digest",
+                    }
+                )
+            elif action == "edit_diff":
+                expected = {
+                    "plan_token",
+                    "action",
+                    "expected_diff_digest",
+                    "fields",
+                }
+            else:
+                expected = {
+                    "plan_token",
+                    "action",
+                    "base_plan_digest",
+                    "diff_digest",
+                    "reviewed_plan",
+                    "reviewed_diff",
+                }
+            if (
+                set(request) != expected
+                or action
+                not in {"request", "edit_diff", "accept_diff", "reject_diff"}
+                or type(request.get("plan_token")) is not str
+                or (
+                    action == "request"
+                    and target_operation in {"add", "update"}
+                    and (
+                        type(request.get("message")) is not str
+                        or type(request.get("target_section_id")) is not str
+                        or (
+                            target_operation == "add"
+                            and (
+                                type(request.get("requirement_refs")) is not list
+                                or any(
+                                    type(ref) is not str
+                                    for ref in request["requirement_refs"]
+                                )
+                            )
+                        )
+                        or (
+                            target_operation == "update"
+                            and type(request.get("target_binding_ref")) is not str
+                        )
+                    )
+                )
+                or (
+                    action == "request"
+                    and target_operation not in {"add", "update"}
+                    and (
+                        type(request.get("message")) is not str
+                        or type(request.get("reviewed_plan")) is not dict
+                        or type(request.get("selected_action")) is not str
+                        or type(request.get("suggestion_receipt")) is not str
+                        or type(request.get("suggestion_digest")) is not str
+                        or (
+                            selected_action == "propose_revision"
+                            and type(request.get("target_section_id")) is not str
+                        )
+                    )
+                )
+                or (
+                    action == "edit_diff"
+                    and (
+                        type(request.get("expected_diff_digest")) is not str
+                        or type(request.get("fields")) is not dict
+                    )
+                )
+                or (
+                    action in {"accept_diff", "reject_diff"}
+                    and (
+                        type(request.get("base_plan_digest")) is not str
+                        or type(request.get("diff_digest")) is not str
+                        or type(request.get("reviewed_plan")) is not dict
+                        or type(request.get("reviewed_diff")) is not dict
+                    )
+                )
+            ):
+                return self._error("product_plan_revision_invalid")
+            revision = {
+                key: value
+                for key, value in request.items()
+                if key != "plan_token"
+            }
+            if action == "request":
+                revision["message"] = request["message"]
+            plan_token = request["plan_token"]
+            return self._submit_management_task(
+                "product_plan_revision",
+                lambda cancel, phase: self._product_planner.revise(
+                    plan_token,
+                    revision,
+                    self._product_planning_catalog(),
+                    cancel.is_set,
+                    phase_callback=phase,
+                ),
+                cancellable=action == "request",
+                read_only_planning=True,
+                planning_progress=True,
+            )
+        except ValueError as exc:
+            return self._exception_error(exc, "product_plan_revision_invalid")
+
+    def suggest_product_plan_action(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if (
+                set(request) != {"plan_token", "feedback"}
+                or type(request.get("plan_token")) is not str
+                or type(request.get("feedback")) is not str
+            ):
+                return self._error("product_plan_action_suggestion_invalid")
+            return self._submit_management_task(
+                "product_plan_action_suggestion",
+                lambda cancel: self._product_planner.suggest_action(
+                    request["plan_token"],
+                    request["feedback"],
+                    cancel.is_set,
+                ),
+                cancellable=True,
+                read_only_planning=True,
+            )
+        except ValueError as exc:
+            return self._exception_error(
+                exc,
+                "product_plan_action_suggestion_invalid",
+            )
+
+    def get_product_plan_run(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if set(request) != {"run_id"} or type(request["run_id"]) is not str:
+                return self._error("product_plan_run_id_required")
+            run_id = request["run_id"].strip()
+            with self._management_lock:
+                task = self._management_tasks.get(run_id)
+                if task is None or not str(task["kind"]).startswith("product_plan_"):
+                    return self._error("product_plan_run_not_found")
+                return self._ok(self._task_view(task))
+        except ValueError as exc:
+            return self._exception_error(exc, "product_plan_run_invalid")
+
+    def cancel_product_plan_run(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if set(request) != {"run_id"} or type(request["run_id"]) is not str:
+                return self._error("product_plan_run_id_required")
+            run_id = request["run_id"].strip()
+            with self._management_lock:
+                task = self._management_tasks.get(run_id)
+                if (
+                    task is None
+                    or not str(task["kind"]).startswith("product_plan_")
+                    or task["cancellable"] is not True
+                ):
+                    return self._error("product_plan_run_not_cancellable")
+                if task["status"] in _TERMINAL_TASK_STATES:
+                    return self._error("product_plan_run_already_terminal")
+                task["cancel_event"].set()
+            return self._ok({"run_id": run_id, "cancel_requested": True})
+        except ValueError as exc:
+            return self._exception_error(exc, "product_plan_cancel_failed")
+
+    def get_product_plan_workspace(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if (
+                set(request) != {"plan_token"}
+                or type(request["plan_token"]) is not str
+            ):
+                return self._error("product_plan_token_invalid")
+            with self._capsule_operation_lock:
+                return self._product_planner.get(
+                    request["plan_token"],
+                    self._product_planning_catalog(),
+                )
+        except (CapsuleStoreError, OSError, ProductGenerationError, ValueError) as exc:
+            return self._exception_error(exc, "product_plan_workspace_failed")
+
+    def confirm_product_plan(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if (
+                set(request) != {"plan_token", "plan_digest", "reviewed_plan"}
+                or type(request["plan_token"]) is not str
+                or type(request["plan_digest"]) is not str
+                or type(request["reviewed_plan"]) is not dict
+            ):
+                return self._error("product_plan_confirmation_invalid")
+            with self._capsule_operation_lock:
+                return self._product_planner.confirm(
+                    request["plan_token"],
+                    request["plan_digest"],
+                    request["reviewed_plan"],
+                    self._product_planning_catalog(),
+                )
+        except (CapsuleStoreError, OSError, ProductGenerationError, ValueError) as exc:
+            return self._exception_error(exc, "product_plan_confirmation_failed")
 
     @_serialized_management
     def list_review_items(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:

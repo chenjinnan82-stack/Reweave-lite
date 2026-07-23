@@ -30,7 +30,13 @@ class ReweaveAppServiceTest(unittest.TestCase):
         self.assertIn("engineStatus", state)
         self.assertTrue(state["engineStatus"]["available"])
         self.assertTrue(state["canGenerateProduct"])
+        self.assertTrue(state["canPlanProduct"])
         self.assertFalse(state["canGeneratePreview"])
+        self.assertEqual(
+            state["productPlanning"]["schema_version"],
+            "product_planning_state.v1",
+        )
+        self.assertEqual(state["productPlanning"]["workspaces"], [])
 
     def test_lumo_engine_via_service_when_env_set(self) -> None:
         class DownClient:
@@ -84,6 +90,19 @@ class ReweaveAppServiceTest(unittest.TestCase):
         self.assertFalse(CAPSULE_MANAGEMENT_ACTIONS & LEGACY_WORKBENCH_ACTIONS)
         self.assertFalse(CAPSULE_MANAGEMENT_ACTIONS & SUPPORT_VIEWER_ACTIONS)
         self.assertEqual(release_boundary_for_action("generate_product"), "public_product")
+        for action in (
+            "list_product_planning_models",
+            "select_product_planning_model",
+            "start_product_plan",
+            "submit_product_plan_answers",
+            "suggest_product_plan_action",
+            "revise_product_plan",
+            "get_product_plan_run",
+            "cancel_product_plan_run",
+            "get_product_plan_workspace",
+            "confirm_product_plan",
+        ):
+            self.assertEqual(release_boundary_for_action(action), "public_product")
         self.assertEqual(
             release_boundary_for_action("analyze_static_web_target"),
             "public_product",
@@ -114,10 +133,159 @@ class ReweaveAppServiceTest(unittest.TestCase):
         )
         self.assertEqual(release_boundary_for_action("made_up_action"), "unknown")
         self.assertIn("generate_product", public_product_actions())
+        self.assertIn("start_product_plan", public_product_actions())
+        self.assertIn("suggest_product_plan_action", public_product_actions())
+        self.assertIn("confirm_product_plan", public_product_actions())
         self.assertIn("analyze_static_web_target", public_product_actions())
         self.assertIn("generate_static_web_patch", public_product_actions())
         self.assertNotIn("generate_preview", public_product_actions())
         self.assertIn("export_preview_package", legacy_workbench_actions())
+
+    def test_revision_targeted_and_edit_requests_are_forwarded_strictly(self) -> None:
+        class Cancel:
+            @staticmethod
+            def is_set() -> bool:
+                return False
+
+        class Planner:
+            def __init__(self) -> None:
+                self.calls: list[tuple[str, dict]] = []
+
+            def revise(self, token, request, _catalog, _cancel, *, phase_callback):
+                self.calls.append((token, request))
+                return {"ok": True, "data": {"forwarded": True}}
+
+        service = object.__new__(ReweaveAppService)
+        planner = Planner()
+        submissions: list[dict] = []
+        service._product_planner = planner
+        service._product_planning_catalog = lambda: {}
+        def submit(_kind, action, **kwargs):
+            submissions.append(kwargs)
+            return action(Cancel(), lambda _phase: None)
+
+        service._submit_management_task = submit
+        base = {
+            "plan_token": "plan_token_public",
+            "action": "request",
+            "message": "调整数据备份策略",
+            "reviewed_plan": {},
+            "selected_action": "propose_revision",
+            "suggestion_receipt": "suggestion_receipt_public",
+            "suggestion_digest": "0" * 64,
+        }
+
+        targeted_add = {
+            "plan_token": "plan_token_public",
+            "action": "request",
+            "message": "新增数据备份工作项",
+            "target_section_id": "data",
+            "target_operation": "add",
+            "requirement_refs": ["requirement_public"],
+        }
+        self.assertTrue(service.revise_product_plan(targeted_add)["ok"])
+        self.assertEqual(
+            planner.calls[-1][1],
+            {key: value for key, value in targeted_add.items() if key != "plan_token"},
+        )
+        self.assertTrue(submissions[-1]["cancellable"])
+        targeted_update = {
+            "plan_token": "plan_token_public",
+            "action": "request",
+            "message": "修改数据工作项",
+            "target_section_id": "data",
+            "target_operation": "update",
+            "target_binding_ref": "work_item_public",
+        }
+        self.assertTrue(service.revise_product_plan(targeted_update)["ok"])
+        self.assertEqual(
+            planner.calls[-1][1],
+            {
+                key: value
+                for key, value in targeted_update.items()
+                if key != "plan_token"
+            },
+        )
+        self.assertTrue(submissions[-1]["cancellable"])
+        self.assertEqual(
+            service.revise_product_plan(
+                {**targeted_add, "target_binding_ref": "work_item_public"}
+            )["error"]["code"],
+            "product_plan_revision_invalid",
+        )
+        self.assertEqual(
+            service.revise_product_plan(
+                {**targeted_update, "requirement_refs": ["requirement_public"]}
+            )["error"]["code"],
+            "product_plan_revision_invalid",
+        )
+
+        edit = {
+            "plan_token": "plan_token_public",
+            "action": "edit_diff",
+            "expected_diff_digest": "2" * 64,
+            "fields": {
+                "title": "数据备份与恢复",
+                "summary": "每日增量备份，每周全量备份。",
+                "acceptance_intent": "完成恢复演练。",
+                "delivery_wave": 3,
+            },
+        }
+        self.assertTrue(service.revise_product_plan(edit)["ok"])
+        self.assertEqual(
+            planner.calls[-1][1],
+            {key: value for key, value in edit.items() if key != "plan_token"},
+        )
+        self.assertEqual(
+            service.revise_product_plan({**edit, "fields": []})["error"]["code"],
+            "product_plan_revision_invalid",
+        )
+        self.assertFalse(submissions[-1]["cancellable"])
+        for invalid in (
+            {**targeted_add, "requirement_refs": "requirement_public"},
+            {**targeted_add, "requirement_refs": [None]},
+        ):
+            self.assertEqual(
+                service.revise_product_plan(invalid)["error"]["code"],
+                "product_plan_revision_invalid",
+            )
+
+        self.assertEqual(
+            service.revise_product_plan(base)["error"]["code"],
+            "product_plan_revision_invalid",
+        )
+        wrong_type = {**base, "target_section_id": None}
+        self.assertEqual(
+            service.revise_product_plan(wrong_type)["error"]["code"],
+            "product_plan_revision_invalid",
+        )
+        forwarded = service.revise_product_plan(
+            {**base, "target_section_id": "data"}
+        )
+        self.assertTrue(forwarded["ok"])
+        self.assertEqual(planner.calls[-1][1]["target_section_id"], "data")
+
+        for selected_action in ("ask_plan", "edit_goal"):
+            unscoped = {**base, "selected_action": selected_action}
+            self.assertTrue(service.revise_product_plan(unscoped)["ok"])
+            self.assertNotIn("target_section_id", planner.calls[-1][1])
+            scoped = {**unscoped, "target_section_id": "data"}
+            self.assertEqual(
+                service.revise_product_plan(scoped)["error"]["code"],
+                "product_plan_revision_invalid",
+            )
+
+        self.assertEqual(
+            service.submit_product_plan_answers(
+                {
+                    "plan_token": "plan_token_public",
+                    "question_set_digest": "1" * 64,
+                    "answers": [],
+                    "target_section_id": "data",
+                }
+            )["error"]["code"],
+            "product_plan_answers_invalid",
+        )
 
 
 if __name__ == "__main__":

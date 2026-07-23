@@ -51,6 +51,16 @@ class Phase4ManagementTest(unittest.TestCase):
             time.sleep(0.01)
         self.fail("management task did not finish")
 
+    def _wait_product_plan(self, run_id: str) -> dict[str, object]:
+        for _ in range(300):
+            result = self.service.get_product_plan_run({"run_id": run_id})
+            self.assertTrue(result["ok"])
+            task = result["data"]
+            if task["status"] in {"completed", "failed", "cancelled"}:
+                return task
+            time.sleep(0.01)
+        self.fail("product planning task did not finish")
+
     def _ready_project(self) -> str:
         source = self.root / "project"
         source.mkdir()
@@ -264,6 +274,271 @@ class Phase4ManagementTest(unittest.TestCase):
         self.assertEqual(failed["error"]["code"], "secret_probe_failed")
         self.assertNotIn("customer-secret", str(failed))
         self.assertEqual(maximum, 1)
+
+    def test_read_only_product_planning_task_does_not_initialize_warehouse(self) -> None:
+        self.assertFalse(self.store.path.exists())
+
+        started = self.service._submit_management_task(
+            "product_plan_probe",
+            lambda _cancel: {"read_only": True},
+            read_only_planning=True,
+        )
+
+        task = self._wait_product_plan(started["run_id"])
+        self.assertEqual(task["status"], "completed")
+        self.assertEqual(task["data"], {"read_only": True})
+        self.assertFalse(self.store.path.exists())
+        with self.assertRaisesRegex(ValueError, "read_only_planning_kind_invalid"):
+            self.service._submit_management_task(
+                "refresh_project",
+                lambda _cancel: {},
+                read_only_planning=True,
+            )
+
+    def test_product_planning_catalog_is_exact_eligible_and_code_free(self) -> None:
+        project_id = self._ready_project()
+        capsule_id, version_id = self._seed_project_contribution(project_id)
+        before = self.store.current_revision()
+
+        with patch.object(self.service._capsule_stage3, "_eligible_exact", return_value=True):
+            catalog = self.service._product_planning_catalog()
+
+        self.assertEqual(catalog["warehouse_revision"], before)
+        self.assertEqual(len(catalog["capsules"]), 1)
+        capsule = catalog["capsules"][0]
+        self.assertEqual(
+            (capsule["capsule_id"], capsule["version_id"]),
+            (capsule_id, version_id),
+        )
+        self.assertEqual(capsule["identity_status"], "formal_exact_version")
+        self.assertNotIn("html_text", capsule)
+        self.assertNotIn("css_text", capsule)
+        self.assertNotIn("javascript_modules_json", capsule)
+        self.assertNotIn("source_relpath", capsule)
+        self.assertNotIn(str(self.root), str(catalog))
+        self.assertEqual(self.store.current_revision(), before)
+
+    def test_product_workspace_restore_receives_current_exact_catalog(self) -> None:
+        current = {"warehouse_revision": 11, "capsules": []}
+        with patch.object(
+            self.service,
+            "_product_planning_catalog",
+            return_value=current,
+        ), patch.object(
+            self.service._product_planner,
+            "get",
+            return_value={"ok": True, "data": {"status": "plan_review"}},
+        ) as get_workspace:
+            result = self.service.get_product_plan_workspace(
+                {"plan_token": "plan_token_" + "a" * 48}
+            )
+        self.assertTrue(result["ok"])
+        get_workspace.assert_called_once_with(
+            "plan_token_" + "a" * 48,
+            current,
+        )
+
+    def test_product_planning_actions_are_read_only_and_task_types_are_isolated(
+        self,
+    ) -> None:
+        self.assertFalse(self.store.path.exists())
+        with patch.object(
+            self.service._product_planner,
+            "list_models",
+            return_value={"ok": True, "data": {"models": []}},
+        ):
+            started = self.service.list_product_planning_models({})
+            task = self._wait_product_plan(started["run_id"])
+        self.assertEqual(task["status"], "completed")
+        self.assertEqual(task["data"]["data"]["models"], [])
+        self.assertFalse(self.store.path.exists())
+        self.assertEqual(
+            self.service.get_intake_run({"run_id": started["run_id"]})["error"]["code"],
+            "intake_run_not_found",
+        )
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        def blocked(_cancel: threading.Event) -> dict[str, bool]:
+            entered.set()
+            release.wait(2)
+            return {"ok": True}
+
+        planning = self.service._submit_management_task(
+            "product_plan_start",
+            blocked,
+            cancellable=True,
+            read_only_planning=True,
+        )
+        self.assertTrue(entered.wait(1))
+        self.assertEqual(
+            self.service.cancel_intake_run({"run_id": planning["run_id"]})["error"]["code"],
+            "intake_run_not_cancellable",
+        )
+        cancelled = self.service.cancel_product_plan_run(
+            {"run_id": planning["run_id"]}
+        )
+        self.assertTrue(cancelled["ok"])
+        release.set()
+        self.assertIn(
+            self._wait_product_plan(planning["run_id"])["status"],
+            {"completed", "cancelled"},
+        )
+
+        ordinary = self.service._submit_management_task(
+            "probe",
+            lambda _cancel: {"ok": True},
+        )
+        self.assertEqual(
+            self.service.get_product_plan_run({"run_id": ordinary["run_id"]})[
+                "error"
+            ]["code"],
+            "product_plan_run_not_found",
+        )
+        self.assertEqual(
+            self.service.cancel_product_plan_run({"run_id": ordinary["run_id"]})[
+                "error"
+            ]["code"],
+            "product_plan_run_not_cancellable",
+        )
+        self.assertEqual(self._wait(ordinary["run_id"])["status"], "completed")
+
+    def test_product_plan_action_suggestion_is_thin_and_read_only(self) -> None:
+        self.assertFalse(self.store.path.exists())
+        with patch.object(
+            self.service._product_planner,
+            "suggest_action",
+            return_value={
+                "ok": True,
+                "data": {
+                    "suggested_action": "ask_plan",
+                    "recommendation_available": True,
+                    "suggestion_receipt": "suggestion_receipt_" + "b" * 48,
+                    "suggestion_digest": "c" * 64,
+                },
+            },
+        ) as suggest:
+            started = self.service.suggest_product_plan_action(
+                {
+                    "plan_token": "plan_token_" + "a" * 48,
+                    "feedback": "解释当前计划",
+                }
+            )
+            task = self._wait_product_plan(started["run_id"])
+        self.assertEqual(task["status"], "completed")
+        self.assertEqual(task["data"]["data"]["suggested_action"], "ask_plan")
+        suggest.assert_called_once()
+        args = suggest.call_args.args
+        self.assertEqual(args[:2], ("plan_token_" + "a" * 48, "解释当前计划"))
+        self.assertTrue(callable(args[2]))
+        self.assertFalse(self.store.path.exists())
+
+    def test_product_planning_error_envelopes_drive_task_terminal_status(self) -> None:
+        failed = self.service._submit_management_task(
+            "product_plan_list_models",
+            lambda _cancel: {
+                "ok": False,
+                "error": {
+                    "code": "ollama_unavailable",
+                    "message_key": "ollama_unavailable",
+                },
+            },
+            read_only_planning=True,
+        )
+        failed_task = self._wait_product_plan(failed["run_id"])
+        self.assertEqual(failed_task["status"], "failed")
+        self.assertEqual(failed_task["error"]["code"], "ollama_unavailable")
+
+        cancelled = self.service._submit_management_task(
+            "product_plan_start",
+            lambda _cancel: {
+                "ok": False,
+                "error": {
+                    "code": "product_plan_cancelled",
+                    "message_key": "product_plan_cancelled",
+                },
+            },
+            cancellable=True,
+            read_only_planning=True,
+        )
+        cancelled_task = self._wait_product_plan(cancelled["run_id"])
+        self.assertEqual(cancelled_task["status"], "cancelled")
+
+    def test_product_planning_payloads_reject_unknown_fields(self) -> None:
+        cases = (
+            (
+                self.service.list_product_planning_models,
+                {"unexpected": True},
+                "product_planning_request_invalid",
+            ),
+            (
+                self.service.select_product_planning_model,
+                {"name": "small", "digest": "a" * 64, "unexpected": True},
+                "product_planning_model_required",
+            ),
+            (
+                self.service.start_product_plan,
+                {"goal": "plan", "unexpected": True},
+                "product_plan_goal_invalid",
+            ),
+            (
+                self.service.submit_product_plan_answers,
+                {
+                    "plan_token": "token",
+                    "question_set_digest": "a" * 64,
+                    "answers": [],
+                    "unexpected": True,
+                },
+                "product_plan_answers_invalid",
+            ),
+            (
+                self.service.suggest_product_plan_action,
+                {
+                    "plan_token": "token",
+                    "feedback": "change",
+                    "unexpected": True,
+                },
+                "product_plan_action_suggestion_invalid",
+            ),
+            (
+                self.service.revise_product_plan,
+                {
+                    "plan_token": "token",
+                    "action": "request",
+                    "message": "change",
+                    "unexpected": True,
+                },
+                "product_plan_revision_invalid",
+            ),
+            (
+                self.service.get_product_plan_workspace,
+                {"plan_token": "token", "unexpected": True},
+                "product_plan_token_invalid",
+            ),
+            (
+                self.service.get_product_plan_run,
+                {"run_id": "run", "unexpected": True},
+                "product_plan_run_id_required",
+            ),
+            (
+                self.service.cancel_product_plan_run,
+                {"run_id": "run", "unexpected": True},
+                "product_plan_run_id_required",
+            ),
+            (
+                self.service.confirm_product_plan,
+                {
+                    "plan_token": "token",
+                    "plan_digest": "a" * 64,
+                    "unexpected": True,
+                },
+                "product_plan_confirmation_invalid",
+            ),
+        )
+        for method, payload, code in cases:
+            with self.subTest(method=method.__name__):
+                self.assertEqual(method(payload)["error"]["code"], code)
 
     def test_cancel_after_action_commit_keeps_completed_task_status(self) -> None:
         entered = threading.Event()

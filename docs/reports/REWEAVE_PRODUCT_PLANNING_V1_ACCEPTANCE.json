@@ -1,0 +1,3313 @@
+{
+  "schema_version": "reweave_product_planning_v1_acceptance.v1",
+  "completed_date": "2026-07-23",
+  "verdict": "PARTIAL",
+  "verdict_reason": "The deterministic product-planning backend and the scope-limited human-editable Plan Diff workflow passed, including plan v2 confirmation and restart recovery. Free-text semantic revision by the local 7B model remains PARTIAL and is not treated as authority. The unconfirmed frontend visual experiment is deferred and excluded from this Git closeout; a real strong-model planning baseline remains outstanding.",
+  "scope": "formal_product_planning_v1_review_only",
+  "baseline": {
+    "branch": "codex/product-planning-v1",
+    "head": "f627d039e06b61b2091c8d4641e00d64c4eec07d",
+    "main": "f627d039e06b61b2091c8d4641e00d64c4eec07d",
+    "origin_main": "f627d039e06b61b2091c8d4641e00d64c4eec07d",
+    "v0_3_0": "e9b2ccd68439c3d5fddae7fa260888b7a5b788c8",
+    "published_by_v0_3_0": false
+  },
+  "section_v2_revision_rejection_closeout": {
+    "status": "PARTIAL_SEMANTIC_REVISION_NOT_PROVEN",
+    "model": {
+      "name": "qwen2.5-coder:7b",
+      "digest": "dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364",
+      "parameter_count": 7615616512,
+      "parameter_size": "7.6B",
+      "quantization_level": "Q4_K_M"
+    },
+    "section_contract": {
+      "schema_version": "product_plan_section_draft.v2",
+      "planning_rules_version": "reweave_product_planning_rules.v2",
+      "prompt_version": "reweave_product_planning_prompt.v5",
+      "native_text_pattern_used": false,
+      "native_min_max_lengths_retained": true,
+      "prompt_states_whitespace_and_control_character_rules": true,
+      "deterministic_safe_text_validation_retained": true,
+      "output_repair_or_retry_added": false,
+      "frontend_checkpoint_reused": true,
+      "generated_sections": [
+        "backend",
+        "data",
+        "infrastructure"
+      ]
+    },
+    "canonical_plan": {
+      "formed": true,
+      "validated": true,
+      "plan_version": 1,
+      "canonical_digest": "5f5de343e3804544768138cd1ac0c6ff10d064618a08ff32654cadbe5fc05b47",
+      "canonical_bytes_sha256": "3eff59e1c5ebc77463f452504a855f112cbd4e7a48fc292063abfa59961b6f04",
+      "sections": 4,
+      "requirements": 9,
+      "work_items": 29,
+      "formal_exact_capsule_bindings": 20,
+      "explicit_gaps": 9,
+      "dependency_edges": 176,
+      "cross_service_bytes_recovered": true
+    },
+    "clarification": {
+      "suggested_action": "propose_revision",
+      "user_authoritative_action": "propose_revision",
+      "question_count": 1,
+      "question_set_digest": "9260c5922b3e65cd1ca3e0323955f1b4af1291eea74518d94a4b9170ef1ce8a3",
+      "base_plan_bytes_unchanged": true,
+      "question_set_recovered_after_service_restart": true
+    },
+    "answered_revision": {
+      "custom_answer_submitted": true,
+      "model_calls": 1,
+      "pending_diff_formed": true,
+      "diff_digest": "8b7605c9298b0ca7cb1df1f70abba05561cb19adb57facbf3f71be07a6aa613a",
+      "operation_count": 1,
+      "change_count": 1,
+      "formal_validation_passed": true,
+      "base_plan_bytes_unchanged": true,
+      "pending_diff_recovered_after_service_restart": true
+    },
+    "human_semantic_review": {
+      "formal_diff_valid": true,
+      "semantic_approval": false,
+      "decision": "reject",
+      "requested_data_section_changed": false,
+      "actual_section_changed": "frontend",
+      "only_work_item_title_changed": true,
+      "acceptance_intent_changed": false,
+      "weekly_full_backup_explicit": false
+    },
+    "rejection": {
+      "performed": true,
+      "public_reject_calls": 1,
+      "model_calls": 0,
+      "retries": 0,
+      "pending_diff_cleared": true,
+      "base_plan_unchanged": true,
+      "service_restarted": true,
+      "base_plan_bytes_recovered": true,
+      "pending_diff_absent_after_restart": true,
+      "workspace_status_after_restart": "plan_review"
+    },
+    "model_positioning": {
+      "role": "planning_draft_and_suggestion_model",
+      "free_text_revision": "not_proven",
+      "same_request_model_retry": false,
+      "prompt_tuning_continued": false,
+      "recommended_future_direction": "user_selects_target_section_and_work_item_before_backend_builds_a_scope_limited_dynamic_schema"
+    },
+    "write_boundary": {
+      "source_tree_unchanged": true,
+      "target_tree_unchanged": true,
+      "warehouse_revision_unchanged": true,
+      "formal_tables_unchanged": true,
+      "products_unchanged": true,
+      "usage_unchanged": true,
+      "candidate_or_product_generated": false,
+      "only_isolated_workspace_state_changed": true,
+      "raw_prompt_or_response_saved": false
+    }
+  },
+  "human_editable_plan_diff_v1": {
+    "status": "PASS_BACKEND_SCOPE",
+    "functional_verdict": "PASS",
+    "visual_verdict": "DEFERRED",
+    "user_confirmed": false,
+    "product_boundary": {
+      "supported_operations": [
+        "add",
+        "update"
+      ],
+      "remove_supported": false,
+      "multi_operation_supported": false,
+      "model_editable_fields": [
+        "title",
+        "summary",
+        "acceptance_intent",
+        "delivery_wave"
+      ],
+      "backend_locks_operation_section_binding_and_requirements": true,
+      "model_is_formal_target_authority": false,
+      "human_edit_requires_model_call": false,
+      "apply_to_draft_is_separate_from_confirmation": true
+    },
+    "real_model_gate": {
+      "status": "PASS",
+      "name": "qwen2.5-coder:7b",
+      "digest": "dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364",
+      "parameter_count": 7615616512,
+      "parameter_size": "7.6B",
+      "quantization_level": "Q4_K_M",
+      "base_plan_version": 1,
+      "base_plan_digest": "5f5de343e3804544768138cd1ac0c6ff10d064618a08ff32654cadbe5fc05b47",
+      "target_section_id": "data",
+      "target_operation": "add",
+      "requirement_selected_by_user": true,
+      "targeted_revision_calls": 1,
+      "suggestion_calls": 0,
+      "answer_calls": 0,
+      "retry_calls": 0,
+      "model_call": {
+        "call_type": "plan_revision_fields",
+        "input_bytes": 1834,
+        "output_bytes": 349,
+        "duration_ms": 8354,
+        "structured_response_digest": "11318484a1e5680fe263e533a7c95451130e182ea41364cb79600a233b52508c"
+      },
+      "model_suggestion_quality": "PARTIAL",
+      "model_suggestion_was_applied_without_review": false,
+      "human_editable_revision_workflow": "PASS",
+      "edited_pending_diff": {
+        "diff_digest": "7a0d92792718bcd38dcb8571167d87b78ba45237906d76fd7ada236efc728a41",
+        "operation_count": 1,
+        "base_plan_bytes_unchanged": true,
+        "cross_service_recovered": true,
+        "model_calls": 0
+      },
+      "reject_branch": {
+        "performed": true,
+        "base_plan_bytes_unchanged": true,
+        "pending_diff_cleared": true
+      },
+      "accept_and_confirm_branch": {
+        "accepted_plan_version": 2,
+        "accepted_plan_digest": "df66506eb2e5e143dabc70ac952a8255b0a39c247ea1e70b51b78f8f00dd899e",
+        "dependency_graph_valid": true,
+        "confirmation_separate": true,
+        "confirmed_plan_and_receipt_recovered": true,
+        "candidate_generated": false,
+        "product_generated": false,
+        "usage_written": false
+      },
+      "memory": {
+        "ollama_process_rss_before_kib": 53056,
+        "ollama_process_rss_peak_kib": 6493808,
+        "ollama_process_rss_after_kib": 6493824,
+        "ollama_loaded_model_bytes": 6414244248
+      }
+    },
+    "frontend_gate": {
+      "status": "DEFERRED_NOT_IN_GIT_CLOSEOUT",
+      "single_revision_input_retained": true,
+      "section_add_and_work_item_update_targets_are_user_selected": true,
+      "formal_frontend_free_text_propose_revision_removed": true,
+      "model_suggestion_four_fields_are_editable": true,
+      "edit_diff_model_calls": 0,
+      "ordinary_ui_internal_binding_or_work_item_ids_visible": false,
+      "ordinary_ui_raw_internal_gap_codes_visible": false,
+      "plan_v2_apply_confirm_and_restart_restore_passed": true,
+      "real_qwebengine": true,
+      "protocol_substitute_used_for_deterministic_ui_regression": true
+    },
+    "visual_gate": {
+      "status": "DEFERRED",
+      "screenshots_generated": true,
+      "user_confirmation_requested": true,
+      "user_confirmed": false,
+      "language": "zh-CN",
+      "runtime": "real_qwebengine",
+      "window_css_pixels": {
+        "width": 1280,
+        "height": 800
+      },
+      "screenshots": [
+        "07-data-add-scope.png",
+        "08-model-suggestion.png",
+        "09-edit-suggestion.png",
+        "10-applied-plan-v2.png",
+        "11-confirmed-plan-v2.png"
+      ],
+      "screenshots_committed_to_repository": false,
+      "topbar_stable": true,
+      "dark_scrollbar_low_contrast": true,
+      "raw_internal_gap_codes_visible": false,
+      "visual_pass_claimed": false
+    },
+    "write_boundary": {
+      "source_tree_unchanged": true,
+      "target_tree_unchanged": true,
+      "warehouse_revision_and_formal_tables_unchanged": true,
+      "products_unchanged": true,
+      "usage_unchanged": true,
+      "candidate_or_product_generated": false,
+      "raw_prompt_or_response_saved": false
+    }
+  },
+  "implemented_candidate": {
+    "single_reweave_app_service": true,
+    "single_main_product_goal_input": true,
+    "legacy_generate_product_backend_retained": true,
+    "prototype_fixture_or_demo_retained": false,
+    "product_plan_schema": "product_plan.v1",
+    "model_section_draft_schema": "product_plan_section_draft.v2",
+    "formal_product_plan_schema_unchanged": true,
+    "model_section_draft_contains_formal_work_item_ids": false,
+    "model_section_draft_contains_task_dependencies": false,
+    "deterministic_backend_compiles_delivery_wave_dependencies": true,
+    "fixed_sections": [
+      "frontend",
+      "backend",
+      "data",
+      "infrastructure"
+    ],
+    "bounded_planning_questions": true,
+    "revision_model_intent_classifier_in_formal_runtime": false,
+    "action_suggestion_requires_explicit_user_confirmation": true,
+    "action_suggestion_is_authority": false,
+    "action_suggestion_persisted_in_workspace": false,
+    "selected_action_is_revision_authority": true,
+    "strict_revision_branches": [
+      "ask_plan_explanation_only",
+      "propose_revision_questions_or_operations",
+      "edit_goal_without_revision_call"
+    ],
+    "revision_model_calls_after_confirmation": {
+      "ask_plan": 1,
+      "propose_revision": 1,
+      "edit_goal": 0
+    },
+    "revision_public_result_kinds_unchanged": true,
+    "legacy_revision_evidence_read_compatible": true,
+    "revision_branch_schemas_mutually_exclusive": true,
+    "revision_keyword_classifier_used": false,
+    "targeted_revision_operation_skeleton": true,
+    "human_editable_pending_diff": true,
+    "targeted_revision_operations": [
+      "add",
+      "update"
+    ],
+    "targeted_revision_remove_supported": false,
+    "revision_request_local_reference_enums": true,
+    "revision_binding_refs_schema_constrained": true,
+    "revision_update_mutable_fields_only": true,
+    "revision_dependencies_recompiled_by_backend": true,
+    "revision_output_repair_used": false,
+    "ollama_internal_failure_classes": [
+      "ollama.timeout",
+      "ollama.connection",
+      "ollama.http"
+    ],
+    "ollama_public_failure_code": "ollama_unavailable",
+    "structured_plan_diff_review": true,
+    "diff_acceptance_binds_reviewed_base_and_diff_digest": true,
+    "confirmation_receipt_only": true,
+    "restart_recovery": true,
+    "explicit_exact_capsule_warehouse_focus": true,
+    "candidate_code_generated": false,
+    "product_generated": false,
+    "module_native_invoked": false
+  },
+  "authority_boundary": {
+    "model_may_interpret_goal": true,
+    "model_may_ask_questions": true,
+    "model_may_suggest_opaque_candidate_refs": true,
+    "model_may_assign_delivery_wave": true,
+    "model_may_generate_formal_ids": false,
+    "deterministic_backend_owns_plan_and_work_item_ids": true,
+    "deterministic_backend_owns_exact_capsule_binding": true,
+    "deterministic_backend_owns_dependency_validation": true,
+    "deterministic_backend_owns_canonical_digests": true,
+    "deterministic_backend_owns_persistence_and_confirmation": true
+  },
+  "real_model_gate": {
+    "ollama_base_url": "http://127.0.0.1:11434",
+    "cloud_or_external_fallback": false,
+    "automatic_larger_model_fallback": false,
+    "formal_parameter_limit": 15000000000,
+    "name": "qwen2.5-coder:7b",
+    "digest": "dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364",
+    "parameter_count": 7615616512,
+    "parameter_size": "7.6B",
+    "quantization_level": "Q4_K_M",
+    "within_8b_limit": true,
+    "planning_rules_version": "reweave_product_planning_rules.v2",
+    "prompt_version": "reweave_product_planning_prompt.v5",
+    "structured_output_mode": "ollama_native_json_schema",
+    "strict_post_response_validation_retained": true,
+    "schema_probe": {
+      "status": "passed",
+      "input_bytes": 681,
+      "output_bytes": 97,
+      "duration_ms": 6023,
+      "structured_response_digest": "711b5c8307df5fbe7fcd3122a3f493861166a600aa37615faac0cb00fddc13eb"
+    },
+    "requirements_outline": {
+      "status": "passed_after_contract_alignment",
+      "error_code": null,
+      "input_bytes": 2954,
+      "output_bytes": 1081,
+      "duration_ms": 13691,
+      "structured_response_digest": "8d8992b726f691e7feb7014cb6beca398cf21389ab4f3eccc3f1281ea96f6821",
+      "structure_counts": {
+        "requirements": 8,
+        "questions": 0,
+        "options": 0
+      },
+      "raw_prompt_persisted": false,
+      "raw_response_persisted": false
+    },
+    "outline_diagnostic": {
+      "first_run": {
+        "prompt_version": "reweave_product_planning_prompt.v1",
+        "status": "rejected",
+        "public_error_code": "product_plan_response_invalid",
+        "internal_rule_code": "outline.questions_status_mismatch",
+        "input_bytes": 2799,
+        "output_bytes": 2804,
+        "duration_ms": 29039,
+        "structured_response_digest": "428196ec5d74b8dddbdf32f7419c548111359f87fd1e54e441b964d8672a0bbd",
+        "structure_counts": {
+          "requirements": 5,
+          "questions": 3,
+          "options": 6
+        }
+      },
+      "classification": "contract_expression_gap",
+      "validator_rule": "needs_clarification must equal whether questions is non-empty",
+      "native_schema_expression": "fields constrained separately; no cross-field conditional",
+      "prompt_expression_before_alignment": "implicit only",
+      "minimal_alignment": {
+        "prompt_version": "reweave_product_planning_prompt.v2",
+        "change": "Explicitly require needs_clarification true exactly for non-empty questions and false exactly for empty questions.",
+        "schema_relaxed": false,
+        "validator_relaxed": false,
+        "output_repair_added": false,
+        "retry_loop_added": false
+      },
+      "second_run_outline_status": "passed"
+    },
+    "section_planning": {
+      "diagnostic_run": {
+        "prompt_version": "reweave_product_planning_prompt.v2",
+        "status": "rejected_after_four_model_calls",
+        "failed_phase": "infrastructure",
+        "public_error_code": "product_plan_response_invalid",
+        "internal_rule_code": "section.work_item_ref_conflicts_prior_section",
+        "failed_section_structure_counts": {
+          "work_items": 8,
+          "gaps": 0,
+          "requirement_refs": 8,
+          "dependencies": 0
+        },
+        "calls": [
+          {
+            "section_id": "frontend",
+            "input_bytes": 3087,
+            "output_bytes": 1643,
+            "duration_ms": 22936,
+            "work_items": 1,
+            "gaps": 7,
+            "structured_response_digest": "e4d4922bc7b97e28f1ac55a6c2ab565b49725fc889911e234b89502eb59495fc"
+          },
+          {
+            "section_id": "backend",
+            "input_bytes": 3102,
+            "output_bytes": 2937,
+            "duration_ms": 33487,
+            "work_items": 7,
+            "gaps": 0,
+            "structured_response_digest": "09d939f2bb1180eaade1afb08f4a98aa35bd80d11bb7fb74787edb8da9ba9274"
+          },
+          {
+            "section_id": "data",
+            "input_bytes": 3223,
+            "output_bytes": 3304,
+            "duration_ms": 38613,
+            "work_items": 8,
+            "gaps": 0,
+            "structured_response_digest": "0b4ea1c9711868e36937b1244c4a04a75df7a3d6d2a3022d677ac63f402a2b12"
+          },
+          {
+            "section_id": "infrastructure",
+            "input_bytes": 3391,
+            "output_bytes": 2881,
+            "duration_ms": 34577,
+            "work_items": 8,
+            "gaps": 0,
+            "structured_response_digest": "ec4c016e0b10a7b41fee4182f5ade858813c446f7db42d5e8a1369ac0e3e5069"
+          }
+        ],
+        "memory": {
+          "ollama_process_rss_before_bytes": 101023744,
+          "ollama_process_rss_peak_bytes": 6930202624,
+          "ollama_process_rss_after_bytes": 6903005184,
+          "ollama_reported_model_size_bytes": 6414244248,
+          "sample_count": 593
+        }
+      },
+      "classification": "contract_expression_gap",
+      "validator_rule": "A new work_items[].ref must not equal a ref already owned by a prior section.",
+      "native_schema_expression": "ref is constrained as a string; the dynamic prior-ref set cannot be expressed by this response Schema.",
+      "prompt_expression_before_alignment": "prior_work_item_refs was supplied as data but its no-reuse meaning was not stated.",
+      "minimal_alignment": {
+        "prompt_version": "reweave_product_planning_prompt.v3",
+        "change": "Require every new work-item ref to be unique and never reuse prior_work_item_refs as a new ref.",
+        "schema_relaxed": false,
+        "validator_relaxed": false,
+        "output_repair_added": false,
+        "retry_loop_added": false
+      },
+      "alignment_rerun": {
+        "status": "stopped_on_operational_failure",
+        "failed_phase": "data",
+        "public_error_code": "ollama_unavailable",
+        "internal_rule_code": null,
+        "infrastructure_alignment_reverified_in_that_run": false,
+        "completed_calls": [
+          {
+            "call_type": "schema_probe",
+            "input_bytes": 667,
+            "output_bytes": 97,
+            "duration_ms": 1803,
+            "structured_response_digest": "711b5c8307df5fbe7fcd3122a3f493861166a600aa37615faac0cb00fddc13eb"
+          },
+          {
+            "call_type": "requirements_outline",
+            "input_bytes": 2940,
+            "output_bytes": 1081,
+            "duration_ms": 18133,
+            "requirements": 8,
+            "questions": 0,
+            "structured_response_digest": "8d8992b726f691e7feb7014cb6beca398cf21389ab4f3eccc3f1281ea96f6821"
+          },
+          {
+            "call_type": "section_frontend",
+            "input_bytes": 3156,
+            "output_bytes": 1643,
+            "duration_ms": 23272,
+            "work_items": 1,
+            "gaps": 7,
+            "structured_response_digest": "e4d4922bc7b97e28f1ac55a6c2ab565b49725fc889911e234b89502eb59495fc"
+          },
+          {
+            "call_type": "section_backend",
+            "input_bytes": 3171,
+            "output_bytes": 1992,
+            "duration_ms": 28832,
+            "work_items": 3,
+            "gaps": 5,
+            "structured_response_digest": "0cd05f0bfba2404e75c762f1dd7cebbfa32b090124bb637414083434603d3bbe"
+          }
+        ],
+        "failed_call": {
+          "call_type": "section_data",
+          "error_code": "ollama_unavailable",
+          "structured_response_digest": null
+        },
+        "ollama_alive_after_failure": true,
+        "model_digest_unchanged_after_failure": true,
+        "memory": {
+          "ollama_process_rss_before_bytes": 6822559744,
+          "ollama_process_rss_peak_bytes": 6953467904,
+          "ollama_process_rss_after_bytes": 6278643712,
+          "ollama_reported_model_size_bytes": 6414244248,
+          "sample_count": 449
+        }
+      },
+      "dependency_unknown_run": {
+        "prompt_version": "reweave_product_planning_prompt.v3",
+        "status": "rejected",
+        "failed_phase": "data",
+        "public_error_code": "product_plan_response_invalid",
+        "internal_rule_code": "section.dependency_unknown",
+        "failed_section_structure_counts": {
+          "work_items": 8,
+          "dependencies": 10
+        },
+        "completed_calls": [
+          {
+            "call_type": "schema_probe",
+            "input_bytes": 667,
+            "output_bytes": 97,
+            "duration_ms": 6396,
+            "structured_response_digest": "711b5c8307df5fbe7fcd3122a3f493861166a600aa37615faac0cb00fddc13eb"
+          },
+          {
+            "call_type": "requirements_outline",
+            "input_bytes": 2940,
+            "output_bytes": 1081,
+            "duration_ms": 16704,
+            "requirements": 8,
+            "questions": 0,
+            "structured_response_digest": "8d8992b726f691e7feb7014cb6beca398cf21389ab4f3eccc3f1281ea96f6821"
+          },
+          {
+            "call_type": "section_frontend",
+            "input_bytes": 3156,
+            "output_bytes": 1643,
+            "duration_ms": 22614,
+            "structured_response_digest": "e4d4922bc7b97e28f1ac55a6c2ab565b49725fc889911e234b89502eb59495fc"
+          },
+          {
+            "call_type": "section_backend",
+            "input_bytes": 3171,
+            "output_bytes": 1992,
+            "duration_ms": 22457,
+            "structured_response_digest": "0cd05f0bfba2404e75c762f1dd7cebbfa32b090124bb637414083434603d3bbe"
+          }
+        ],
+        "failed_call": {
+          "call_type": "section_data",
+          "input_bytes": 3216,
+          "output_bytes": 3579,
+          "duration_ms": 37152,
+          "structured_response_digest": "60fc884d43cc4d1e287f952ad15a11db993a98b6e01ccef13c56257c9ab8cffe"
+        },
+        "memory": {
+          "ollama_process_rss_peak_bytes": 6880804864,
+          "ollama_process_rss_after_bytes": 6863699968,
+          "ollama_reported_model_size_bytes": 6414244248,
+          "sample_count": 409
+        }
+      },
+      "dependency_allowlist_alignment": {
+        "classification": "contract_expression_gap",
+        "validator_rule": "Every depends_on value must resolve to a prior section work-item ref or a work-item ref declared in the current section.",
+        "native_schema_expression": "depends_on items are strings; the dynamic prior/current ref allowlist cannot be expressed by the response Schema.",
+        "prompt_expression_before_alignment": "The prompt supplied prior_work_item_refs but did not define the complete dependency allowlist or forbid invented dependency refs.",
+        "minimal_alignment": {
+          "prompt_version": "reweave_product_planning_prompt.v4",
+          "change": "Each depends_on value must exactly equal a prior_work_item_refs value or a ref from this section's work_items; never invent a dependency ref.",
+          "schema_relaxed": false,
+          "validator_relaxed": false,
+          "other_section_rules_added": false,
+          "output_repair_added": false,
+          "retry_loop_added": false,
+          "model_fallback_added": false
+        }
+      },
+      "v4_real_plan_run": {
+        "status": "plan_review",
+        "prompt_version": "reweave_product_planning_prompt.v4",
+        "calls": [
+          {
+            "call_type": "schema_probe",
+            "input_bytes": 667,
+            "output_bytes": 97,
+            "duration_ms": 7056,
+            "structured_response_digest": "711b5c8307df5fbe7fcd3122a3f493861166a600aa37615faac0cb00fddc13eb"
+          },
+          {
+            "call_type": "requirements_outline",
+            "input_bytes": 2940,
+            "output_bytes": 1081,
+            "duration_ms": 17382,
+            "requirements": 8,
+            "questions": 0,
+            "structured_response_digest": "8d8992b726f691e7feb7014cb6beca398cf21389ab4f3eccc3f1281ea96f6821"
+          },
+          {
+            "call_type": "section_frontend",
+            "input_bytes": 3298,
+            "output_bytes": 1636,
+            "duration_ms": 23318,
+            "work_items": 1,
+            "gaps": 7,
+            "dependencies": 0,
+            "requirement_refs": 8,
+            "structured_response_digest": "e0d65ce5b8390a284ca902b98057b8beebae3212804c72fc38eb54cdd09f01e2"
+          },
+          {
+            "call_type": "section_backend",
+            "input_bytes": 3313,
+            "output_bytes": 1132,
+            "duration_ms": 16509,
+            "work_items": 1,
+            "gaps": 1,
+            "dependencies": 0,
+            "requirement_refs": 15,
+            "structured_response_digest": "8d928b12ef56bf6fb3b58482bc78f738dd44aede7096dac8b253b9cf4fd1d13a"
+          },
+          {
+            "call_type": "section_data",
+            "input_bytes": 3320,
+            "output_bytes": 2973,
+            "duration_ms": 39049,
+            "work_items": 7,
+            "gaps": 1,
+            "dependencies": 21,
+            "requirement_refs": 8,
+            "structured_response_digest": "61c2f18f4bfaa55f2c7b93ece9572c466deb94f5f431cada7824e423036d9f42"
+          },
+          {
+            "call_type": "section_infrastructure",
+            "input_bytes": 3472,
+            "output_bytes": 2847,
+            "duration_ms": 35243,
+            "work_items": 7,
+            "gaps": 1,
+            "dependencies": 0,
+            "requirement_refs": 8,
+            "structured_response_digest": "78791d1008ae88b53ddb5ef7be46f49e49f04725aade985c953e84581deee07f"
+          },
+          {
+            "call_type": "catalog_match_frontend",
+            "input_bytes": 1697,
+            "output_bytes": 390,
+            "duration_ms": 6955,
+            "structured_response_digest": "adbbf1d88bc239f05ab714e1101d333d5bc4776c06c906ea279981138c55509f"
+          },
+          {
+            "call_type": "catalog_match_backend",
+            "input_bytes": 1693,
+            "output_bytes": 445,
+            "duration_ms": 7358,
+            "structured_response_digest": "bf969f12b5924ae00da8f274a638477a561be36d0d7da52cd3ba35c852ded8d2"
+          },
+          {
+            "call_type": "catalog_match_data",
+            "input_bytes": 1777,
+            "output_bytes": 395,
+            "duration_ms": 7018,
+            "structured_response_digest": "db0965070fe462ee708ff5e3ba3b9f074e804937c6675431d6465076d51fd6fe"
+          },
+          {
+            "call_type": "catalog_match_infrastructure",
+            "input_bytes": 1877,
+            "output_bytes": 368,
+            "duration_ms": 6686,
+            "structured_response_digest": "c13ffe487850564bda087477b870928f5a531fe80b7ab8edb987b0baeb545d48"
+          }
+        ],
+        "canonical_plan": {
+          "plan_id": "plan_6e71849938b344e9b30dd19832dd456b",
+          "plan_version": 1,
+          "canonical_digest": "5bc4c5ca87ad736b00da90a2a8df802aab6f9699518789d2fc39ec824521bad3",
+          "requirements": 8,
+          "sections": 4,
+          "work_items": 16,
+          "gaps": 10,
+          "formal_exact_capsule_bindings": 4,
+          "dependency_graph_valid_and_acyclic": true
+        },
+        "memory": {
+          "ollama_process_rss_before_bytes": 80576512,
+          "ollama_process_rss_peak_bytes": 6803554304,
+          "ollama_process_rss_after_bytes": 6371426304,
+          "ollama_reported_model_size_bytes": 6414244248,
+          "ollama_reported_model_vram_bytes": 6414244248,
+          "sample_count": 632
+        }
+      },
+      "revision_lifecycle_checkpoint": {
+        "request_kind": "explicit_modification_request",
+        "model_result_kind": "explanation",
+        "classification": "model_contract_violation",
+        "classification_evidence": "The request explicitly asked to adjust one plan area while preserving the rest. The revision contract delegates classification among explanation, modification, and needs_clarification, and its update operation can express this change. The model instead returned a structurally valid explanation with zero operations.",
+        "internal_rule_code": null,
+        "internal_rule_code_reason": "Natural-language intent classification is delegated to the model; deterministic post-validation only verifies the selected branch's structure.",
+        "alternate_wording_retry_attempted": false,
+        "prompt_or_schema_changed": false,
+        "call": {
+          "input_bytes": 14229,
+          "output_bytes": 216,
+          "duration_ms": 18665,
+          "structured_response_digest": "099144d01b397ee0e466cf030b25b4ccf4e0e6ca289ebd8931763b42a20ed9b3"
+        },
+        "plan_changed": false,
+        "plan_version_after_call": 1,
+        "plan_digest_after_call": "5bc4c5ca87ad736b00da90a2a8df802aab6f9699518789d2fc39ec824521bad3",
+        "plan_diff_created": false,
+        "confirmation_created": false,
+        "cross_service_restart_restore": {
+          "status": "plan_review",
+          "plan_version": 1,
+          "plan_digest_unchanged": true,
+          "confirmation_present": false
+        },
+        "memory": {
+          "ollama_process_rss_peak_bytes": 6401933312,
+          "ollama_process_rss_after_bytes": 6401966080,
+          "ollama_reported_model_size_bytes": 6414244248,
+          "sample_count": 75
+        }
+      },
+      "revision_classification_capability_gate": {
+        "model": {
+          "name": "qwen2.5-coder:7b",
+          "digest": "dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364",
+          "parameter_count": 7615616512,
+          "parameter_size": "7.6B",
+          "quantization_level": "Q4_K_M"
+        },
+        "base_plan": {
+          "canonical_digest": "5bc4c5ca87ad736b00da90a2a8df802aab6f9699518789d2fc39ec824521bad3",
+          "plan_version": 1,
+          "canonical_plan_bytes_digest": "6274f2755c45555a2baf1594a663a721f56eb17bfd30ced0c4692e8bf2635d41"
+        },
+        "execution": {
+          "temperature": 0,
+          "real_reweave_app_service": true,
+          "native_json_schema": true,
+          "strict_post_validation": true,
+          "independent_workspace_copy_per_kind": true,
+          "planned_order": [
+            "explanation",
+            "modification",
+            "needs_clarification"
+          ],
+          "cases_attempted": 2,
+          "stopped_on_first_failure": true,
+          "alternate_wording_retry_attempted": false,
+          "prompt_schema_or_validator_changed": false
+        },
+        "explanation": {
+          "attempted": true,
+          "passed": true,
+          "observed_kind": "explanation",
+          "questions": 0,
+          "operations": 0,
+          "plan_diff_created": false,
+          "plan_byte_equal": true,
+          "input_bytes": 14232,
+          "output_bytes": 595,
+          "duration_ms": 31755,
+          "structured_response_digest": "36b56110c27c60ef9309ab1524cdab757f28f4280e6c207c8646e2e90f0d7b1d",
+          "memory": {
+            "ollama_process_rss_sampled_peak_bytes": 6664454144,
+            "ollama_process_rss_after_bytes": 6716981248,
+            "ollama_reported_loaded_size_bytes": 6578881166,
+            "ollama_reported_loaded_vram_bytes": 6578881166,
+            "sample_count": 124
+          }
+        },
+        "modification": {
+          "attempted": true,
+          "passed": false,
+          "observed_kind": "modification",
+          "questions": 0,
+          "operations": 1,
+          "task_status": "failed",
+          "workspace_status": "failed",
+          "public_error_code": "product_plan_response_invalid",
+          "internal_rule_code": null,
+          "failure_classification": "model_contract_violation",
+          "failure_boundary": "modification_branch_strict_post_validation",
+          "precise_subrule_proven": false,
+          "precise_subrule_note": "The current revision validator emits no rule code for this branch and raw model output was intentionally not retained. The evidence proves a modification-branch response-contract violation, but does not claim an unobserved field value.",
+          "plan_diff_created": false,
+          "plan_byte_equal": true,
+          "input_bytes": 14268,
+          "output_bytes": 753,
+          "duration_ms": 31254,
+          "structured_response_digest": "df5590d09b9cf8c6ba68616bd4fe3234fb54a48bae534728a1b244f6d05c93aa",
+          "memory": {
+            "ollama_process_rss_sampled_peak_bytes": 6947979264,
+            "ollama_process_rss_after_bytes": 6794428416,
+            "ollama_reported_loaded_size_bytes": 6578881166,
+            "ollama_reported_loaded_vram_bytes": 6578881166,
+            "sample_count": 126
+          }
+        },
+        "needs_clarification": {
+          "attempted": false,
+          "reason": "The modification case failed and the fixed stop condition forbids continuing to the next kind."
+        },
+        "model_suitable_for_complete_revision_role": false,
+        "plan_diff_reject_completed": false,
+        "independent_plan_diff_accept_completed": false,
+        "confirmation_completed": false,
+        "post_confirmation_restart_restore_completed": false,
+        "qwebengine_and_screenshots_completed": false,
+        "write_boundary": {
+          "source_tree_unchanged": true,
+          "target_tree_unchanged": true,
+          "warehouse_revision_and_formal_tables_unchanged": true,
+          "products_directory_unchanged": true,
+          "product_workspaces_only_allowed_structured_change": true,
+          "forbidden_persistence_markers_found": 0,
+          "candidate_or_product_generated": false
+        }
+      },
+      "qwen25_7b_fresh_plan_and_revision_gate": {
+        "model": {
+          "name": "qwen2.5:7b",
+          "digest": "845dbda0ea48ed749caafd9e6037047aa19acfcfd82e704d7ca97d631a0b697e",
+          "parameter_count": 7615616512,
+          "parameter_size": "7.6B",
+          "quantization_level": "Q4_K_M",
+          "within_8b_limit": true
+        },
+        "isolation": {
+          "fresh_temporary_state": true,
+          "fresh_model_selection_and_schema_probe": true,
+          "previous_coder_workspace_opened_for_write": false,
+          "previous_coder_model_binding_unchanged": true,
+          "previous_coder_plan_digest_unchanged": true,
+          "prompt_schema_validator_changed": false,
+          "retry_or_alternate_wording_used": false
+        },
+        "plan_generation": {
+          "status": "plan_review",
+          "model_calls": 10,
+          "total_input_bytes": 25725,
+          "total_output_bytes": 8280,
+          "total_duration_ms": 100348,
+          "schema_probe": {
+            "status": "passed",
+            "input_bytes": 661,
+            "output_bytes": 84,
+            "duration_ms": 5851,
+            "structured_response_digest": "a8ebd4cfb3312421477c3ecd0504b8363261e7e6aff1853ba048dacaace83ff5"
+          },
+          "outline": {
+            "status": "passed",
+            "requirements": 9,
+            "questions": 0,
+            "input_bytes": 2934,
+            "output_bytes": 1475,
+            "duration_ms": 19868,
+            "structured_response_digest": "e35e3a3147c77b80cad076f4e0df56e6397aaa3d8c5652e0a140309f4fa7f1c0"
+          },
+          "sections": [
+            {
+              "section_id": "frontend",
+              "work_items": 3,
+              "gaps": 0,
+              "dependencies": 0,
+              "input_bytes": 3672,
+              "output_bytes": 1366,
+              "duration_ms": 15519,
+              "structured_response_digest": "1bb34cf4fccb43105550164e1a0266366dd9bdc994c93919798f0f1c86e05571"
+            },
+            {
+              "section_id": "backend",
+              "work_items": 8,
+              "gaps": 0,
+              "dependencies": 3,
+              "input_bytes": 3727,
+              "output_bytes": 3664,
+              "duration_ms": 36373,
+              "structured_response_digest": "c22baacbbe5a2a9bf5246ecb788717c55b90c5d4ea051876fd13fe36f24dac57"
+            },
+            {
+              "section_id": "data",
+              "work_items": 1,
+              "gaps": 0,
+              "dependencies": 1,
+              "input_bytes": 3867,
+              "output_bytes": 654,
+              "duration_ms": 8070,
+              "structured_response_digest": "2d4c4fbae3955fc15872feb0792598d27c4c1fd99b3f01ee09b63570395b06dc"
+            },
+            {
+              "section_id": "infrastructure",
+              "work_items": 1,
+              "gaps": 0,
+              "dependencies": 1,
+              "input_bytes": 3923,
+              "output_bytes": 668,
+              "duration_ms": 8118,
+              "structured_response_digest": "c307ad8f50db71586a9817b9504414e0a6265ccd282f2a8a03f249d09877f9e2"
+            }
+          ],
+          "catalog_match_calls": {
+            "count": 4,
+            "formal_exact_bindings": 0,
+            "structured_response_digests": [
+              "f61043b2db821705ef662d060a39dfaed2f2172078e39c51d7bfd850e6097b8f",
+              "cb94b8562aacbc3580746da0d32f9ba24f0df6544c9d32f6441738a580c42bf0",
+              "5de8eaa9aafcdab3f3c08baa31461a7447141aa4a6132ed4a5d69169db06e552",
+              "4c1a8d0e83c0ac8977fa7d65e16cad6f469a127521f7c65255e9ac088a526be7"
+            ]
+          },
+          "canonical_plan": {
+            "plan_id": "plan_0e543f08798e4ae9871d8dc76594f93b",
+            "plan_version": 1,
+            "canonical_digest": "b59af66bf2b90c2eba6af8539d5557fdc15a6591b8f607060d8b768cb2844744",
+            "sections": 4,
+            "work_items": 13,
+            "gaps": 0,
+            "formal_exact_capsule_bindings": 0,
+            "accepted_by_current_deterministic_validator": true,
+            "formal_binding_or_gap_evidence_proven": false
+          },
+          "memory": {
+            "ollama_process_rss_before_bytes": 79724544,
+            "ollama_process_rss_peak_bytes": 6477938688,
+            "ollama_process_rss_after_bytes": 6246563840,
+            "ollama_reported_loaded_size_bytes": 6578881166,
+            "ollama_reported_loaded_vram_bytes": 6578881166,
+            "sample_count": 371
+          }
+        },
+        "revision_gate": {
+          "planned_order": [
+            "explanation",
+            "modification",
+            "needs_clarification"
+          ],
+          "cases_attempted": 1,
+          "stopped_on_first_failure": true,
+          "explanation": {
+            "attempted": true,
+            "passed": false,
+            "observed_kind": "explanation",
+            "questions": 1,
+            "operations": 0,
+            "public_error_code": "product_plan_response_invalid",
+            "internal_rule_code": null,
+            "observed_contract_violation": "explanation_questions_nonempty",
+            "plan_diff_created": false,
+            "plan_byte_equal": true,
+            "canonical_plan_bytes_digest": "0d05b0f08b9f37c8ca76a9aa646c623cb4e166bf0accf20c24c43b5a5edfdf55",
+            "input_bytes": 11376,
+            "output_bytes": 1410,
+            "duration_ms": 26645,
+            "structured_response_digest": "dd16049d214c4e491cbcf1c2776376da6956d6e848d1f757f44d09a96762e80c",
+            "memory": {
+              "ollama_process_rss_sampled_peak_bytes": 6253068288,
+              "ollama_process_rss_after_bytes": 6299926528,
+              "ollama_reported_loaded_size_bytes": 6578881166,
+              "ollama_reported_loaded_vram_bytes": 6578881166,
+              "sample_count": 98
+            }
+          },
+          "modification": {
+            "attempted": false,
+            "reason": "The explanation case failed and the fixed stop condition forbids continuing."
+          },
+          "needs_clarification": {
+            "attempted": false,
+            "reason": "The explanation case failed and the fixed stop condition forbids continuing."
+          },
+          "model_suitable_for_complete_revision_role": false
+        },
+        "local_eight_b_capability_conclusion": {
+          "tested_exact_models": [
+            "qwen2.5-coder:7b@dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364",
+            "qwen2.5:7b@845dbda0ea48ed749caafd9e6037047aa19acfcfd82e704d7ca97d631a0b697e"
+          ],
+          "complete_revision_capable_model_proven": false,
+          "scope_limited_to_tested_installed_models": true,
+          "further_prompt_tuning_allowed": false
+        },
+        "write_boundary": {
+          "source_tree_unchanged": true,
+          "target_tree_unchanged": true,
+          "warehouse_revision_and_formal_tables_unchanged_after_seed": true,
+          "products_directory_unchanged": true,
+          "previous_coder_workspace_unchanged": true,
+          "new_product_workspaces_only_allowed_structured_change": true,
+          "forbidden_persistence_markers_found": 0,
+          "candidate_or_product_generated": false
+        }
+      },
+      "qwen25_7b_two_stage_revision_gate": {
+        "model": {
+          "name": "qwen2.5:7b",
+          "digest": "845dbda0ea48ed749caafd9e6037047aa19acfcfd82e704d7ca97d631a0b697e",
+          "parameter_count": 7615616512,
+          "parameter_size": "7.6B",
+          "quantization_level": "Q4_K_M",
+          "within_8b_limit": true
+        },
+        "contract": {
+          "intent_prompt_version": "product_plan_revision_intent_prompt.v1",
+          "intent_schema_version": "product_plan_revision_intent.v1",
+          "branch_prompt_versions": {
+            "explanation": "product_plan_revision_explanation_prompt.v1",
+            "modification": "product_plan_revision_modification_prompt.v1",
+            "needs_clarification": "product_plan_revision_clarification_prompt.v1"
+          },
+          "branch_schema_versions": {
+            "explanation": "product_plan_revision_explanation.v1",
+            "modification": "product_plan_revision_modification.v1",
+            "needs_clarification": "product_plan_revision_clarification.v1"
+          },
+          "intent_output_keys": [
+            "intent"
+          ],
+          "branch_output_keys_are_mutually_exclusive": true,
+          "calls_per_revision_maximum": 2,
+          "hidden_retry_or_repair_used": false,
+          "keyword_classifier_used": false,
+          "model_fallback_used": false
+        },
+        "fresh_plan": {
+          "fresh_temporary_state": true,
+          "fresh_model_selection_and_schema_probe": true,
+          "previous_model_bound_workspaces_opened_for_write": false,
+          "schema_probe": {
+            "status": "passed",
+            "input_bytes": 661,
+            "output_bytes": 84,
+            "duration_ms": 5263,
+            "structured_response_digest": "a8ebd4cfb3312421477c3ecd0504b8363261e7e6aff1853ba048dacaace83ff5"
+          },
+          "canonical_plan": {
+            "status": "plan_review",
+            "canonical_digest": "5039e5e0adf9a24cc43ab44c8324fc604a63fe26b362c6a03b8505cbd0a641bf",
+            "sections": 4,
+            "work_items": 13,
+            "gaps": 0,
+            "formal_exact_capsule_bindings": 0,
+            "model_calls": 10,
+            "total_input_bytes": 25725,
+            "total_output_bytes": 8280,
+            "total_duration_ms": 96968
+          },
+          "memory": {
+            "ollama_process_rss_before_bytes": 127647744,
+            "ollama_process_rss_peak_bytes": 7036534784,
+            "ollama_process_rss_after_bytes": 7036534784,
+            "ollama_reported_loaded_size_bytes": 6578881166,
+            "ollama_reported_loaded_vram_bytes": 6578881166,
+            "sample_count": 381
+          }
+        },
+        "revision_gate": {
+          "planned_order": [
+            "explanation",
+            "modification",
+            "needs_clarification"
+          ],
+          "cases_attempted": 2,
+          "stopped_on_first_failure": true,
+          "explanation": {
+            "attempted": true,
+            "intent_call_passed": true,
+            "intent": "explanation",
+            "intent_input_bytes": 2590,
+            "intent_output_bytes": 29,
+            "intent_duration_ms": 2034,
+            "intent_response_digest": "74aa5110b94cee379beac5b45d1324ca49920fa6615cd75b7e2dc6ab485a2a95",
+            "branch_call_passed": true,
+            "branch_input_bytes": 9284,
+            "branch_output_bytes": 383,
+            "branch_duration_ms": 14572,
+            "branch_response_digest": "0d90c6d32f7d1bf8eeace3a4de336b18ce99ebeada27fe42f77ae127cc5ddc44",
+            "branch_keys": [
+              "explanation"
+            ],
+            "evidence_binding_valid": true,
+            "plan_byte_equal": true,
+            "base_plan_bytes_digest": "eda323b868c236fb8c3d394af6e194a6a4a28f44c9292f2903e0f1906eea60d3",
+            "passed": true,
+            "memory": {
+              "ollama_process_rss_peak_bytes": 6932283392,
+              "ollama_process_rss_after_bytes": 6932283392,
+              "sample_count": 69
+            }
+          },
+          "modification": {
+            "attempted": true,
+            "intent_call_passed": true,
+            "intent": "modification",
+            "intent_input_bytes": 2626,
+            "intent_output_bytes": 30,
+            "intent_duration_ms": 1112,
+            "intent_response_digest": "aec6870886e94021418b247c116e684a9408275dc0b8e754115adf41684f9be4",
+            "branch_stage_invoked_once": true,
+            "branch_structured_response_returned": false,
+            "public_error_code": "ollama_unavailable",
+            "failure_classification": "transport_or_runtime_unavailable",
+            "model_branch_contract_violation_proven": false,
+            "retry_performed": false,
+            "plan_diff_created": false,
+            "plan_byte_equal": true,
+            "base_plan_bytes_digest": "eda323b868c236fb8c3d394af6e194a6a4a28f44c9292f2903e0f1906eea60d3",
+            "passed": false,
+            "memory": {
+              "ollama_process_rss_peak_bytes": 7092289536,
+              "ollama_process_rss_after_bytes": 7086194688,
+              "sample_count": 188
+            }
+          },
+          "needs_clarification": {
+            "attempted": false,
+            "reason": "The modification branch stage failed and the fixed stop condition forbids retry or continuing to the next case."
+          },
+          "complete_two_stage_revision_capability_proven": false,
+          "precise_incomplete_reason": "The explanation pair passed and the modification intent was classified correctly, but the only modification branch stage returned ollama_unavailable before a structured response; modification branch generation and needs_clarification therefore remain unproven."
+        },
+        "continued_gates": {
+          "plan_diff_reject_completed": false,
+          "independent_plan_diff_accept_completed": false,
+          "confirmation_completed": false,
+          "post_confirmation_restart_restore_completed": false,
+          "qwebengine_and_screenshots_completed": false
+        },
+        "write_boundary": {
+          "source_tree_unchanged": true,
+          "target_tree_unchanged": true,
+          "warehouse_revision_and_formal_tables_unchanged_after_seed": true,
+          "products_directory_unchanged": true,
+          "previous_model_bound_workspaces_unchanged": true,
+          "new_product_workspaces_only_allowed_structured_change": true,
+          "forbidden_persistence_markers_found": 0,
+          "candidate_or_product_generated": false
+        }
+      },
+      "qwen25_7b_modification_once_audit": {
+        "independent_attempt": true,
+        "previous_ollama_unavailable_history_retained": true,
+        "prompt_schema_model_or_timeout_changed": false,
+        "model": {
+          "name": "qwen2.5:7b",
+          "digest": "845dbda0ea48ed749caafd9e6037047aa19acfcfd82e704d7ca97d631a0b697e",
+          "parameter_count": 7615616512,
+          "parameter_size": "7.6B",
+          "quantization_level": "Q4_K_M"
+        },
+        "base_plan": {
+          "canonical_digest": "5039e5e0adf9a24cc43ab44c8324fc604a63fe26b362c6a03b8505cbd0a641bf",
+          "plan_version": 1,
+          "source_workspace_opened_for_write": false,
+          "independent_copy_used": true,
+          "plan_byte_equal_after": true,
+          "plan_bytes_digest_before_and_after": "eda323b868c236fb8c3d394af6e194a6a4a28f44c9292f2903e0f1906eea60d3"
+        },
+        "request": {
+          "revision_request_digest": "9edd05063ea713927d197f6314e9c8d08342c8498c159964825c644dadf7b964",
+          "modification_case_only": true,
+          "revision_requests_submitted": 1,
+          "hidden_retry_or_rewording_used": false
+        },
+        "intent_call": {
+          "attempted": 1,
+          "intent": "modification",
+          "input_bytes": 2626,
+          "output_bytes": 30,
+          "duration_ms": 4434,
+          "structured_response_digest": "aec6870886e94021418b247c116e684a9408275dc0b8e754115adf41684f9be4",
+          "passed": true
+        },
+        "branch_call": {
+          "attempted": 1,
+          "top_level_keys": [
+            "operations"
+          ],
+          "operations": 1,
+          "input_bytes": 10685,
+          "output_bytes": 629,
+          "duration_ms": 22379,
+          "within_unchanged_45_second_limit": true,
+          "structured_response_digest": "0944331c9309c76ba6cad634295281d6b52656643dc33c9f5dbaa2018b4ac652",
+          "intent_evidence_chain_valid": true,
+          "native_schema_passed": true,
+          "structured_response_returned": true
+        },
+        "deterministic_result": {
+          "public_error_code": "product_plan_diff_invalid",
+          "precise_subrule": null,
+          "precise_subrule_not_claimed_reason": "The current deterministic plan-diff validator exposes no internal subrule for this boundary, and raw model output was not retained.",
+          "plan_diff_created": false,
+          "plan_changed": false,
+          "formal_modification_capability_proven": false,
+          "classification": "schema_valid_modification_rejected_by_deterministic_plan_diff_validation",
+          "hardware_or_45_second_unreliability_proven_by_this_attempt": false
+        },
+        "transport_failure_diagnostics": {
+          "internal_rule_codes": [
+            "ollama.timeout",
+            "ollama.connection",
+            "ollama.http"
+          ],
+          "public_code_for_all_three": "ollama_unavailable",
+          "private_exception_text_exposed": false,
+          "transport_failure_observed_in_this_attempt": false
+        },
+        "memory": {
+          "ollama_process_rss_peak_bytes": 6847217664,
+          "ollama_process_rss_after_bytes": 6844334080,
+          "ollama_reported_loaded_size": "6.6 GB",
+          "processor": "100% GPU",
+          "sample_count": 108
+        },
+        "write_boundary": {
+          "source_tree_unchanged": true,
+          "target_tree_unchanged": true,
+          "warehouse_revision_and_formal_tables_unchanged": true,
+          "products_directory_unchanged": true,
+          "product_workspaces_only_allowed_structured_change": true,
+          "forbidden_persistence_markers_found": 0,
+          "candidate_or_product_generated": false
+        }
+      },
+      "qwen25_7b_diff_rule_diagnostic_and_reference_schema_alignment": {
+        "independent_attempt": true,
+        "model": {
+          "name": "qwen2.5:7b",
+          "digest": "845dbda0ea48ed749caafd9e6037047aa19acfcfd82e704d7ca97d631a0b697e",
+          "parameter_count": 7615616512,
+          "parameter_size": "7.6B",
+          "quantization_level": "Q4_K_M"
+        },
+        "base_plan": {
+          "canonical_digest": "5039e5e0adf9a24cc43ab44c8324fc604a63fe26b362c6a03b8505cbd0a641bf",
+          "plan_version": 1,
+          "source_workspace_opened_for_write": false,
+          "independent_copy_used": true,
+          "plan_byte_equal_after": true,
+          "plan_bytes_digest_before_and_after": "eda323b868c236fb8c3d394af6e194a6a4a28f44c9292f2903e0f1906eea60d3"
+        },
+        "diagnostic_contract": {
+          "prompt_changed_before_rerun": false,
+          "schema_changed_before_rerun": false,
+          "model_or_digest_changed": false,
+          "timeout_changed": false,
+          "modification_case_only": true,
+          "real_model_reruns": 1,
+          "hidden_retry_or_rewording_used": false
+        },
+        "intent_call": {
+          "attempted": 1,
+          "intent": "modification",
+          "input_bytes": 2626,
+          "output_bytes": 30,
+          "duration_ms": 5531,
+          "structured_response_digest": "aec6870886e94021418b247c116e684a9408275dc0b8e754115adf41684f9be4",
+          "passed": true
+        },
+        "branch_call": {
+          "attempted": 1,
+          "top_level_keys": [
+            "operations"
+          ],
+          "operations": 2,
+          "input_bytes": 10685,
+          "output_bytes": 992,
+          "duration_ms": 24640,
+          "within_unchanged_45_second_limit": true,
+          "structured_response_digest": "c9d3ffb12d28b8a99d641712c46b0f330fc6fee0b11612e0ac42f64e0b0b0efe",
+          "native_schema_passed": true,
+          "structured_response_returned": true
+        },
+        "deterministic_result": {
+          "public_error_code": "product_plan_diff_invalid",
+          "internal_rule_code": "diff.update_section_mismatch",
+          "failure_classification": "cross_field_reference_pair_mismatch",
+          "binding_ref_individually_recognized": true,
+          "section_id_individually_recognized": true,
+          "binding_section_pair_formally_valid": false,
+          "semantic_plan_violation_proven": false,
+          "plan_diff_created": false,
+          "plan_changed": false,
+          "formal_modification_capability_proven": false
+        },
+        "post_diagnostic_schema_alignment": {
+          "request_local_binding_ref_enum": true,
+          "request_local_requirement_ref_enum": true,
+          "request_local_dependency_ref_enum": true,
+          "exact_binding_ref_section_id_pairs": true,
+          "backend_formal_id_mapping_retained": true,
+          "deterministic_post_validation_retained": true,
+          "output_repair_or_autofill_used": false,
+          "prompt_changed": false,
+          "short_reference_aliases_introduced": false,
+          "direct_tests_passed": true,
+          "real_model_rerun_after_alignment": false,
+          "reason": "The single authorized diagnostic rerun was already consumed; the tightened request-local Schema is directly tested but not represented as real-model evidence."
+        },
+        "memory": {
+          "ollama_process_rss_peak_bytes": 6838222848,
+          "ollama_process_rss_after_bytes": 6771064832,
+          "sample_count": 121
+        },
+        "write_boundary": {
+          "source_tree_unchanged": true,
+          "target_tree_unchanged": true,
+          "warehouse_revision_and_formal_tables_unchanged": true,
+          "products_directory_unchanged": true,
+          "product_workspaces_only_allowed_structured_change": true,
+          "forbidden_persistence_markers_found": 0,
+          "candidate_or_product_generated": false
+        }
+      },
+      "qwen25_7b_post_alignment_modification_once": {
+        "independent_attempt": true,
+        "model": {
+          "name": "qwen2.5:7b",
+          "digest": "845dbda0ea48ed749caafd9e6037047aa19acfcfd82e704d7ca97d631a0b697e",
+          "parameter_count": 7615616512,
+          "parameter_size": "7.6B",
+          "quantization_level": "Q4_K_M"
+        },
+        "base_plan": {
+          "canonical_digest": "5039e5e0adf9a24cc43ab44c8324fc604a63fe26b362c6a03b8505cbd0a641bf",
+          "plan_version": 1,
+          "source_workspace_opened_for_write": false,
+          "independent_copy_used": true,
+          "plan_byte_equal_after": true,
+          "plan_bytes_digest_before_and_after": "eda323b868c236fb8c3d394af6e194a6a4a28f44c9292f2903e0f1906eea60d3"
+        },
+        "contract": {
+          "prompt_changed": false,
+          "schema_changed_during_run": false,
+          "validator_changed": false,
+          "model_or_digest_changed": false,
+          "timeout_changed": false,
+          "temperature": 0,
+          "modification_case_only": true,
+          "hidden_retry_rewording_repair_or_fallback_used": false
+        },
+        "dynamic_schema": {
+          "binding_ref_enum_supplied": true,
+          "requirement_ref_enum_supplied": true,
+          "dependency_ref_enum_supplied": true,
+          "exact_binding_ref_section_id_one_of_supplied": true,
+          "call_evidence_bound_to_base_plan_and_model": true,
+          "reference_allowlist_validation_reached": false,
+          "reason": "Strict operation-object shape validation failed before individual reference and semantic checks."
+        },
+        "intent_call": {
+          "attempted": 1,
+          "intent": "modification",
+          "input_bytes": 2626,
+          "output_bytes": 30,
+          "duration_ms": 6805,
+          "structured_response_digest": "aec6870886e94021418b247c116e684a9408275dc0b8e754115adf41684f9be4",
+          "passed": true
+        },
+        "branch_call": {
+          "attempted": 1,
+          "top_level_keys": [
+            "operations"
+          ],
+          "operations": 2,
+          "input_bytes": 14562,
+          "output_bytes": 268,
+          "duration_ms": 17046,
+          "structured_response_digest": "0e03df516b7360598fb6a3b9c446aea306b80fb422d725eb6ed76860acd55158",
+          "structured_response_returned": true,
+          "strict_operation_shape_passed": false
+        },
+        "deterministic_result": {
+          "public_error_code": "product_plan_diff_invalid",
+          "internal_rule_code": "diff.operation_shape_invalid",
+          "failure_stage": "revision_operation_exact_shape",
+          "pending_plan_diff_created": false,
+          "plan_changed": false,
+          "formal_post_alignment_modification_capability_proven": false
+        },
+        "memory": {
+          "ollama_process_rss_peak_bytes": 6782582784,
+          "ollama_process_rss_after_bytes": 6780420096,
+          "sample_count": 95
+        },
+        "write_boundary": {
+          "source_tree_unchanged": true,
+          "target_tree_unchanged": true,
+          "warehouse_revision_and_formal_tables_unchanged": true,
+          "products_directory_unchanged": true,
+          "product_workspaces_only_allowed_structured_change": true,
+          "forbidden_persistence_markers_found": 0,
+          "candidate_or_product_generated": false
+        }
+      },
+      "qwen25_7b_operation_shape_diagnostic_once": {
+        "independent_attempt": true,
+        "model": {
+          "name": "qwen2.5:7b",
+          "digest": "845dbda0ea48ed749caafd9e6037047aa19acfcfd82e704d7ca97d631a0b697e",
+          "parameter_count": 7615616512,
+          "parameter_size": "7.6B",
+          "quantization_level": "Q4_K_M"
+        },
+        "base_plan": {
+          "canonical_digest": "5039e5e0adf9a24cc43ab44c8324fc604a63fe26b362c6a03b8505cbd0a641bf",
+          "plan_version": 1,
+          "source_workspace_opened_for_write": false,
+          "independent_copy_used": true,
+          "plan_byte_equal_after": true,
+          "plan_bytes_digest_before_and_after": "eda323b868c236fb8c3d394af6e194a6a4a28f44c9292f2903e0f1906eea60d3"
+        },
+        "contract": {
+          "prompt_changed": false,
+          "schema_changed": false,
+          "model_or_digest_changed": false,
+          "timeout_changed": false,
+          "business_semantics_changed": false,
+          "temperature": 0,
+          "intent_calls": 1,
+          "branch_calls": 1,
+          "hidden_retry_rewording_repair_or_fallback_used": false
+        },
+        "operation_shape_diagnostics": {
+          "private_rule_codes": [
+            "diff.operation_not_object",
+            "diff.operation_required_key_missing.<fixed_schema_field>",
+            "diff.operation_extra_key"
+          ],
+          "multiple_missing_keys_use_fixed_schema_order": true,
+          "only_fixed_schema_field_names_may_enter_rule_codes": true,
+          "extra_field_names_or_values_exposed": false,
+          "raw_model_content_exposed_or_persisted": false
+        },
+        "intent_call": {
+          "attempted": 1,
+          "intent": "modification",
+          "input_bytes": 2626,
+          "output_bytes": 30,
+          "duration_ms": 6588,
+          "structured_response_digest": "aec6870886e94021418b247c116e684a9408275dc0b8e754115adf41684f9be4",
+          "passed": true
+        },
+        "branch_call": {
+          "attempted": 1,
+          "top_level_keys": [
+            "operations"
+          ],
+          "operations": 2,
+          "input_bytes": 14562,
+          "output_bytes": 324,
+          "duration_ms": 18782,
+          "structured_response_digest": "407414817c7293a3fd0ad94497246d828992d793919e7ec3e39f6355393c2e21",
+          "structured_response_returned": true,
+          "strict_operation_shape_passed": false
+        },
+        "deterministic_result": {
+          "public_error_code": "product_plan_diff_invalid",
+          "internal_rule_code": "diff.operation_required_key_missing.title",
+          "failure_classification": "operation_object_shape_not_followed",
+          "reference_validation_reached": false,
+          "plan_semantic_validation_reached": false,
+          "pending_plan_diff_created": false,
+          "plan_changed": false,
+          "formal_modification_capability_proven": false
+        },
+        "memory": {
+          "ollama_process_rss_peak_bytes": 6794362880,
+          "ollama_process_rss_after_bytes": 6761431040,
+          "sample_count": 103
+        },
+        "write_boundary": {
+          "source_tree_unchanged": true,
+          "target_tree_unchanged": true,
+          "warehouse_revision_and_formal_tables_unchanged": true,
+          "products_directory_unchanged": true,
+          "product_workspaces_only_allowed_structured_change": true,
+          "forbidden_persistence_markers_found": 0,
+          "candidate_or_product_generated": false
+        }
+      },
+      "qwen25_7b_modification_v2_once": {
+        "independent_attempt": true,
+        "model": {
+          "name": "qwen2.5:7b",
+          "digest": "845dbda0ea48ed749caafd9e6037047aa19acfcfd82e704d7ca97d631a0b697e",
+          "parameter_count": 7615616512,
+          "parameter_size": "7.6B",
+          "quantization_level": "Q4_K_M"
+        },
+        "contract": {
+          "prompt_version": "product_plan_revision_modification_prompt.v1",
+          "schema_version": "product_plan_revision_modification.v2",
+          "flat_update_patch": true,
+          "omitted_update_fields_retain_reviewed_base_values": true,
+          "add_and_remove_branch_shapes_remain_strict": true,
+          "deterministic_post_validation_retained": true,
+          "output_repair_or_autofill_used": false,
+          "prompt_tuning_used": false,
+          "temperature": 0,
+          "intent_calls": 1,
+          "branch_calls": 1,
+          "hidden_retry_rewording_or_fallback_used": false
+        },
+        "base_plan": {
+          "canonical_digest": "5039e5e0adf9a24cc43ab44c8324fc604a63fe26b362c6a03b8505cbd0a641bf",
+          "plan_version": 1,
+          "source_workspace_opened_for_write": false,
+          "independent_copy_used": true,
+          "plan_byte_equal_after": true,
+          "plan_bytes_digest_before_and_after": "eda323b868c236fb8c3d394af6e194a6a4a28f44c9292f2903e0f1906eea60d3"
+        },
+        "intent_call": {
+          "attempted": 1,
+          "intent": "modification",
+          "input_bytes": 2626,
+          "output_bytes": 30,
+          "duration_ms": 4769,
+          "structured_response_digest": "aec6870886e94021418b247c116e684a9408275dc0b8e754115adf41684f9be4",
+          "passed": true
+        },
+        "branch_call": {
+          "attempted": 1,
+          "top_level_keys": [
+            "operations"
+          ],
+          "operations": 3,
+          "input_bytes": 32147,
+          "output_bytes": 1532,
+          "duration_ms": 34762,
+          "within_unchanged_45_second_limit": true,
+          "structured_response_digest": "dfce7f7faab22cbe7f2faa944dbd33a02a97a8723289081c4fb0d58dbd2efd06",
+          "operation_shape_passed": true,
+          "opaque_reference_translation_passed": true
+        },
+        "deterministic_result": {
+          "public_error_code": "product_plan_diff_invalid",
+          "internal_rule_code": "diff.requirement_ids_empty",
+          "failure_classification": "formal_plan_semantic_contract_violation",
+          "operation_shape_failure": false,
+          "unknown_reference_failure": false,
+          "pending_plan_diff_created": false,
+          "plan_changed": false,
+          "formal_modification_capability_proven": false,
+          "exact_model_ollama_combination_suitable_for_formal_revision": false
+        },
+        "memory": {
+          "ollama_process_rss_peak_bytes": 6888849408,
+          "ollama_process_rss_after_bytes": 6864683008,
+          "sample_count": 160
+        },
+        "write_boundary": {
+          "source_tree_unchanged": true,
+          "target_tree_unchanged": true,
+          "warehouse_revision_and_formal_tables_unchanged": true,
+          "products_directory_unchanged": true,
+          "product_workspaces_only_allowed_structured_change": true,
+          "forbidden_persistence_markers_found": 0,
+          "candidate_or_product_generated": false
+        }
+      },
+      "qwen3_14b_formal_planning_gate": {
+        "independent_attempt": true,
+        "fresh_temporary_application_state": true,
+        "previous_model_workspaces_opened_for_write": false,
+        "model": {
+          "name": "qwen3:14b-q4_K_M",
+          "manifest_digest": "bdbd181c33f2ed1b31c972991882db3cf4d192569092138a7d29e973cd9debe8",
+          "model_layer_digest": "a8cc1361f3145dc01f6d77c6c82c9116b9ffe3c97b34716fe20418455876c40e",
+          "parameter_count": 14768307200,
+          "parameter_size": "14.8B",
+          "quantization_level": "Q4_K_M",
+          "architecture": "qwen3",
+          "mixture_of_experts": false,
+          "within_15b_limit": true,
+          "model_layer_bytes": 9276184896,
+          "ollama_manifest_total_bytes": 9276198565
+        },
+        "contract": {
+          "formal_parameter_limit": 15000000000,
+          "loopback_only": true,
+          "proxy_disabled": true,
+          "redirect_disabled": true,
+          "cloud_or_model_fallback": false,
+          "temperature": 0,
+          "think": false,
+          "native_json_schema": true,
+          "prompt_changed": false,
+          "schema_changed": false,
+          "validator_changed": false,
+          "modification_v2_retained": true,
+          "hidden_retry_or_output_repair_used": false
+        },
+        "schema_probe": {
+          "attempted": 1,
+          "status": "passed",
+          "input_bytes": 681,
+          "output_bytes": 84,
+          "duration_ms": 12251,
+          "structured_response_digest": "a8ebd4cfb3312421477c3ecd0504b8363261e7e6aff1853ba048dacaace83ff5"
+        },
+        "requirements_outline": {
+          "attempted": 1,
+          "status": "failed",
+          "public_error_code": "ollama_unavailable",
+          "internal_rule_code": "ollama.timeout",
+          "failure_classification": "runtime_environment_or_time_limit",
+          "timeout_limit_seconds": 45,
+          "input_bytes": null,
+          "output_bytes": null,
+          "duration_ms": null,
+          "structured_response_digest": null,
+          "missing_call_evidence_reason": "The transport timed out before a response receipt was available."
+        },
+        "progress": {
+          "canonical_plan_formed": false,
+          "four_sections_completed": 0,
+          "cross_service_plan_restore_attempted": false,
+          "revision_explanation_attempted": false,
+          "revision_modification_attempted": false,
+          "revision_needs_clarification_attempted": false,
+          "diff_reject_or_accept_attempted": false,
+          "confirmation_attempted": false,
+          "restart_recovery_attempted": false,
+          "qwebengine_or_screenshots_attempted": false
+        },
+        "memory": {
+          "ollama_loaded_model_size_bytes": 14362848787,
+          "ollama_loaded_model_vram_bytes": 14362848787,
+          "ollama_process_rss_before_bytes": 86933504,
+          "ollama_process_rss_peak_bytes": 14407385088,
+          "ollama_process_rss_after_bytes": 14372519936,
+          "sample_count": 214
+        },
+        "write_boundary": {
+          "source_tree_unchanged": true,
+          "target_tree_unchanged": true,
+          "warehouse_revision_and_formal_tables_unchanged_after_seed": true,
+          "products_directory_unchanged": true,
+          "product_workspaces_only_allowed_structured_change": true,
+          "candidate_or_product_generated": false,
+          "raw_prompt_response_or_thinking_persisted": false
+        }
+      },
+      "qwen3_14b_180_second_formal_planning_gate": {
+        "independent_attempt": true,
+        "fresh_temporary_application_state": true,
+        "prior_45_second_attempt_retained": true,
+        "previous_model_workspaces_opened_for_write": false,
+        "single_run_only": true,
+        "model": {
+          "name": "qwen3:14b-q4_K_M",
+          "manifest_digest": "bdbd181c33f2ed1b31c972991882db3cf4d192569092138a7d29e973cd9debe8",
+          "model_layer_digest": "a8cc1361f3145dc01f6d77c6c82c9116b9ffe3c97b34716fe20418455876c40e",
+          "parameter_count": 14768307200,
+          "parameter_size": "14.8B",
+          "quantization_level": "Q4_K_M",
+          "architecture": "qwen3",
+          "mixture_of_experts": false,
+          "within_15b_limit": true,
+          "model_layer_bytes": 9276184896,
+          "ollama_manifest_total_bytes": 9276198565
+        },
+        "contract": {
+          "formal_parameter_limit": 15000000000,
+          "loopback_only": true,
+          "proxy_disabled": true,
+          "redirect_disabled": true,
+          "cloud_or_model_fallback": false,
+          "temperature": 0,
+          "think": false,
+          "native_json_schema": true,
+          "probe_timeout_seconds": 45,
+          "formal_call_timeout_seconds": 180,
+          "timeout_only_change": true,
+          "model_or_digest_changed": false,
+          "fixed_goal_changed": false,
+          "prompt_changed": false,
+          "schema_changed": false,
+          "validator_changed": false,
+          "business_contract_changed": false,
+          "hidden_retry_or_output_repair_used": false
+        },
+        "schema_probe": {
+          "attempted": 1,
+          "status": "passed",
+          "input_bytes": 681,
+          "output_bytes": 84,
+          "duration_ms": 12857,
+          "structured_response_digest": "a8ebd4cfb3312421477c3ecd0504b8363261e7e6aff1853ba048dacaace83ff5"
+        },
+        "requirements_outline": {
+          "attempted": 1,
+          "status": "passed",
+          "requirements": 9,
+          "questions": 0,
+          "input_bytes": 2954,
+          "output_bytes": 1686,
+          "duration_ms": 49728,
+          "structured_response_digest": "4e41d6de288247e763463365987191fa919523c4ccecc09806f1e522ee330aa7"
+        },
+        "sections": {
+          "frontend": {
+            "status": "passed",
+            "work_items": 9,
+            "dependencies": 0,
+            "gaps": 0,
+            "input_bytes": 3893,
+            "output_bytes": 4080,
+            "duration_ms": 87827,
+            "structured_response_digest": "25cbb80d01c7ce0fa67abfa752614c1d3c86875f654219f8218b9885464774c9"
+          },
+          "backend": {
+            "status": "passed",
+            "work_items": 9,
+            "dependencies": 0,
+            "gaps": 0,
+            "input_bytes": 4068,
+            "output_bytes": 4054,
+            "duration_ms": 85357,
+            "structured_response_digest": "8c91108514812f6806bbd4904a469d268d290b8aa1bdf6eb2d713245579d368f"
+          },
+          "data": {
+            "status": "passed",
+            "work_items": 9,
+            "dependencies": 162,
+            "gaps": 0,
+            "input_bytes": 4236,
+            "output_bytes": 7098,
+            "duration_ms": 177853,
+            "structured_response_digest": "6bf6f9256dddce5e0dcaa9b7df507c64213e9a1d7ff46b5f1a17410ac9e0c111"
+          },
+          "infrastructure": {
+            "status": "rejected_by_deterministic_validation",
+            "public_error_code": "product_plan_response_invalid",
+            "internal_rule_code": "section.dependency_unknown",
+            "failure_classification": "model_contract_violation",
+            "work_items": 9,
+            "dependencies": 20,
+            "gaps": 0,
+            "input_bytes": 4420,
+            "output_bytes": 4327,
+            "duration_ms": 81087,
+            "structured_response_digest": "dddd79c8b0d4e5335120769739d075ae31711a5e872e02c2c19fd5613cfeedc5"
+          }
+        },
+        "failure": {
+          "deepest_stage": "infrastructure",
+          "public_error_code": "product_plan_response_invalid",
+          "internal_rule_code": "section.dependency_unknown",
+          "failure_classification": "model_contract_violation",
+          "dependency_allowlist_already_expressed_by_unchanged_prompt": true,
+          "schema_validator_mismatch_found": false,
+          "runtime_timeout_in_this_attempt": false
+        },
+        "progress": {
+          "all_six_model_calls_returned_within_their_fixed_limits": true,
+          "canonical_plan_formed": false,
+          "valid_sections_completed": 3,
+          "cross_service_plan_restore_attempted": false,
+          "revision_explanation_attempted": false,
+          "revision_modification_attempted": false,
+          "revision_needs_clarification_attempted": false,
+          "diff_reject_or_accept_attempted": false,
+          "confirmation_attempted": false,
+          "restart_recovery_attempted": false,
+          "qwebengine_or_screenshots_attempted": false
+        },
+        "memory": {
+          "ollama_loaded_model_size_bytes": 14362848787,
+          "ollama_loaded_model_vram_bytes": 14362848787,
+          "ollama_process_rss_before_bytes": 79872000,
+          "ollama_process_rss_peak_bytes": 14793523200,
+          "ollama_process_rss_after_bytes": 14315044864,
+          "sample_count": 1747
+        },
+        "write_boundary": {
+          "source_tree_unchanged": true,
+          "target_tree_unchanged": true,
+          "warehouse_revision_and_formal_tables_unchanged_after_seed": true,
+          "products_directory_unchanged": true,
+          "product_workspaces_only_allowed_structured_change": true,
+          "candidate_or_product_generated": false,
+          "raw_prompt_response_or_thinking_persisted": false
+        }
+      },
+      "model_draft_compile_v1_qwen25_coder_7b_gate": {
+        "independent_attempt": true,
+        "fresh_temporary_application_state": true,
+        "fresh_temporary_product_workspaces": true,
+        "fresh_temporary_formal_sqlite_warehouse": true,
+        "previous_model_workspaces_opened_for_write": false,
+        "single_run_only": true,
+        "stopped_on_first_failed_acceptance_gate": true,
+        "model": {
+          "name": "qwen2.5-coder:7b",
+          "digest": "dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364",
+          "parameter_count": 7615616512,
+          "parameter_size": "7.6B",
+          "quantization_level": "Q4_K_M",
+          "architecture": "qwen2",
+          "mixture_of_experts": false,
+          "within_15b_limit": true,
+          "installed_size_bytes": 4683087561
+        },
+        "contract": {
+          "model_section_schema": "product_plan_section_draft.v1",
+          "formal_plan_schema": "product_plan.v1",
+          "planning_rules_version": "reweave_product_planning_rules.v2",
+          "prompt_version": "reweave_product_planning_prompt.v5",
+          "model_emits_formal_work_item_id": false,
+          "model_emits_task_dependency_refs": false,
+          "model_emits_formal_capsule_identity": false,
+          "model_selects_known_requirement_refs": true,
+          "model_selects_delivery_wave": true,
+          "model_selects_allowlisted_candidate_ref_or_explicit_gap": true,
+          "backend_assigns_formal_ids": true,
+          "backend_binds_exact_capsule_identity": true,
+          "backend_compiles_wave_dependencies": true,
+          "backend_validates_acyclicity_and_references": true,
+          "backend_owns_canonical_digest_and_version": true,
+          "loopback_only": true,
+          "proxy_disabled": true,
+          "redirect_disabled": true,
+          "cloud_or_model_fallback": false,
+          "temperature": 0,
+          "think": false,
+          "native_json_schema": true,
+          "prompt_changed_during_real_run": false,
+          "schema_changed_during_real_run": false,
+          "compiler_changed_during_real_run": false,
+          "fixed_inputs_changed": false,
+          "hidden_retry_or_output_repair_used": false
+        },
+        "initial_planning": {
+          "schema_probe": {
+            "status": "passed",
+            "input_bytes": 681,
+            "output_bytes": 97,
+            "duration_ms": 6023,
+            "structured_response_digest": "711b5c8307df5fbe7fcd3122a3f493861166a600aa37615faac0cb00fddc13eb"
+          },
+          "requirements_outline": {
+            "status": "passed",
+            "requirements": 8,
+            "questions": 0,
+            "input_bytes": 2954,
+            "output_bytes": 1081,
+            "duration_ms": 13691,
+            "structured_response_digest": "8d8992b726f691e7feb7014cb6beca398cf21389ab4f3eccc3f1281ea96f6821"
+          },
+          "planning_questions_forced": false,
+          "sections": {
+            "frontend": {
+              "status": "passed",
+              "work_items": 8,
+              "requirement_refs": 8,
+              "candidate_refs": 1,
+              "delivery_waves_used": 3,
+              "input_bytes": 3899,
+              "output_bytes": 3711,
+              "duration_ms": 34809,
+              "structured_response_digest": "88d2cc862b4e91e4aea40f89768c3b5bc6554425a03d1751c0be25671933fcec"
+            },
+            "backend": {
+              "status": "passed",
+              "work_items": 8,
+              "requirement_refs": 8,
+              "candidate_refs": 1,
+              "delivery_waves_used": 3,
+              "input_bytes": 3896,
+              "output_bytes": 2930,
+              "duration_ms": 27656,
+              "structured_response_digest": "6e54f3dc49f6c0c2032432c0390a7e492bc96c2fb6527b9c48b4dfa91776125b"
+            },
+            "data": {
+              "status": "passed",
+              "work_items": 8,
+              "requirement_refs": 8,
+              "candidate_refs": 1,
+              "delivery_waves_used": 3,
+              "input_bytes": 3887,
+              "output_bytes": 2765,
+              "duration_ms": 29401,
+              "structured_response_digest": "2aa363654f5dfe2af3bda717ce13e8b65046aac2d19147e1de4c627b84da1a13"
+            },
+            "infrastructure": {
+              "status": "passed",
+              "work_items": 8,
+              "requirement_refs": 8,
+              "candidate_refs": 1,
+              "delivery_waves_used": 3,
+              "input_bytes": 3917,
+              "output_bytes": 3250,
+              "duration_ms": 34792,
+              "structured_response_digest": "cdccbc2e7e1c19be05ea7dfb749e9146d286455c0dec03593f7361a56a9447de"
+            }
+          }
+        },
+        "canonical_plan": {
+          "formed": true,
+          "plan_version": 1,
+          "canonical_digest": "58f8a34eb6924e7ef4d86493d9a733ced955474616aac52f00eec018b6f6ea3b",
+          "canonical_plan_bytes_digest": "6c3b53a7056588f1af05557e72a913a4672bf45b8a4f7a259d92bb36797b4081",
+          "sections": 4,
+          "requirements": 8,
+          "requirements_covered": 8,
+          "work_items": 32,
+          "formal_exact_capsule_bindings": 4,
+          "explicit_gaps": 28,
+          "delivery_wave_counts": {
+            "1": 0,
+            "2": 11,
+            "3": 13,
+            "4": 8
+          },
+          "formal_ids_backend_generated": true,
+          "dependencies_backend_compiled": true,
+          "dependency_graph_valid_and_acyclic": true,
+          "cross_service_base_plan_restore_passed": true,
+          "cross_service_base_plan_byte_equal": true
+        },
+        "revision_gate": {
+          "independent_base_plan_copy_per_kind": true,
+          "base_plan_version": 1,
+          "base_plan_bytes_digest": "6c3b53a7056588f1af05557e72a913a4672bf45b8a4f7a259d92bb36797b4081",
+          "explanation": {
+            "intent_classification": "explanation",
+            "intent_status": "passed",
+            "branch_status": "passed",
+            "plan_byte_equal": true,
+            "plan_diff_created": false,
+            "intent_call": {
+              "input_bytes": 3483,
+              "output_bytes": 29,
+              "duration_ms": 3048,
+              "structured_response_digest": "74aa5110b94cee379beac5b45d1324ca49920fa6615cd75b7e2dc6ab485a2a95"
+            },
+            "branch_call": {
+              "input_bytes": 19013,
+              "output_bytes": 398,
+              "duration_ms": 33432,
+              "structured_response_digest": "fa8a1c60c6d7d72cd52638ba49e78c246aa65e7202a92e2bfc95e3d7004ecd20"
+            }
+          },
+          "modification": {
+            "intent_classification": "modification",
+            "intent_status": "passed",
+            "branch_status": "passed",
+            "operations": 1,
+            "pending_plan_diff_created": true,
+            "pending_plan_diff_changes": 1,
+            "proposed_plan_version": 2,
+            "base_plan_byte_equal_before_acceptance": true,
+            "intent_call": {
+              "input_bytes": 3519,
+              "output_bytes": 30,
+              "duration_ms": 1153,
+              "structured_response_digest": "aec6870886e94021418b247c116e684a9408275dc0b8e754115adf41684f9be4"
+            },
+            "branch_call": {
+              "input_bytes": 39347,
+              "output_bytes": 327,
+              "duration_ms": 29820,
+              "structured_response_digest": "65f4bc934bb41e8d994a972c9859a5e668f40a8b0e0717e4cdfbd15f58212256"
+            }
+          },
+          "needs_clarification": {
+            "expected_intent": "needs_clarification",
+            "observed_intent": "explanation",
+            "intent_status": "failed",
+            "branch_selected_from_observed_intent": "explanation",
+            "question_set_created": false,
+            "plan_diff_created": false,
+            "base_plan_byte_equal": true,
+            "acceptance_rule_code": "revision_gate_contract_invalid",
+            "failure_classification": "model_contract_violation",
+            "intent_call": {
+              "input_bytes": 3546,
+              "output_bytes": 29,
+              "duration_ms": 1268,
+              "structured_response_digest": "74aa5110b94cee379beac5b45d1324ca49920fa6615cd75b7e2dc6ab485a2a95"
+            },
+            "branch_call": {
+              "input_bytes": 19076,
+              "output_bytes": 182,
+              "duration_ms": 28228,
+              "structured_response_digest": "d34eae73f65989aca778915e5c2ac6b3bd021879891f16daee950b265dcb7c2e"
+            }
+          },
+          "stopped_after_needs_clarification_failure": true,
+          "retry_or_input_rewrite_attempted": false,
+          "diff_rejection_attempted": false,
+          "independent_diff_acceptance_attempted": false,
+          "confirmation_attempted": false,
+          "confirmed_restart_restore_attempted": false,
+          "qwebengine_or_screenshots_attempted": false
+        },
+        "aggregate_call_evidence": {
+          "model_calls_attempted": 12,
+          "model_calls_completed": 12,
+          "input_bytes": 107218,
+          "output_bytes": 14829,
+          "model_duration_ms": 243321
+        },
+        "memory": {
+          "ollama_loaded_model_size_bytes": 6578881166,
+          "ollama_loaded_model_vram_bytes": 6578881166,
+          "ollama_process_rss_before_bytes": 76529664,
+          "ollama_process_rss_peak_bytes": 7595769856,
+          "ollama_process_rss_after_bytes": 7501234176,
+          "sample_count": 917
+        },
+        "write_boundary": {
+          "source_tree_unchanged": true,
+          "target_tree_unchanged": true,
+          "warehouse_revision": 0,
+          "warehouse_revision_and_formal_tables_unchanged_after_seed": true,
+          "warehouse_row_counts": {
+            "capsules": 1,
+            "capsule_versions": 1,
+            "capsule_sources": 0,
+            "product_capsule_usage": 0
+          },
+          "products_directory_unchanged": true,
+          "product_workspaces_only_allowed_structured_change": true,
+          "candidate_or_product_generated": false,
+          "raw_prompt_marker_found": false,
+          "raw_response_marker_found": false,
+          "absolute_or_temporary_path_marker_found": false
+        }
+      },
+      "revision_two_layer_qwen25_coder_7b_gate": {
+        "independent_attempt": true,
+        "fresh_temporary_application_state": true,
+        "fresh_temporary_product_workspaces": true,
+        "fresh_temporary_formal_sqlite_warehouse": true,
+        "previous_workspaces_opened_for_write": false,
+        "single_run_only": true,
+        "stopped_on_first_failed_acceptance_gate": true,
+        "model": {
+          "name": "qwen2.5-coder:7b",
+          "digest": "dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364",
+          "parameter_count": 7615616512,
+          "parameter_size": "7.6B",
+          "quantization_level": "Q4_K_M",
+          "architecture": "qwen2",
+          "within_15b_limit": true,
+          "installed_size_bytes": 4683087561
+        },
+        "contract": {
+          "top_level_purpose_values": [
+            "explanation",
+            "change"
+          ],
+          "change_outcome_values": [
+            "modification",
+            "needs_clarification"
+          ],
+          "intent_prompt_version": "product_plan_revision_intent_prompt.v2",
+          "intent_schema_version": "product_plan_revision_intent.v2",
+          "change_prompt_version": "product_plan_revision_change_prompt.v1",
+          "change_schema_version": "product_plan_revision_change.v1",
+          "change_schema_uses_strict_one_of": true,
+          "calls_per_revision": 2,
+          "public_result_kinds_unchanged": true,
+          "legacy_revision_evidence_read_compatible": true,
+          "section_draft_or_wave_compiler_changed": false,
+          "formal_plan_schema": "product_plan.v1",
+          "loopback_only": true,
+          "temperature": 0,
+          "think": false,
+          "native_json_schema": true,
+          "hidden_retry_output_repair_or_fallback_used": false,
+          "post_failure_contract_or_input_change": false
+        },
+        "canonical_plan": {
+          "formed": true,
+          "plan_version": 1,
+          "canonical_digest": "152bb0aa95ad22e2b77d498fdaa9a4ffcaef869a07fe20e9d68afe1b98bde687",
+          "canonical_plan_bytes_digest": "27d20c56525b9e48fea9ac4eaec8a84d22891fbd6ef254b0b350a63ac7526a36",
+          "sections": 4,
+          "requirements": 9,
+          "requirements_covered": 9,
+          "work_items": 26,
+          "formal_exact_capsule_bindings": 2,
+          "explicit_gaps": 24,
+          "delivery_wave_counts": {
+            "1": 26,
+            "2": 0,
+            "3": 0,
+            "4": 0
+          },
+          "formal_ids_backend_generated": true,
+          "dependencies_backend_compiled": true,
+          "dependency_graph_valid_and_acyclic": true,
+          "cross_service_base_plan_restore_passed": true,
+          "cross_service_base_plan_byte_equal": true
+        },
+        "revision_gate": {
+          "independent_base_plan_copy_per_kind": true,
+          "explanation": {
+            "expected_purpose": "explanation",
+            "observed_purpose": "explanation",
+            "branch": "explanation",
+            "passed": true,
+            "plan_byte_equal": true,
+            "question_or_diff_created": false
+          },
+          "modification": {
+            "expected_purpose": "change",
+            "observed_purpose": "change",
+            "expected_outcome": "modification",
+            "observed_outcome": "modification",
+            "passed": true,
+            "operations": 1,
+            "pending_plan_diff_created": true,
+            "pending_plan_diff_changes": 1,
+            "proposed_plan_version": 2,
+            "base_plan_byte_equal_before_acceptance": true
+          },
+          "needs_clarification": {
+            "expected_purpose": "change",
+            "observed_purpose": "explanation",
+            "expected_outcome": "needs_clarification",
+            "observed_outcome": null,
+            "passed": false,
+            "question_set_created": false,
+            "plan_diff_created": false,
+            "base_plan_byte_equal": true,
+            "failure_stage": "revision_needs_clarification",
+            "acceptance_rule_code": "revision_gate_contract_invalid",
+            "failure_classification": "model_contract_violation"
+          },
+          "diff_rejection_attempted": false,
+          "independent_diff_acceptance_attempted": false,
+          "confirmation_attempted": false,
+          "confirmed_restart_restore_attempted": false,
+          "frontend_qwebengine_or_screenshots_attempted": false
+        },
+        "calls": [
+          {
+            "call_type": "schema_probe",
+            "input_bytes": 681,
+            "output_bytes": 97,
+            "duration_ms": 6164,
+            "structured_response_digest": "711b5c8307df5fbe7fcd3122a3f493861166a600aa37615faac0cb00fddc13eb"
+          },
+          {
+            "call_type": "requirements_outline",
+            "input_bytes": 2977,
+            "output_bytes": 1203,
+            "duration_ms": 18714,
+            "structured_response_digest": "97153f03a20d82f468a5bc7e96eb75b74cb187f84223ed9c9329f7899216ae48"
+          },
+          {
+            "call_type": "section_frontend",
+            "input_bytes": 4038,
+            "output_bytes": 3625,
+            "duration_ms": 42902,
+            "structured_response_digest": "41672322079004998e1b841d4b56aa2604bc329acfc54ade1bf41867b37d1bf3"
+          },
+          {
+            "call_type": "section_backend",
+            "input_bytes": 4035,
+            "output_bytes": 3345,
+            "duration_ms": 37877,
+            "structured_response_digest": "cbec7ece9468845a930b1ea0a71c0918ae2ef1767cab62eea5a95ec6e7b21dcd"
+          },
+          {
+            "call_type": "section_data",
+            "input_bytes": 4026,
+            "output_bytes": 3342,
+            "duration_ms": 44567,
+            "structured_response_digest": "45f9069dc50d9b04422a471d129bf29c94426cb6179ddbb7d7271cfb827e74cb"
+          },
+          {
+            "call_type": "section_infrastructure",
+            "input_bytes": 4056,
+            "output_bytes": 472,
+            "duration_ms": 10312,
+            "structured_response_digest": "5dedde209898c87916d80ae3ef1e1998012db8159b050082e4778826cc2bba7e"
+          },
+          {
+            "call_type": "plan_revision_intent",
+            "case": "explanation",
+            "intent": "explanation",
+            "input_bytes": 3599,
+            "output_bytes": 29,
+            "duration_ms": 3977,
+            "structured_response_digest": "74aa5110b94cee379beac5b45d1324ca49920fa6615cd75b7e2dc6ab485a2a95"
+          },
+          {
+            "call_type": "plan_revision_explanation",
+            "case": "explanation",
+            "input_bytes": 16605,
+            "output_bytes": 515,
+            "duration_ms": 43560,
+            "structured_response_digest": "e5c31effe89d1d9e6644a814b6c6793e2e9840dc541176816e5e7e847f1a1d45"
+          },
+          {
+            "call_type": "plan_revision_intent",
+            "case": "modification",
+            "intent": "change",
+            "input_bytes": 3635,
+            "output_bytes": 24,
+            "duration_ms": 1648,
+            "structured_response_digest": "c718bd9a833d05a0ada3480261e884b1505f65f382787e21b335c64a1dc06f2b"
+          },
+          {
+            "call_type": "plan_revision_change",
+            "case": "modification",
+            "outcome": "modification",
+            "input_bytes": 35176,
+            "output_bytes": 435,
+            "duration_ms": 45709,
+            "structured_response_digest": "a38b470f4f31fa0bcbd917864dcd1e26cc372703d488616479eed99760656b83"
+          },
+          {
+            "call_type": "plan_revision_intent",
+            "case": "needs_clarification",
+            "intent": "explanation",
+            "input_bytes": 3662,
+            "output_bytes": 29,
+            "duration_ms": 1731,
+            "structured_response_digest": "74aa5110b94cee379beac5b45d1324ca49920fa6615cd75b7e2dc6ab485a2a95"
+          },
+          {
+            "call_type": "plan_revision_explanation",
+            "case": "needs_clarification",
+            "input_bytes": 16668,
+            "output_bytes": 712,
+            "duration_ms": 37939,
+            "structured_response_digest": "42169b7b48d9dc18c76c482330ee8536db79b8dfb74652861b760979a2ed5f51"
+          }
+        ],
+        "aggregate_call_evidence": {
+          "model_calls_attempted": 12,
+          "model_calls_completed": 12,
+          "input_bytes": 99158,
+          "output_bytes": 13828,
+          "model_duration_ms": 295100
+        },
+        "memory": {
+          "ollama_loaded_model_size_bytes": 6578881166,
+          "ollama_loaded_model_vram_bytes": 6578881166,
+          "ollama_process_rss_before_bytes": 103923712,
+          "ollama_process_rss_peak_bytes": 7688978432,
+          "ollama_process_rss_after_bytes": 7678246912,
+          "sample_count": 1109
+        },
+        "write_boundary": {
+          "source_tree_unchanged": true,
+          "target_tree_unchanged": true,
+          "warehouse_revision": 0,
+          "warehouse_revision_and_formal_tables_unchanged_after_seed": true,
+          "warehouse_row_counts": {
+            "capsules": 1,
+            "capsule_versions": 1,
+            "capsule_sources": 0,
+            "product_capsule_usage": 0
+          },
+          "products_directory_unchanged": true,
+          "product_workspaces_only_allowed_structured_change": true,
+          "candidate_or_product_generated": false,
+          "raw_prompt_marker_found": false,
+          "raw_response_marker_found": false,
+          "absolute_or_temporary_path_marker_found": false
+        }
+      },
+      "revision_single_response_qwen25_coder_7b_gate": {
+        "independent_attempt": true,
+        "reused_prior_verified_canonical_plan_by_isolated_copy": true,
+        "original_workspace_opened_for_write": false,
+        "single_run_only": true,
+        "stopped_on_first_failed_acceptance_gate": true,
+        "model": {
+          "name": "qwen2.5-coder:7b",
+          "digest": "dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364",
+          "parameter_count": 7615616512,
+          "parameter_size": "7.6B",
+          "quantization_level": "Q4_K_M",
+          "architecture": "qwen2",
+          "within_15b_limit": true,
+          "installed_size_bytes": 4683087561
+        },
+        "contract": {
+          "formal_runtime_model_intent_classifier_used": false,
+          "call_type": "plan_revision",
+          "prompt_version": "product_plan_revision_prompt.v1",
+          "schema_version": "product_plan_revision.v1",
+          "strict_one_of_response_shapes": [
+            "explanation_only",
+            "explanation_and_questions",
+            "operations_only"
+          ],
+          "calls_per_revision": 1,
+          "backend_dispatches_only_from_validated_keys": true,
+          "public_result_kinds_unchanged": true,
+          "legacy_intent_and_branch_evidence_read_compatible": true,
+          "section_draft_or_wave_compiler_changed": false,
+          "formal_plan_schema": "product_plan.v1",
+          "loopback_only": true,
+          "temperature": 0,
+          "think": false,
+          "native_json_schema": true,
+          "hidden_retry_output_repair_or_fallback_used": false,
+          "post_failure_contract_or_input_change": false
+        },
+        "canonical_base_plan": {
+          "restored_from_prior_verified_workspace": true,
+          "plan_version": 1,
+          "canonical_digest": "152bb0aa95ad22e2b77d498fdaa9a4ffcaef869a07fe20e9d68afe1b98bde687",
+          "canonical_plan_bytes_digest": "27d20c56525b9e48fea9ac4eaec8a84d22891fbd6ef254b0b350a63ac7526a36",
+          "sections": 4,
+          "requirements": 9,
+          "work_items": 26,
+          "formal_exact_capsule_bindings": 2,
+          "explicit_gaps": 24,
+          "cross_service_restore_previously_passed": true,
+          "original_base_tree_unchanged_after_this_gate": true
+        },
+        "revision_gate": {
+          "independent_base_plan_copy_per_attempted_kind": true,
+          "explanation": {
+            "attempted": true,
+            "model_calls": 1,
+            "expected_shape": [
+              "explanation"
+            ],
+            "observed_shape": [
+              "explanation"
+            ],
+            "public_kind": "explanation",
+            "passed": true,
+            "plan_byte_equal": true,
+            "question_or_diff_created": false
+          },
+          "modification": {
+            "attempted": true,
+            "model_calls": 1,
+            "expected_shape": [
+              "operations"
+            ],
+            "observed_shape": [
+              "explanation"
+            ],
+            "public_kind": "explanation",
+            "passed": false,
+            "pending_plan_diff_created": false,
+            "base_plan_byte_equal": true,
+            "failure_stage": "revision_modification",
+            "acceptance_rule_code": "revision_gate_contract_invalid",
+            "failure_classification": "model_semantic_result_mismatch",
+            "native_schema_or_post_validator_failure": false
+          },
+          "needs_clarification": {
+            "attempted": false,
+            "reason": "stopped_on_prior_modification_failure"
+          },
+          "diff_rejection_attempted": false,
+          "independent_diff_acceptance_attempted": false,
+          "confirmation_attempted": false,
+          "confirmed_restart_restore_attempted": false,
+          "frontend_qwebengine_or_screenshots_attempted": false
+        },
+        "calls": [
+          {
+            "call_type": "plan_revision",
+            "case": "explanation",
+            "response_shape": [
+              "explanation"
+            ],
+            "input_bytes": 35369,
+            "output_bytes": 284,
+            "duration_ms": 35325,
+            "structured_response_digest": "b2c0eb4cde60f602d403733a5f0789cd1f23a56e7717ae5cd0c8de107fa79545"
+          },
+          {
+            "call_type": "plan_revision",
+            "case": "modification",
+            "response_shape": [
+              "explanation"
+            ],
+            "input_bytes": 35405,
+            "output_bytes": 178,
+            "duration_ms": 30133,
+            "structured_response_digest": "f5a7b7f994616ac886f8f5f613b37a7c512655b8af3b1bbe3f8deb7808f2d625"
+          }
+        ],
+        "aggregate_call_evidence": {
+          "revision_cases_attempted": 2,
+          "model_calls_attempted": 2,
+          "model_calls_completed": 2,
+          "input_bytes": 70774,
+          "output_bytes": 462,
+          "model_duration_ms": 65458
+        },
+        "memory": {
+          "ollama_loaded_model_size_bytes": 6578881166,
+          "ollama_loaded_model_vram_bytes": 6578881166,
+          "ollama_process_rss_before_bytes": 126025728,
+          "ollama_process_rss_peak_bytes": 7017086976,
+          "ollama_process_rss_after_bytes": 7013613568,
+          "sample_count": 243
+        },
+        "write_boundary": {
+          "source_tree_unchanged": true,
+          "target_tree_unchanged": true,
+          "warehouse_revision": 0,
+          "warehouse_revision_and_formal_tables_unchanged": true,
+          "warehouse_row_counts": {
+            "capsules": 1,
+            "capsule_versions": 1,
+            "capsule_sources": 0,
+            "product_capsule_usage": 0
+          },
+          "products_directory_unchanged": true,
+          "only_isolated_product_workspaces_changed": true,
+          "candidate_or_product_generated": false,
+          "raw_prompt_marker_found": false,
+          "raw_response_marker_found": false,
+          "absolute_or_temporary_path_marker_found": false
+        }
+      }
+    },
+    "measured_memory": {
+      "ollama_process_rss_before_bytes": 80576512,
+      "ollama_process_rss_peak_bytes": 6803554304,
+      "ollama_process_rss_after_bytes": 6371426304,
+      "ollama_reported_model_size_bytes": 6414244248,
+      "ollama_reported_model_vram_bytes": 6414244248,
+      "sample_count": 632
+    },
+    "previous_1_5b_attempt": {
+      "name": "qwen2.5-coder:1.5b",
+      "digest": "d7372fd828518a4d38b1eb196c673c31a85f2ed302b3d1e406c4c2d1b64a0668",
+      "parameter_count": 1543714304,
+      "parameter_size": "1.5B",
+      "native_json_schema_probe_status": "passed",
+      "native_json_schema_outline_status": "rejected",
+      "native_json_schema_outline_error_code": "product_plan_response_invalid",
+      "native_json_schema_outline_digest": "60ddc1b12b6412365f748a850acb3016d99e496ca25a38c228430543bca07359",
+      "generic_json_outline_status": "rejected",
+      "generic_json_outline_error_code": "product_plan_response_invalid",
+      "generic_json_outline_digest": "bf6b77ce935bc32ac179a81d1139bdc285dcf466df12b3845105266a44139d53",
+      "exact_rule_code_retrospectively_available": false
+    },
+    "fixed_large_goal_language": "zh",
+    "complete_real_model_flow": true
+  },
+  "protocol_substitute_regression": {
+    "strict_loopback_http_protocol": true,
+    "planner_or_analyze_stub_used": false,
+    "model_protocol_substitute_used": true,
+    "real_reweave_app_service": true,
+    "real_qwebchannel_bridge": true,
+    "real_qwebengine": true,
+    "temporary_formal_sqlite_warehouse": true,
+    "planning_questions_and_user_choice": "passed",
+    "four_section_plan": "passed",
+    "formal_exact_version_suggestion_and_gap": "passed",
+    "explanation_without_plan_change": "passed",
+    "plan_diff_reject_and_accept": "passed",
+    "confirmation_receipt_without_product_generation": "passed",
+    "restart_history_restore": "passed",
+    "warehouse_round_trip_restore": "passed",
+    "cancel_and_retry": "passed"
+  },
+  "large_planning_proof": {
+    "verdict": "PARTIAL",
+    "fixed_goal_used": true,
+    "real_model_canonical_plan_formed": true,
+    "real_model_four_sections": true,
+    "real_model_traceable_work_items": 29,
+    "real_model_minimum_twelve_traceable_work_items": true,
+    "real_model_requirements": 9,
+    "real_model_formal_exact_capsule_bindings": 20,
+    "real_model_explicit_gaps": 9,
+    "real_model_dependencies_valid_and_acyclic": true,
+    "real_model_structured_question_and_answer": true,
+    "real_model_plan_diff": true,
+    "real_model_pending_diff_restart_restore": true,
+    "real_model_human_semantic_acceptance": false,
+    "real_model_diff_rejection": true,
+    "real_model_rejected_base_restart_restore": true,
+    "real_model_diff_acceptance": false,
+    "real_model_confirmation": false,
+    "real_model_post_confirmation_restart_restore": false,
+    "real_model_restart_restore": true,
+    "additional_qwen25_7b_canonical_plan_formed": true,
+    "additional_qwen25_7b_work_items": 13,
+    "additional_qwen25_7b_revision_gate_passed": false,
+    "additional_qwen25_7b_two_stage_explanation_passed": true,
+    "additional_qwen25_7b_two_stage_modification_intent_passed": true,
+    "additional_qwen25_7b_two_stage_modification_branch_completed": true,
+    "additional_qwen25_7b_modification_schema_passed": true,
+    "additional_qwen25_7b_modification_semantic_validation_passed": false,
+    "additional_qwen25_7b_diff_rule_diagnostic": "diff.update_section_mismatch",
+    "additional_qwen25_7b_cross_field_reference_alignment_implemented": true,
+    "additional_qwen25_7b_post_alignment_real_gate_run": true,
+    "additional_qwen25_7b_post_alignment_intent_passed": true,
+    "additional_qwen25_7b_post_alignment_operation_shape_passed": false,
+    "additional_qwen25_7b_post_alignment_rule": "diff.operation_shape_invalid",
+    "additional_qwen25_7b_operation_shape_diagnostic_run": true,
+    "additional_qwen25_7b_operation_shape_diagnostic_rule": "diff.operation_required_key_missing.title",
+    "additional_qwen25_7b_operation_shape_failure_is_plan_semantic_failure": false,
+    "additional_qwen25_7b_modification_v2_run": true,
+    "additional_qwen25_7b_modification_v2_operation_shape_passed": true,
+    "additional_qwen25_7b_modification_v2_reference_translation_passed": true,
+    "additional_qwen25_7b_modification_v2_semantic_validation_passed": false,
+    "additional_qwen25_7b_modification_v2_rule": "diff.requirement_ids_empty",
+    "additional_qwen25_7b_formal_revision_suitable": false,
+    "qwen3_14b_schema_probe_passed": true,
+    "qwen3_14b_outline_passed": true,
+    "qwen3_14b_canonical_plan_formed": false,
+    "qwen3_14b_prior_45_second_timeout_evidence_retained": true,
+    "qwen3_14b_180_second_formal_calls_attempted": true,
+    "qwen3_14b_valid_sections_completed": 3,
+    "qwen3_14b_deepest_rule": "section.dependency_unknown",
+    "qwen3_14b_failure_classification": "model_contract_violation",
+    "draft_compile_v1_qwen25_coder_7b_canonical_plan_formed": true,
+    "draft_compile_v1_sections": 4,
+    "draft_compile_v1_requirements": 8,
+    "draft_compile_v1_work_items": 32,
+    "draft_compile_v1_formal_exact_capsule_bindings": 4,
+    "draft_compile_v1_explicit_gaps": 28,
+    "draft_compile_v1_dependency_graph_valid_and_acyclic": true,
+    "draft_compile_v1_base_restart_restore_passed": true,
+    "draft_compile_v1_explanation_passed": true,
+    "draft_compile_v1_modification_pending_diff_passed": true,
+    "draft_compile_v1_needs_clarification_passed": false,
+    "draft_compile_v1_needs_clarification_observed_intent": "explanation",
+    "draft_compile_v1_revision_gate_rule": "revision_gate_contract_invalid",
+    "draft_compile_v1_complete_revision_gate_passed": false,
+    "revision_two_layer_canonical_plan_formed": true,
+    "revision_two_layer_requirements": 9,
+    "revision_two_layer_work_items": 26,
+    "revision_two_layer_formal_exact_capsule_bindings": 2,
+    "revision_two_layer_explicit_gaps": 24,
+    "revision_two_layer_explanation_passed": true,
+    "revision_two_layer_change_modification_passed": true,
+    "revision_two_layer_change_needs_clarification_passed": false,
+    "revision_two_layer_clarification_observed_purpose": "explanation",
+    "revision_two_layer_complete_backend_gate_passed": false,
+    "revision_single_response_classifier_removed_from_runtime": true,
+    "revision_single_response_calls_per_request": 1,
+    "revision_single_response_prior_base_plan_reused": true,
+    "revision_single_response_explanation_passed": true,
+    "revision_single_response_modification_passed": false,
+    "revision_single_response_modification_observed_shape": "explanation_only",
+    "revision_single_response_needs_clarification_attempted": false,
+    "revision_single_response_complete_backend_gate_passed": false,
+    "reason": "The Section-v2 run formed and recovered a validated 4-section, 9-requirement, 29-work-item canonical plan with 20 exact bindings, 9 explicit gaps, and 176 valid dependency edges. One real clarification answer produced and recovered a formally valid pending Diff. Human review rejected that Diff because it changed only a frontend title rather than the requested data-section backup policy and acceptance intent, and did not explicitly state weekly full backup. The reject path used no model call, cleared the Diff, and recovered the unchanged base plan. The 7B model is therefore proven for planning drafts and suggestions, while semantically acceptable free-text revision remains unproven. Historical gates remain unchanged."
+  },
+  "large_product_build": {
+    "verdict": "PARTIAL",
+    "reason": "No candidate or product is generated in this stage, and the unchanged module_native composer still accepts only one capability group with 1 to 3 capsules.",
+    "module_native_changed": false
+  },
+  "security_and_privacy": {
+    "loopback_only": true,
+    "proxy_disabled": true,
+    "redirect_disabled": true,
+    "fixed_request_response_and_timeout_limits": true,
+    "formal_model_parameter_limit": 15000000000,
+    "models_above_limit_fail_closed_without_generation": true,
+    "metadata_proven_moe_models_fail_closed_without_generation": true,
+    "unproven_parameter_count_models_fail_closed_without_generation": true,
+    "ollama_generate_think_false": true,
+    "capsule_source_or_paths_sent_to_model": false,
+    "formal_capsule_identity_sent_to_model": false,
+    "raw_prompt_or_response_persisted": false,
+    "request_local_model_reference_allowlists": true,
+    "request_local_binding_section_pairs_constrained": true,
+    "model_output_repair_or_autofill_used": false,
+    "deterministic_reference_revalidation_retained": true,
+    "workspace_id_or_path_in_dom_or_get_state": false,
+    "backend_text_rendered_as_text": true,
+    "frontend_evidence_derived_from_backend": true
+  },
+  "write_boundary": {
+    "allowed_writes": [
+      "product planning model role selection",
+      "small structured product_workspaces state"
+    ],
+    "source_tree_unchanged": true,
+    "target_tree_unchanged": true,
+    "warehouse_revision_unchanged": true,
+    "capsules_table_unchanged": true,
+    "capsule_versions_table_unchanged": true,
+    "capsule_sources_table_unchanged": true,
+    "product_capsule_usage_unchanged": true,
+    "products_directory_unchanged": true,
+    "section_diagnostic_and_alignment_runs_zero_write_verified": true,
+    "v4_planning_and_revision_source_target_warehouse_products_unchanged": true,
+    "revision_classification_gate_source_target_warehouse_products_unchanged": true,
+    "qwen25_7b_fresh_plan_and_revision_gate_source_target_warehouse_products_unchanged": true,
+    "qwen25_7b_two_stage_revision_gate_source_target_warehouse_products_unchanged": true,
+    "qwen25_7b_modification_once_source_target_warehouse_products_unchanged": true,
+    "qwen25_7b_diff_rule_diagnostic_source_target_warehouse_products_unchanged": true,
+    "qwen25_7b_post_alignment_modification_source_target_warehouse_products_unchanged": true,
+    "qwen25_7b_operation_shape_diagnostic_source_target_warehouse_products_unchanged": true,
+    "qwen25_7b_modification_v2_source_target_warehouse_products_unchanged": true,
+    "qwen3_14b_probe_outline_source_target_warehouse_products_unchanged": true,
+    "qwen3_14b_180_second_planning_source_target_warehouse_products_unchanged": true,
+    "draft_compile_v1_qwen25_coder_7b_source_target_warehouse_products_unchanged": true,
+    "draft_compile_v1_formal_tables_and_usage_unchanged": true,
+    "revision_two_layer_qwen25_coder_7b_source_target_warehouse_products_unchanged": true,
+    "revision_two_layer_formal_tables_and_usage_unchanged": true,
+    "revision_single_response_qwen25_coder_7b_source_target_warehouse_products_unchanged": true,
+    "revision_single_response_original_base_workspace_unchanged": true,
+    "revision_single_response_formal_tables_and_usage_unchanged": true,
+    "section_v2_revision_gate_source_target_warehouse_products_unchanged": true,
+    "section_v2_revision_gate_formal_tables_and_usage_unchanged": true,
+    "section_v2_rejected_diff_changed_only_isolated_workspace_state": true,
+    "product_workspaces_changed_only_with_allowed_structured_state": true,
+    "forbidden_persistence_markers_found": 0,
+    "real_model_run_created_candidate_or_product": false
+  },
+  "verification": {
+    "python_compile": {
+      "passed": 6,
+      "failed": 0
+    },
+    "javascript_syntax": {
+      "passed": 2,
+      "failed": 0
+    },
+    "json_parse": "passed",
+    "focused_planner_service_bridge_static": {
+      "passed": 102,
+      "failed": 0,
+      "subtests_passed": 13
+    },
+    "repository_without_phase6_desktop": {
+      "passed": 860,
+      "failed": 0,
+      "subtests_passed": 198,
+      "duration_seconds": 365.48
+    },
+    "qwebengine_isolated_processes": {
+      "passed": 7,
+      "failed": 0,
+      "tests": [
+        "test_simple_mode_scans_multiply_without_creating_candidate",
+        "test_static_web_target_review_ui_never_writes_or_calls_confirm_service",
+        "test_capsule_warehouse_read_only_scene_with_real_service",
+        "test_product_plan_ide_prototype_round_trip_is_read_only",
+        "test_product_plan_formal_running_cancel_is_interrupted_and_retryable",
+        "test_static_web_target_review_ui_with_real_service",
+        "test_phase6_desktop_end_to_end_without_reload"
+      ]
+    },
+    "native_json_schema_bounded_attempt": {
+      "python_compile_passed": 3,
+      "planner_tests_passed": 17,
+      "qwebengine_tests_passed": 2,
+      "failed": 0
+    },
+    "eight_b_limit_and_real_7_6b_attempt": {
+      "python_compile_passed": 3,
+      "planner_tests_passed": 17,
+      "schema_probe_passed": 1,
+      "requirements_outline_rejected": 1,
+      "qwebengine_tests_run": 0,
+      "qwebengine_not_run_reason": "The real-model flow failed before a genuine plan review surface existed.",
+      "failed_regression_tests": 0
+    },
+    "outline_rule_diagnostic_and_alignment": {
+      "python_compile_passed": 2,
+      "planner_tests_passed": 19,
+      "rule_codes_directly_exercised": 24,
+      "first_real_outline_rejected_with_exact_rule": 1,
+      "second_real_outline_passed": 1,
+      "later_section_validation_rejected": 1,
+      "untracked_files_no_index_diff_check_passed": 3,
+      "git_index_empty": true,
+      "failed_regression_tests": 0
+    },
+    "section_rule_diagnostic_and_alignment": {
+      "python_compile_passed": 2,
+      "planner_tests_passed": 20,
+      "rule_codes_directly_exercised": 44,
+      "first_real_section_rejected_with_exact_rule": 1,
+      "exact_rule_code": "section.work_item_ref_conflicts_prior_section",
+      "contract_alignment_applied": 1,
+      "alignment_rerun_stopped_with_ollama_unavailable": 1,
+      "infrastructure_alignment_reverified_in_that_run": false,
+      "failed_regression_tests": 0
+    },
+    "dependency_allowlist_alignment_and_v4_real_run": {
+      "python_compile_passed": 2,
+      "planner_tests_passed": 20,
+      "v3_real_run_rejected_with_exact_dependency_rule": 1,
+      "exact_rule_code": "section.dependency_unknown",
+      "contract_alignment_applied": 1,
+      "v4_schema_probe_passed": 1,
+      "v4_outline_passed": 1,
+      "v4_sections_passed": 4,
+      "v4_catalog_match_calls_passed": 4,
+      "canonical_plan_formed": 1,
+      "real_revision_calls": 1,
+      "revision_model_contract_violations": 1,
+      "real_plan_diffs_created": 0,
+      "real_confirmations_created": 0,
+      "cross_service_restart_restores_passed": 1,
+      "json_parse": "passed",
+      "git_index_empty": true,
+      "failed_regression_tests": 0
+    },
+    "revision_classification_capability_gate": {
+      "temporary_gate_script_compile_passed": 1,
+      "business_code_files_changed": 0,
+      "real_model_calls": 2,
+      "independent_workspace_copies_used": 2,
+      "explanation_cases_passed": 1,
+      "modification_kind_correct_but_post_validation_rejected": 1,
+      "needs_clarification_cases_attempted": 0,
+      "needs_clarification_not_attempted_reason": "Stopped immediately after the modification failure.",
+      "plan_byte_equality_checks_passed": 2,
+      "zero_forbidden_write_checks_passed": 2,
+      "plan_diffs_created": 0,
+      "confirmations_created": 0,
+      "qwebengine_tests_run": 0,
+      "failed_capability_cases": 1,
+      "git_index_empty": true
+    },
+    "qwen25_7b_fresh_plan_and_revision_gate": {
+      "temporary_wrapper_compile_passed": 2,
+      "business_code_files_changed": 0,
+      "fresh_model_selection_and_probe_passed": 1,
+      "real_plan_model_calls": 10,
+      "canonical_plans_formed": 1,
+      "real_revision_calls": 1,
+      "explanation_kind_with_forbidden_question_rejected": 1,
+      "modification_cases_attempted": 0,
+      "needs_clarification_cases_attempted": 0,
+      "plan_byte_equality_checks_passed": 1,
+      "zero_forbidden_write_checks_passed": 2,
+      "plan_diffs_created": 0,
+      "confirmations_created": 0,
+      "qwebengine_tests_run": 0,
+      "prompt_tuning_performed": 0,
+      "failed_capability_cases": 1,
+      "git_index_empty": true
+    },
+    "qwen25_7b_two_stage_revision_gate": {
+      "planner_direct_tests_passed": 27,
+      "planner_direct_tests_failed": 0,
+      "python_files_compiled": 2,
+      "temporary_gate_script_compile_passed": 1,
+      "fresh_model_selection_and_probe_passed": 1,
+      "fresh_real_plan_model_calls": 10,
+      "canonical_plans_formed": 1,
+      "revision_cases_attempted": 2,
+      "revision_stages_invoked": 4,
+      "structured_revision_responses_returned": 3,
+      "explanation_pairs_passed": 1,
+      "modification_intent_classifications_passed": 1,
+      "modification_branch_transport_failures": 1,
+      "needs_clarification_cases_attempted": 0,
+      "plan_byte_equality_checks_passed": 2,
+      "zero_forbidden_write_checks_passed": 3,
+      "plan_diffs_created": 0,
+      "confirmations_created": 0,
+      "qwebengine_tests_run": 0,
+      "hidden_retries_or_prompt_adjustments": 0,
+      "git_index_empty": true
+    },
+    "qwen25_7b_modification_once_audit": {
+      "planner_direct_tests_passed": 30,
+      "planner_direct_tests_failed": 0,
+      "python_files_compiled": 2,
+      "temporary_gate_scripts_compiled": 2,
+      "transport_failure_classes_tested": 3,
+      "public_ollama_unavailable_contracts_passed": 3,
+      "modification_cases_attempted": 1,
+      "intent_calls": 1,
+      "branch_calls": 1,
+      "structured_revision_responses_returned": 2,
+      "schema_valid_operations_returned": 1,
+      "deterministic_plan_diff_rejections": 1,
+      "plan_byte_equality_checks_passed": 1,
+      "zero_forbidden_write_checks_passed": 1,
+      "plan_diffs_created": 0,
+      "confirmations_created": 0,
+      "qwebengine_tests_run": 0,
+      "hidden_retries_or_prompt_adjustments": 0,
+      "git_index_empty": true
+    },
+    "qwen25_7b_diff_rule_diagnostic_and_schema_alignment": {
+      "planner_direct_tests_passed": 33,
+      "planner_direct_tests_failed": 0,
+      "python_files_compiled": 2,
+      "diff_rule_direct_cases_passed": 4,
+      "modification_cases_attempted": 1,
+      "intent_calls": 1,
+      "branch_calls": 1,
+      "structured_revision_responses_returned": 2,
+      "schema_valid_operations_returned": 2,
+      "deterministic_plan_diff_rejections": 1,
+      "exact_internal_rule_code": "diff.update_section_mismatch",
+      "request_local_reference_enum_assertions_passed": 3,
+      "exact_binding_section_pair_assertions_passed": 2,
+      "plan_byte_equality_checks_passed": 1,
+      "zero_forbidden_write_checks_passed": 1,
+      "plan_diffs_created": 0,
+      "confirmations_created": 0,
+      "qwebengine_tests_run": 0,
+      "real_model_reruns_after_schema_alignment": 0,
+      "hidden_retries_or_prompt_adjustments": 0,
+      "git_index_empty": true
+    },
+    "qwen25_7b_post_alignment_modification_once": {
+      "planner_direct_tests_passed": 34,
+      "planner_direct_tests_failed": 0,
+      "update_section_mismatch_direct_test_passed": 1,
+      "modification_cases_attempted": 1,
+      "intent_calls": 1,
+      "branch_calls": 1,
+      "structured_revision_responses_returned": 2,
+      "operations_returned": 2,
+      "deterministic_plan_diff_rejections": 1,
+      "exact_internal_rule_code": "diff.operation_shape_invalid",
+      "plan_byte_equality_checks_passed": 1,
+      "zero_forbidden_write_checks_passed": 1,
+      "plan_diffs_created": 0,
+      "confirmations_created": 0,
+      "qwebengine_tests_run": 0,
+      "hidden_retries_or_contract_changes": 0,
+      "git_index_empty": true
+    },
+    "qwen25_7b_operation_shape_diagnostic_once": {
+      "python_files_compiled": 2,
+      "planner_direct_tests_passed": 39,
+      "planner_direct_tests_failed": 0,
+      "operation_shape_failure_cases_passed": 4,
+      "formal_operation_success_cases_passed": 1,
+      "modification_cases_attempted": 1,
+      "intent_calls": 1,
+      "branch_calls": 1,
+      "structured_revision_responses_returned": 2,
+      "operations_returned": 2,
+      "deterministic_plan_diff_rejections": 1,
+      "exact_internal_rule_code": "diff.operation_required_key_missing.title",
+      "plan_byte_equality_checks_passed": 1,
+      "zero_forbidden_write_checks_passed": 1,
+      "plan_diffs_created": 0,
+      "confirmations_created": 0,
+      "qwebengine_tests_run": 0,
+      "hidden_retries_or_contract_changes": 0,
+      "git_index_empty": true
+    },
+    "qwen25_7b_modification_v2_once": {
+      "python_files_compiled": 2,
+      "planner_direct_tests_passed": 39,
+      "planner_direct_tests_failed": 0,
+      "modification_v2_schema_cases_passed": 1,
+      "flat_update_patch_cases_passed": 1,
+      "modification_cases_attempted": 1,
+      "intent_calls": 1,
+      "branch_calls": 1,
+      "structured_revision_responses_returned": 2,
+      "operations_returned": 3,
+      "operation_shape_passes": 1,
+      "opaque_reference_translation_passes": 1,
+      "deterministic_plan_diff_rejections": 1,
+      "exact_internal_rule_code": "diff.requirement_ids_empty",
+      "plan_byte_equality_checks_passed": 1,
+      "zero_forbidden_write_checks_passed": 1,
+      "plan_diffs_created": 0,
+      "confirmations_created": 0,
+      "qwebengine_tests_run": 0,
+      "hidden_retries_or_prompt_tuning": 0,
+      "git_index_empty": true
+    },
+    "qwen3_14b_formal_planning_gate": {
+      "python_files_compiled": 2,
+      "planner_direct_tests_passed": 39,
+      "planner_direct_tests_failed": 0,
+      "fifteen_b_limit_cases_passed": 2,
+      "moe_rejection_cases_passed": 1,
+      "think_false_payload_cases_passed": 1,
+      "real_model_calls_attempted": 2,
+      "real_model_calls_completed": 1,
+      "schema_probes_passed": 1,
+      "outline_transport_timeouts": 1,
+      "canonical_plans_formed": 0,
+      "revision_cases_attempted": 0,
+      "plan_diffs_created": 0,
+      "confirmations_created": 0,
+      "qwebengine_tests_run": 0,
+      "hidden_retries_or_contract_changes": 0,
+      "git_index_empty": true
+    },
+    "qwen3_14b_180_second_formal_planning_gate": {
+      "python_files_compiled": 2,
+      "planner_direct_tests_passed": 39,
+      "planner_direct_tests_failed": 0,
+      "real_model_calls_attempted": 6,
+      "real_model_calls_completed": 6,
+      "schema_probes_passed": 1,
+      "outlines_passed": 1,
+      "section_calls_attempted": 4,
+      "section_calls_returned": 4,
+      "sections_passing_deterministic_validation": 3,
+      "section_deterministic_rejections": 1,
+      "formal_call_timeouts": 0,
+      "deepest_rule_code": "section.dependency_unknown",
+      "canonical_plans_formed": 0,
+      "revision_cases_attempted": 0,
+      "plan_diffs_created": 0,
+      "confirmations_created": 0,
+      "qwebengine_tests_run": 0,
+      "hidden_retries_or_contract_changes": 0,
+      "git_index_empty": true
+    },
+    "model_draft_compile_v1_qwen25_coder_7b_gate": {
+      "python_files_compiled": 2,
+      "temporary_gate_script_compiled": 1,
+      "planner_direct_tests_passed": 41,
+      "planner_direct_tests_failed": 0,
+      "model_draft_and_wave_compiler_direct_cases_present": true,
+      "formal_parameter_moe_and_loopback_regression_cases_present": true,
+      "real_model_calls_attempted": 12,
+      "real_model_calls_completed": 12,
+      "schema_probes_passed": 1,
+      "outlines_passed": 1,
+      "section_drafts_passed": 4,
+      "canonical_plans_formed": 1,
+      "canonical_work_items": 32,
+      "base_restart_restores_passed": 1,
+      "revision_cases_attempted": 3,
+      "explanation_cases_passed": 1,
+      "modification_pending_diff_cases_passed": 1,
+      "needs_clarification_cases_passed": 0,
+      "needs_clarification_misclassified_as_explanation": 1,
+      "base_plan_byte_equality_checks_passed": 3,
+      "pending_plan_diffs_created": 1,
+      "diff_rejections_performed": 0,
+      "diff_acceptances_performed": 0,
+      "confirmations_created": 0,
+      "confirmed_restart_restores_performed": 0,
+      "qwebengine_tests_run": 0,
+      "hidden_retries_or_contract_changes": 0,
+      "json_parse": "passed",
+      "git_index_empty": true
+    },
+    "revision_two_layer_qwen25_coder_7b_gate": {
+      "python_files_compiled": 2,
+      "temporary_gate_script_compiled": 1,
+      "planner_direct_tests_passed": 41,
+      "planner_direct_tests_failed": 0,
+      "real_model_calls_attempted": 12,
+      "real_model_calls_completed": 12,
+      "schema_probes_passed": 1,
+      "outlines_passed": 1,
+      "section_drafts_passed": 4,
+      "canonical_plans_formed": 1,
+      "canonical_work_items": 26,
+      "base_restart_restores_passed": 1,
+      "revision_cases_attempted": 3,
+      "explanation_cases_passed": 1,
+      "change_modification_cases_passed": 1,
+      "change_needs_clarification_cases_passed": 0,
+      "clarification_misclassified_as_explanation": 1,
+      "base_plan_byte_equality_checks_passed": 3,
+      "pending_plan_diffs_created": 1,
+      "diff_rejections_performed": 0,
+      "diff_acceptances_performed": 0,
+      "confirmations_created": 0,
+      "confirmed_restart_restores_performed": 0,
+      "qwebengine_tests_run": 0,
+      "hidden_retries_or_post_failure_contract_changes": 0,
+      "json_parse": "passed",
+      "git_index_empty": true
+    },
+    "revision_single_response_qwen25_coder_7b_gate": {
+      "python_files_compiled": 2,
+      "temporary_gate_script_compiled": 1,
+      "planner_direct_tests_passed": 45,
+      "planner_direct_tests_failed": 0,
+      "single_response_schema_shapes_tested": 3,
+      "runtime_intent_classifier_calls": 0,
+      "real_model_calls_attempted": 2,
+      "real_model_calls_completed": 2,
+      "prior_canonical_plan_copies_restored": 3,
+      "revision_cases_attempted": 2,
+      "explanation_cases_passed": 1,
+      "modification_operations_cases_passed": 0,
+      "modification_explanation_only_mismatches": 1,
+      "needs_clarification_cases_attempted": 0,
+      "base_plan_byte_equality_checks_passed": 2,
+      "pending_plan_diffs_created": 0,
+      "diff_rejections_performed": 0,
+      "diff_acceptances_performed": 0,
+      "confirmations_created": 0,
+      "confirmed_restart_restores_performed": 0,
+      "qwebengine_tests_run": 0,
+      "hidden_retries_or_post_failure_contract_changes": 0,
+      "json_parse": "passed",
+      "git_index_empty": true
+    },
+    "section_v2_revision_rejection_closeout": {
+      "python_files_compiled": 2,
+      "planner_direct_tests_passed": 49,
+      "planner_direct_tests_failed": 0,
+      "canonical_plans_formed": 1,
+      "question_sets_recovered": 1,
+      "pending_plan_diffs_formed": 1,
+      "pending_plan_diffs_recovered": 1,
+      "human_semantic_reviews_completed": 1,
+      "human_semantic_approvals": 0,
+      "diff_rejections_performed": 1,
+      "model_calls_during_rejection": 0,
+      "base_plan_byte_equality_checks_passed": 3,
+      "forbidden_write_checks_passed": 4,
+      "diff_acceptances_performed": 0,
+      "confirmations_created": 0,
+      "post_confirmation_restores_performed": 0,
+      "qwebengine_tests_run": 0,
+      "same_request_model_retries": 0,
+      "post_failure_prompt_changes": 0,
+      "json_parse": "passed"
+    },
+    "human_editable_plan_diff_v1": {
+      "planner_and_app_service_tests_passed": 69,
+      "frontend_static_tests_passed": 27,
+      "release_surface_audit_tests_passed": 5,
+      "qwebengine_independent_processes_passed": 7,
+      "qwebengine_independent_processes_failed": 0,
+      "real_model_targeted_revision_calls": 1,
+      "human_edit_model_calls": 0,
+      "diff_rejection_passed": 1,
+      "diff_acceptance_passed": 1,
+      "plan_v2_confirmation_passed": 1,
+      "confirmed_restart_restore_passed": 1,
+      "forbidden_write_checks_passed": true,
+      "visual_confirmation_pending": true
+    },
+    "git_diff_check": "passed",
+    "git_diff_cached_check": "passed"
+  },
+  "action_suggestion_user_confirmation_v1": {
+    "status": "PASS",
+    "functional_verdict": "PASS",
+    "overall_product_planning_verdict": "PARTIAL",
+    "public_actions": {
+      "suggest_product_plan_action_added": true,
+      "suggestion_input_fields": [
+        "plan_token",
+        "feedback"
+      ],
+      "suggestion_output_enum": [
+        "ask_plan",
+        "propose_revision",
+        "edit_goal"
+      ],
+      "suggestion_is_authority": false,
+      "explicit_selected_action_required": true,
+      "suggestion_failure_selects_no_action": true,
+      "suggestion_receipt_is_ephemeral": true,
+      "suggestion_changes_workspace": false,
+      "suggestion_changes_plan": false,
+      "edit_goal_revision_model_calls": 0,
+      "legacy_revision_evidence_read_compatible": true
+    },
+    "real_model": {
+      "name": "qwen2.5-coder:7b",
+      "digest": "dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364",
+      "parameter_count": 7615616512,
+      "parameter_size": "7.6B",
+      "quantization_level": "Q4_K_M",
+      "ollama_base_url": "http://127.0.0.1:11434",
+      "cloud_or_external_fallback": false,
+      "raw_prompt_or_response_persisted": false
+    },
+    "base_plan": {
+      "restored_from_prior_verified_workspace": true,
+      "original_workspace_opened_for_write": false,
+      "plan_version": 1,
+      "canonical_digest": "152bb0aa95ad22e2b77d498fdaa9a4ffcaef869a07fe20e9d68afe1b98bde687",
+      "plan_bytes_digest": "27d20c56525b9e48fea9ac4eaec8a84d22891fbd6ef254b0b350a63ac7526a36"
+    },
+    "real_backend_gate": {
+      "status": "passed",
+      "temporary_root_recorded_in_repository": false,
+      "cases": {
+        "explanation": {
+          "suggested_action": "ask_plan",
+          "selected_action": "ask_plan",
+          "user_overrode_recommendation": false,
+          "strict_branch": "plan_revision_explanation",
+          "public_result_kind": "explanation",
+          "question_count": 0,
+          "plan_diff_changes": 0,
+          "plan_byte_equal": true,
+          "suggestion_call": {
+            "input_bytes": 16769,
+            "output_bytes": 36,
+            "duration_ms": 23858,
+            "structured_response_digest": "7ad5354e532c6c70b373089718c6796374c6cc79087d3685f97447efd676eecf"
+          },
+          "branch_call": {
+            "input_bytes": 16549,
+            "output_bytes": 449,
+            "duration_ms": 22579,
+            "structured_response_digest": "e67c9c0d98c7c715be8d0530937996dae08787ba69b60e4cffbcec6a57303b73"
+          }
+        },
+        "modification": {
+          "suggested_action": "propose_revision",
+          "selected_action": "propose_revision",
+          "user_overrode_recommendation": false,
+          "strict_branch": "plan_revision_proposal",
+          "public_result_kind": "needs_clarification",
+          "question_count": 1,
+          "plan_diff_changes": 0,
+          "plan_byte_equal": true,
+          "suggestion_call": {
+            "input_bytes": 16805,
+            "output_bytes": 44,
+            "duration_ms": 19978,
+            "structured_response_digest": "f0049c2127fa8a0d49b52fa4ff6edab224aad3616fb3a41dfe0c4e77204676c7"
+          },
+          "branch_call": {
+            "input_bytes": 34959,
+            "output_bytes": 669,
+            "duration_ms": 27203,
+            "structured_response_digest": "2034654ed23389f0bf1d1b5eb46e9b7eba1803de8427dd60492db5016b6f8acb"
+          }
+        },
+        "ambiguous_modification": {
+          "suggested_action": "ask_plan",
+          "selected_action": "propose_revision",
+          "user_overrode_recommendation": true,
+          "strict_branch": "plan_revision_proposal",
+          "public_result_kind": "needs_clarification",
+          "question_count": 1,
+          "plan_diff_changes": 0,
+          "plan_byte_equal": true,
+          "suggestion_call": {
+            "input_bytes": 16832,
+            "output_bytes": 36,
+            "duration_ms": 20364,
+            "structured_response_digest": "7ad5354e532c6c70b373089718c6796374c6cc79087d3685f97447efd676eecf"
+          },
+          "branch_call": {
+            "input_bytes": 34986,
+            "output_bytes": 699,
+            "duration_ms": 27764,
+            "structured_response_digest": "18dc2acd1eea2b83b70a9d626e35b631c8c8ca3130b9861da2c6401f64c15f0b"
+          }
+        }
+      },
+      "diff_lifecycle": "not_entered_modification_returned_questions",
+      "diff_rejection_performed": false,
+      "diff_acceptance_performed": false,
+      "confirmation_performed": false,
+      "confirmed_restart_restore_performed": false,
+      "memory": {
+        "ollama_process_rss_before_bytes": 84197376,
+        "ollama_process_rss_peak_bytes": 7885045760,
+        "ollama_process_rss_after_bytes": 7871315968,
+        "ollama_loaded_model_bytes": 6578881166,
+        "sample_count": 542
+      },
+      "write_boundary": {
+        "source_tree_unchanged": true,
+        "target_tree_unchanged": true,
+        "warehouse_revision_and_formal_tables_unchanged": true,
+        "products_unchanged": true,
+        "usage_unchanged": true,
+        "candidate_or_product_generated": false
+      }
+    },
+    "real_qwebengine_gate": {
+      "status": "passed",
+      "real_reweave_app_service": true,
+      "real_bridge": true,
+      "real_qwebengine": true,
+      "language": "zh-CN",
+      "window_css_pixels": {
+        "width": 1280,
+        "height": 800
+      },
+      "suggestion_calls": 2,
+      "revision_branch_calls": 1,
+      "cancel_revision_branch_calls": 0,
+      "wrong_suggestion_safely_overridden": true,
+      "final_status": "needs_clarification",
+      "question_count": 1,
+      "get_state_private_fields_absent": true,
+      "dom_private_fields_absent": true,
+      "source_tree_unchanged": true,
+      "target_tree_unchanged": true,
+      "warehouse_unchanged": true,
+      "products_unchanged": true
+    },
+    "temporary_screenshots": {
+      "committed_to_repository": false,
+      "revision_input": "01-revision-input.png",
+      "unselected_recommendation": "02-unselected-recommendation.png",
+      "user_overrides_recommendation": "03-user-overrides-recommendation.png",
+      "proposal_questions": "04-proposal-questions.png",
+      "cancel_focus_restore": "05-cancel-focus-restore.png",
+      "revision_input_recapture_model_calls": 0,
+      "visual_evidence_status": "SUPERSEDED",
+      "superseded_by": "inline_product_plan_visual_gate",
+      "visual_pass_claimed": false
+    },
+    "validation": {
+      "python_files_compiled": 11,
+      "javascript_files_syntax_checked": 3,
+      "planner_direct_tests_passed": 49,
+      "combined_direct_tests_passed": 136,
+      "combined_unittest_subtests_passed": 14,
+      "frontend_static_tests_passed": 27,
+      "release_surface_audit_tests_passed": 5,
+      "phase6_qwebengine_independent_processes_passed": 7,
+      "phase6_qwebengine_independent_processes_failed": 0,
+      "cancel_retry_protocol_fixture_schema_updated_to": "product_plan_section_draft.v1",
+      "non_phase6_collected_nodes": 844,
+      "non_phase6_first_chunked_sweep": {
+        "passed": 843,
+        "failed": 1,
+        "failure": "StageECaptureTest.test_brand_change_during_formal_runtime_prevents_module_persistence returned bundle_security_rejected after two QWebEngine tests in the same process batch"
+      },
+      "non_phase6_isolated_failed_node_rerun_passed": 1,
+      "non_phase6_same_eight_node_batch_rerun_passed": 8,
+      "non_phase6_all_collected_nodes_have_passing_evidence": true,
+      "non_phase6_single_chunked_sweep_all_green": false,
+      "json_parse": "passed",
+      "git_index_empty": true
+    }
+  },
+  "inline_product_plan_visual_gate": {
+    "status": "PASS",
+    "functional_verdict": "PASS",
+    "visual_verdict": "PASS",
+    "user_confirmed": true,
+    "confirmed_date": "2026-07-22",
+    "scope": "inline_main_task_bay",
+    "screenshots": [
+      "01-home-input.png",
+      "02-inline-planning.png",
+      "03-inline-plan-overview.png",
+      "04-inline-clarification.png",
+      "05-revision-intent-dialog.png",
+      "06-warehouse-return.png"
+    ],
+    "window_css_pixels": {
+      "width": 1280,
+      "height": 800
+    },
+    "language": "zh-CN",
+    "runtime": "real_qwebengine",
+    "surface_before_canonical_plan": "white",
+    "surface_after_canonical_plan": "near_black",
+    "no_nested_card": true,
+    "outer_scroll_zero": true,
+    "raw_work_item_ids_visible": false,
+    "semantic_deterministic_chinese_copy": true,
+    "low_contrast_dark_scrollbar": true,
+    "topbar_pixels_stable": true,
+    "english_formal_capsule_name_boundary": "Product Plan Formal Navigation is a formal capsule name, not fixed UI or test-plan copy.",
+    "verification": {
+      "javascript_syntax_passed": 2,
+      "frontend_static_tests_passed": 27,
+      "affected_qwebengine_independent_processes_passed": 2,
+      "qwebengine_rerun_in_report_calibration_stage": false
+    }
+  },
+  "visual_gate": {
+    "screenshots_generated": true,
+    "user_confirmation_requested": true,
+    "user_confirmed": true,
+    "confirmed_date": "2026-07-22",
+    "status": "PASS",
+    "visual_pass_claimed": true,
+    "screenshots": [
+      "01-home-input.png",
+      "02-inline-planning.png",
+      "03-inline-plan-overview.png",
+      "04-inline-clarification.png",
+      "05-revision-intent-dialog.png",
+      "06-warehouse-return.png"
+    ],
+    "reason": "Six Chinese 1280x800 real-QWebEngine screenshots passed functional and visual review and were explicitly confirmed by the user."
+  },
+  "not_implemented": [
+    "candidate source generation",
+    "candidate file tree or file diff",
+    "isolated candidate validation",
+    "full IDE review",
+    "product directory write",
+    "product_capsule_usage write",
+    "module_native multi-capability expansion",
+    "target or user worktree apply",
+    "commit or rollback",
+    "cloud model or fallback",
+    "remove or multi-operation plan revision",
+    "full plan editor",
+    "release or tag change"
+  ]
+}
