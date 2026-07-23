@@ -101,6 +101,7 @@ def compose_capsule_product(
     product_id: str,
     generated_at: str,
     capsules: list[dict[str, Any]],
+    candidate_acceptance_port: bool = False,
 ) -> dict[str, Any]:
     """Compose eligible formal capsules supplied entirely in memory.
 
@@ -116,6 +117,8 @@ def compose_capsule_product(
         raise ValueError("product_generated_at_invalid")
     if type(capsules) is not list or not 1 <= len(capsules) <= 3:
         raise ValueError("product_capsule_count_invalid")
+    if type(candidate_acceptance_port) is not bool:
+        raise ValueError("candidate_acceptance_port_invalid")
 
     normalized = sorted(
         (_normalize_formal_capsule(row) for row in capsules),
@@ -168,7 +171,13 @@ def compose_capsule_product(
         global_name = f"ReweaveFormalCapsule{index}"
         globals_by_kind[row["capability_kind"]] = global_name
         bundles[row["capability_kind"]] = _bundle_formal_capsule(row, global_name)
-    bootstrap = _formal_bootstrap(by_kind, globals_by_kind, connections, root_id)
+    bootstrap = _formal_bootstrap(
+        by_kind,
+        globals_by_kind,
+        connections,
+        root_id,
+        candidate_acceptance_port,
+    )
     app_text = "\n".join(
         [
             '"use strict";',
@@ -215,6 +224,19 @@ def compose_capsule_product(
         },
         "asset_provenance": asset_provenance,
     }
+    if candidate_acceptance_port:
+        provenance["candidate_acceptance_port"] = "candidate_acceptance.v1"
+    composition_manifest = {
+        "schema_version": FORMAL_PRODUCT_MANIFEST_VERSION,
+        "product_id": product_id,
+        "generated_at": generated_at,
+        "capability_key": next(iter(capability_keys)),
+        "root_selector": root_selector,
+        "capsules": capsule_receipts,
+        "connections": connections,
+    }
+    if candidate_acceptance_port:
+        composition_manifest["candidate_acceptance_port"] = "candidate_acceptance.v1"
     return {
         "status": "composed",
         "composer_version": FORMAL_PRODUCT_COMPOSER_VERSION,
@@ -224,15 +246,7 @@ def compose_capsule_product(
             "app.js": app_text,
         },
         "assets": asset_files,
-        "composition_manifest": {
-            "schema_version": FORMAL_PRODUCT_MANIFEST_VERSION,
-            "product_id": product_id,
-            "generated_at": generated_at,
-            "capability_key": next(iter(capability_keys)),
-            "root_selector": root_selector,
-            "capsules": capsule_receipts,
-            "connections": connections,
-        },
+        "composition_manifest": composition_manifest,
         "provenance": provenance,
     }
 
@@ -612,6 +626,7 @@ def _formal_bootstrap(
     globals_by_kind: dict[str, str],
     connections: list[dict[str, str]],
     root_id: str,
+    candidate_acceptance_port: bool,
 ) -> str:
     samples = {
         kind: generate_synthetic_fixtures(row["input_contract"])["normal"][0]
@@ -639,6 +654,27 @@ def _formal_bootstrap(
     payload = json.dumps(
         {"samples": samples, "event": event, "contracts": contracts},
         ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
+    )
+    acceptance_port = (
+        """
+  if (computation) {
+    Object.defineProperty(globalThis, "__reweave_acceptance_v1", {
+      value: freeze({
+        run(value) {
+          if (interaction) return dispatch(config.event, value);
+          if (disposed) throw new Error("acceptance_after_dispose");
+          const computed = compute(value);
+          render(computed);
+          return computed;
+        }
+      }),
+      enumerable: false,
+      configurable: false,
+      writable: false
+    });
+  }"""
+        if candidate_acceptance_port
+        else ""
     )
     return f"""(() => {{
   const root = document.getElementById({json.dumps(root_id)});
@@ -723,6 +759,16 @@ def _formal_bootstrap(
     if (!result || result.ok !== true || !result.value || typeof result.value !== "object" || Array.isArray(result.value)) throw new Error("computation_result_invalid");
     return safe(result.value, config.contracts.computation_output, "computation_output_contract_violation");
   }};
+  const dispatch = (name, value) => {{
+    if (disposed) throw new Error("emit_after_dispose");
+    if (name !== config.event && config.event) throw new Error("undeclared_product_event");
+    const output = safe(value, config.contracts.interaction_events[name], "interaction_output_contract_violation");
+    emissionCount += 1;
+    const computed = compute(output);
+    render(computed);
+    globalThis.__reweave_result = {{schema_version:"reweave_product_runtime_result.v1",status:"passed",acceptance_scope:"real_qwebengine_product_bootstrap",emission_count:emissionCount}};
+    return computed;
+  }};
   if (computation) render(compute(config.samples.computation));
   else if (presentation) render(config.samples.presentation);
   let dispose = () => {{ disposed = true; }};
@@ -730,17 +776,13 @@ def _formal_bootstrap(
     const returned = interaction.{by_kind.get('interaction', {}).get('activation', {}).get('entrypoint', 'mount')}(root, {{
       input: safe(config.samples.interaction, config.contracts.interaction_input, "interaction_input_contract_violation"),
       emit(name, value) {{
-        if (disposed) throw new Error("emit_after_dispose");
-        if (name !== config.event && config.event) throw new Error("undeclared_product_event");
-        const output = safe(value, config.contracts.interaction_events[name], "interaction_output_contract_violation");
-        emissionCount += 1;
-        render(compute(output));
-        globalThis.__reweave_result = {{schema_version:"reweave_product_runtime_result.v1",status:"passed",acceptance_scope:"real_qwebengine_product_bootstrap",emission_count:emissionCount}};
+        dispatch(name, value);
       }}
     }});
     if (typeof returned !== "function") throw new Error("interaction_dispose_missing");
     dispose = () => {{ if (!disposed) {{ disposed = true; returned(); }} }};
   }}
+{acceptance_port}
   globalThis.__reweave_dispose = dispose;
   globalThis.__reweave_result = {{schema_version:"reweave_product_runtime_result.v1",status:"passed",acceptance_scope:"real_qwebengine_product_bootstrap",emission_count:emissionCount}};
 }})();"""

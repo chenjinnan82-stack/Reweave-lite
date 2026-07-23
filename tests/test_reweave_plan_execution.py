@@ -12,13 +12,20 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from pimos_lite.reweave_app_service import ReweaveAppService
+from pimos_lite.composer.module_native import compose_capsule_product
+from pimos_lite.reweave_app_service import (
+    ProductGenerationError,
+    ReweaveAppService,
+)
 from pimos_lite.reweave_capsule_store import CapsuleWarehouseStore
 from pimos_lite.reweave_plan_execution import (
+    CandidateAcceptanceError,
     PlanExecutionError,
+    build_candidate_acceptance,
     canonical_bytes,
     canonical_digest,
     compile_plan_execution,
+    evaluate_candidate_acceptance,
 )
 from pimos_lite.reweave_product_planner import (
     PLAN_SCHEMA_VERSION,
@@ -220,6 +227,31 @@ def _store_snapshot(store: CapsuleWarehouseStore) -> dict:
         }
 
 
+def _acceptance_cases(expected_total: int = 6) -> list[dict]:
+    return [
+        {
+            "requirement_ids": ["requirement_03"],
+            "input": {"quantity": 3},
+            "expected_output": {"total": expected_total},
+        }
+    ]
+
+
+def _acceptance_worker(actual_total: int = 6) -> dict:
+    return {
+        "schema_version": "candidate_acceptance_worker.v1",
+        "status": "completed",
+        "cases": [
+            {
+                "case_id": "case_01",
+                "status": "passed",
+                "actual_output": {"total": actual_total},
+                "error_code": None,
+            }
+        ],
+    }
+
+
 @unittest.skipUnless(shutil.which("node"), "Node.js is required")
 class PlanExecutionV1Test(unittest.TestCase):
     def setUp(self) -> None:
@@ -387,6 +419,228 @@ class PlanExecutionV1Test(unittest.TestCase):
         ):
             compile_plan_execution(no_dom_plan, no_dom_confirmation, self.capsules)
 
+    def test_candidate_acceptance_contract_is_strict_and_deterministic(self) -> None:
+        input_contract, output_contract = self.service._candidate_acceptance_contracts(
+            self.capsules
+        )
+        first = build_candidate_acceptance(
+            self.plan,
+            self.confirmation,
+            _acceptance_cases(),
+            input_contract,
+            output_contract,
+            "a" * 64,
+        )
+        second = build_candidate_acceptance(
+            copy.deepcopy(self.plan),
+            copy.deepcopy(self.confirmation),
+            copy.deepcopy(_acceptance_cases()),
+            copy.deepcopy(input_contract),
+            copy.deepcopy(output_contract),
+            "a" * 64,
+        )
+        self.assertEqual(canonical_bytes(first), canonical_bytes(second))
+        self.assertEqual(first["cases"][0]["case_id"], "case_01")
+        self.assertEqual(first["requirement_ids"], [
+            "requirement_01",
+            "requirement_02",
+            "requirement_03",
+            "requirement_04",
+        ])
+
+        receipt = evaluate_candidate_acceptance(
+            first,
+            _acceptance_worker(),
+            input_contract,
+            output_contract,
+        )
+        self.assertEqual(receipt["status"], "passed")
+        mismatch = evaluate_candidate_acceptance(
+            first,
+            _acceptance_worker(7),
+            input_contract,
+            output_contract,
+        )
+        self.assertEqual(mismatch["status"], "failed")
+        self.assertEqual(
+            mismatch["cases"][0]["failure_code"],
+            "candidate_output_mismatch",
+        )
+        nested_output = {
+            "schema": "data_contract.v1",
+            "type": "object",
+            "properties": {
+                "meta": {
+                    "type": "object",
+                    "properties": {"ok": {"type": "boolean"}},
+                    "required": ["ok"],
+                    "additional_properties": False,
+                },
+                "values": {
+                    "type": "array",
+                    "items": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "maximum": 9,
+                    },
+                    "min_items": 2,
+                    "max_items": 2,
+                },
+            },
+            "required": ["meta", "values"],
+            "additional_properties": False,
+        }
+        nested = build_candidate_acceptance(
+            self.plan,
+            self.confirmation,
+            [{
+                "requirement_ids": ["requirement_03"],
+                "input": {"quantity": 3},
+                "expected_output": {
+                    "meta": {"ok": True},
+                    "values": [1, 2],
+                },
+            }],
+            input_contract,
+            nested_output,
+            "b" * 64,
+        )
+        nested_worker = {
+            "schema_version": "candidate_acceptance_worker.v1",
+            "status": "completed",
+            "cases": [{
+                "case_id": "case_01",
+                "status": "passed",
+                "actual_output": {
+                    "values": [1, 2],
+                    "meta": {"ok": True},
+                },
+                "error_code": None,
+            }],
+        }
+        self.assertEqual(
+            evaluate_candidate_acceptance(
+                nested,
+                nested_worker,
+                input_contract,
+                nested_output,
+            )["status"],
+            "passed",
+        )
+        nested_worker["cases"][0]["actual_output"]["values"] = [2, 1]
+        self.assertEqual(
+            evaluate_candidate_acceptance(
+                nested,
+                nested_worker,
+                input_contract,
+                nested_output,
+            )["cases"][0]["failure_code"],
+            "candidate_output_mismatch",
+        )
+        nested_worker["cases"][0]["actual_output"] = {
+            "meta": {"ok": 1},
+            "values": [1, 2],
+        }
+        self.assertEqual(
+            evaluate_candidate_acceptance(
+                nested,
+                nested_worker,
+                input_contract,
+                nested_output,
+            )["cases"][0]["failure_code"],
+            "candidate_output_contract_invalid",
+        )
+
+        invalid_cases = (
+            [],
+            _acceptance_cases() * 17,
+            [{
+                "requirement_ids": ["requirement_unknown"],
+                "input": {"quantity": 3},
+                "expected_output": {"total": 6},
+            }],
+            [{
+                "requirement_ids": ["requirement_03", "requirement_03"],
+                "input": {"quantity": 3},
+                "expected_output": {"total": 6},
+            }],
+            [{
+                "requirement_ids": ["requirement_03"],
+                "input": {"quantity": 0},
+                "expected_output": {"total": 6},
+            }],
+            [{
+                "requirement_ids": ["requirement_03"],
+                "input": {"quantity": 3},
+                "expected_output": {"total": 30},
+            }],
+        )
+        for cases in invalid_cases:
+            with self.subTest(cases=cases), self.assertRaises(
+                CandidateAcceptanceError
+            ):
+                build_candidate_acceptance(
+                    self.plan,
+                    self.confirmation,
+                    cases,
+                    input_contract,
+                    output_contract,
+                    "a" * 64,
+                )
+
+        duplicate = _acceptance_cases() + _acceptance_cases()
+        with self.assertRaisesRegex(
+            CandidateAcceptanceError,
+            "candidate_acceptance_case_duplicate",
+        ):
+            build_candidate_acceptance(
+                self.plan,
+                self.confirmation,
+                duplicate,
+                input_contract,
+                output_contract,
+                "a" * 64,
+            )
+
+    def test_acceptance_port_is_candidate_only(self) -> None:
+        capsules = [
+            {
+                key: value
+                for key, value in capsule.items()
+                if key != "canonical_hash"
+            }
+            for capsule in self.capsules
+        ]
+        regular = compose_capsule_product(
+            task="普通正式产品",
+            product_id="product_" + "a" * 32,
+            generated_at=NOW,
+            capsules=capsules,
+        )
+        candidate = compose_capsule_product(
+            task="隔离候选",
+            product_id="product_" + "b" * 32,
+            generated_at=NOW,
+            capsules=capsules,
+            candidate_acceptance_port=True,
+        )
+        self.assertNotIn(
+            "__reweave_acceptance_v1",
+            regular["files"]["app.js"],
+        )
+        self.assertIn(
+            "__reweave_acceptance_v1",
+            candidate["files"]["app.js"],
+        )
+        self.assertNotIn(
+            "candidate_acceptance_port",
+            regular["composition_manifest"],
+        )
+        self.assertEqual(
+            candidate["composition_manifest"]["candidate_acceptance_port"],
+            "candidate_acceptance.v1",
+        )
+
     def test_candidate_is_isolated_idempotent_and_recoverable(self) -> None:
         self.service._product_planner = _ConfirmedPlanner(
             self.plan,
@@ -408,22 +662,28 @@ class PlanExecutionV1Test(unittest.TestCase):
                 "pimos_lite.reweave_app_service._validate_product_runtime",
                 _runtime_receipt,
             ),
+            patch(
+                "pimos_lite.reweave_app_service._validate_product_acceptance",
+                return_value=_acceptance_worker(),
+            ),
         ):
             started = self.service.start_product_candidate(
                 {
                     "plan_token": "plan_token_test",
                     "plan_digest": self.plan["canonical_digest"],
+                    "acceptance_cases": _acceptance_cases(),
                 }
             )
             self.assertTrue(started["ok"])
             task = _poll(self.service, started["run_id"])
             self.assertEqual(task["status"], "completed", task)
             candidate = task["data"]["data"]
-            self.assertEqual(candidate["schema_version"], "product_candidate.v1")
+            self.assertEqual(candidate["schema_version"], "product_candidate.v2")
             self.assertEqual(candidate["status"], "review_ready")
             self.assertNotIn("candidate_id", candidate)
             self.assertTrue(candidate["validation"]["static"]["status"] == "passed")
             self.assertTrue(candidate["validation"]["runtime"]["status"] == "passed")
+            self.assertEqual(candidate["validation"]["acceptance"]["status"], "passed")
             self.assertEqual(
                 {row["path"] for row in candidate["provenance"]["file_provenance"]},
                 {row["path"] for row in candidate["files"]},
@@ -441,6 +701,7 @@ class PlanExecutionV1Test(unittest.TestCase):
                 {
                     "plan_token": "plan_token_test",
                     "plan_digest": self.plan["canonical_digest"],
+                    "acceptance_cases": _acceptance_cases(),
                 }
             )
             repeated_task = _poll(self.service, repeated["run_id"])
@@ -474,6 +735,7 @@ class PlanExecutionV1Test(unittest.TestCase):
                     {
                         "plan_token": "plan_token_reproduced",
                         "plan_digest": self.plan["canonical_digest"],
+                        "acceptance_cases": _acceptance_cases(),
                     }
                 )
                 reproduced_task = _poll(second_service, reproduced["run_id"])
@@ -525,6 +787,44 @@ class PlanExecutionV1Test(unittest.TestCase):
             candidate_dir = next(
                 (self.state / "product_candidates").glob("candidate_*")
             )
+            self.assertTrue((candidate_dir / "acceptance_contract.json").is_file())
+            self.assertTrue((candidate_dir / "acceptance_receipt.json").is_file())
+            contract_path = candidate_dir / "acceptance_contract.json"
+            contract_bytes = contract_path.read_bytes()
+            contract = json.loads(contract_bytes)
+            contract["cases"][0]["expected_output"]["total"] = 7
+            contract_path.write_text(
+                json.dumps(contract, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            tampered_contract = self.service.get_product_candidate(
+                {"candidate_token": candidate["candidate_token"]}
+            )
+            self.assertFalse(tampered_contract["ok"])
+            self.assertEqual(
+                tampered_contract["error"]["code"],
+                "product_candidate_invalid",
+            )
+            contract_path.write_bytes(contract_bytes)
+
+            receipt_path = candidate_dir / "acceptance_receipt.json"
+            receipt_bytes = receipt_path.read_bytes()
+            receipt = json.loads(receipt_bytes)
+            receipt["cases"][0]["actual_output"]["total"] = 7
+            receipt_path.write_text(
+                json.dumps(receipt, ensure_ascii=False),
+                encoding="utf-8",
+            )
+            tampered_receipt = self.service.get_product_candidate(
+                {"candidate_token": candidate["candidate_token"]}
+            )
+            self.assertFalse(tampered_receipt["ok"])
+            self.assertEqual(
+                tampered_receipt["error"]["code"],
+                "product_candidate_invalid",
+            )
+            receipt_path.write_bytes(receipt_bytes)
+
             (candidate_dir / "product" / "index.html").write_text(
                 "corrupted\n",
                 encoding="utf-8",
@@ -558,6 +858,292 @@ class PlanExecutionV1Test(unittest.TestCase):
                 )
             )
 
+    def test_failed_acceptance_is_read_only_and_contract_is_immutable(self) -> None:
+        self.service._product_planner = _ConfirmedPlanner(
+            self.plan,
+            self.confirmation,
+        )
+        before = _store_snapshot(self.store)
+        with (
+            patch(
+                "pimos_lite.reweave_app_service._validate_product_static",
+                _quality_receipt,
+            ),
+            patch(
+                "pimos_lite.reweave_app_service._validate_product_runtime",
+                _runtime_receipt,
+            ),
+            patch(
+                "pimos_lite.reweave_app_service._validate_product_acceptance",
+                return_value=_acceptance_worker(),
+            ),
+        ):
+            started = self.service.start_product_candidate(
+                {
+                    "plan_token": "plan_token_failed_acceptance",
+                    "plan_digest": self.plan["canonical_digest"],
+                    "acceptance_cases": _acceptance_cases(7),
+                }
+            )
+            task = _poll(self.service, started["run_id"])
+            self.assertEqual(task["status"], "completed", task)
+            candidate = task["data"]["data"]
+            self.assertEqual(candidate["status"], "acceptance_failed")
+            self.assertEqual(
+                candidate["validation"]["acceptance"]["cases"][0]["failure_code"],
+                "candidate_output_mismatch",
+            )
+            opened = self.service.read_product_candidate_file(
+                {
+                    "candidate_token": candidate["candidate_token"],
+                    "relative_path": "app.js",
+                }
+            )
+            self.assertTrue(opened["ok"], opened)
+
+            repeated = self.service.start_product_candidate(
+                {
+                    "plan_token": "plan_token_failed_acceptance",
+                    "plan_digest": self.plan["canonical_digest"],
+                    "acceptance_cases": _acceptance_cases(7),
+                }
+            )
+            repeated_task = _poll(self.service, repeated["run_id"])
+            self.assertEqual(repeated_task["status"], "completed", repeated_task)
+            self.assertEqual(
+                repeated_task["data"]["data"]["candidate_token"],
+                candidate["candidate_token"],
+            )
+
+            conflicting = self.service.start_product_candidate(
+                {
+                    "plan_token": "plan_token_failed_acceptance",
+                    "plan_digest": self.plan["canonical_digest"],
+                    "acceptance_cases": _acceptance_cases(),
+                }
+            )
+            conflicting_task = _poll(self.service, conflicting["run_id"])
+            self.assertEqual(conflicting_task["status"], "failed")
+            self.assertEqual(
+                conflicting_task["error"]["code"],
+                "candidate_acceptance_contract_conflict",
+            )
+        self.assertEqual(_store_snapshot(self.store), before)
+        self.assertFalse((self.state / "products").exists())
+        self.assertEqual(
+            len(list((self.state / "product_candidates").glob("candidate_*"))),
+            1,
+        )
+
+    @unittest.skipUnless(
+        Path(".venv-reweave/bin/python").is_file()
+        or Path(".venv-reweave/Scripts/python.exe").is_file(),
+        "PySide worker environment is required",
+    )
+    def test_real_qweb_acceptance_allows_matching_business_output(self) -> None:
+        self.service._product_planner = _ConfirmedPlanner(
+            self.plan,
+            self.confirmation,
+        )
+        started = self.service.start_product_candidate(
+            {
+                "plan_token": "plan_token_real_acceptance_pass",
+                "plan_digest": self.plan["canonical_digest"],
+                "acceptance_cases": _acceptance_cases(),
+            }
+        )
+        task = _poll(self.service, started["run_id"])
+        self.assertEqual(task["status"], "completed", task)
+        candidate = task["data"]["data"]
+        self.assertEqual(candidate["status"], "review_ready")
+        self.assertEqual(candidate["validation"]["runtime"]["status"], "passed")
+        self.assertEqual(
+            candidate["validation"]["acceptance"]["product_goal_conformance"],
+            "passed",
+        )
+        self.assertEqual(
+            candidate["acceptance"]["cases"][0]["actual_output"],
+            {"total": 6},
+        )
+
+    @unittest.skipUnless(
+        Path(".venv-reweave/bin/python").is_file()
+        or Path(".venv-reweave/Scripts/python.exe").is_file(),
+        "PySide worker environment is required",
+    )
+    def test_real_qweb_acceptance_reports_wrong_business_output(self) -> None:
+        self.service._product_planner = _ConfirmedPlanner(
+            self.plan,
+            self.confirmation,
+        )
+        started = self.service.start_product_candidate(
+            {
+                "plan_token": "plan_token_real_acceptance",
+                "plan_digest": self.plan["canonical_digest"],
+                "acceptance_cases": _acceptance_cases(7),
+            }
+        )
+        task = _poll(self.service, started["run_id"])
+        self.assertEqual(task["status"], "completed", task)
+        candidate = task["data"]["data"]
+        self.assertEqual(candidate["status"], "acceptance_failed")
+        self.assertEqual(candidate["validation"]["runtime"]["status"], "passed")
+        acceptance = candidate["validation"]["acceptance"]
+        self.assertEqual(acceptance["runtime_operational"], "passed")
+        self.assertEqual(acceptance["product_goal_conformance"], "failed")
+        self.assertEqual(acceptance["cases"][0]["actual_output"], {"total": 6})
+        self.assertEqual(
+            acceptance["cases"][0]["failure_code"],
+            "candidate_output_mismatch",
+        )
+        self.assertEqual(
+            candidate["acceptance"]["cases"][0],
+            {
+                "case_id": "case_01",
+                "input": {"quantity": 3},
+                "expected_output": {"total": 7},
+                "actual_output": {"total": 6},
+                "status": "failed",
+                "failure_code": "candidate_output_mismatch",
+            },
+        )
+        self.assertNotIn("requirement_ids", candidate["acceptance"]["cases"][0])
+
+    def test_runtime_failure_prevents_acceptance_and_candidate_persistence(self) -> None:
+        self.service._product_planner = _ConfirmedPlanner(
+            self.plan,
+            self.confirmation,
+        )
+        with (
+            patch(
+                "pimos_lite.reweave_app_service._validate_product_static",
+                _quality_receipt,
+            ),
+            patch(
+                "pimos_lite.reweave_app_service._validate_product_runtime",
+                side_effect=ProductGenerationError("product_qweb_worker_failed"),
+            ),
+            patch(
+                "pimos_lite.reweave_app_service._validate_product_acceptance"
+            ) as acceptance,
+        ):
+            started = self.service.start_product_candidate(
+                {
+                    "plan_token": "plan_token_runtime_failed",
+                    "plan_digest": self.plan["canonical_digest"],
+                    "acceptance_cases": _acceptance_cases(),
+                }
+            )
+            task = _poll(self.service, started["run_id"])
+            self.assertEqual(task["status"], "failed")
+            self.assertEqual(task["error"]["code"], "product_qweb_worker_failed")
+            acceptance.assert_not_called()
+        root = self.state / "product_candidates"
+        self.assertFalse(root.exists() and list(root.glob("candidate_*")))
+        with (
+            patch(
+                "pimos_lite.reweave_app_service._validate_product_static",
+                _quality_receipt,
+            ),
+            patch(
+                "pimos_lite.reweave_app_service._validate_product_runtime",
+                _runtime_receipt,
+            ),
+            patch(
+                "pimos_lite.reweave_app_service._validate_product_acceptance",
+                side_effect=ProductGenerationError(
+                    "candidate_acceptance_port_missing"
+                ),
+            ),
+        ):
+            started = self.service.start_product_candidate(
+                {
+                    "plan_token": "plan_token_acceptance_worker_failed",
+                    "plan_digest": self.plan["canonical_digest"],
+                    "acceptance_cases": _acceptance_cases(),
+                }
+            )
+            task = _poll(self.service, started["run_id"])
+            self.assertEqual(task["status"], "failed")
+            self.assertEqual(
+                task["error"]["code"],
+                "candidate_acceptance_port_missing",
+            )
+        self.assertFalse(root.exists() and list(root.glob("candidate_*")))
+
+    def test_legacy_candidate_is_read_only_and_never_claims_conformance(self) -> None:
+        self.service._product_planner = _ConfirmedPlanner(
+            self.plan,
+            self.confirmation,
+        )
+        with (
+            patch(
+                "pimos_lite.reweave_app_service._validate_product_static",
+                _quality_receipt,
+            ),
+            patch(
+                "pimos_lite.reweave_app_service._validate_product_runtime",
+                _runtime_receipt,
+            ),
+            patch(
+                "pimos_lite.reweave_app_service._validate_product_acceptance",
+                return_value=_acceptance_worker(),
+            ),
+        ):
+            started = self.service.start_product_candidate(
+                {
+                    "plan_token": "plan_token_legacy_projection",
+                    "plan_digest": self.plan["canonical_digest"],
+                    "acceptance_cases": _acceptance_cases(),
+                }
+            )
+            task = _poll(self.service, started["run_id"])
+            self.assertEqual(task["status"], "completed", task)
+        candidate = task["data"]["data"]
+        candidate_dir = next(
+            (self.state / "product_candidates").glob("candidate_*")
+        )
+        record_path = candidate_dir / "candidate.json"
+        record = json.loads(record_path.read_text(encoding="utf-8"))
+        record["schema_version"] = "product_candidate.v1"
+        record["status"] = "review_ready"
+        record.pop("candidate_content_digest")
+        record.pop("acceptance")
+        record["validation"].pop("acceptance")
+        core = {
+            key: value
+            for key, value in record.items()
+            if key not in {"candidate_token", "candidate_digest", "record_digest"}
+        }
+        record["candidate_digest"] = canonical_digest(core)
+        record["record_digest"] = canonical_digest(
+            {key: value for key, value in record.items() if key != "record_digest"}
+        )
+        record_path.write_bytes(canonical_bytes(record) + b"\n")
+
+        restored = self.service.get_product_candidate(
+            {"candidate_token": candidate["candidate_token"]}
+        )
+        self.assertTrue(restored["ok"], restored)
+        self.assertEqual(restored["data"]["schema_version"], "product_candidate.v1")
+        self.assertEqual(restored["data"]["status"], "legacy_unverified")
+        self.assertEqual(
+            restored["data"]["product_goal_conformance"],
+            "not_available",
+        )
+
+    def test_acceptance_requires_one_computation_capsule(self) -> None:
+        without_computation = [
+            item
+            for item in self.capsules
+            if item["capability_kind"] != "computation"
+        ]
+        with self.assertRaisesRegex(
+            ProductGenerationError,
+            "candidate_acceptance_computation_required",
+        ):
+            self.service._candidate_acceptance_contracts(without_computation)
+
     @unittest.skipUnless(hasattr(os, "symlink"), "symlink support is required")
     def test_candidate_root_symlink_fails_closed(self) -> None:
         self.service._product_planner = _ConfirmedPlanner(
@@ -571,6 +1157,7 @@ class PlanExecutionV1Test(unittest.TestCase):
             {
                 "plan_token": "plan_token_symlink",
                 "plan_digest": self.plan["canonical_digest"],
+                "acceptance_cases": _acceptance_cases(),
             }
         )
         task = _poll(self.service, started["run_id"])

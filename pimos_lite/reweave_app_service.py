@@ -55,10 +55,16 @@ from pimos_lite.reweave_product_planner import (
     ProductPlanner,
 )
 from pimos_lite.reweave_plan_execution import (
+    CANDIDATE_ACCEPTANCE_RECEIPT_VERSION,
+    CANDIDATE_ACCEPTANCE_VERSION,
+    MAX_CANDIDATE_ACCEPTANCE_CASES,
     PLAN_EXECUTION_VERSION,
+    CandidateAcceptanceError,
+    build_candidate_acceptance,
     canonical_bytes as plan_execution_bytes,
     canonical_digest as plan_execution_digest,
     compile_plan_execution,
+    evaluate_candidate_acceptance,
 )
 from pimos_lite.reweave_javascript_source import (
     JAVASCRIPT_SOURCE_TYPE,
@@ -520,6 +526,33 @@ def _fsync_product_tree(root: Path) -> None:
             os.close(descriptor)
 
 
+def _candidate_content_digest(
+    execution_digest: str,
+    composer_version: str,
+    entry: dict[str, str],
+    files: list[dict[str, Any]],
+) -> str:
+    content_files = [
+        {
+            "path": item["path"],
+            "sha256": item["sha256"],
+            "size_bytes": item["size_bytes"],
+        }
+        for item in files
+        if item["path"]
+        not in {"manifest.json", "quality_gate.json", "runtime_validation.json"}
+    ]
+    return plan_execution_digest(
+        {
+            "schema_version": "product_candidate_content.v1",
+            "execution_digest": execution_digest,
+            "composer_version": composer_version,
+            "entry": entry,
+            "files": content_files,
+        }
+    )
+
+
 def _validate_product_static(root: Path) -> dict[str, Any]:
     required = ("index.html", "styles.css", "app.js")
     if any(
@@ -658,6 +691,83 @@ def _validate_product_runtime(root: Path) -> dict[str, Any]:
             else "product_qweb_validation_failed"
         )
     return result
+
+
+def _validate_product_acceptance(
+    root: Path,
+    contract: dict[str, Any],
+) -> dict[str, Any]:
+    worker = Path(__file__).with_name("reweave_capsule_worker.py")
+    allowed = sorted(
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*")
+        if path.is_file() and not path.is_symlink()
+    )
+    cases = [
+        {"case_id": item["case_id"], "input": item["input"]}
+        for item in contract["cases"]
+    ]
+    with tempfile.TemporaryDirectory(
+        prefix="reweave-product-acceptance-"
+    ) as temporary:
+        environment = _product_worker_environment(Path(temporary))
+        completed = subprocess.run(
+            [_desktop_worker_python(), str(worker)],
+            input=json.dumps(
+                {
+                    "mode": "qweb_acceptance",
+                    "entry": "index.html",
+                    "allow_files": allowed,
+                    "cases": cases,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ),
+            capture_output=True,
+            text=True,
+            cwd=root,
+            timeout=12,
+            check=False,
+            env=environment,
+        )
+    if completed.returncode or len(completed.stdout.encode("utf-8")) > 1024 * 1024:
+        raise ProductGenerationError("candidate_acceptance_worker_failed")
+    try:
+        result = _strict_json_bytes(completed.stdout.encode("utf-8"))
+    except (UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        raise ProductGenerationError("candidate_acceptance_worker_failed") from exc
+    if (
+        type(result) is not dict
+        or set(result)
+        != {
+            "schema_version",
+            "status",
+            "cases",
+            "blocked_requests",
+            "console_messages",
+            "acceptance_scope",
+        }
+        or result.get("acceptance_scope") != "candidate_business_acceptance"
+        or result.get("blocked_requests") != []
+        or result.get("console_messages") != []
+        or result.get("status") != "completed"
+    ):
+        code = (
+            str(result.get("error_code"))
+            if type(result) is dict
+            and re.fullmatch(
+                r"[a-z][a-z0-9_]{1,95}", str(result.get("error_code") or "")
+            )
+            else "candidate_acceptance_worker_failed"
+        )
+        raise ProductGenerationError(code)
+    return {
+        "schema_version": result["schema_version"],
+        "status": result["status"],
+        "cases": result["cases"],
+    }
 
 
 def _serialized_management(method: Any) -> Any:
@@ -2524,6 +2634,36 @@ class ReweaveAppService:
         return self._capsule_store.path.parent / PRODUCT_CANDIDATES_DIRNAME
 
     @staticmethod
+    def _candidate_acceptance_contracts(
+        capsules: list[dict[str, Any]],
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        computations = [
+            item for item in capsules if item.get("capability_kind") == "computation"
+        ]
+        interactions = [
+            item for item in capsules if item.get("capability_kind") == "interaction"
+        ]
+        if len(computations) != 1 or len(interactions) > 1:
+            raise ProductGenerationError("candidate_acceptance_computation_required")
+        computation = computations[0]
+        input_contract = computation.get("input_contract")
+        if interactions:
+            event_contract = interactions[0].get("output_contract")
+            events = (
+                event_contract.get("events")
+                if type(event_contract) is dict
+                and event_contract.get("schema") == "event_outputs.v1"
+                else None
+            )
+            if type(events) is not dict or len(events) != 1:
+                raise ProductGenerationError("candidate_acceptance_contract_invalid")
+            input_contract = next(iter(events.values()))
+        output_contract = computation.get("output_contract")
+        if type(input_contract) is not dict or type(output_contract) is not dict:
+            raise ProductGenerationError("candidate_acceptance_contract_invalid")
+        return input_contract, output_contract
+
+    @staticmethod
     def _assert_candidate_path_safe(path: Path) -> None:
         absolute = Path(os.path.abspath(path))
         for component in reversed((absolute, *absolute.parents)):
@@ -2536,11 +2676,15 @@ class ReweaveAppService:
 
     @staticmethod
     def _candidate_projection(record: dict[str, Any]) -> dict[str, Any]:
-        return {
+        projection = {
             key: json.loads(json.dumps(value, ensure_ascii=False))
             for key, value in record.items()
             if key not in {"candidate_id", "record_digest"}
         }
+        if record.get("schema_version") == "product_candidate.v1":
+            projection["status"] = "legacy_unverified"
+            projection["product_goal_conformance"] = "not_available"
+        return projection
 
     def _read_candidate_record_path(self, candidate_dir: Path) -> dict[str, Any]:
         root = self._product_candidate_root()
@@ -2566,13 +2710,22 @@ class ReweaveAppService:
             record = _strict_json_bytes(metadata.read_bytes())
         except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
             raise ProductGenerationError("product_candidate_invalid") from exc
-        required = {
+        v1_required = {
             "schema_version", "status", "candidate_id", "candidate_token",
             "candidate_digest", "record_digest", "created_at", "plan", "execution_digest",
             "composer_version", "entry", "files", "file_changes", "provenance",
             "validation", "permissions",
         }
-        if type(record) is not dict or set(record) != required:
+        if type(record) is not dict:
+            raise ProductGenerationError("product_candidate_invalid")
+        schema_version = record.get("schema_version")
+        if schema_version == "product_candidate.v1":
+            required = v1_required
+        elif schema_version == "product_candidate.v2":
+            required = v1_required | {"candidate_content_digest", "acceptance"}
+        else:
+            raise ProductGenerationError("product_candidate_invalid")
+        if set(record) != required:
             raise ProductGenerationError("product_candidate_invalid")
         core = {
             key: value
@@ -2583,8 +2736,12 @@ class ReweaveAppService:
             key: value for key, value in record.items() if key != "record_digest"
         }
         if (
-            record["schema_version"] != "product_candidate.v1"
-            or record["status"] != "review_ready"
+            record["status"]
+            not in (
+                {"review_ready"}
+                if schema_version == "product_candidate.v1"
+                else {"review_ready", "acceptance_failed"}
+            )
             or _CANDIDATE_ID.fullmatch(str(record["candidate_id"])) is None
             or record["candidate_id"] != candidate_dir.name
             or _CANDIDATE_TOKEN.fullmatch(str(record["candidate_token"])) is None
@@ -2593,6 +2750,13 @@ class ReweaveAppService:
             or _MANIFEST_DIGEST.fullmatch(str(record["record_digest"])) is None
             or record["record_digest"] != plan_execution_digest(record_body)
             or _MANIFEST_DIGEST.fullmatch(str(record["execution_digest"])) is None
+            or (
+                schema_version == "product_candidate.v2"
+                and _MANIFEST_DIGEST.fullmatch(
+                    str(record["candidate_content_digest"])
+                )
+                is None
+            )
             or type(record["created_at"]) is not str
             or type(record["plan"]) is not dict
             or set(record["plan"]) != {"plan_id", "plan_version", "plan_digest"}
@@ -2609,6 +2773,10 @@ class ReweaveAppService:
             or type(record["file_changes"]) is not list
             or type(record["provenance"]) is not dict
             or type(record["validation"]) is not dict
+            or (
+                schema_version == "product_candidate.v2"
+                and type(record["acceptance"]) is not dict
+            )
             or record["permissions"]
             != {
                 "source_project_write": False,
@@ -2670,6 +2838,17 @@ class ReweaveAppService:
             ):
                 raise ProductGenerationError("product_candidate_invalid")
         if record["entry"]["path"] not in file_paths:
+            raise ProductGenerationError("product_candidate_invalid")
+        if (
+            schema_version == "product_candidate.v2"
+            and record["candidate_content_digest"]
+            != _candidate_content_digest(
+                record["execution_digest"],
+                record["composer_version"],
+                record["entry"],
+                record["files"],
+            )
+        ):
             raise ProductGenerationError("product_candidate_invalid")
         change_paths: set[str] = set()
         for change in record["file_changes"]:
@@ -2746,6 +2925,181 @@ class ReweaveAppService:
                 )
             ):
                 raise ProductGenerationError("product_candidate_invalid")
+        if schema_version == "product_candidate.v1":
+            if set(record["validation"]) != {"static", "runtime"}:
+                raise ProductGenerationError("product_candidate_invalid")
+            return record
+
+        acceptance_contract_path = candidate_dir / "acceptance_contract.json"
+        acceptance_receipt_path = candidate_dir / "acceptance_receipt.json"
+        if (
+            acceptance_contract_path.is_symlink()
+            or not acceptance_contract_path.is_file()
+            or acceptance_receipt_path.is_symlink()
+            or not acceptance_receipt_path.is_file()
+        ):
+            raise ProductGenerationError("product_candidate_invalid")
+        self._assert_candidate_path_safe(acceptance_contract_path)
+        self._assert_candidate_path_safe(acceptance_receipt_path)
+        try:
+            acceptance_contract = _strict_json_bytes(
+                acceptance_contract_path.read_bytes()
+            )
+            acceptance_receipt = _strict_json_bytes(
+                acceptance_receipt_path.read_bytes()
+            )
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+            raise ProductGenerationError("product_candidate_invalid") from exc
+        contract_keys = {
+            "schema_version",
+            "plan_digest",
+            "confirmation_digest",
+            "candidate_content_digest",
+            "requirement_ids",
+            "input_contract_digest",
+            "output_contract_digest",
+            "cases",
+            "canonical_digest",
+        }
+        receipt_keys = {
+            "schema_version",
+            "contract_digest",
+            "candidate_content_digest",
+            "status",
+            "runtime_operational",
+            "product_goal_conformance",
+            "cases",
+            "receipt_digest",
+        }
+        contract_body = (
+            {
+                key: value
+                for key, value in acceptance_contract.items()
+                if key != "canonical_digest"
+            }
+            if type(acceptance_contract) is dict
+            else {}
+        )
+        receipt_body = (
+            {
+                key: value
+                for key, value in acceptance_receipt.items()
+                if key != "receipt_digest"
+            }
+            if type(acceptance_receipt) is dict
+            else {}
+        )
+        contract_cases = (
+            acceptance_contract.get("cases", [])
+            if type(acceptance_contract) is dict
+            else []
+        )
+        receipt_cases = (
+            acceptance_receipt.get("cases", [])
+            if type(acceptance_receipt) is dict
+            else []
+        )
+        if (
+            type(acceptance_contract) is not dict
+            or set(acceptance_contract) != contract_keys
+            or acceptance_contract.get("schema_version")
+            != CANDIDATE_ACCEPTANCE_VERSION
+            or acceptance_contract.get("plan_digest") != record["plan"]["plan_digest"]
+            or acceptance_contract.get("confirmation_digest")
+            != execution.get("confirmation_digest")
+            or acceptance_contract.get("candidate_content_digest")
+            != record["candidate_content_digest"]
+            or acceptance_contract.get("canonical_digest")
+            != plan_execution_digest(contract_body)
+            or type(contract_cases) is not list
+            or not 1 <= len(contract_cases) <= MAX_CANDIDATE_ACCEPTANCE_CASES
+            or type(acceptance_receipt) is not dict
+            or set(acceptance_receipt) != receipt_keys
+            or acceptance_receipt.get("schema_version")
+            != CANDIDATE_ACCEPTANCE_RECEIPT_VERSION
+            or acceptance_receipt.get("contract_digest")
+            != acceptance_contract.get("canonical_digest")
+            or acceptance_receipt.get("candidate_content_digest")
+            != record["candidate_content_digest"]
+            or acceptance_receipt.get("runtime_operational") != "passed"
+            or acceptance_receipt.get("status") not in {"passed", "failed"}
+            or acceptance_receipt.get("product_goal_conformance")
+            != acceptance_receipt.get("status")
+            or acceptance_receipt.get("receipt_digest")
+            != plan_execution_digest(receipt_body)
+            or type(receipt_cases) is not list
+            or len(receipt_cases) != len(contract_cases)
+            or set(record["validation"]) != {"static", "runtime", "acceptance"}
+            or record["validation"]["acceptance"] != acceptance_receipt
+            or record["status"]
+            != (
+                "review_ready"
+                if acceptance_receipt.get("status") == "passed"
+                else "acceptance_failed"
+            )
+        ):
+            raise ProductGenerationError("product_candidate_invalid")
+        for contract_case, receipt_case in zip(
+            contract_cases, receipt_cases, strict=True
+        ):
+            if (
+                type(contract_case) is not dict
+                or set(contract_case)
+                != {"case_id", "requirement_ids", "input", "expected_output"}
+                or type(contract_case["case_id"]) is not str
+                or not contract_case["case_id"]
+                or type(contract_case["requirement_ids"]) is not list
+                or not contract_case["requirement_ids"]
+                or type(receipt_case) is not dict
+                or set(receipt_case)
+                != {
+                    "case_id",
+                    "status",
+                    "actual_output",
+                    "failure_code",
+                }
+                or receipt_case["case_id"] != contract_case["case_id"]
+                or receipt_case["status"] not in {"passed", "failed"}
+                or (
+                    receipt_case["status"] == "passed"
+                    and receipt_case["failure_code"] is not None
+                )
+                or (
+                    receipt_case["status"] == "failed"
+                    and receipt_case["failure_code"]
+                    not in {
+                        "candidate_case_execution_failed",
+                        "candidate_output_contract_invalid",
+                        "candidate_output_mismatch",
+                    }
+                )
+            ):
+                raise ProductGenerationError("product_candidate_invalid")
+        expected_acceptance = {
+            "contract_digest": acceptance_contract["canonical_digest"],
+            "status": acceptance_receipt["status"],
+            "runtime_operational": acceptance_receipt["runtime_operational"],
+            "product_goal_conformance": acceptance_receipt[
+                "product_goal_conformance"
+            ],
+            "cases": [
+                {
+                    "case_id": contract_case["case_id"],
+                    "input": contract_case["input"],
+                    "expected_output": contract_case["expected_output"],
+                    "actual_output": receipt_case["actual_output"],
+                    "status": receipt_case["status"],
+                    "failure_code": receipt_case["failure_code"],
+                }
+                for contract_case, receipt_case in zip(
+                    contract_cases,
+                    receipt_cases,
+                    strict=True,
+                )
+            ],
+        }
+        if record["acceptance"] != expected_acceptance:
+            raise ProductGenerationError("product_candidate_invalid")
         return record
 
     def _read_candidate_record(self, candidate_token: str) -> tuple[Path, dict[str, Any]]:
@@ -2764,7 +3118,12 @@ class ReweaveAppService:
                 return candidate_dir, record
         raise ProductGenerationError("product_candidate_not_found")
 
-    def _build_product_candidate(self, plan_token: str, plan_digest: str) -> dict[str, Any]:
+    def _build_product_candidate(
+        self,
+        plan_token: str,
+        plan_digest: str,
+        acceptance_cases: list[dict[str, Any]],
+    ) -> dict[str, Any]:
         catalog = self._product_planning_catalog()
         restored = self._product_planner.get(plan_token, catalog)
         if restored.get("ok") is not True or type(restored.get("data")) is not dict:
@@ -2797,6 +3156,14 @@ class ReweaveAppService:
             read_only=True,
         )
         execution = compile_plan_execution(plan, confirmation, capsules)
+        selected_by_id = {capsule["capsule_id"]: capsule for capsule in capsules}
+        selected = [
+            selected_by_id[capsule_id]
+            for capsule_id in execution["composer_request"]["capsule_ids"]
+        ]
+        input_contract, output_contract = self._candidate_acceptance_contracts(
+            selected
+        )
         candidate_id = "candidate_" + execution["execution_digest"][:32]
         root = self._product_candidate_root()
         self._assert_candidate_path_safe(root)
@@ -2810,13 +3177,40 @@ class ReweaveAppService:
             existing = self._read_candidate_record_path(final)
             if existing["execution_digest"] != execution["execution_digest"]:
                 raise ProductGenerationError("product_candidate_conflict")
+            if existing["schema_version"] != "product_candidate.v2":
+                raise ProductGenerationError(
+                    "candidate_acceptance_contract_conflict"
+                )
+            try:
+                requested_contract = build_candidate_acceptance(
+                    plan,
+                    confirmation,
+                    acceptance_cases,
+                    input_contract,
+                    output_contract,
+                    existing["candidate_content_digest"],
+                )
+                stored_contract = _strict_json_bytes(
+                    (final / "acceptance_contract.json").read_bytes()
+                )
+            except (
+                CandidateAcceptanceError,
+                OSError,
+                UnicodeError,
+                ValueError,
+                json.JSONDecodeError,
+            ) as exc:
+                code = (
+                    exc.code
+                    if isinstance(exc, CandidateAcceptanceError)
+                    else "candidate_acceptance_contract_conflict"
+                )
+                raise ProductGenerationError(code) from exc
+            if requested_contract != stored_contract:
+                raise ProductGenerationError(
+                    "candidate_acceptance_contract_conflict"
+                )
             return self._candidate_projection(existing)
-
-        selected_by_id = {capsule["capsule_id"]: capsule for capsule in capsules}
-        selected = [
-            selected_by_id[capsule_id]
-            for capsule_id in execution["composer_request"]["capsule_ids"]
-        ]
         try:
             composition = compose_capsule_product(
                 task=execution["composer_request"]["task"],
@@ -2826,6 +3220,7 @@ class ReweaveAppService:
                     {key: value for key, value in capsule.items() if key != "canonical_hash"}
                     for capsule in selected
                 ],
+                candidate_acceptance_port=True,
             )
         except ValueError as exc:
             code = str(exc)
@@ -2955,8 +3350,50 @@ class ReweaveAppService:
                 json.dumps(provenance, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
             )
             _fsync_product_tree(product_root)
+            content_files = []
+            for path in sorted(product_root.rglob("*")):
+                if not path.is_file() or path.is_symlink():
+                    continue
+                data = path.read_bytes()
+                content_files.append(
+                    {
+                        "path": path.relative_to(product_root).as_posix(),
+                        "sha256": hashlib.sha256(data).hexdigest(),
+                        "size_bytes": len(data),
+                    }
+                )
+            candidate_content_digest = _candidate_content_digest(
+                execution["execution_digest"],
+                str(composition.get("composer_version") or ""),
+                {"path": "index.html", "kind": "static_html"},
+                content_files,
+            )
+            try:
+                acceptance_contract = build_candidate_acceptance(
+                    plan,
+                    confirmation,
+                    acceptance_cases,
+                    input_contract,
+                    output_contract,
+                    candidate_content_digest,
+                )
+            except CandidateAcceptanceError as exc:
+                raise ProductGenerationError(exc.code) from exc
             quality = _validate_product_static(product_root)
             runtime = _validate_product_runtime(product_root)
+            acceptance_worker = _validate_product_acceptance(
+                product_root,
+                acceptance_contract,
+            )
+            try:
+                acceptance = evaluate_candidate_acceptance(
+                    acceptance_contract,
+                    acceptance_worker,
+                    input_contract,
+                    output_contract,
+                )
+            except CandidateAcceptanceError as exc:
+                raise ProductGenerationError(exc.code) from exc
             _write_product_file(
                 product_root,
                 "quality_gate.json",
@@ -2966,6 +3403,16 @@ class ReweaveAppService:
                 product_root,
                 "runtime_validation.json",
                 json.dumps(runtime, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            )
+            _write_product_file(
+                temporary,
+                "acceptance_contract.json",
+                plan_execution_bytes(acceptance_contract) + b"\n",
+            )
+            _write_product_file(
+                temporary,
+                "acceptance_receipt.json",
+                plan_execution_bytes(acceptance) + b"\n",
             )
             pre_manifest = []
             for path in sorted(product_root.rglob("*")):
@@ -3050,9 +3497,36 @@ class ReweaveAppService:
                         ),
                     }
                 )
+            acceptance_projection = {
+                "contract_digest": acceptance_contract["canonical_digest"],
+                "status": acceptance["status"],
+                "runtime_operational": acceptance["runtime_operational"],
+                "product_goal_conformance": acceptance[
+                    "product_goal_conformance"
+                ],
+                "cases": [
+                    {
+                        "case_id": contract_case["case_id"],
+                        "input": contract_case["input"],
+                        "expected_output": contract_case["expected_output"],
+                        "actual_output": receipt_case["actual_output"],
+                        "status": receipt_case["status"],
+                        "failure_code": receipt_case["failure_code"],
+                    }
+                    for contract_case, receipt_case in zip(
+                        acceptance_contract["cases"],
+                        acceptance["cases"],
+                        strict=True,
+                    )
+                ],
+            }
             core = {
-                "schema_version": "product_candidate.v1",
-                "status": "review_ready",
+                "schema_version": "product_candidate.v2",
+                "status": (
+                    "review_ready"
+                    if acceptance["status"] == "passed"
+                    else "acceptance_failed"
+                ),
                 "candidate_id": candidate_id,
                 "created_at": confirmation["confirmed_at"],
                 "plan": {
@@ -3061,12 +3535,18 @@ class ReweaveAppService:
                     "plan_digest": plan["canonical_digest"],
                 },
                 "execution_digest": execution["execution_digest"],
+                "candidate_content_digest": candidate_content_digest,
                 "composer_version": str(composition.get("composer_version") or ""),
                 "entry": {"path": "index.html", "kind": "static_html"},
+                "acceptance": acceptance_projection,
                 "files": files,
                 "file_changes": changes,
                 "provenance": provenance,
-                "validation": {"static": quality, "runtime": runtime},
+                "validation": {
+                    "static": quality,
+                    "runtime": runtime,
+                    "acceptance": acceptance,
+                },
                 "permissions": {
                     "source_project_write": False,
                     "target_project_write": False,
@@ -3115,17 +3595,30 @@ class ReweaveAppService:
         try:
             request = self._payload(payload)
             if (
-                set(request) != {"plan_token", "plan_digest"}
+                set(request)
+                != {"plan_token", "plan_digest", "acceptance_cases"}
                 or type(request["plan_token"]) is not str
                 or type(request["plan_digest"]) is not str
                 or _MANIFEST_DIGEST.fullmatch(request["plan_digest"]) is None
+                or type(request["acceptance_cases"]) is not list
+                or not 1
+                <= len(request["acceptance_cases"])
+                <= MAX_CANDIDATE_ACCEPTANCE_CASES
+                or any(
+                    type(item) is not dict
+                    or set(item)
+                    != {"requirement_ids", "input", "expected_output"}
+                    for item in request["acceptance_cases"]
+                )
             ):
                 return self._error("product_candidate_request_invalid")
             return self._submit_management_task(
                 "product_candidate_start",
                 lambda _cancel: self._ok(
                     self._build_product_candidate(
-                        request["plan_token"], request["plan_digest"]
+                        request["plan_token"],
+                        request["plan_digest"],
+                        request["acceptance_cases"],
                     )
                 ),
                 read_only_candidate=True,

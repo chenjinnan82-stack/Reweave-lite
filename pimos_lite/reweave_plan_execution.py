@@ -7,14 +7,30 @@ import json
 import re
 from typing import Any
 
+from pimos_lite.reweave_data_contract import (
+    DataContractError,
+    data_contract_accepts,
+    normalize_data_contract,
+)
 
 PLAN_EXECUTION_VERSION = "plan_execution.v1"
+CANDIDATE_ACCEPTANCE_VERSION = "candidate_acceptance.v1"
+CANDIDATE_ACCEPTANCE_RECEIPT_VERSION = "candidate_acceptance_receipt.v1"
+CANDIDATE_ACCEPTANCE_WORKER_VERSION = "candidate_acceptance_worker.v1"
+MAX_CANDIDATE_ACCEPTANCE_CASES = 16
+MAX_CANDIDATE_ACCEPTANCE_BYTES = 1024 * 1024
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _PLAN_ID = re.compile(r"plan_[0-9a-f]{32}\Z")
 _SECTION_IDS = ("frontend", "backend", "data", "infrastructure")
 
 
 class PlanExecutionError(ValueError):
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
+class CandidateAcceptanceError(ValueError):
     def __init__(self, code: str) -> None:
         super().__init__(code)
         self.code = code
@@ -41,6 +57,306 @@ def _exact(value: Any, keys: set[str], code: str) -> dict[str, Any]:
     if type(value) is not dict or set(value) != keys:
         raise PlanExecutionError(code)
     return value
+
+
+def _acceptance_copy(value: Any) -> Any:
+    try:
+        encoded = canonical_bytes(value)
+    except PlanExecutionError as exc:
+        raise CandidateAcceptanceError("candidate_acceptance_json_invalid") from exc
+    if len(encoded) > MAX_CANDIDATE_ACCEPTANCE_BYTES:
+        raise CandidateAcceptanceError("candidate_acceptance_payload_too_large")
+    return json.loads(encoded)
+
+
+def _acceptance_exact(
+    value: Any,
+    keys: set[str],
+    code: str,
+) -> dict[str, Any]:
+    if type(value) is not dict or set(value) != keys:
+        raise CandidateAcceptanceError(code)
+    return value
+
+
+def _json_exact(left: Any, right: Any) -> bool:
+    if type(left) is not type(right):
+        return False
+    if type(left) is dict:
+        return set(left) == set(right) and all(
+            _json_exact(left[key], right[key]) for key in left
+        )
+    if type(left) is list:
+        return len(left) == len(right) and all(
+            _json_exact(left_item, right_item)
+            for left_item, right_item in zip(left, right, strict=True)
+        )
+    return left == right
+
+
+def build_candidate_acceptance(
+    plan: dict[str, Any],
+    confirmation: dict[str, Any],
+    cases: list[dict[str, Any]],
+    input_contract: dict[str, Any],
+    output_contract: dict[str, Any],
+    candidate_content_digest: str,
+) -> dict[str, Any]:
+    """Canonicalize user-confirmed product conformance examples."""
+
+    plan_body = (
+        {key: value for key, value in plan.items() if key != "canonical_digest"}
+        if type(plan) is dict
+        else {}
+    )
+    confirmation_body = (
+        {
+            key: value
+            for key, value in confirmation.items()
+            if key != "receipt_digest"
+        }
+        if type(confirmation) is dict
+        else {}
+    )
+    if (
+        type(plan) is not dict
+        or plan.get("schema_version") != "product_plan.v1"
+        or _DIGEST.fullmatch(str(plan.get("canonical_digest"))) is None
+        or plan.get("canonical_digest") != canonical_digest(plan_body)
+        or type(plan.get("requirements")) is not list
+        or type(confirmation) is not dict
+        or confirmation.get("schema_version") != "product_plan_confirmation.v1"
+        or confirmation.get("plan_id") != plan.get("plan_id")
+        or confirmation.get("plan_version") != plan.get("plan_version")
+        or confirmation.get("plan_digest") != plan.get("canonical_digest")
+        or _DIGEST.fullmatch(str(confirmation.get("receipt_digest"))) is None
+        or confirmation.get("receipt_digest")
+        != canonical_digest(confirmation_body)
+        or _DIGEST.fullmatch(str(candidate_content_digest)) is None
+    ):
+        raise CandidateAcceptanceError("candidate_acceptance_binding_invalid")
+    requirement_ids = {
+        item.get("requirement_id")
+        for item in plan["requirements"]
+        if type(item) is dict and type(item.get("requirement_id")) is str
+    }
+    if len(requirement_ids) != len(plan["requirements"]) or not requirement_ids:
+        raise CandidateAcceptanceError("candidate_acceptance_requirement_invalid")
+    try:
+        normalized_input = normalize_data_contract(input_contract)
+        normalized_output = normalize_data_contract(output_contract)
+    except DataContractError as exc:
+        raise CandidateAcceptanceError("candidate_acceptance_contract_invalid") from exc
+    if (
+        type(cases) is not list
+        or not 1 <= len(cases) <= MAX_CANDIDATE_ACCEPTANCE_CASES
+    ):
+        raise CandidateAcceptanceError("candidate_acceptance_case_count_invalid")
+
+    normalized_cases: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for index, raw in enumerate(cases, start=1):
+        case = _acceptance_exact(
+            raw,
+            {"requirement_ids", "input", "expected_output"},
+            "candidate_acceptance_case_invalid",
+        )
+        case_requirements = case["requirement_ids"]
+        if (
+            type(case_requirements) is not list
+            or not case_requirements
+            or any(type(value) is not str for value in case_requirements)
+            or len(case_requirements) != len(set(case_requirements))
+            or set(case_requirements) - requirement_ids
+        ):
+            raise CandidateAcceptanceError("candidate_acceptance_requirement_invalid")
+        item_input = _acceptance_copy(case["input"])
+        expected_output = _acceptance_copy(case["expected_output"])
+        if not data_contract_accepts(normalized_input, item_input):
+            raise CandidateAcceptanceError("candidate_acceptance_input_invalid")
+        if not data_contract_accepts(normalized_output, expected_output):
+            raise CandidateAcceptanceError("candidate_acceptance_expected_output_invalid")
+        semantic = {
+            "requirement_ids": sorted(case_requirements),
+            "input": item_input,
+            "expected_output": expected_output,
+        }
+        semantic_digest = canonical_digest(semantic)
+        if semantic_digest in seen:
+            raise CandidateAcceptanceError("candidate_acceptance_case_duplicate")
+        seen.add(semantic_digest)
+        normalized_cases.append(
+            {
+                "case_id": f"case_{index:02d}",
+                **semantic,
+            }
+        )
+
+    contract = {
+        "schema_version": CANDIDATE_ACCEPTANCE_VERSION,
+        "plan_digest": plan["canonical_digest"],
+        "confirmation_digest": confirmation["receipt_digest"],
+        "candidate_content_digest": candidate_content_digest,
+        "requirement_ids": sorted(requirement_ids),
+        "input_contract_digest": canonical_digest(normalized_input),
+        "output_contract_digest": canonical_digest(normalized_output),
+        "cases": normalized_cases,
+    }
+    contract["canonical_digest"] = canonical_digest(contract)
+    _acceptance_copy(contract)
+    return contract
+
+
+def evaluate_candidate_acceptance(
+    contract: dict[str, Any],
+    worker_result: dict[str, Any],
+    input_contract: dict[str, Any],
+    output_contract: dict[str, Any],
+) -> dict[str, Any]:
+    """Build a stable receipt from one bounded QWebEngine acceptance run."""
+
+    required_contract = {
+        "schema_version",
+        "plan_digest",
+        "confirmation_digest",
+        "candidate_content_digest",
+        "requirement_ids",
+        "input_contract_digest",
+        "output_contract_digest",
+        "cases",
+        "canonical_digest",
+    }
+    contract = _acceptance_exact(
+        contract,
+        required_contract,
+        "candidate_acceptance_contract_invalid",
+    )
+    contract_body = {
+        key: value for key, value in contract.items() if key != "canonical_digest"
+    }
+    if (
+        contract["schema_version"] != CANDIDATE_ACCEPTANCE_VERSION
+        or any(
+            _DIGEST.fullmatch(str(contract.get(key))) is None
+            for key in (
+                "plan_digest",
+                "confirmation_digest",
+                "candidate_content_digest",
+                "input_contract_digest",
+                "output_contract_digest",
+                "canonical_digest",
+            )
+        )
+        or contract["canonical_digest"] != canonical_digest(contract_body)
+        or type(contract["cases"]) is not list
+        or not 1 <= len(contract["cases"]) <= MAX_CANDIDATE_ACCEPTANCE_CASES
+    ):
+        raise CandidateAcceptanceError("candidate_acceptance_contract_invalid")
+    try:
+        normalized_input = normalize_data_contract(input_contract)
+        normalized_output = normalize_data_contract(output_contract)
+    except DataContractError as exc:
+        raise CandidateAcceptanceError("candidate_acceptance_contract_invalid") from exc
+    if (
+        canonical_digest(normalized_input) != contract["input_contract_digest"]
+        or canonical_digest(normalized_output) != contract["output_contract_digest"]
+        or type(contract["requirement_ids"]) is not list
+        or not contract["requirement_ids"]
+        or any(type(value) is not str for value in contract["requirement_ids"])
+        or len(contract["requirement_ids"]) != len(set(contract["requirement_ids"]))
+    ):
+        raise CandidateAcceptanceError("candidate_acceptance_contract_invalid")
+    for index, case in enumerate(contract["cases"], start=1):
+        row = _acceptance_exact(
+            case,
+            {"case_id", "requirement_ids", "input", "expected_output"},
+            "candidate_acceptance_contract_invalid",
+        )
+        if (
+            row["case_id"] != f"case_{index:02d}"
+            or type(row["requirement_ids"]) is not list
+            or not row["requirement_ids"]
+            or any(type(value) is not str for value in row["requirement_ids"])
+            or len(row["requirement_ids"]) != len(set(row["requirement_ids"]))
+            or set(row["requirement_ids"]) - set(contract["requirement_ids"])
+            or not data_contract_accepts(normalized_input, row["input"])
+            or not data_contract_accepts(normalized_output, row["expected_output"])
+        ):
+            raise CandidateAcceptanceError("candidate_acceptance_contract_invalid")
+
+    result = _acceptance_exact(
+        worker_result,
+        {"schema_version", "status", "cases"},
+        "candidate_acceptance_worker_invalid",
+    )
+    if (
+        result["schema_version"] != CANDIDATE_ACCEPTANCE_WORKER_VERSION
+        or result["status"] != "completed"
+        or type(result["cases"]) is not list
+        or len(result["cases"]) != len(contract["cases"])
+    ):
+        raise CandidateAcceptanceError("candidate_acceptance_worker_invalid")
+
+    receipts: list[dict[str, Any]] = []
+    overall = "passed"
+    for expected_case, worker_case in zip(
+        contract["cases"], result["cases"], strict=True
+    ):
+        row = _acceptance_exact(
+            worker_case,
+            {"case_id", "status", "actual_output", "error_code"},
+            "candidate_acceptance_worker_invalid",
+        )
+        if row["case_id"] != expected_case.get("case_id"):
+            raise CandidateAcceptanceError("candidate_acceptance_worker_invalid")
+        if row["status"] == "failed":
+            if (
+                row["actual_output"] is not None
+                or row["error_code"] != "candidate_case_execution_failed"
+            ):
+                raise CandidateAcceptanceError("candidate_acceptance_worker_invalid")
+            status = "failed"
+            actual_output = None
+            failure_code = "candidate_case_execution_failed"
+        elif row["status"] == "passed":
+            if row["error_code"] is not None:
+                raise CandidateAcceptanceError("candidate_acceptance_worker_invalid")
+            actual_output = _acceptance_copy(row["actual_output"])
+            if not data_contract_accepts(normalized_output, actual_output):
+                status = "failed"
+                actual_output = None
+                failure_code = "candidate_output_contract_invalid"
+            elif not _json_exact(actual_output, expected_case.get("expected_output")):
+                status = "failed"
+                failure_code = "candidate_output_mismatch"
+            else:
+                status = "passed"
+                failure_code = None
+        else:
+            raise CandidateAcceptanceError("candidate_acceptance_worker_invalid")
+        if status == "failed":
+            overall = "failed"
+        receipts.append(
+            {
+                "case_id": expected_case["case_id"],
+                "status": status,
+                "actual_output": actual_output,
+                "failure_code": failure_code,
+            }
+        )
+
+    receipt = {
+        "schema_version": CANDIDATE_ACCEPTANCE_RECEIPT_VERSION,
+        "contract_digest": contract["canonical_digest"],
+        "candidate_content_digest": contract["candidate_content_digest"],
+        "status": overall,
+        "runtime_operational": "passed",
+        "product_goal_conformance": overall,
+        "cases": receipts,
+    }
+    receipt["receipt_digest"] = canonical_digest(receipt)
+    _acceptance_copy(receipt)
+    return receipt
 
 
 def _topological_order(items: dict[str, dict[str, Any]]) -> list[str]:
@@ -424,9 +740,16 @@ def compile_plan_execution(
 
 
 __all__ = [
+    "CANDIDATE_ACCEPTANCE_RECEIPT_VERSION",
+    "CANDIDATE_ACCEPTANCE_VERSION",
+    "CANDIDATE_ACCEPTANCE_WORKER_VERSION",
+    "MAX_CANDIDATE_ACCEPTANCE_CASES",
     "PLAN_EXECUTION_VERSION",
+    "CandidateAcceptanceError",
     "PlanExecutionError",
+    "build_candidate_acceptance",
     "canonical_bytes",
     "canonical_digest",
     "compile_plan_execution",
+    "evaluate_candidate_acceptance",
 ]
