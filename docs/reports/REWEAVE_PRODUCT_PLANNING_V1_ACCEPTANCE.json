@@ -1,8 +1,8 @@
 {
   "schema_version": "reweave_product_planning_v1_acceptance.v1",
   "completed_date": "2026-07-23",
-  "verdict": "PARTIAL",
-  "verdict_reason": "The deterministic product-planning backend and the scope-limited human-editable Plan Diff workflow passed, including plan v2 confirmation and restart recovery. Free-text semantic revision by the local 7B model remains PARTIAL and is not treated as authority. The unconfirmed frontend visual experiment is deferred and excluded from this Git closeout; a real strong-model planning baseline remains outstanding.",
+  "verdict": "PASS",
+  "verdict_reason": "The formal backend product-planning scope passed. A real Qwen3 14B run used the fixed complex goal to form and recover a validated canonical plan, produced a semantically correct data-section Plan Diff, accepted plan v2, confirmed it, and recovered the confirmed plan and receipt after restart. The local 7B free-text revision limitation remains a nested historical PARTIAL, the formal frontend remains DEFERRED, and candidate generation was intentionally not called in this stage.",
   "scope": "formal_product_planning_v1_review_only",
   "baseline": {
     "branch": "codex/product-planning-v1",
@@ -109,6 +109,152 @@
       "candidate_or_product_generated": false,
       "only_isolated_workspace_state_changed": true,
       "raw_prompt_or_response_saved": false
+    }
+  },
+  "qwen3_14b_strong_model_baseline_v1": {
+    "status": "PASS",
+    "scope": "real_model_formal_backend_planning_only",
+    "run_date": "2026-07-23",
+    "stage1_head": "f42179293d6151931829ee1efcfe88cc26e083b9",
+    "model": {
+      "name": "qwen3:14b-q4_K_M",
+      "manifest_digest": "bdbd181c33f2ed1b31c972991882db3cf4d192569092138a7d29e973cd9debe8",
+      "model_layer_digest": "a8cc1361f3145dc01f6d77c6c82c9116b9ffe3c97b34716fe20418455876c40e",
+      "parameter_count": 14768307200,
+      "parameter_size": "14.8B",
+      "quantization_level": "Q4_K_M",
+      "manifest_size_bytes": 9276198565,
+      "within_15b_limit": true
+    },
+    "runtime_contract": {
+      "ollama_base_url": "http://127.0.0.1:11434",
+      "loopback_only": true,
+      "proxy_disabled": true,
+      "redirect_disabled": true,
+      "cloud_or_model_fallback": false,
+      "temperature": 0,
+      "think": false,
+      "native_json_schema": true,
+      "probe_timeout_seconds": 45,
+      "formal_call_timeout_seconds": 180,
+      "hidden_retry_or_output_repair_used": false,
+      "prompt_schema_timeout_or_model_changed_after_failure": false
+    },
+    "schema_probe": {
+      "status": "passed",
+      "input_bytes": 681,
+      "output_bytes": 84,
+      "duration_ms": 9458,
+      "structured_response_digest": "a8ebd4cfb3312421477c3ecd0504b8363261e7e6aff1853ba048dacaace83ff5"
+    },
+    "canonical_plan": {
+      "formed": true,
+      "cross_service_recovered": true,
+      "plan_version": 1,
+      "canonical_digest": "c637471b3b2eb2fc3fb333c99f74ed350bd42dc81e1dca3611a9ed70338000ba",
+      "canonical_bytes_digest": "6f065e43f99c6e37e74f9f4446c6ea3b96b9c3dce2a3cd9374e444e6243b9d50",
+      "sections": 4,
+      "requirements": 9,
+      "work_items": 20,
+      "formal_exact_capsule_bindings": 10,
+      "explicit_gaps": 10,
+      "dependency_edges": 71,
+      "requirements_fully_covered": true,
+      "dependency_graph_valid_and_acyclic": true,
+      "blocking_questions": 0
+    },
+    "planning_calls": [
+      {
+        "call_type": "requirements_outline",
+        "input_bytes": 2977,
+        "output_bytes": 1830,
+        "duration_ms": 45855,
+        "structured_response_digest": "9054dcf58d52e9cc8152610aa79133399e164eceaecc3b419344165e40b5bf9b"
+      },
+      {
+        "call_type": "section_frontend",
+        "input_bytes": 6258,
+        "output_bytes": 1216,
+        "duration_ms": 31353,
+        "structured_response_digest": "094a7355f1d36d16f8703f46aa4d3a9da12a87e8243382169314776af587719a"
+      },
+      {
+        "call_type": "section_backend",
+        "input_bytes": 6255,
+        "output_bytes": 4485,
+        "duration_ms": 67497,
+        "structured_response_digest": "ab3c360e175048b22af8dd76ad5cb2ecb0f09710095cdd6b4c7433cc259e0620"
+      },
+      {
+        "call_type": "section_data",
+        "input_bytes": 6246,
+        "output_bytes": 626,
+        "duration_ms": 12730,
+        "structured_response_digest": "b2ce667575f1b7d73a9c2469724974d57063df8de15d70d75229a35ea1c03e1a"
+      },
+      {
+        "call_type": "section_infrastructure",
+        "input_bytes": 6276,
+        "output_bytes": 3893,
+        "duration_ms": 78073,
+        "structured_response_digest": "1d222109d6bb89ba0d18aaadbfc88db33d148f5fd638a77c600089fcb4550750"
+      }
+    ],
+    "revision": {
+      "fixed_request_used": true,
+      "request_scope": "user_authoritative_data_section",
+      "action_suggestion_calls": 1,
+      "suggested_action": "edit_goal",
+      "user_selected_action": "propose_revision",
+      "user_selection_overrode_model_suggestion": true,
+      "proposal_calls": 1,
+      "proposal_input_bytes": 20016,
+      "proposal_output_bytes": 630,
+      "proposal_duration_ms": 69156,
+      "proposal_response_digest": "75b9332d4efe8098e3810909edace3d41eb3cb95f6e9ea584bb8827ac2c5ef5a",
+      "pending_diff_formed": true,
+      "diff_digest": "c5e6d0b235b79c29279fd2b67a983333e58ffdd0aafae1efc2ae2ab1855241b4",
+      "change_count": 1,
+      "only_data_section_changed": true,
+      "daily_incremental_present": true,
+      "weekly_full_present": true,
+      "restore_drill_in_acceptance": true,
+      "base_plan_unchanged_before_accept": true,
+      "audit_checker_initially_misclassified_english_semantics": true,
+      "model_rerun_for_audit_correction": false
+    },
+    "accept_confirm_restore": {
+      "additional_model_calls": 0,
+      "accepted_plan_version": 2,
+      "accepted_plan_digest": "6d24b77e3a19b7bfd35cb908f8f7bf7e157f81fad5ebc2cf82dfe25b25531e14",
+      "confirmation_receipt_digest": "8b3917807463e5612bc105f212a92b7b497032c94211f0273e4d9e27d7940b59",
+      "confirmed_plan_and_receipt_recovered_after_restart": true,
+      "candidate_generated": false,
+      "product_generated": false,
+      "usage_written": false
+    },
+    "memory": {
+      "ollama_loaded_size_label_after_run": "14 GB",
+      "llama_server_rss_after_run_kib": 13897776,
+      "peak_rss_unavailable_due_to_audit_sampler_process_name_mismatch": true,
+      "model_rerun_for_memory_measurement": false
+    },
+    "write_boundary": {
+      "source_tree_unchanged": true,
+      "target_tree_unchanged": true,
+      "warehouse_revision_unchanged": true,
+      "formal_tables_unchanged": true,
+      "products_absent": true,
+      "usage_unchanged": true,
+      "only_product_workspaces_and_model_role_configuration_changed": true,
+      "candidate_generated": false,
+      "raw_prompt_or_response_persisted": false
+    },
+    "excluded": {
+      "formal_frontend": "DEFERRED",
+      "candidate_generation": "NOT_CALLED",
+      "ide_review": "NOT_STARTED",
+      "apply_commit_or_rollback": "NOT_STARTED"
     }
   },
   "human_editable_plan_diff_v1": {
@@ -2474,25 +2620,26 @@
     "cancel_and_retry": "passed"
   },
   "large_planning_proof": {
-    "verdict": "PARTIAL",
+    "verdict": "PASS",
     "fixed_goal_used": true,
     "real_model_canonical_plan_formed": true,
     "real_model_four_sections": true,
-    "real_model_traceable_work_items": 29,
+    "real_model_traceable_work_items": 20,
     "real_model_minimum_twelve_traceable_work_items": true,
     "real_model_requirements": 9,
-    "real_model_formal_exact_capsule_bindings": 20,
-    "real_model_explicit_gaps": 9,
+    "real_model_formal_exact_capsule_bindings": 10,
+    "real_model_explicit_gaps": 10,
     "real_model_dependencies_valid_and_acyclic": true,
-    "real_model_structured_question_and_answer": true,
+    "real_model_structured_question_and_answer": false,
+    "real_model_no_blocking_question_required": true,
     "real_model_plan_diff": true,
     "real_model_pending_diff_restart_restore": true,
-    "real_model_human_semantic_acceptance": false,
-    "real_model_diff_rejection": true,
-    "real_model_rejected_base_restart_restore": true,
-    "real_model_diff_acceptance": false,
-    "real_model_confirmation": false,
-    "real_model_post_confirmation_restart_restore": false,
+    "real_model_human_semantic_acceptance": true,
+    "real_model_diff_rejection": false,
+    "real_model_rejected_base_restart_restore": false,
+    "real_model_diff_acceptance": true,
+    "real_model_confirmation": true,
+    "real_model_post_confirmation_restart_restore": true,
     "real_model_restart_restore": true,
     "additional_qwen25_7b_canonical_plan_formed": true,
     "additional_qwen25_7b_work_items": 13,
@@ -2519,12 +2666,17 @@
     "additional_qwen25_7b_formal_revision_suitable": false,
     "qwen3_14b_schema_probe_passed": true,
     "qwen3_14b_outline_passed": true,
-    "qwen3_14b_canonical_plan_formed": false,
+    "qwen3_14b_canonical_plan_formed": true,
     "qwen3_14b_prior_45_second_timeout_evidence_retained": true,
     "qwen3_14b_180_second_formal_calls_attempted": true,
-    "qwen3_14b_valid_sections_completed": 3,
-    "qwen3_14b_deepest_rule": "section.dependency_unknown",
-    "qwen3_14b_failure_classification": "model_contract_violation",
+    "qwen3_14b_valid_sections_completed": 4,
+    "qwen3_14b_deepest_rule": null,
+    "qwen3_14b_failure_classification": null,
+    "qwen3_14b_current_baseline_status": "PASS",
+    "qwen3_14b_current_plan_version_1_digest": "c637471b3b2eb2fc3fb333c99f74ed350bd42dc81e1dca3611a9ed70338000ba",
+    "qwen3_14b_current_accepted_plan_version_2_digest": "6d24b77e3a19b7bfd35cb908f8f7bf7e157f81fad5ebc2cf82dfe25b25531e14",
+    "qwen3_14b_current_revision_semantics_passed": true,
+    "qwen3_14b_current_confirmation_and_restart_restore_passed": true,
     "draft_compile_v1_qwen25_coder_7b_canonical_plan_formed": true,
     "draft_compile_v1_sections": 4,
     "draft_compile_v1_requirements": 8,
@@ -2557,7 +2709,7 @@
     "revision_single_response_modification_observed_shape": "explanation_only",
     "revision_single_response_needs_clarification_attempted": false,
     "revision_single_response_complete_backend_gate_passed": false,
-    "reason": "The Section-v2 run formed and recovered a validated 4-section, 9-requirement, 29-work-item canonical plan with 20 exact bindings, 9 explicit gaps, and 176 valid dependency edges. One real clarification answer produced and recovered a formally valid pending Diff. Human review rejected that Diff because it changed only a frontend title rather than the requested data-section backup policy and acceptance intent, and did not explicitly state weekly full backup. The reject path used no model call, cleared the Diff, and recovered the unchanged base plan. The 7B model is therefore proven for planning drafts and suggestions, while semantically acceptable free-text revision remains unproven. Historical gates remain unchanged."
+    "reason": "The current Qwen3 14B baseline formed and recovered a validated 4-section, 9-requirement, 20-work-item canonical plan with 10 exact bindings, 10 explicit gaps, and 71 valid dependency edges. Its data-scoped free-text revision produced one formally valid change containing daily incremental backup, weekly full backup, and recovery-drill acceptance intent; no unrelated section changed. The Diff was accepted as plan v2, confirmed, and the confirmed plan and receipt were recovered after restart. Historical 7B limitations remain nested evidence and do not make the model authoritative."
   },
   "large_product_build": {
     "verdict": "PARTIAL",
@@ -2610,6 +2762,7 @@
     "qwen25_7b_modification_v2_source_target_warehouse_products_unchanged": true,
     "qwen3_14b_probe_outline_source_target_warehouse_products_unchanged": true,
     "qwen3_14b_180_second_planning_source_target_warehouse_products_unchanged": true,
+    "qwen3_14b_current_strong_baseline_source_target_warehouse_products_usage_unchanged": true,
     "draft_compile_v1_qwen25_coder_7b_source_target_warehouse_products_unchanged": true,
     "draft_compile_v1_formal_tables_and_usage_unchanged": true,
     "revision_two_layer_qwen25_coder_7b_source_target_warehouse_products_unchanged": true,
@@ -2634,6 +2787,34 @@
       "failed": 0
     },
     "json_parse": "passed",
+    "qwen3_14b_strong_model_baseline_v1": {
+      "real_model_calls_attempted": 8,
+      "real_model_calls_completed": 8,
+      "schema_probes_passed": 1,
+      "outlines_passed": 1,
+      "section_calls_passed": 4,
+      "action_suggestion_calls": 1,
+      "revision_proposal_calls": 1,
+      "canonical_plans_formed": 1,
+      "plan_diffs_created": 1,
+      "plan_diffs_semantically_accepted": 1,
+      "plan_diffs_accepted": 1,
+      "confirmations_created": 1,
+      "confirmed_restart_restores_passed": 1,
+      "candidate_calls": 0,
+      "hidden_retries": 0,
+      "audit_only_preflight_failures_before_model_call": 2,
+      "audit_semantic_checker_corrections_without_model_rerun": 1
+    },
+    "post_strong_model_report_regression": {
+      "planner_and_app_service_tests_passed": 69,
+      "failed": 0,
+      "pytest_version": "9.1.1",
+      "pytest_provided_from_offline_uv_cache": true,
+      "json_parse": "passed",
+      "git_diff_check": "passed",
+      "git_diff_cached_check_before_staging": "passed"
+    },
     "focused_planner_service_bridge_static": {
       "passed": 102,
       "failed": 0,
