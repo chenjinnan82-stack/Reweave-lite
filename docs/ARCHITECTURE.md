@@ -5,10 +5,11 @@ capsule warehouse, one `module_native` composer, and two delivery modes.
 
 - The published baseline is `v0.3.0`, which closes Stage G.
 - Current `main` additionally contains the completed legacy/North-Star
-  calibration, the Static Web review-only Patch backend, and the desktop
-  review interaction added by Plans 2–4.
-- Those post-tag capabilities are current mainline behavior; they were not
-  published by the existing `v0.3.0` Tag.
+  calibration, the Static Web review-only Patch backend, and the desktop review
+  interaction added by Plans 2–4. The current branch adds the formal local-model
+  product-planning, confirmed-plan execution, and isolated-candidate backends.
+- None of those post-tag capabilities were published by the existing `v0.3.0`
+  Tag.
 
 The authoritative roadmap is
 [Reweave Product North Star](REWEAVE_PRODUCT_NORTH_STAR.md). Current behavior
@@ -27,6 +28,14 @@ flowchart LR
   E --> F["ReweaveAppService"]
   F --> G["One module_native composer"]
 
+  P["Product goal"] --> Q["Explicit local <=15B planning-model selection and probe"]
+  Q --> F
+  F --> R["product_plan.v1 review, diff, and confirmation"]
+  R --> S["Application-state product_workspaces"]
+  R --> T["plan_execution.v1"]
+  T --> G
+  G --> U["isolated product_candidate.v1"]
+
   G --> H["Standalone product"]
   H --> I["index.html / styles.css / app.js"]
   I --> J["manifest, provenance, exact usage, and local history"]
@@ -44,6 +53,14 @@ from the same warehouse and use the same composer. Target integration is not a
 second repository, a second capsule format, or a second composition path.
 Source Box binding metadata and transient target profiles do not form another
 formal capsule warehouse.
+
+`product_workspaces` is a separate application-state area for small structured
+planning drafts, immutable confirmed plan versions, question/answer records,
+plan Diffs, model-call evidence summaries, and confirmation receipts. It is not
+a second Capsule IR, repository, product directory, or composer. It contains no
+raw prompt, raw model response, capsule source, product source, or candidate
+files. Isolated candidate files live under the separate application-state
+`product_candidates` area; that area is not a formal product store.
 
 ## Shared Core
 
@@ -74,6 +91,43 @@ versions and invokes the single `module_native` composer. The desktop bridge
 forwards narrow service actions; it does not reproduce path, authorization,
 composition, or Patch rules in the frontend.
 
+The same service owns the product-planning actions. A separate logical local
+planning-model role interprets goals, asks bounded blocking questions, plans
+the fixed frontend/backend/data/infrastructure sections, and suggests opaque
+candidate references. Deterministic code alone assigns plan/work-item IDs,
+binds exact capsule/version identities, validates dependencies and eligibility,
+computes canonical digests, persists workspaces, invalidates stale state, and
+confirms plans. The planning role is independent from
+`capsule_supervision_model`, even when a user selects the same installed model
+for both roles.
+
+## Product Planning Candidate (Not v0.3.0)
+
+The desktop's single product-goal input now starts `product_plan.v1`. The first
+use of an exact local Ollama name and digest requires explicit selection,
+Ollama metadata proof of at most 15B actual parameters, and a strict Schema probe. There is no
+automatic download, first-model selection, cloud call, or model fallback.
+
+Planning is segmented into a bounded requirements outline, optional 1–3
+blocking questions, four section calls, bounded code-free capsule-summary
+batches, and deterministic final validation. The model never receives formal
+capsule IDs, version IDs, canonical hashes, source paths, source code, SQLite
+rows, product files, or absolute workspace paths; it can refer only to
+ephemeral allowlisted candidate references.
+
+The planning backend supports explanation, controlled `plan_diff` review,
+confirmation, and history recovery. Confirmation writes only a structured plan
+receipt after exact capsule revalidation. A separate explicit candidate action
+can compile that receipt through `plan_execution.v1` and invoke `module_native`
+once to create an isolated `product_candidate.v1`; it does not write the formal
+product store or `product_capsule_usage`.
+
+The deterministic planning backend, confirmed-plan compiler, isolated candidate
+backend, and read-only thin reviewer pass their scoped gates. Local 7B evidence
+proves planning drafts and bounded field suggestions, not reliable free-text
+revision. A user-approved real strong-model goal-to-confirmed-plan run remains
+outstanding, so the complete goal-to-candidate claim is `PARTIAL`.
+
 ## Delivery Mode 1: Standalone Product
 
 The standalone path generates a new runnable `index.html`, `styles.css`, and
@@ -84,6 +138,11 @@ Boxes remain read-only.
 The service-backed formal CLI accepts explicitly selected capsule IDs and uses
 this same application-service and composer path. The retired Stage 4 public
 demo is not an active product entry.
+
+The legacy formal generation service remains available for compatibility and
+existing product history. The new candidate backend is separate: it consumes a
+confirmed plan, writes only isolated application state, and exposes no promote,
+apply, commit, or rollback action.
 
 ## Delivery Mode 2: Static Web Target Review
 
@@ -120,10 +179,17 @@ command.
   [REWEAVE_STATIC_WEB_TARGET_PATCH_ACCEPTANCE.json](reports/REWEAVE_STATIC_WEB_TARGET_PATCH_ACCEPTANCE.json).
 - The desktop review flow is recorded in
   [REWEAVE_STATIC_WEB_TARGET_UI_ACCEPTANCE.json](reports/REWEAVE_STATIC_WEB_TARGET_UI_ACCEPTANCE.json).
+- The combined real-service, real-bridge, real-QWebEngine review-only proof is
+  recorded in
+  [REWEAVE_STATIC_WEB_TARGET_REAL_E2E_ACCEPTANCE.json](reports/REWEAVE_STATIC_WEB_TARGET_REAL_E2E_ACCEPTANCE.json).
+- The product-planning implementation candidate, passing deterministic desktop
+  regressions, and still-failing real 1.5B outline gate are recorded in
+  [REWEAVE_PRODUCT_PLANNING_V1_ACCEPTANCE.json](reports/REWEAVE_PRODUCT_PLANNING_V1_ACCEPTANCE.json).
 
-The desktop acceptance uses a real QWebEngine flow with a strict stub of the
-Plan 3 service contract; the real backend is proven separately by the Plan 3
-acceptance. This is not yet one combined real-service-to-UI end-to-end proof.
+The earlier desktop acceptance intentionally froze the Plan 3 service contract
+behind a strict protocol substitute. The later real E2E record closes the
+combined `ReweaveAppService -> bridge -> QWebEngine` review-only flow without
+changing the Patch, zero-write, or in-memory-confirmation boundary.
 
 ## Not Implemented
 
@@ -133,6 +199,10 @@ The current architecture does not provide:
   build, test, and post-Patch behavior checks;
 - writes, apply, commit, or rollback in a user's real worktree;
 - React + Vite or Node target integration;
+- a formal desktop candidate reviewer or full IDE for confirmed product plans;
+- candidate promotion into the formal product store, usage, or a user worktree;
+- multi-capability large-product composition: the current `module_native`
+  composer still accepts only 1–3 capsules from one capability group;
 - a general Target Adapter, cross-project compatibility planner, or complete
   Project IR;
 - automatic legal-license or distribution authorization; or

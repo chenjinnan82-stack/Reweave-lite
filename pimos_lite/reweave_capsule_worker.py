@@ -116,7 +116,7 @@ def _image(request: dict[str, Any]) -> dict[str, Any]:
 
 
 def _qweb(request: dict[str, Any]) -> dict[str, Any]:
-    from PySide6.QtCore import QTimer, QUrl
+    from PySide6.QtCore import QCoreApplication, QEvent, QTimer, QUrl
     from PySide6.QtWidgets import QApplication
     from PySide6.QtWebEngineCore import (
         QWebEnginePage,
@@ -219,7 +219,10 @@ def _qweb(request: dict[str, Any]) -> dict[str, Any]:
     page.load(QUrl.fromLocalFile(str(entry)))
     app.exec()
     page.deleteLater()
+    QCoreApplication.sendPostedEvents(page, QEvent.Type.DeferredDelete)
     profile.deleteLater()
+    QCoreApplication.sendPostedEvents(profile, QEvent.Type.DeferredDelete)
+    app.processEvents()
     if blocked:
         result = {
             "schema_version": "qweb_validation.v1",

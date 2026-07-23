@@ -1,10 +1,19 @@
-"""Deterministic confirmed-plan execution compiler tests."""
+"""Confirmed plan execution and isolated product candidate tests."""
 
 from __future__ import annotations
 
 import copy
+import json
+import os
+import shutil
+import tempfile
+import time
 import unittest
+from pathlib import Path
+from unittest.mock import patch
 
+from pimos_lite.reweave_app_service import ReweaveAppService
+from pimos_lite.reweave_capsule_store import CapsuleWarehouseStore
 from pimos_lite.reweave_plan_execution import (
     PlanExecutionError,
     canonical_bytes,
@@ -16,9 +25,33 @@ from pimos_lite.reweave_product_planner import (
     PLANNING_PROMPT_VERSION,
     PLANNING_RULES_VERSION,
 )
+from tests.test_reweave_phase5_generation import (
+    _NoLegacyEngine,
+    _quality_receipt,
+    _runtime_receipt,
+    _seed_capsule,
+)
+
 
 NOW = "2026-07-23T00:00:00Z"
 SECTIONS = ("frontend", "backend", "data", "infrastructure")
+
+
+class _ConfirmedPlanner:
+    def __init__(self, plan: dict, confirmation: dict) -> None:
+        self.plan = copy.deepcopy(plan)
+        self.confirmation = copy.deepcopy(confirmation)
+
+    def get(self, _token: str, _catalog: dict) -> dict:
+        return {
+            "ok": True,
+            "data": {
+                "status": "confirmed",
+                "plan": copy.deepcopy(self.plan),
+                "confirmation": copy.deepcopy(self.confirmation),
+            },
+        }
+
 
 def _binding(capsule: dict) -> dict:
     display_names = {
@@ -157,20 +190,63 @@ def _refresh(plan: dict, confirmation: dict) -> None:
     )
 
 
+def _poll(service: ReweaveAppService, run_id: str) -> dict:
+    for _ in range(3000):
+        response = service.get_product_candidate_run({"run_id": run_id})
+        if response["ok"] and response["data"]["status"] in {
+            "completed",
+            "failed",
+            "cancelled",
+        }:
+            return response["data"]
+        time.sleep(0.01)
+    raise AssertionError("candidate run did not finish")
 
+
+def _store_snapshot(store: CapsuleWarehouseStore) -> dict:
+    tables = (
+        "warehouse_state",
+        "capability_groups",
+        "capsules",
+        "capsule_versions",
+        "capsule_assets",
+        "capsule_sources",
+        "product_capsule_usage",
+    )
+    with store.read_connection() as connection:
+        return {
+            table: [tuple(row) for row in connection.execute(f"SELECT * FROM {table}")]
+            for table in tables
+        }
+
+
+@unittest.skipUnless(shutil.which("node"), "Node.js is required")
 class PlanExecutionV1Test(unittest.TestCase):
     def setUp(self) -> None:
-        self.capsules = [
-            {
-                "capsule_id": f"capsule_{kind}",
-                "version_id": f"version_{kind}",
-                "canonical_hash": str(index) * 64,
-                "capability_key": "bounded_quote",
-                "capability_kind": kind,
-            }
-            for index, kind in enumerate(("presentation", "interaction", "computation"), start=1)
-        ]
-        self.plan, self.confirmation = _confirmed_plan(self.capsules, 1)
+        self.temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self.temporary.name)
+        self.state = self.root / "state"
+        self.environment = patch.dict(
+            os.environ,
+            {"REWEAVE_STATE_DIR": str(self.state)},
+        )
+        self.environment.start()
+        self.store = CapsuleWarehouseStore(self.state / "capsule_warehouse.sqlite3")
+        self.store.initialize()
+        self.service = ReweaveAppService(_NoLegacyEngine(), capsule_store=self.store)
+        for kind in ("presentation", "interaction", "computation"):
+            _seed_capsule(self.store, kind)
+        self.capsules, _scope = self.service._load_generation_capsules(
+            ["capsule_presentation", "capsule_interaction", "capsule_computation"],
+            read_only=True,
+        )
+        revision = self.service._product_planning_catalog()["warehouse_revision"]
+        self.plan, self.confirmation = _confirmed_plan(self.capsules, revision)
+
+    def tearDown(self) -> None:
+        self.service.close()
+        self.environment.stop()
+        self.temporary.cleanup()
 
     def test_compiler_is_deterministic_and_fail_closed(self) -> None:
         first = compile_plan_execution(
@@ -310,6 +386,197 @@ class PlanExecutionV1Test(unittest.TestCase):
             "plan_execution_dom_capsule_required",
         ):
             compile_plan_execution(no_dom_plan, no_dom_confirmation, self.capsules)
+
+    def test_candidate_is_isolated_idempotent_and_recoverable(self) -> None:
+        self.service._product_planner = _ConfirmedPlanner(
+            self.plan,
+            self.confirmation,
+        )
+        before = _store_snapshot(self.store)
+        source = self.root / "source-sentinel"
+        target = self.root / "target-sentinel"
+        source.write_text("source unchanged\n", encoding="utf-8")
+        target.write_text("target unchanged\n", encoding="utf-8")
+        products = self.state / "products"
+
+        with (
+            patch(
+                "pimos_lite.reweave_app_service._validate_product_static",
+                _quality_receipt,
+            ),
+            patch(
+                "pimos_lite.reweave_app_service._validate_product_runtime",
+                _runtime_receipt,
+            ),
+        ):
+            started = self.service.start_product_candidate(
+                {
+                    "plan_token": "plan_token_test",
+                    "plan_digest": self.plan["canonical_digest"],
+                }
+            )
+            self.assertTrue(started["ok"])
+            task = _poll(self.service, started["run_id"])
+            self.assertEqual(task["status"], "completed", task)
+            candidate = task["data"]["data"]
+            self.assertEqual(candidate["schema_version"], "product_candidate.v1")
+            self.assertEqual(candidate["status"], "review_ready")
+            self.assertNotIn("candidate_id", candidate)
+            self.assertTrue(candidate["validation"]["static"]["status"] == "passed")
+            self.assertTrue(candidate["validation"]["runtime"]["status"] == "passed")
+            self.assertEqual(
+                {row["path"] for row in candidate["provenance"]["file_provenance"]},
+                {row["path"] for row in candidate["files"]},
+            )
+            self.assertTrue(
+                all(
+                    row["execution_unit_ids"]
+                    and row["work_item_ids"]
+                    and row["capsule_version_ids"]
+                    for row in candidate["provenance"]["file_provenance"]
+                )
+            )
+
+            repeated = self.service.start_product_candidate(
+                {
+                    "plan_token": "plan_token_test",
+                    "plan_digest": self.plan["canonical_digest"],
+                }
+            )
+            repeated_task = _poll(self.service, repeated["run_id"])
+            repeated_candidate = repeated_task["data"]["data"]
+            self.assertEqual(
+                repeated_candidate["candidate_token"],
+                candidate["candidate_token"],
+            )
+            self.assertEqual(
+                repeated_candidate["candidate_digest"],
+                candidate["candidate_digest"],
+            )
+
+            second_state = self.root / "second-state"
+            second_store = CapsuleWarehouseStore(
+                second_state / "capsule_warehouse.sqlite3"
+            )
+            second_store.initialize()
+            second_service = ReweaveAppService(
+                _NoLegacyEngine(),
+                capsule_store=second_store,
+            )
+            try:
+                for kind in ("presentation", "interaction", "computation"):
+                    _seed_capsule(second_store, kind)
+                second_service._product_planner = _ConfirmedPlanner(
+                    self.plan,
+                    self.confirmation,
+                )
+                reproduced = second_service.start_product_candidate(
+                    {
+                        "plan_token": "plan_token_reproduced",
+                        "plan_digest": self.plan["canonical_digest"],
+                    }
+                )
+                reproduced_task = _poll(second_service, reproduced["run_id"])
+                reproduced_candidate = reproduced_task["data"]["data"]
+                self.assertEqual(
+                    reproduced_candidate["candidate_digest"],
+                    candidate["candidate_digest"],
+                )
+                self.assertEqual(
+                    reproduced_candidate["files"],
+                    candidate["files"],
+                )
+            finally:
+                second_service.close()
+
+            restarted = ReweaveAppService(
+                _NoLegacyEngine(),
+                capsule_store=self.store,
+            )
+            try:
+                restored = restarted.get_product_candidate(
+                    {"candidate_token": candidate["candidate_token"]}
+                )
+                self.assertTrue(restored["ok"], restored)
+                self.assertEqual(restored["data"], candidate)
+                opened = restarted.read_product_candidate_file(
+                    {
+                        "candidate_token": candidate["candidate_token"],
+                        "relative_path": "index.html",
+                    }
+                )
+                self.assertTrue(opened["ok"], opened)
+                self.assertEqual(opened["data"]["encoding"], "utf-8")
+                self.assertIn("--- /dev/null", opened["data"]["text_diff"])
+                traversal = restarted.read_product_candidate_file(
+                    {
+                        "candidate_token": candidate["candidate_token"],
+                        "relative_path": "../index.html",
+                    }
+                )
+                self.assertFalse(traversal["ok"])
+                self.assertEqual(
+                    traversal["error"]["code"],
+                    "product_file_path_invalid",
+                )
+            finally:
+                restarted.close()
+
+            candidate_dir = next(
+                (self.state / "product_candidates").glob("candidate_*")
+            )
+            (candidate_dir / "product" / "index.html").write_text(
+                "corrupted\n",
+                encoding="utf-8",
+            )
+            corrupted = self.service.get_product_candidate(
+                {"candidate_token": candidate["candidate_token"]}
+            )
+            self.assertFalse(corrupted["ok"])
+            self.assertEqual(
+                corrupted["error"]["code"],
+                "product_candidate_invalid",
+            )
+
+        self.assertEqual(_store_snapshot(self.store), before)
+        self.assertFalse(products.exists())
+        self.assertEqual(source.read_text(encoding="utf-8"), "source unchanged\n")
+        self.assertEqual(target.read_text(encoding="utf-8"), "target unchanged\n")
+        candidate_root = self.state / "product_candidates"
+        self.assertEqual(len(list(candidate_root.glob("candidate_*"))), 1)
+        execution_path = next(candidate_root.glob("candidate_*")) / "execution_plan.json"
+        execution = json.loads(execution_path.read_text(encoding="utf-8"))
+        self.assertEqual(execution["schema_version"], "plan_execution.v1")
+        self.assertEqual(execution["execution_digest"], candidate["execution_digest"])
+        if os.name == "posix":
+            self.assertEqual(candidate_root.stat().st_mode & 0o777, 0o700)
+            self.assertTrue(
+                all(
+                    path.stat().st_mode & 0o777 == 0o600
+                    for path in candidate_root.rglob("*")
+                    if path.is_file()
+                )
+            )
+
+    @unittest.skipUnless(hasattr(os, "symlink"), "symlink support is required")
+    def test_candidate_root_symlink_fails_closed(self) -> None:
+        self.service._product_planner = _ConfirmedPlanner(
+            self.plan,
+            self.confirmation,
+        )
+        outside = self.root / "outside"
+        outside.mkdir()
+        os.symlink(outside, self.state / "product_candidates")
+        started = self.service.start_product_candidate(
+            {
+                "plan_token": "plan_token_symlink",
+                "plan_digest": self.plan["canonical_digest"],
+            }
+        )
+        task = _poll(self.service, started["run_id"])
+        self.assertEqual(task["status"], "failed")
+        self.assertEqual(task["error"]["code"], "product_candidate_directory_unsafe")
+        self.assertEqual(list(outside.iterdir()), [])
 
 
 if __name__ == "__main__":

@@ -1,0 +1,188 @@
+{
+  "schema_version": "reweave_plan_to_execution_v1_acceptance.v1",
+  "completed_date": "2026-07-23",
+  "verdict": "PARTIAL",
+  "verdict_reason": "The deterministic confirmed-plan compiler, isolated candidate backend, and read-only thin reviewer passed. The complete product-goal-to-candidate claim remains unproven because no user-approved real strong model was run to produce the confirmed plan used by this gate.",
+  "scope": {
+    "plan_execution_v1": "PASS",
+    "product_candidate_v1": "PASS",
+    "thin_review_only_viewer": "PASS",
+    "real_strong_model_goal_to_candidate": "PARTIAL"
+  },
+  "authority_boundary": {
+    "model_may_propose_plan_semantics": true,
+    "model_controls_execution_units": false,
+    "model_controls_composer_inputs": false,
+    "model_controls_file_identity": false,
+    "model_controls_validation": false,
+    "model_generated_candidate_code": false,
+    "deterministic_backend_controls_identity_dependencies_digest_and_persistence": true
+  },
+  "plan_execution_gate": {
+    "schema_version": "plan_execution.v1",
+    "status": "PASS",
+    "input": "confirmed_product_plan.v1_with_matching_receipt",
+    "execution_units": 4,
+    "formal_capsules": 3,
+    "same_capability_group": true,
+    "unique_capability_kinds": true,
+    "dom_capability_present": true,
+    "gaps_allowed": false,
+    "topological_order_deterministic": true,
+    "byte_equal_replay": true,
+    "failure_closed_cases": [
+      "unconfirmed_or_digest_mismatch",
+      "gap_present",
+      "stale_exact_binding",
+      "multi_capability_group",
+      "duplicate_capability_kind",
+      "unknown_dependency",
+      "self_dependency",
+      "dependency_cycle",
+      "requirement_uncovered",
+      "composer_incompatible"
+    ]
+  },
+  "candidate_gate": {
+    "schema_version": "product_candidate.v1",
+    "status": "PASS",
+    "composer": "module_native_formal_product.v1",
+    "candidate_files": 7,
+    "candidate_digest": "5db5987629f85f4031327513793be95de9c17d835840ac62cd1d9ba826b6d278",
+    "execution_digest": "3f7e5b45abd1e8d8d293a27a55c5bf875841b7556909061b50a9a26b4342f744",
+    "idempotent_repeat": true,
+    "restart_recovery": true,
+    "file_hashes_verified_on_read": true,
+    "file_diff_relative_to_empty_baseline": true,
+    "file_provenance_links_execution_units_work_items_and_exact_capsule_versions": true,
+    "execution_plan_persisted_canonically": true,
+    "directories_mode": "0700",
+    "files_mode": "0600",
+    "symlinks_absent": true,
+    "atomic_replace": true,
+    "candidate_id_exposed_in_ordinary_projection": false,
+    "application_state_path_exposed": false
+  },
+  "validation_gate": {
+    "static_status": "passed",
+    "strict_csp": true,
+    "network_apis_absent": true,
+    "javascript_syntax": true,
+    "real_qwebengine_runtime": "passed",
+    "blocked_requests": 0,
+    "console_messages": 0,
+    "interactive_runtime": {
+      "status": "PASS",
+      "input_quantity": 3,
+      "observed_total": 6
+    }
+  },
+  "write_boundary": {
+    "warehouse_revision_unchanged": true,
+    "warehouse_formal_tables_unchanged": true,
+    "product_capsule_usage_unchanged": true,
+    "products_directory_unchanged": true,
+    "source_tree_unchanged": true,
+    "target_tree_unchanged": true,
+    "only_product_candidates_state_written": true,
+    "candidate_promoted": false
+  },
+  "thin_reviewer": {
+    "status": "PASS",
+    "implementation_location": "temporary_review_only_artifact",
+    "real_qwebengine": true,
+    "language": "zh-CN",
+    "viewport": "1280x800",
+    "shows": [
+      "confirmed_plan_summary",
+      "candidate_file_tree",
+      "read_only_file_content",
+      "text_diff",
+      "isolated_preview",
+      "validation_results",
+      "capsule_provenance"
+    ],
+    "forbidden_actions_absent": [
+      "apply",
+      "commit",
+      "export",
+      "promote"
+    ],
+    "artifacts": [
+      "candidate-preview.png",
+      "candidate-review.png",
+      "viewer.html",
+      "viewer.css",
+      "baseline.json",
+      "result.json"
+    ]
+  },
+  "planning_input_evidence": {
+    "kind": "strict_confirmed_plan_protocol_fixture",
+    "real_product_planner_model_used": false,
+    "real_formal_sqlite_capsules_used": true,
+    "real_reweave_app_service_used": true,
+    "real_module_native_composer_used": true,
+    "claim_boundary": "This proves the deterministic backend from a valid confirmed plan to a real candidate, not a real strong-model goal-to-candidate flow."
+  },
+  "tests": {
+    "python_compile": "PASS",
+    "plan_execution_direct": {
+      "passed": 3,
+      "failed": 0
+    },
+    "planner_service_bridge_management_release_group": {
+      "passed": 128,
+      "subtests_passed": 14,
+      "failed": 0
+    },
+    "phase5_formal_generation": {
+      "passed": 21,
+      "subtests_passed": 15,
+      "failed": 0
+    },
+    "full_repository_excluding_phase6_desktop": {
+      "passed": 853,
+      "subtests_passed": 198,
+      "environment_gate_failures": 9,
+      "environment_gate_independent_rechecks_passed": 9,
+      "environment_gate_breakdown": {
+        "sandbox_loopback_bind": 1,
+        "qwebengine_long_process_resource": 8
+      }
+    },
+    "json_parse": "PASS",
+    "git_diff_check": "PASS",
+    "git_diff_cached_check": "PASS"
+  },
+  "security": {
+    "raw_prompt_saved": false,
+    "raw_response_saved": false,
+    "source_code_sent_to_model": false,
+    "new_cloud_or_network_path": false,
+    "sqlite_schema_changed": false,
+    "module_native_changed": false,
+    "second_composer_added": false,
+    "second_app_service_added": false,
+    "candidate_code_repairer_added": false
+  },
+  "deferred": [
+    "user_approved_real_strong_model_goal_to_confirmed_plan_gate",
+    "multi_capability_composer",
+    "gap_code_generation",
+    "formal_frontend_candidate_review",
+    "candidate_promotion_transaction",
+    "apply_commit_rollback"
+  ],
+  "git_stop": {
+    "baseline": "f627d039e06b61b2091c8d4641e00d64c4eec07d",
+    "v0_3_0": "e9b2ccd68439c3d5fddae7fa260888b7a5b788c8",
+    "preexisting_staged_snapshot_preserved": true,
+    "new_changes_staged": false,
+    "commit": false,
+    "push": false,
+    "pull_request": false,
+    "release": false,
+    "tag_changed": false
+  }
+}

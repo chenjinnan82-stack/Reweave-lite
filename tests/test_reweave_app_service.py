@@ -101,6 +101,10 @@ class ReweaveAppServiceTest(unittest.TestCase):
             "cancel_product_plan_run",
             "get_product_plan_workspace",
             "confirm_product_plan",
+            "start_product_candidate",
+            "get_product_candidate_run",
+            "get_product_candidate",
+            "read_product_candidate_file",
         ):
             self.assertEqual(release_boundary_for_action(action), "public_product")
         self.assertEqual(
@@ -136,6 +140,8 @@ class ReweaveAppServiceTest(unittest.TestCase):
         self.assertIn("start_product_plan", public_product_actions())
         self.assertIn("suggest_product_plan_action", public_product_actions())
         self.assertIn("confirm_product_plan", public_product_actions())
+        self.assertIn("start_product_candidate", public_product_actions())
+        self.assertIn("get_product_candidate", public_product_actions())
         self.assertIn("analyze_static_web_target", public_product_actions())
         self.assertIn("generate_static_web_patch", public_product_actions())
         self.assertNotIn("generate_preview", public_product_actions())

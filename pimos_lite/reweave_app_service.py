@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
+import base64
+import difflib
 import hashlib
 import json
 import os
 import re
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -51,6 +54,12 @@ from pimos_lite.reweave_product_planner import (
     PRODUCT_PLANNING_PHASES,
     ProductPlanner,
 )
+from pimos_lite.reweave_plan_execution import (
+    PLAN_EXECUTION_VERSION,
+    canonical_bytes as plan_execution_bytes,
+    canonical_digest as plan_execution_digest,
+    compile_plan_execution,
+)
 from pimos_lite.reweave_javascript_source import (
     JAVASCRIPT_SOURCE_TYPE,
     JavascriptScopeSnapshot,
@@ -72,8 +81,11 @@ APP_SERVICE_VERSION = "v2"
 LUMO_LITE_MODE = "source_read_only_preview_write"
 PRODUCT_MANIFEST_VERSION = "reweave_product_manifest.v1"
 PRODUCTS_DIRNAME = "products"
+PRODUCT_CANDIDATES_DIRNAME = "product_candidates"
 _PRODUCT_ID = re.compile(r"product_[0-9a-f]{32}\Z")
 _MANIFEST_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
+_CANDIDATE_ID = re.compile(r"candidate_[0-9a-f]{32}\Z")
+_CANDIDATE_TOKEN = re.compile(r"candidate_token_[0-9a-f]{48}\Z")
 PUBLIC_PRODUCT_ACTIONS = frozenset(
     {
         "get_initial_state",
@@ -88,6 +100,10 @@ PUBLIC_PRODUCT_ACTIONS = frozenset(
         "cancel_product_plan_run",
         "get_product_plan_workspace",
         "confirm_product_plan",
+        "start_product_candidate",
+        "get_product_candidate_run",
+        "get_product_candidate",
+        "read_product_candidate_file",
         "analyze_static_web_target",
         "generate_static_web_patch",
         "get_latest_product_entry_path",
@@ -1387,13 +1403,16 @@ class ReweaveAppService:
         restore: bool = False,
         cancellable: bool = False,
         read_only_planning: bool = False,
+        read_only_candidate: bool = False,
         planning_progress: bool = False,
     ) -> dict[str, Any]:
         if read_only_planning and not kind.startswith("product_plan_"):
             raise ValueError("read_only_planning_kind_invalid")
         if planning_progress and not read_only_planning:
             raise ValueError("planning_progress_kind_invalid")
-        if not restore and not read_only_planning:
+        if read_only_candidate and not kind.startswith("product_candidate_"):
+            raise ValueError("read_only_candidate_kind_invalid")
+        if not restore and not read_only_planning and not read_only_candidate:
             try:
                 self._ensure_capsule_management()
             except (CapsuleStoreError, OSError, RuntimeError, sqlite3.Error) as exc:
@@ -1451,7 +1470,10 @@ class ReweaveAppService:
                         )
                     planner_error = None
                     if (
-                        kind.startswith("product_plan_")
+                        (
+                            kind.startswith("product_plan_")
+                            or kind.startswith("product_candidate_")
+                        )
                         and type(task["data"]) is dict
                         and task["data"].get("ok") is False
                     ):
@@ -2497,6 +2519,706 @@ class ReweaveAppService:
                 )
         except (CapsuleStoreError, OSError, ProductGenerationError, ValueError) as exc:
             return self._exception_error(exc, "product_plan_confirmation_failed")
+
+    def _product_candidate_root(self) -> Path:
+        return self._capsule_store.path.parent / PRODUCT_CANDIDATES_DIRNAME
+
+    @staticmethod
+    def _assert_candidate_path_safe(path: Path) -> None:
+        absolute = Path(os.path.abspath(path))
+        for component in reversed((absolute, *absolute.parents)):
+            try:
+                metadata = component.lstat()
+            except FileNotFoundError:
+                continue
+            if stat.S_ISLNK(metadata.st_mode):
+                raise ProductGenerationError("product_candidate_directory_unsafe")
+
+    @staticmethod
+    def _candidate_projection(record: dict[str, Any]) -> dict[str, Any]:
+        return {
+            key: json.loads(json.dumps(value, ensure_ascii=False))
+            for key, value in record.items()
+            if key not in {"candidate_id", "record_digest"}
+        }
+
+    def _read_candidate_record_path(self, candidate_dir: Path) -> dict[str, Any]:
+        root = self._product_candidate_root()
+        self._assert_candidate_path_safe(root)
+        self._assert_candidate_path_safe(candidate_dir)
+        try:
+            candidate_dir.resolve().relative_to(root.resolve())
+        except (OSError, ValueError) as exc:
+            raise ProductGenerationError("product_candidate_directory_unsafe") from exc
+        metadata = candidate_dir / "candidate.json"
+        execution_metadata = candidate_dir / "execution_plan.json"
+        product_root = candidate_dir / "product"
+        if (
+            metadata.is_symlink()
+            or not metadata.is_file()
+            or execution_metadata.is_symlink()
+            or not execution_metadata.is_file()
+            or product_root.is_symlink()
+            or not product_root.is_dir()
+        ):
+            raise ProductGenerationError("product_candidate_invalid")
+        try:
+            record = _strict_json_bytes(metadata.read_bytes())
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+            raise ProductGenerationError("product_candidate_invalid") from exc
+        required = {
+            "schema_version", "status", "candidate_id", "candidate_token",
+            "candidate_digest", "record_digest", "created_at", "plan", "execution_digest",
+            "composer_version", "entry", "files", "file_changes", "provenance",
+            "validation", "permissions",
+        }
+        if type(record) is not dict or set(record) != required:
+            raise ProductGenerationError("product_candidate_invalid")
+        core = {
+            key: value
+            for key, value in record.items()
+            if key not in {"candidate_token", "candidate_digest", "record_digest"}
+        }
+        record_body = {
+            key: value for key, value in record.items() if key != "record_digest"
+        }
+        if (
+            record["schema_version"] != "product_candidate.v1"
+            or record["status"] != "review_ready"
+            or _CANDIDATE_ID.fullmatch(str(record["candidate_id"])) is None
+            or record["candidate_id"] != candidate_dir.name
+            or _CANDIDATE_TOKEN.fullmatch(str(record["candidate_token"])) is None
+            or _MANIFEST_DIGEST.fullmatch(str(record["candidate_digest"])) is None
+            or record["candidate_digest"] != plan_execution_digest(core)
+            or _MANIFEST_DIGEST.fullmatch(str(record["record_digest"])) is None
+            or record["record_digest"] != plan_execution_digest(record_body)
+            or _MANIFEST_DIGEST.fullmatch(str(record["execution_digest"])) is None
+            or type(record["created_at"]) is not str
+            or type(record["plan"]) is not dict
+            or set(record["plan"]) != {"plan_id", "plan_version", "plan_digest"}
+            or not re.fullmatch(r"plan_[0-9a-f]{32}", str(record["plan"]["plan_id"]))
+            or type(record["plan"]["plan_version"]) is not int
+            or record["plan"]["plan_version"] < 1
+            or _MANIFEST_DIGEST.fullmatch(str(record["plan"]["plan_digest"])) is None
+            or type(record["composer_version"]) is not str
+            or not record["composer_version"]
+            or type(record["entry"]) is not dict
+            or record["entry"] != {"path": "index.html", "kind": "static_html"}
+            or type(record["files"]) is not list
+            or not record["files"]
+            or type(record["file_changes"]) is not list
+            or type(record["provenance"]) is not dict
+            or type(record["validation"]) is not dict
+            or record["permissions"]
+            != {
+                "source_project_write": False,
+                "target_project_write": False,
+                "product_store_write": False,
+                "product_usage_write": False,
+            }
+        ):
+            raise ProductGenerationError("product_candidate_invalid")
+        try:
+            execution = _strict_json_bytes(execution_metadata.read_bytes())
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+            raise ProductGenerationError("product_candidate_invalid") from exc
+        if (
+            type(execution) is not dict
+            or execution.get("schema_version") != PLAN_EXECUTION_VERSION
+            or execution.get("execution_digest") != record["execution_digest"]
+            or plan_execution_digest(
+                {
+                    key: value
+                    for key, value in execution.items()
+                    if key != "execution_digest"
+                }
+            )
+            != record["execution_digest"]
+            or execution.get("plan_id") != record["plan"].get("plan_id")
+            or execution.get("plan_version") != record["plan"].get("plan_version")
+            or execution.get("plan_digest") != record["plan"].get("plan_digest")
+        ):
+            raise ProductGenerationError("product_candidate_invalid")
+        file_paths: set[str] = set()
+        file_text: dict[str, bool] = {}
+        file_data: dict[str, bytes] = {}
+        for item in record["files"]:
+            if (
+                type(item) is not dict
+                or set(item) != {"path", "sha256", "size_bytes", "text"}
+                or type(item["path"]) is not str
+                or type(item["size_bytes"]) is not int
+                or item["size_bytes"] < 0
+                or type(item["text"]) is not bool
+                or _MANIFEST_DIGEST.fullmatch(str(item["sha256"])) is None
+            ):
+                raise ProductGenerationError("product_candidate_invalid")
+            logical = _safe_product_relative(item["path"])
+            if logical in file_paths:
+                raise ProductGenerationError("product_candidate_invalid")
+            file_paths.add(logical)
+            file_text[logical] = item["text"]
+            path = product_root.joinpath(*PurePosixPath(logical).parts)
+            self._assert_candidate_path_safe(path)
+            if path.is_symlink() or not path.is_file():
+                raise ProductGenerationError("product_candidate_invalid")
+            data = path.read_bytes()
+            file_data[logical] = data
+            if (
+                len(data) != item["size_bytes"]
+                or hashlib.sha256(data).hexdigest() != item["sha256"]
+            ):
+                raise ProductGenerationError("product_candidate_invalid")
+        if record["entry"]["path"] not in file_paths:
+            raise ProductGenerationError("product_candidate_invalid")
+        change_paths: set[str] = set()
+        for change in record["file_changes"]:
+            if (
+                type(change) is not dict
+                or set(change) != {"path", "operation", "text_diff_sha256"}
+                or type(change["path"]) is not str
+                or change["operation"] != "added"
+                or (
+                    change["text_diff_sha256"] is not None
+                    and _MANIFEST_DIGEST.fullmatch(str(change["text_diff_sha256"]))
+                    is None
+                )
+            ):
+                raise ProductGenerationError("product_candidate_invalid")
+            logical = _safe_product_relative(change["path"])
+            if logical in change_paths or logical not in file_paths:
+                raise ProductGenerationError("product_candidate_invalid")
+            if file_text[logical] != (change["text_diff_sha256"] is not None):
+                raise ProductGenerationError("product_candidate_invalid")
+            if file_text[logical]:
+                try:
+                    text = file_data[logical].decode("utf-8")
+                except UnicodeDecodeError as exc:
+                    raise ProductGenerationError("product_candidate_invalid") from exc
+                expected_diff = "".join(
+                    difflib.unified_diff(
+                        [],
+                        text.splitlines(keepends=True),
+                        fromfile="/dev/null",
+                        tofile=logical,
+                    )
+                )
+                if (
+                    hashlib.sha256(expected_diff.encode("utf-8")).hexdigest()
+                    != change["text_diff_sha256"]
+                ):
+                    raise ProductGenerationError("product_candidate_invalid")
+            change_paths.add(logical)
+        if change_paths != file_paths:
+            raise ProductGenerationError("product_candidate_invalid")
+        receipts = record["provenance"].get("file_provenance")
+        if (
+            record["provenance"].get("schema_version")
+            != "product_candidate_provenance.v1"
+            or type(receipts) is not list
+            or {receipt.get("path") for receipt in receipts if type(receipt) is dict}
+            != file_paths
+            or record["validation"].get("static", {}).get("status") != "passed"
+            or record["validation"].get("runtime", {}).get("status") != "passed"
+        ):
+            raise ProductGenerationError("product_candidate_invalid")
+        for receipt in receipts:
+            if (
+                type(receipt) is not dict
+                or set(receipt)
+                != {
+                    "path",
+                    "execution_unit_ids",
+                    "work_item_ids",
+                    "capsule_version_ids",
+                }
+                or receipt["path"] not in file_paths
+                or any(
+                    type(receipt[key]) is not list
+                    or not receipt[key]
+                    or len(receipt[key]) != len(set(receipt[key]))
+                    or any(type(value) is not str or not value for value in receipt[key])
+                    for key in (
+                        "execution_unit_ids",
+                        "work_item_ids",
+                        "capsule_version_ids",
+                    )
+                )
+            ):
+                raise ProductGenerationError("product_candidate_invalid")
+        return record
+
+    def _read_candidate_record(self, candidate_token: str) -> tuple[Path, dict[str, Any]]:
+        if _CANDIDATE_TOKEN.fullmatch(candidate_token) is None:
+            raise ProductGenerationError("product_candidate_token_invalid")
+        root = self._product_candidate_root()
+        self._assert_candidate_path_safe(root)
+        if not root.is_dir():
+            raise ProductGenerationError("product_candidate_not_found")
+        # ponytail: bounded app-state scan; add an index only if candidate volume proves it necessary.
+        for candidate_dir in sorted(root.glob("candidate_*")):
+            if not candidate_dir.is_dir() or candidate_dir.is_symlink():
+                continue
+            record = self._read_candidate_record_path(candidate_dir)
+            if record["candidate_token"] == candidate_token:
+                return candidate_dir, record
+        raise ProductGenerationError("product_candidate_not_found")
+
+    def _build_product_candidate(self, plan_token: str, plan_digest: str) -> dict[str, Any]:
+        catalog = self._product_planning_catalog()
+        restored = self._product_planner.get(plan_token, catalog)
+        if restored.get("ok") is not True or type(restored.get("data")) is not dict:
+            error = restored.get("error") if type(restored) is dict else None
+            code = error.get("code") if type(error) is dict else None
+            raise ProductGenerationError(
+                code if type(code) is str else "product_candidate_plan_unavailable"
+            )
+        workspace = restored["data"]
+        plan = workspace.get("plan")
+        confirmation = workspace.get("confirmation")
+        if (
+            workspace.get("status") != "confirmed"
+            or type(plan) is not dict
+            or type(confirmation) is not dict
+            or plan.get("canonical_digest") != plan_digest
+        ):
+            raise ProductGenerationError("product_candidate_plan_not_confirmed")
+        capsule_ids = sorted(
+            {
+                str(binding["capsule_id"])
+                for section in plan.get("sections", [])
+                for item in section.get("work_items", [])
+                for binding in item.get("capsule_bindings", [])
+                if type(binding) is dict and binding.get("capsule_id")
+            }
+        )
+        capsules, product_scope = self._load_generation_capsules(
+            capsule_ids,
+            read_only=True,
+        )
+        execution = compile_plan_execution(plan, confirmation, capsules)
+        candidate_id = "candidate_" + execution["execution_digest"][:32]
+        root = self._product_candidate_root()
+        self._assert_candidate_path_safe(root)
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if os.name == "posix":
+            root.chmod(0o700)
+        final = root / candidate_id
+        if final.exists() or final.is_symlink():
+            if final.is_symlink() or not final.is_dir():
+                raise ProductGenerationError("product_candidate_directory_unsafe")
+            existing = self._read_candidate_record_path(final)
+            if existing["execution_digest"] != execution["execution_digest"]:
+                raise ProductGenerationError("product_candidate_conflict")
+            return self._candidate_projection(existing)
+
+        selected_by_id = {capsule["capsule_id"]: capsule for capsule in capsules}
+        selected = [
+            selected_by_id[capsule_id]
+            for capsule_id in execution["composer_request"]["capsule_ids"]
+        ]
+        try:
+            composition = compose_capsule_product(
+                task=execution["composer_request"]["task"],
+                product_id=execution["composer_request"]["product_id"],
+                generated_at=execution["composer_request"]["generated_at"],
+                capsules=[
+                    {key: value for key, value in capsule.items() if key != "canonical_hash"}
+                    for capsule in selected
+                ],
+            )
+        except ValueError as exc:
+            code = str(exc)
+            raise ProductGenerationError(
+                code
+                if re.fullmatch(r"[a-z][a-z0-9_]{1,95}", code)
+                else "product_candidate_composition_failed"
+            ) from exc
+        if (
+            type(composition) is not dict
+            or composition.get("status") != "composed"
+            or type(composition.get("files")) is not dict
+            or type(composition.get("assets")) is not dict
+            or type(composition.get("provenance")) is not dict
+        ):
+            raise ProductGenerationError("product_candidate_composition_invalid")
+
+        temporary = Path(tempfile.mkdtemp(prefix=f".{candidate_id}-", dir=root))
+        try:
+            product_root = temporary / "product"
+            product_root.mkdir(mode=0o700)
+            paths: set[str] = set()
+            for relative, content in {
+                **composition["files"],
+                **composition["assets"],
+            }.items():
+                logical = _safe_product_relative(relative)
+                if logical in paths:
+                    raise ProductGenerationError("product_candidate_file_duplicate")
+                paths.add(logical)
+                _write_product_file(product_root, logical, content)
+
+            units = {
+                unit["execution_unit_id"]: unit
+                for unit in execution["execution_units"]
+            }
+            version_units: dict[str, set[str]] = {}
+            for unit_id, unit in units.items():
+                for capsule in unit["capsules"]:
+                    version_units.setdefault(capsule["version_id"], set()).add(unit_id)
+            composer_provenance = composition["provenance"]
+            if (
+                type(composer_provenance.get("file_provenance")) is not dict
+                or type(composer_provenance.get("asset_provenance")) is not dict
+            ):
+                raise ProductGenerationError("product_candidate_provenance_invalid")
+            file_versions: dict[str, set[str]] = {
+                str(path): {str(version) for version in versions}
+                for path, versions in composer_provenance["file_provenance"].items()
+                if type(path) is str and type(versions) is list
+            }
+            for path, receipt in composer_provenance["asset_provenance"].items():
+                if type(path) is not str or type(receipt) is not dict:
+                    raise ProductGenerationError("product_candidate_provenance_invalid")
+                sources = receipt.get("sources")
+                if type(sources) is not list:
+                    raise ProductGenerationError("product_candidate_provenance_invalid")
+                file_versions[path] = {
+                    str(source["version_id"])
+                    for source in sources
+                    if type(source) is dict and type(source.get("version_id")) is str
+                }
+            known_versions = set(version_units)
+            file_versions = {
+                path: versions or set(known_versions)
+                for path, versions in file_versions.items()
+            }
+            if set(file_versions) != paths or any(
+                not versions or any(version not in version_units for version in versions)
+                for versions in file_versions.values()
+            ):
+                raise ProductGenerationError("product_candidate_provenance_invalid")
+
+            def file_receipt(path: str, versions: set[str]) -> dict[str, Any]:
+                unit_ids = sorted(
+                    {
+                        unit_id
+                        for version in versions
+                        for unit_id in version_units[version]
+                    }
+                )
+                return {
+                    "path": path,
+                    "execution_unit_ids": unit_ids,
+                    "work_item_ids": sorted(
+                        {units[unit_id]["work_item_id"] for unit_id in unit_ids}
+                    ),
+                    "capsule_version_ids": sorted(versions),
+                }
+
+            all_unit_ids = sorted(units)
+            all_versions = set(version_units)
+            provenance = {
+                "schema_version": "product_candidate_provenance.v1",
+                "plan_id": execution["plan_id"],
+                "plan_version": execution["plan_version"],
+                "plan_digest": execution["plan_digest"],
+                "execution_digest": execution["execution_digest"],
+                "composer_version": str(composition.get("composer_version") or ""),
+                "file_provenance": [
+                    file_receipt(path, file_versions[path])
+                    for path in sorted(file_versions)
+                ]
+                + [
+                    {
+                        "path": path,
+                        "execution_unit_ids": all_unit_ids,
+                        "work_item_ids": sorted(
+                            {units[unit_id]["work_item_id"] for unit_id in all_unit_ids}
+                        ),
+                        "capsule_version_ids": sorted(all_versions),
+                    }
+                    for path in (
+                        "manifest.json",
+                        "provenance.json",
+                        "quality_gate.json",
+                        "runtime_validation.json",
+                    )
+                ],
+                "source_project_write": False,
+                "target_project_write": False,
+                "model_source_generation": False,
+            }
+            _write_product_file(
+                product_root,
+                "provenance.json",
+                json.dumps(provenance, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            )
+            _fsync_product_tree(product_root)
+            quality = _validate_product_static(product_root)
+            runtime = _validate_product_runtime(product_root)
+            _write_product_file(
+                product_root,
+                "quality_gate.json",
+                json.dumps(quality, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            )
+            _write_product_file(
+                product_root,
+                "runtime_validation.json",
+                json.dumps(runtime, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            )
+            pre_manifest = []
+            for path in sorted(product_root.rglob("*")):
+                if not path.is_file() or path.is_symlink():
+                    continue
+                data = path.read_bytes()
+                pre_manifest.append(
+                    {
+                        "path": path.relative_to(product_root).as_posix(),
+                        "sha256": hashlib.sha256(data).hexdigest(),
+                        "size_bytes": len(data),
+                    }
+                )
+            manifest = {
+                "schema_version": "reweave_candidate_manifest.v1",
+                "created_at": confirmation["confirmed_at"],
+                "plan": {
+                    "plan_id": plan["plan_id"],
+                    "plan_version": plan["plan_version"],
+                    "plan_digest": plan["canonical_digest"],
+                },
+                "execution_digest": execution["execution_digest"],
+                "composer_version": str(composition.get("composer_version") or ""),
+                "product_usage_scope": product_scope,
+                "entry": {"path": "index.html", "kind": "static_html"},
+                "capsules": execution["capsules"],
+                "connections": composition.get("composition_manifest", {}).get(
+                    "connections", []
+                ),
+                "files": pre_manifest,
+                "permissions": {
+                    "source_project_write": False,
+                    "target_project_write": False,
+                    "product_store_write": False,
+                    "product_usage_write": False,
+                },
+            }
+            _write_product_file(
+                product_root,
+                "manifest.json",
+                plan_execution_bytes(manifest) + b"\n",
+            )
+            with self._capsule_store.read_connection() as connection:
+                self._assert_generation_capsules_current(connection, selected)
+
+            files: list[dict[str, Any]] = []
+            changes: list[dict[str, Any]] = []
+            for path in sorted(product_root.rglob("*")):
+                if not path.is_file() or path.is_symlink():
+                    continue
+                data = path.read_bytes()
+                logical = path.relative_to(product_root).as_posix()
+                try:
+                    text = data.decode("utf-8")
+                except UnicodeDecodeError:
+                    text = None
+                files.append(
+                    {
+                        "path": logical,
+                        "sha256": hashlib.sha256(data).hexdigest(),
+                        "size_bytes": len(data),
+                        "text": text is not None,
+                    }
+                )
+                changes.append(
+                    {
+                        "path": logical,
+                        "operation": "added",
+                        "text_diff_sha256": (
+                            hashlib.sha256(
+                                "".join(
+                                    difflib.unified_diff(
+                                        [],
+                                        text.splitlines(keepends=True),
+                                        fromfile="/dev/null",
+                                        tofile=logical,
+                                    )
+                                ).encode("utf-8")
+                            ).hexdigest()
+                            if text is not None
+                            else None
+                        ),
+                    }
+                )
+            core = {
+                "schema_version": "product_candidate.v1",
+                "status": "review_ready",
+                "candidate_id": candidate_id,
+                "created_at": confirmation["confirmed_at"],
+                "plan": {
+                    "plan_id": plan["plan_id"],
+                    "plan_version": plan["plan_version"],
+                    "plan_digest": plan["canonical_digest"],
+                },
+                "execution_digest": execution["execution_digest"],
+                "composer_version": str(composition.get("composer_version") or ""),
+                "entry": {"path": "index.html", "kind": "static_html"},
+                "files": files,
+                "file_changes": changes,
+                "provenance": provenance,
+                "validation": {"static": quality, "runtime": runtime},
+                "permissions": {
+                    "source_project_write": False,
+                    "target_project_write": False,
+                    "product_store_write": False,
+                    "product_usage_write": False,
+                },
+            }
+            candidate_token = "candidate_token_" + uuid.uuid4().hex + uuid.uuid4().hex[:16]
+            record = {
+                **core,
+                "candidate_token": candidate_token,
+                "candidate_digest": plan_execution_digest(core),
+            }
+            record["record_digest"] = plan_execution_digest(record)
+            _write_product_file(
+                temporary,
+                "execution_plan.json",
+                plan_execution_bytes(execution) + b"\n",
+            )
+            _write_product_file(
+                temporary,
+                "candidate.json",
+                plan_execution_bytes(record) + b"\n",
+            )
+            _fsync_product_tree(temporary)
+            if final.exists() or final.is_symlink():
+                raise ProductGenerationError("product_candidate_conflict")
+            os.replace(temporary, final)
+            if os.name == "posix":
+                descriptor = os.open(root, os.O_RDONLY)
+                try:
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+            persisted = self._read_candidate_record_path(final)
+            return self._candidate_projection(persisted)
+        except (OSError, sqlite3.Error) as exc:
+            raise ProductGenerationError("product_candidate_write_failed") from exc
+        finally:
+            if temporary.exists():
+                shutil.rmtree(temporary, ignore_errors=True)
+
+    def start_product_candidate(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if (
+                set(request) != {"plan_token", "plan_digest"}
+                or type(request["plan_token"]) is not str
+                or type(request["plan_digest"]) is not str
+                or _MANIFEST_DIGEST.fullmatch(request["plan_digest"]) is None
+            ):
+                return self._error("product_candidate_request_invalid")
+            return self._submit_management_task(
+                "product_candidate_start",
+                lambda _cancel: self._ok(
+                    self._build_product_candidate(
+                        request["plan_token"], request["plan_digest"]
+                    )
+                ),
+                read_only_candidate=True,
+            )
+        except ValueError as exc:
+            return self._exception_error(exc, "product_candidate_request_invalid")
+
+    def get_product_candidate_run(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if set(request) != {"run_id"} or type(request["run_id"]) is not str:
+                return self._error("product_candidate_run_id_required")
+            with self._management_lock:
+                task = self._management_tasks.get(request["run_id"])
+                if task is None or not str(task["kind"]).startswith("product_candidate_"):
+                    return self._error("product_candidate_run_not_found")
+                return self._ok(self._task_view(task))
+        except ValueError as exc:
+            return self._exception_error(exc, "product_candidate_run_invalid")
+
+    def get_product_candidate(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if (
+                set(request) != {"candidate_token"}
+                or type(request["candidate_token"]) is not str
+            ):
+                return self._error("product_candidate_token_invalid")
+            _path, record = self._read_candidate_record(request["candidate_token"])
+            return self._ok(self._candidate_projection(record))
+        except (OSError, ProductGenerationError, ValueError) as exc:
+            return self._exception_error(exc, "product_candidate_read_failed")
+
+    def read_product_candidate_file(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if (
+                set(request) != {"candidate_token", "relative_path"}
+                or type(request["candidate_token"]) is not str
+                or type(request["relative_path"]) is not str
+            ):
+                return self._error("product_candidate_file_request_invalid")
+            candidate_dir, record = self._read_candidate_record(
+                request["candidate_token"]
+            )
+            logical = _safe_product_relative(request["relative_path"])
+            metadata = next(
+                (item for item in record["files"] if item["path"] == logical),
+                None,
+            )
+            if metadata is None:
+                raise ProductGenerationError("product_candidate_file_not_found")
+            path = candidate_dir / "product" / PurePosixPath(logical)
+            if path.is_symlink() or not path.is_file():
+                raise ProductGenerationError("product_candidate_file_not_found")
+            data = path.read_bytes()
+            if len(data) > 1024 * 1024:
+                raise ProductGenerationError("product_candidate_file_too_large")
+            if metadata["text"]:
+                content = data.decode("utf-8")
+                diff = "".join(
+                    difflib.unified_diff(
+                        [],
+                        content.splitlines(keepends=True),
+                        fromfile="/dev/null",
+                        tofile=logical,
+                    )
+                )
+                encoding = "utf-8"
+            else:
+                content = base64.b64encode(data).decode("ascii")
+                diff = None
+                encoding = "base64"
+            return self._ok(
+                {
+                    "candidate_token": record["candidate_token"],
+                    "candidate_digest": record["candidate_digest"],
+                    "path": logical,
+                    "sha256": metadata["sha256"],
+                    "size_bytes": metadata["size_bytes"],
+                    "encoding": encoding,
+                    "content": content,
+                    "text_diff": diff,
+                }
+            )
+        except (OSError, UnicodeError, ProductGenerationError, ValueError) as exc:
+            return self._exception_error(exc, "product_candidate_file_read_failed")
 
     @_serialized_management
     def list_review_items(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -4025,9 +4747,13 @@ class ReweaveAppService:
             return self._exception_error(exc, "generate_product_invalid")
 
     def _load_generation_capsules(
-        self, capsule_ids: list[str]
+        self,
+        capsule_ids: list[str],
+        *,
+        read_only: bool = False,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        self._ensure_capsule_management()
+        if not read_only:
+            self._ensure_capsule_management()
         placeholders = ",".join("?" for _ in capsule_ids)
         with self._capsule_store.read_connection() as connection:
             rows = connection.execute(
@@ -4399,6 +5125,7 @@ class ReweaveAppService:
                 )
                 + "\n",
             )
+            _fsync_product_tree(temporary)
             quality = _validate_product_static(temporary)
             runtime = _validate_product_runtime(temporary)
             _write_product_file(
