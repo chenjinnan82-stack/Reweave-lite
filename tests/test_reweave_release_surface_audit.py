@@ -43,6 +43,7 @@ def test_stage5_formal_and_historical_surfaces_are_separate() -> None:
     assert {
         "pimos_lite/desktop_reweave_static.py",
         "pimos_lite/reweave_app_service.py",
+        "pimos_lite/reweave_plan_execution.py",
         "pimos_lite/reweave_product_planner.py",
         "pimos_lite/composer/module_native.py",
         "pimos_lite/reweave_capsule_store.py",
@@ -76,6 +77,7 @@ def test_stage5_formal_and_historical_surfaces_are_separate() -> None:
         row["path"]: row["release_disposition"] for row in audit["entrypoints"]
     }
     assert dispositions["scripts/run_public_reweave_demo.py"] == "included"
+    assert dispositions["pimos_lite/reweave_plan_execution.py"] == "included"
     assert dispositions["pimos_lite/reweave_llm_pack.py"] == "historical_excluded"
 
     javascript_source = next(

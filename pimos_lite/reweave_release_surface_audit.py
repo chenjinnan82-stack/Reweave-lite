@@ -14,6 +14,7 @@ PUBLIC_ALPHA_SUMMARY_VERSION = "reweave_public_alpha_release_summary.v2"
 REQUIRED_SURFACE_FILES = (
     "pimos_lite/desktop_reweave_static.py",
     "pimos_lite/reweave_app_service.py",
+    "pimos_lite/reweave_plan_execution.py",
     "pimos_lite/reweave_product_planner.py",
     "pimos_lite/composer/module_native.py",
     "pimos_lite/reweave_capsule_store.py",
@@ -226,6 +227,8 @@ def _role(relative: str) -> str:
         return "desktop_bridge"
     if relative == "pimos_lite/reweave_app_service.py":
         return "application_service"
+    if relative == "pimos_lite/reweave_plan_execution.py":
+        return "confirmed_plan_execution_compiler"
     if relative == "pimos_lite/reweave_product_planner.py":
         return "local_product_planner"
     if relative == "pimos_lite/composer/module_native.py":
