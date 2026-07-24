@@ -102,6 +102,26 @@ FORMAL_PRODUCT_CSP = (
 )
 
 
+def formal_page_contract_digest(capsules: list[dict[str, Any]]) -> str:
+    """Return the shared canonical HTML digest for formal DOM capsules."""
+    normalized = [_normalize_formal_capsule(row) for row in capsules]
+    return _formal_page_contract_digest_from_normalized(normalized)
+
+
+def _formal_page_contract_digest_from_normalized(
+    capsules: list[dict[str, Any]],
+) -> str:
+    dom_rows = [
+        row for row in capsules if row["capability_kind"] != "computation"
+    ]
+    if not dom_rows:
+        raise ValueError("product_dom_capsule_required")
+    html_values = {row["html"] for row in dom_rows}
+    if len(html_values) != 1:
+        raise ValueError("product_dom_contract_mismatch")
+    return hashlib.sha256(next(iter(html_values)).encode("utf-8")).hexdigest()
+
+
 def compose_capsule_product(
     *,
     task: str,
@@ -153,8 +173,7 @@ def compose_capsule_product(
         raise ValueError("product_dom_capsule_required")
     by_kind = {row["capability_kind"]: row for row in normalized}
     dom_rows = [row for row in normalized if row["capability_kind"] != "computation"]
-    if len({row["html"] for row in dom_rows}) != 1:
-        raise ValueError("product_dom_contract_mismatch")
+    _formal_page_contract_digest_from_normalized(normalized)
 
     normalized_parameter_binding = (
         _normalize_parameter_binding(by_kind, parameter_binding)
@@ -2897,4 +2916,5 @@ __all__ = [
     "build_module_capability_graph",
     "compose_capsule_product",
     "compose_module_native_preview",
+    "formal_page_contract_digest",
 ]

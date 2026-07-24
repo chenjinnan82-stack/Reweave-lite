@@ -7,6 +7,7 @@ import json
 import re
 from typing import Any
 
+from pimos_lite.composer.module_native import formal_page_contract_digest
 from pimos_lite.reweave_data_contract import (
     DataContractError,
     contracts_compatible,
@@ -1194,6 +1195,15 @@ def _compile_plan_execution(
         raise PlanExecutionError("plan_execution_capability_kind_duplicate")
     if not ({"presentation", "interaction"} & set(capability_kinds)):
         raise PlanExecutionError("plan_execution_dom_capsule_required")
+    try:
+        formal_page_contract_digest(selected)
+    except ValueError as exc:
+        code = (
+            "plan_execution_dom_contract_mismatch"
+            if str(exc) == "product_dom_contract_mismatch"
+            else "plan_execution_capsule_invalid"
+        )
+        raise PlanExecutionError(code) from exc
 
     unit_ids = {
         work_id: "execution_unit_"

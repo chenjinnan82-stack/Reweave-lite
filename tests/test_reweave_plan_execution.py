@@ -12,7 +12,10 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-from pimos_lite.composer.module_native import compose_capsule_product
+from pimos_lite.composer.module_native import (
+    compose_capsule_product,
+    formal_page_contract_digest,
+)
 from pimos_lite.reweave_app_service import (
     ProductGenerationError,
     ReweaveAppService,
@@ -508,6 +511,89 @@ class PlanExecutionV1Test(unittest.TestCase):
             "plan_execution_dom_capsule_required",
         ):
             compile_plan_execution(no_dom_plan, no_dom_confirmation, self.capsules)
+
+    def test_formal_page_contract_is_shared_and_fails_before_execution(self) -> None:
+        first_digest = formal_page_contract_digest(self.capsules)
+        self.assertEqual(
+            first_digest,
+            formal_page_contract_digest(copy.deepcopy(self.capsules)),
+        )
+
+        css_variant = copy.deepcopy(self.capsules)
+        for capsule in css_variant:
+            capsule.pop("canonical_hash")
+            if capsule["capability_kind"] == "interaction":
+                capsule["css"] += "\n[data-action='calculate'] { cursor: pointer; }\n"
+        self.assertEqual(first_digest, formal_page_contract_digest(css_variant))
+
+        presentation = next(
+            capsule
+            for capsule in self.capsules
+            if capsule["capability_kind"] == "presentation"
+        )
+        single_plan = copy.deepcopy(self.plan)
+        single_confirmation = copy.deepcopy(self.confirmation)
+        for section in single_plan["sections"]:
+            section["work_items"][0]["capsule_bindings"] = [
+                _binding(presentation)
+            ]
+        single_confirmation["capsule_revalidation"] = [
+            {
+                "capsule_id": presentation["capsule_id"],
+                "version_id": presentation["version_id"],
+                "eligibility_status": "active_current_eligible",
+                "review_status": "user_confirmed",
+            }
+            for _section in single_plan["sections"]
+        ]
+        _refresh(single_plan, single_confirmation)
+        self.assertEqual(
+            compile_plan_execution(
+                single_plan,
+                single_confirmation,
+                self.capsules,
+            )["schema_version"],
+            "plan_execution.v1",
+        )
+
+        capsule_ids = []
+        for kind in ("presentation", "interaction", "computation"):
+            payload = copy.deepcopy(_capsule_payload(kind))
+            if kind == "interaction":
+                payload["html"] += "\n<!-- distinct formal page -->"
+            capsule_id, _version_id = _seed_capsule(
+                self.store,
+                kind,
+                capability_key="page_contract_mismatch",
+                suffix=f"page_contract_mismatch_{kind}",
+                payload=payload,
+            )
+            capsule_ids.append(capsule_id)
+        mismatched, _scope = self.service._load_generation_capsules(
+            capsule_ids,
+            read_only=True,
+        )
+        revision = self.service._product_planning_catalog()["warehouse_revision"]
+        mismatch_plan, mismatch_confirmation = _confirmed_plan(
+            mismatched,
+            revision,
+        )
+        with self.assertRaisesRegex(
+            PlanExecutionError,
+            "plan_execution_dom_contract_mismatch",
+        ):
+            compile_plan_execution(
+                mismatch_plan,
+                mismatch_confirmation,
+                mismatched,
+            )
+        with self.assertRaisesRegex(ValueError, "product_dom_contract_mismatch"):
+            compose_capsule_product(
+                task="隔离候选",
+                product_id="product_" + "c" * 32,
+                generated_at=NOW,
+                capsules=mismatched,
+            )
 
     def test_parameterized_offer_binding_and_v1_bytes_are_strict(self) -> None:
         old_execution = compile_plan_execution(
