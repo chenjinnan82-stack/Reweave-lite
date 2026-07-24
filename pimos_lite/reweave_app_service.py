@@ -111,6 +111,7 @@ PUBLIC_PRODUCT_ACTIONS = frozenset(
         "cancel_product_plan_run",
         "get_product_plan_workspace",
         "confirm_product_plan",
+        "list_reusable_product_capabilities",
         "start_product_candidate",
         "get_product_candidate_run",
         "get_product_candidate",
@@ -2284,6 +2285,71 @@ class ReweaveAppService:
             )
         except ValueError as exc:
             return self._exception_error(exc, "product_planning_request_invalid")
+
+    def list_reusable_product_capabilities(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            if self._payload(payload):
+                return self._error("reusable_capability_request_invalid")
+            with self._capsule_operation_lock:
+                catalog = self._product_planning_catalog()
+                identities = catalog["capsules"]
+                capsule_ids = [item["capsule_id"] for item in identities]
+                loaded = []
+                if capsule_ids:
+                    loaded, _scope, _page_contracts = (
+                        self._load_generation_capsules_with_page_contracts(
+                            capsule_ids,
+                            read_only=True,
+                        )
+                    )
+                by_id = {item["capsule_id"]: item for item in loaded}
+                with self._capsule_store.read_connection() as connection:
+                    result = []
+                    for identity in identities:
+                        capsule = by_id.get(identity["capsule_id"])
+                        source = connection.execute(
+                            "SELECT relationship FROM capsule_sources "
+                            "WHERE version_id = ? AND candidate_canonical_hash = ? "
+                            "AND relationship IN ('exact', 'published_implementation') "
+                            "ORDER BY source_link_id LIMIT 1",
+                            (identity["version_id"], identity["canonical_hash"]),
+                        ).fetchone()
+                        if capsule is None or source is None:
+                            raise ProductGenerationError(
+                                "reusable_capability_source_invalid"
+                            )
+                        result.append(
+                            {
+                                **identity,
+                                "input_contract": capsule["input_contract"],
+                                "output_contract": capsule["output_contract"],
+                                "source": {
+                                    "status": "formal_exact_source_verified",
+                                    "relationship": str(source["relationship"]),
+                                },
+                            }
+                        )
+            return self._ok(
+                {
+                    "schema_version": "reweave_reusable_capability_catalog.v1",
+                    "warehouse_revision": catalog["warehouse_revision"],
+                    "capabilities": result,
+                }
+            )
+        except (
+            CapsuleStoreError,
+            OSError,
+            ProductGenerationError,
+            RuntimeError,
+            sqlite3.Error,
+            ValueError,
+        ) as exc:
+            return self._exception_error(
+                exc,
+                "reusable_capability_catalog_unavailable",
+            )
 
     def select_product_planning_model(
         self, payload: dict[str, Any] | None = None

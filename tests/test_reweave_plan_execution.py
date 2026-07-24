@@ -442,6 +442,60 @@ class PlanExecutionV1Test(unittest.TestCase):
         self.environment.stop()
         self.temporary.cleanup()
 
+    def test_local_agent_capability_catalog_reuses_formal_loader(self) -> None:
+        with self.store.transaction() as connection:
+            for capsule in self.capsules:
+                connection.execute(
+                    "INSERT INTO capsule_sources "
+                    "(source_link_id, version_id, project_id, source_identity, "
+                    "source_kind, source_relpath, source_hash, "
+                    "candidate_canonical_hash, relationship, read_at) "
+                    "VALUES (?, ?, NULL, 'legacy:agent-test', 'legacy_json', "
+                    "?, ?, ?, 'exact', ?)",
+                    (
+                        f"source_agent_{capsule['capability_kind']}",
+                        capsule["version_id"],
+                        f"{capsule['capability_kind']}.json",
+                        capsule["canonical_hash"],
+                        capsule["canonical_hash"],
+                        NOW,
+                    ),
+                )
+        response = self.service.list_reusable_product_capabilities({})
+
+        self.assertTrue(response["ok"])
+        self.assertEqual(
+            response["data"]["schema_version"],
+            "reweave_reusable_capability_catalog.v1",
+        )
+        capabilities = response["data"]["capabilities"]
+        self.assertEqual(len(capabilities), 3)
+        self.assertEqual(
+            {item["capability_kind"] for item in capabilities},
+            {"presentation", "interaction", "computation"},
+        )
+        self.assertTrue(
+            all(
+                item["identity_status"] == "formal_exact_version"
+                and item["source"]["status"] == "formal_exact_source_verified"
+                and item["source"]["relationship"]
+                in {"exact", "published_implementation"}
+                and isinstance(item["input_contract"], dict)
+                and isinstance(item["output_contract"], dict)
+                for item in capabilities
+            )
+        )
+        public = json.dumps(response, ensure_ascii=False)
+        self.assertNotIn("source_relpath", public)
+        self.assertNotIn("html_text", public)
+        self.assertNotIn("javascript_modules", public)
+        self.assertEqual(
+            self.service.list_reusable_product_capabilities(
+                {"unexpected": True}
+            )["error"]["code"],
+            "reusable_capability_request_invalid",
+        )
+
     def _parameterized_fixture(
         self,
         value: int = 10,

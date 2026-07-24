@@ -102,6 +102,7 @@ class ReweaveAppServiceTest(unittest.TestCase):
             "cancel_product_plan_run",
             "get_product_plan_workspace",
             "confirm_product_plan",
+            "list_reusable_product_capabilities",
             "start_product_candidate",
             "get_product_candidate_run",
             "get_product_candidate",
@@ -141,6 +142,10 @@ class ReweaveAppServiceTest(unittest.TestCase):
         self.assertIn("start_product_plan", public_product_actions())
         self.assertIn("suggest_product_plan_action", public_product_actions())
         self.assertIn("confirm_product_plan", public_product_actions())
+        self.assertIn(
+            "list_reusable_product_capabilities",
+            public_product_actions(),
+        )
         self.assertIn("start_product_candidate", public_product_actions())
         self.assertIn("get_product_candidate", public_product_actions())
         self.assertIn("analyze_static_web_target", public_product_actions())
