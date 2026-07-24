@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -673,7 +674,12 @@ class CapsuleCoreCodeProjectionTest(unittest.TestCase):
     def test_v2_page_identity_uses_existing_loader_and_composer_projection(
         self,
     ) -> None:
-        canonical = canonicalize_capsule(self.payload)
+        payload = copy.deepcopy(self.payload)
+        payload["javascript_modules"] = sorted(  # type: ignore[index]
+            payload["javascript_modules"],  # type: ignore[index]
+            key=lambda row: row["path"],
+        )
+        canonical = canonicalize_capsule(payload)
         declaration = build_page_capability_declaration_v2(
             capability_kind="presentation",
             elements=[
@@ -700,7 +706,7 @@ class CapsuleCoreCodeProjectionTest(unittest.TestCase):
             "presentation",
             capability_key="page_identity_v2",
             suffix="page_identity_v2",
-            payload=self.payload,
+            payload=payload,
             canonical_hash_override=binding["formal_identity_digest"],
             extraction_summary_override=extraction_summary,
         )
@@ -764,13 +770,29 @@ class CapsuleCoreCodeProjectionTest(unittest.TestCase):
         self.assertEqual(composer_capsules, capsules)
         self.assertEqual(composer_scope, product_scope)
         self.assertEqual(composer_contracts, contracts)
+        composition = compose_capsule_product(
+            task="Verified page capability",
+            product_id="product_" + "7" * 32,
+            generated_at=NOW,
+            capsules=composer_capsules,
+            verified_page_contracts=composer_contracts,
+        )
+        public_composition = json.dumps(
+            {
+                "files": composition["files"],
+                "composition_manifest": composition["composition_manifest"],
+            },
+            ensure_ascii=False,
+        )
+        self.assertNotIn("page_capability_declaration", public_composition)
+        self.assertNotIn("formal_capsule_identity.v2", public_composition)
 
         orphan_id, orphan_version = _seed_capsule(
             self.store,
             "presentation",
             capability_key="page_identity_v2_orphan",
             suffix="page_identity_v2_orphan",
-            payload=self.payload,
+            payload=payload,
             canonical_hash_override=binding["formal_identity_digest"],
             extraction_summary_override=extraction_summary,
         )
@@ -1072,6 +1094,89 @@ class Phase5FormalGenerationTest(unittest.TestCase):
             composer.call_args.kwargs["verified_page_contracts"],
             page_contracts,
         )
+
+    def test_candidate_loads_once_and_shares_one_page_projection(self) -> None:
+        capsules, product_scope = self.service._load_generation_capsules(
+            list(self.ids.values()),
+            read_only=True,
+        )
+        page_contracts = [{"projection": "verified"}]
+        original = copy.deepcopy(page_contracts)
+        plan = {
+            "canonical_digest": "d" * 64,
+            "sections": [
+                {
+                    "work_items": [
+                        {
+                            "capsule_bindings": [
+                                {"capsule_id": row["capsule_id"]}
+                                for row in capsules
+                            ]
+                        }
+                    ]
+                }
+            ],
+        }
+        confirmation = {"schema_version": "product_plan_confirmation.v1"}
+
+        class Planner:
+            def get(self, _token, _catalog):
+                return {
+                    "ok": True,
+                    "data": {
+                        "status": "confirmed",
+                        "plan": plan,
+                        "confirmation": confirmation,
+                    },
+                }
+
+        execution = {
+            "schema_version": "plan_execution.v1",
+            "execution_digest": "e" * 64,
+            "composer_request": {
+                "task": "Verified candidate",
+                "product_id": "product_" + "8" * 32,
+                "generated_at": NOW,
+                "capsule_ids": [row["capsule_id"] for row in capsules],
+            },
+        }
+        self.service._product_planner = Planner()
+
+        def compile_probe(*_args, **kwargs):
+            self.assertIs(kwargs["verified_page_contracts"], page_contracts)
+            self.assertEqual(page_contracts, original)
+            return execution
+
+        def compose_probe(**kwargs):
+            self.assertIs(kwargs["verified_page_contracts"], page_contracts)
+            self.assertEqual(page_contracts, original)
+            raise ValueError("projection_probe")
+
+        with (
+            patch.object(
+                self.service,
+                "_load_composer_capsules",
+                return_value=(capsules, product_scope, page_contracts),
+            ) as loader,
+            patch(
+                "pimos_lite.reweave_app_service.compile_plan_execution",
+                side_effect=compile_probe,
+            ) as compiler,
+            patch(
+                "pimos_lite.reweave_app_service.compose_capsule_product",
+                side_effect=compose_probe,
+            ) as composer,
+            self.assertRaisesRegex(ProductGenerationError, "projection_probe"),
+        ):
+            self.service._build_product_candidate(
+                "plan_token_projection",
+                plan["canonical_digest"],
+                [],
+            )
+        loader.assert_called_once()
+        self.assertEqual(compiler.call_count, 1)
+        self.assertEqual(composer.call_count, 1)
+        self.assertEqual(page_contracts, original)
 
         record = {
             "manifest": {

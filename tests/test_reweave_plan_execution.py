@@ -159,8 +159,8 @@ def _v2_composer_fixture(capsules: list[dict]) -> tuple[list[dict], list[dict]]:
         row for row in result if row["capability_kind"] == "interaction"
     )
     interaction["html"] += '<aside data-ref="interaction-only"></aside>'
-    interaction["css"] += (
-        "\n__CAPSULE_ROOT__ [data-ref='quantity'] { inline-size: 8rem; }\n"
+    interaction["css"] = (
+        "__CAPSULE_ROOT__ [data-ref='quantity'] { inline-size: 8rem; }\n"
     )
     projections: list[dict] = []
     elements = _page_capability_elements()
@@ -733,7 +733,9 @@ class PlanExecutionV1Test(unittest.TestCase):
         self.assertEqual(composition, repeated)
         self.assertIn("data-action=\"calculate\"", composition["files"]["index.html"])
         self.assertNotIn("interaction-only", composition["files"]["index.html"])
-        self.assertIn("inline-size: 8rem", composition["files"]["styles.css"])
+        styles = composition["files"]["styles.css"]
+        self.assertEqual(styles.count("inline-size: 8rem"), 1)
+        self.assertEqual(styles.count("display: grid; gap: 0.5rem"), 1)
         presentation = next(
             row for row in capsules if row["capability_kind"] == "presentation"
         )
@@ -1199,6 +1201,23 @@ class PlanExecutionV1Test(unittest.TestCase):
                 verified_page_contracts=[],
             ),
         )
+
+        malformed = copy.deepcopy(self.capsules)
+        malformed[0]["runtime_allowlist"] = [
+            *malformed[0]["runtime_allowlist"],
+            malformed[0]["runtime_allowlist"][0],
+        ]
+        malformed[0].pop("canonical_hash")
+        with self.assertRaisesRegex(
+            ValueError,
+            "formal_capsule_runtime_allowlist_invalid",
+        ):
+            compose_capsule_product(
+                task="隔离候选",
+                product_id="product_" + "8" * 32,
+                generated_at=NOW,
+                capsules=malformed,
+            )
 
         capsules, plan, confirmation, offer = self._parameterized_fixture()
         self.assertEqual(

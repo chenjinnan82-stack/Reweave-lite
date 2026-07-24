@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import unittest
 
+from pimos_lite import reweave_page_capability_contract as page_contract
 from pimos_lite.reweave_capsule_store import canonicalize_capsule
 from pimos_lite.reweave_page_capability_contract import (
     FORMAL_CAPSULE_IDENTITY_VERSION,
@@ -338,6 +339,14 @@ class PageCapabilityContractV2Tests(unittest.TestCase):
             [presentation, interaction, computation],
             projections,
         )
+        self.assertEqual(
+            set(result),
+            {"mode", "provider_identity", "compatibility_digest"},
+        )
+        self.assertNotIn(
+            "validate_formal_page_contract",
+            page_contract.__all__,
+        )
         self.assertEqual(result["mode"], "v2")
         self.assertEqual(
             result["provider_identity"],
@@ -465,6 +474,19 @@ class PageCapabilityContractV2Tests(unittest.TestCase):
             validate_formal_page_contract([presentation], [projection])["mode"],
             "v2",
         )
+
+    def test_formal_page_contract_rejects_noncanonical_payloads(self) -> None:
+        presentation = _formal_capsule(
+            "presentation",
+            "<main data-ref='page'></main>",
+        )
+        presentation["runtime_allowlist"] = ["scoped_ui_update", "scoped_ui_update"]
+        presentation.pop("canonical_hash")
+        with self.assertRaisesRegex(
+            ValueError,
+            "formal_page_contract_identity_invalid",
+        ):
+            validate_formal_page_contract([presentation])
 
 
 if __name__ == "__main__":

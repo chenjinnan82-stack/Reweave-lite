@@ -107,7 +107,7 @@ def formal_page_contract_digest(capsules: list[dict[str, Any]]) -> str:
     """Return the shared canonical HTML digest for formal DOM capsules."""
     normalized = [_normalize_formal_capsule(row) for row in capsules]
     return page_contract.validate_formal_page_contract(normalized)[
-        "contract_digest"
+        "compatibility_digest"
     ]
 
 

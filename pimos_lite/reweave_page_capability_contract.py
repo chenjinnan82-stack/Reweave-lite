@@ -176,6 +176,8 @@ def validate_formal_page_contract(
     verified_page_contracts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Validate one formal v1 HTML contract or one verified v2 capability set."""
+    from pimos_lite.reweave_capsule_store import canonicalize_capsule
+
     if type(capsules) is not list or not capsules:
         raise ValueError("formal_page_contract_identity_invalid")
     projections = _normalize_verified_page_contracts(verified_page_contracts)
@@ -194,11 +196,14 @@ def validate_formal_page_contract(
         if identity in by_identity:
             raise ValueError("formal_page_contract_identity_invalid")
         try:
-            payload_digest = _canonical_digest(_formal_capsule_payload(capsule))
+            payload = _formal_capsule_payload(capsule)
+            canonical = canonicalize_capsule(payload)
         except (KeyError, TypeError, ValueError) as exc:
             raise ValueError("formal_page_contract_identity_invalid") from exc
+        if canonical.payload != payload:
+            raise ValueError("formal_page_contract_identity_invalid")
         by_identity[identity] = capsule
-        payload_digests[identity] = payload_digest
+        payload_digests[identity] = canonical.sha256
 
     projected = {
         (row["capsule_id"], row["version_id"]): row for row in projections
@@ -272,7 +277,7 @@ def validate_formal_page_contract(
         html_values = {row["html"] for row in dom_rows}
         if len(html_values) != 1:
             raise ValueError("product_dom_contract_mismatch")
-        contract_digest = hashlib.sha256(
+        compatibility_digest = hashlib.sha256(
             next(iter(html_values)).encode("utf-8")
         ).hexdigest()
     else:
@@ -281,9 +286,11 @@ def validate_formal_page_contract(
         if presentation is None:
             raise ValueError("formal_page_contract_provider_missing")
         if interaction is None:
-            contract_digest = declarations["presentation"]["canonical_digest"]
+            compatibility_digest = declarations["presentation"][
+                "canonical_digest"
+            ]
         else:
-            contract_digest = build_page_capability_contract_v2(
+            compatibility_digest = build_page_capability_contract_v2(
                 presentation_provides=declarations["presentation"]["provides"],
                 interaction_requires=declarations["interaction"]["requires"],
             )["canonical_digest"]
@@ -291,7 +298,7 @@ def validate_formal_page_contract(
     return {
         "mode": next(iter(modes)),
         "provider_identity": (provider["capsule_id"], provider["version_id"]),
-        "contract_digest": contract_digest,
+        "compatibility_digest": compatibility_digest,
     }
 
 
@@ -434,6 +441,5 @@ __all__ = [
     "build_page_capability_contract_v2",
     "normalize_page_capability_declaration_v2",
     "normalize_page_capability_selector",
-    "validate_formal_page_contract",
     "verify_formal_capsule_identity",
 ]
