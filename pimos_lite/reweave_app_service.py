@@ -2964,7 +2964,7 @@ class ReweaveAppService:
             ):
                 return self._error("product_plan_token_invalid")
             with self._capsule_operation_lock:
-                workspace, _capsules, _scope, _contracts = (
+                workspace, capsules, _scope, _contracts = (
                     self._confirmed_candidate_context(request["plan_token"])
                 )
                 acceptance = (
@@ -2972,6 +2972,8 @@ class ReweaveAppService:
                         request["plan_token"]
                     )
                 )
+            plan = workspace["plan"]
+            confirmation = workspace["confirmation"]
             acceptance_data = (
                 acceptance["data"]["acceptance_confirmation"]
                 if acceptance.get("ok") is True
@@ -2983,8 +2985,22 @@ class ReweaveAppService:
                 != "candidate_acceptance_confirmation_required"
             ):
                 return acceptance
-            plan = workspace["plan"]
-            confirmation = workspace["confirmation"]
+            if type(acceptance_data) is dict:
+                input_contract, output_contract = (
+                    self._candidate_acceptance_contracts(capsules)
+                )
+                try:
+                    acceptance_data = (
+                        validate_candidate_acceptance_confirmation(
+                            plan,
+                            confirmation,
+                            acceptance_data,
+                            input_contract,
+                            output_contract,
+                        )
+                    )
+                except CandidateAcceptanceError as exc:
+                    raise ProductGenerationError(exc.code) from exc
             parameters = [
                 {
                     "name": binding["input_field"],

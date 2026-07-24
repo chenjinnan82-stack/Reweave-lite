@@ -1984,6 +1984,34 @@ class PlanExecutionV1Test(unittest.TestCase):
         self.assertTrue(
             plan_response["data"]["candidate_acceptance"]["confirmed"]
         )
+        invalid_confirmation = copy.deepcopy(acceptance_confirmation)
+        invalid_confirmation["cases"][0]["input"]["quantity"] = 99
+        invalid_confirmation["canonical_digest"] = canonical_digest(
+            {
+                key: value
+                for key, value in invalid_confirmation.items()
+                if key != "canonical_digest"
+            }
+        )
+        self.service._product_planner = _ConfirmedPlanner(
+            self.plan,
+            self.confirmation,
+            invalid_confirmation,
+        )
+        invalid_confirmation_response = request(
+            "get_confirmed_product_plan",
+            {"plan_token": "plan_token_test"},
+            "invalid-confirmation",
+        )
+        self.assertEqual(
+            invalid_confirmation_response["error"]["code"],
+            "candidate_acceptance_confirmation_invalid",
+        )
+        self.service._product_planner = _ConfirmedPlanner(
+            self.plan,
+            self.confirmation,
+            acceptance_confirmation,
+        )
         self.assertEqual(
             request(
                 "start_confirmed_product_candidate",
