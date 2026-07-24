@@ -563,6 +563,22 @@ function analyzeCandidate() {
   }
   const replacements = new Map();
   const listenerEvidence = [];
+  const pageCapabilityReads = new Map();
+  const pageCapabilityWrites = new Map();
+
+  function recordPageCapability(target, selector, value) {
+    const values = target.get(selector) || new Set();
+    values.add(value);
+    target.set(selector, values);
+  }
+
+  function assignmentTarget(node) {
+    const parent = node.parent;
+    return ts.isBinaryExpression(parent)
+      && parent.left === node
+      && parent.operatorToken.kind >= ts.SyntaxKind.FirstAssignment
+      && parent.operatorToken.kind <= ts.SyntaxKind.LastAssignment;
+  }
 
   function addReplacement(path, node, structural) {
     const value = staticString(node);
@@ -829,6 +845,13 @@ function analyzeCandidate() {
         const name = propertyName(node);
         if (forbiddenProperties.has(name)) throw new Rejection("forbidden_property", path);
         const owner = rootIdentifier(node);
+        const directOwner = ts.isIdentifier(node.expression)
+          ? node.expression.text
+          : null;
+        if (directOwner && domBindings.has(directOwner)
+            && allowedDomRead.has(name) && !assignmentTarget(node)) {
+          recordPageCapability(pageCapabilityReads, domBindings.get(directOwner), name);
+        }
         if (opaqueEvent && owner === opaqueEvent && name !== "preventDefault") {
           throw new Rejection("event_object_property_forbidden", path);
         }
@@ -873,8 +896,14 @@ function analyzeCandidate() {
                 || !allowedDomWrite.has(name)) {
               throw new Rejection("dom_write_forbidden", path);
             }
+            recordPageCapability(
+              pageCapabilityWrites,
+              domBindings.get(directOwner),
+              name,
+            );
           } else if (domBindings.has(owner)) {
             if (!allowedDomWrite.has(name)) throw new Rejection("dom_write_forbidden", path);
+            recordPageCapability(pageCapabilityWrites, domBindings.get(owner), name);
           } else if (kind !== "interaction") {
             throw new Rejection("object_state_mutation_forbidden", path);
           }
@@ -1228,11 +1257,26 @@ function analyzeCandidate() {
   const removed = new Set(listenerEvidence.filter((item) => item.operation === "removeEventListener").map((item) => `${item.selector}\0${item.event}\0${item.handler}`));
   if (added.some((item) => !removed.has(`${item.selector}\0${item.event}\0${item.handler}`))) throw new Rejection("interaction_dispose_not_closed");
   if (kind === "presentation" && added.length) throw new Rejection("presentation_event_binding_forbidden");
+  const pageCapabilityEvents = new Map();
+  for (const item of added) {
+    recordPageCapability(pageCapabilityEvents, item.selector, item.event);
+  }
+  const pageCapabilitySelectors = new Set([
+    ...pageCapabilityReads.keys(),
+    ...pageCapabilityWrites.keys(),
+    ...pageCapabilityEvents.keys(),
+  ]);
   return {
-    schema_version: "javascript_security.v1",
+    schema_version: "javascript_security.v2",
     status: "passed",
     javascript_modules: cleanedModules,
     listener_bindings: [...new Map(added.map((item) => [`${item.selector}\0${item.event}\0${item.handler}`, item])).values()],
+    page_capability_accesses: [...pageCapabilitySelectors].sort().map((selector) => ({
+      selector,
+      reads: [...(pageCapabilityReads.get(selector) || [])].sort(),
+      writes: [...(pageCapabilityWrites.get(selector) || [])].sort(),
+      events: [...(pageCapabilityEvents.get(selector) || [])].sort(),
+    })),
     sensitivity_literals_by_path: sensitivityLiteralsByPath,
   };
 }
@@ -1387,5 +1431,5 @@ try {
   }
 } catch (error) {
   const code = error instanceof Rejection ? error.code : "javascript_security_analyzer_failed";
-  process.stdout.write(JSON.stringify({ schema_version: "javascript_security.v1", status: "rejected", error_code: code }));
+  process.stdout.write(JSON.stringify({ schema_version: "javascript_security.v2", status: "rejected", error_code: code }));
 }

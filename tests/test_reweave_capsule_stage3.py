@@ -200,6 +200,62 @@ class HtmlCssSafetyTest(unittest.TestCase):
                     redact_strings=[],
                 )
 
+    def test_stage3_page_capability_declaration_validates_dom_accesses(self) -> None:
+        cleaned = sanitize_html(
+            """<section data-capsule-root>
+<input data-ref="quantity" type="number">
+<button data-action="calculate" type="button">Calculate</button>
+<span data-ref="total"></span>
+</section>""",
+            dom_scope={
+                "selectors": [
+                    "[data-action='calculate']",
+                    "[data-ref='quantity']",
+                    "[data-ref='total']",
+                ]
+            },
+            asset_paths=set(),
+            redact_strings=[],
+        )
+        declaration = stage3_module._stage3_page_capability_declaration(
+            "interaction",
+            cleaned,
+            [
+                {
+                    "selector": "[data-action='calculate']",
+                    "reads": [],
+                    "writes": [],
+                    "events": ["click"],
+                },
+                {
+                    "selector": "[data-ref='quantity']",
+                    "reads": ["value"],
+                    "writes": [],
+                    "events": [],
+                },
+            ],
+        )
+        self.assertEqual(
+            declaration["schema_version"],
+            "page_capability_declaration.v2",
+        )
+        self.assertEqual(declaration["capability_kind"], "interaction")
+        self.assertEqual(len(declaration["requires"]), 2)
+
+        with self.assertRaisesRegex(Stage3Error, "page_capability_event_missing"):
+            stage3_module._stage3_page_capability_declaration(
+                "interaction",
+                cleaned,
+                [
+                    {
+                        "selector": "[data-ref='total']",
+                        "reads": [],
+                        "writes": [],
+                        "events": ["submit"],
+                    }
+                ],
+            )
+
     def test_css_parser_scopes_safe_rules_and_rejects_escape_or_global_access(self) -> None:
         cleaned = sanitize_css(
             ".thumbnail > [data-state='ready']:hover { display: grid; gap: 0.75rem; }",
@@ -280,6 +336,23 @@ class JavaScriptSafetyTest(unittest.TestCase):
 }"""
         )
         self.assertEqual(safe["status"], "passed")
+        self.assertEqual(
+            safe["page_capability_accesses"],
+            [
+                {
+                    "selector": "[data-action='calculate']",
+                    "reads": [],
+                    "writes": [],
+                    "events": ["click"],
+                },
+                {
+                    "selector": "[data-ref='quantity']",
+                    "reads": ["value"],
+                    "writes": [],
+                    "events": [],
+                },
+            ],
+        )
 
         for fragment, code in [
             ("const leaked = event.target;", "event_object_property_forbidden"),
@@ -1746,6 +1819,19 @@ alice&#64;example.com</main><script type="module" src="./compute.js"></script>
 
         self.assertEqual(prepared.artifact.assets, ())
         self.assertNotIn("outside.png", prepared.artifact.canonical_payload["html"])
+        declaration = json.loads(prepared.review["sanitized_candidate_json"])[
+            "page_capability_declaration"
+        ]
+        self.assertEqual(declaration["capability_kind"], "presentation")
+        self.assertEqual(
+            declaration["provides"][0]["selector"],
+            "[data-ref='title']",
+        )
+        self.assertIn("textContent", declaration["provides"][0]["writes"])
+        self.assertNotIn(
+            "page_capability_declaration",
+            prepared.artifact.canonical_payload,
+        )
 
 
 DESKTOP_PYTHON = ROOT / ".venv-reweave" / "bin" / "python"
@@ -1832,6 +1918,16 @@ class Stage3PySideFlowTest(unittest.TestCase):
 
         self.assertEqual(result["status"], "review_required", result)
         self.assertEqual(result["validation_scope"], "real_qwebengine_interaction")
+        with self.store.read_connection() as connection:
+            persisted = connection.execute(
+                "SELECT sanitized_candidate_json FROM review_items WHERE review_id = ?",
+                (review["review_id"],),
+            ).fetchone()
+        declaration = json.loads(persisted["sanitized_candidate_json"])[
+            "page_capability_declaration"
+        ]
+        self.assertEqual(declaration["capability_kind"], "interaction")
+        self.assertEqual(len(declaration["requires"]), 2)
 
     def test_real_qwebengine_rejects_observably_non_idempotent_dispose(self) -> None:
         payload = {
@@ -2039,6 +2135,16 @@ class Stage3PySideFlowTest(unittest.TestCase):
 
         self.assertEqual(result["status"], "review_required", result)
         self.assertEqual(result["validation_scope"], "real_qwebengine_render")
+        with self.store.read_connection() as connection:
+            persisted = connection.execute(
+                "SELECT sanitized_candidate_json FROM review_items WHERE review_id = ?",
+                (review["review_id"],),
+            ).fetchone()
+        declaration = json.loads(persisted["sanitized_candidate_json"])[
+            "page_capability_declaration"
+        ]
+        self.assertEqual(declaration["capability_kind"], "presentation")
+        self.assertEqual(declaration["provides"][0]["selector"], "[data-ref='title']")
 
     def test_real_qwebengine_blocks_file_escape(self) -> None:
         package = self.root / "qweb-package"

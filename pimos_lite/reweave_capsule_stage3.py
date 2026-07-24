@@ -53,6 +53,11 @@ from pimos_lite.reweave_javascript_source import (
     JavascriptSourceError,
     JavascriptSourceService,
 )
+from pimos_lite.reweave_page_capability_contract import (
+    build_page_capability_contract_v2,
+    build_page_capability_declaration_v2,
+    normalize_page_capability_selector,
+)
 from pimos_lite.reweave_process_environment import restricted_subprocess_environment
 
 
@@ -519,6 +524,114 @@ def sanitize_html(
     if re.search(r"\sfor=\"(?!__CAPSULE_ID__-)", cleaned_html):
         raise Stage3Error("html_label_target_invalid")
     return cleaned_html.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _stage3_page_capability_declaration(
+    capability_kind: str,
+    cleaned_html: str,
+    page_capability_accesses: Any,
+) -> dict[str, Any]:
+    if capability_kind not in {"presentation", "interaction"}:
+        raise Stage3Error("page_capability_kind_invalid")
+    parser = _HtmlTreeParser()
+    try:
+        parser.feed(cleaned_html)
+        parser.close()
+    except Exception as exc:
+        raise Stage3Error("page_capability_html_invalid") from exc
+    if parser.failed:
+        raise Stage3Error("page_capability_html_invalid")
+
+    provided: list[dict[str, Any]] = []
+
+    def visit(node: dict[str, Any]) -> None:
+        tag = str(node.get("tag") or "")
+        attrs = dict(node.get("attrs", []))
+        reads = {"hidden", "textContent"}
+        writes = {"hidden", "textContent"}
+        events = {"click"}
+        if tag in {"button", "input", "select", "textarea"}:
+            reads.add("disabled")
+            writes.add("disabled")
+        if tag in {"input", "select", "textarea"}:
+            reads.add("value")
+            writes.add("value")
+            events.update({"change", "input", "select"})
+        if tag == "input":
+            reads.add("checked")
+            writes.add("checked")
+        if tag == "select":
+            reads.add("selectedIndex")
+            writes.add("selectedIndex")
+        if tag == "form":
+            events.update({"reset", "submit"})
+        for name in ("data-action", "data-ref"):
+            value = attrs.get(name)
+            if value:
+                provided.append(
+                    {
+                        "selector": f"[{name}='{value}']",
+                        "tag": tag,
+                        "reads": sorted(reads),
+                        "writes": sorted(writes),
+                        "events": sorted(events),
+                    }
+                )
+        for child in node.get("children", []):
+            if isinstance(child, dict):
+                visit(child)
+
+    visit(parser.root)
+    try:
+        provider = build_page_capability_declaration_v2(
+            capability_kind="presentation",
+            elements=provided,
+        )
+    except ValueError as exc:
+        raise Stage3Error(str(exc)) from exc
+    provider_by_selector = {
+        row["selector"]: row for row in provider["provides"]
+    }
+    if type(page_capability_accesses) is not list or not page_capability_accesses:
+        raise Stage3Error("page_capability_accesses_invalid")
+    required: list[dict[str, Any]] = []
+    for item in page_capability_accesses:
+        if type(item) is not dict or set(item) != {
+            "selector",
+            "reads",
+            "writes",
+            "events",
+        }:
+            raise Stage3Error("page_capability_accesses_invalid")
+        try:
+            selector = normalize_page_capability_selector(item["selector"])
+        except ValueError as exc:
+            raise Stage3Error(str(exc)) from exc
+        offered = provider_by_selector.get(selector)
+        if offered is None:
+            raise Stage3Error("page_capability_element_missing")
+        required.append(
+            {
+                "selector": selector,
+                "tag": offered["tag"],
+                "reads": item["reads"],
+                "writes": item["writes"],
+                "events": item["events"],
+            }
+        )
+    try:
+        build_page_capability_contract_v2(
+            presentation_provides=provider["provides"],
+            interaction_requires=required,
+        )
+        return build_page_capability_declaration_v2(
+            capability_kind=capability_kind,
+            elements=provider["provides"]
+            if capability_kind == "presentation"
+            else required,
+        )
+    except ValueError as exc:
+        raise Stage3Error(str(exc)) from exc
 
 
 def sanitize_css(source: str, *, redact_strings: list[str]) -> str:
@@ -1187,7 +1300,10 @@ def _analyze_javascript(candidate: dict[str, Any], redact_strings: list[str]) ->
         timeout=15,
         error_code="javascript_security_analyzer_failed",
     )
-    if result.get("status") != "passed":
+    if (
+        result.get("schema_version") != "javascript_security.v2"
+        or result.get("status") != "passed"
+    ):
         raise Stage3Error(str(result.get("error_code") or "javascript_security_rejected"))
     return result
 
@@ -5476,6 +5592,15 @@ class ReweaveCapsuleStage3:
             raise Stage3Error("sensitive_logical_path_unsupported")
         security = _analyze_javascript(found, sorted(set(redact_strings)))
         found["javascript_modules"] = security["javascript_modules"]
+        page_capability_declaration = (
+            _stage3_page_capability_declaration(
+                found["capability_kind"],
+                cleaned_html,
+                security.get("page_capability_accesses"),
+            )
+            if found["capability_kind"] != "computation"
+            else None
+        )
         cleaned_javascript = "\n".join(
             str(item.get("source") or "") for item in found["javascript_modules"]
         )
@@ -5576,8 +5701,12 @@ class ReweaveCapsuleStage3:
                 "listener_bindings": security.get("listener_bindings", []),
             },
         )
+        prepared_review = dict(review)
+        if page_capability_declaration is not None:
+            summary["page_capability_declaration"] = page_capability_declaration
+            prepared_review["sanitized_candidate_json"] = _json(summary)
         return _PreparedReview(
-            review=review,
+            review=prepared_review,
             artifact=artifact,
             fixtures=fixtures,
             snapshot_digest=snapshot.digest,
