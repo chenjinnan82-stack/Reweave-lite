@@ -62,11 +62,13 @@ from pimos_lite.reweave_plan_execution import (
     PLAN_EXECUTION_VERSION,
     CandidateAcceptanceError,
     build_candidate_acceptance,
+    build_candidate_acceptance_confirmation,
     canonical_bytes as plan_execution_bytes,
     canonical_digest as plan_execution_digest,
     compile_parameterized_plan_execution,
     compile_plan_execution,
     evaluate_candidate_acceptance,
+    validate_candidate_acceptance_confirmation,
 )
 from pimos_lite.reweave_javascript_source import (
     JAVASCRIPT_SOURCE_TYPE,
@@ -111,6 +113,7 @@ PUBLIC_PRODUCT_ACTIONS = frozenset(
         "cancel_product_plan_run",
         "get_product_plan_workspace",
         "confirm_product_plan",
+        "confirm_product_candidate_acceptance",
         "list_reusable_product_capabilities",
         "start_product_candidate",
         "get_product_candidate_run",
@@ -2803,6 +2806,282 @@ class ReweaveAppService:
         except (CapsuleStoreError, OSError, ProductGenerationError, ValueError) as exc:
             return self._exception_error(exc, "product_plan_confirmation_failed")
 
+    def _confirmed_candidate_context(
+        self,
+        plan_token: str,
+    ) -> tuple[
+        dict[str, Any],
+        list[dict[str, Any]],
+        dict[str, Any],
+        list[dict[str, Any]],
+    ]:
+        restored = self._product_planner.get(plan_token)
+        data = restored.get("data") if type(restored) is dict else None
+        plan = data.get("plan") if type(data) is dict else None
+        confirmation = data.get("confirmation") if type(data) is dict else None
+        if (
+            restored.get("ok") is not True
+            or type(data) is not dict
+            or data.get("status") != "confirmed"
+            or type(plan) is not dict
+            or type(confirmation) is not dict
+        ):
+            code = (
+                restored.get("error", {}).get("code")
+                if type(restored) is dict
+                and type(restored.get("error")) is dict
+                else None
+            )
+            raise ProductGenerationError(
+                code
+                if type(code) is str
+                else "product_candidate_plan_not_confirmed"
+            )
+        capsule_ids = sorted(
+            {
+                str(binding["capsule_id"])
+                for section in plan["sections"]
+                for item in section["work_items"]
+                for binding in item["capsule_bindings"]
+            }
+        )
+        capsules, product_scope, page_contracts = self._load_composer_capsules(
+            capsule_ids,
+            read_only=True,
+        )
+        current = {
+            (capsule["capsule_id"], capsule["version_id"]): capsule
+            for capsule in capsules
+        }
+        if any(
+            (binding["capsule_id"], binding["version_id"]) not in current
+            or current[(binding["capsule_id"], binding["version_id"])][
+                "canonical_hash"
+            ]
+            != binding["canonical_hash"]
+            for section in plan["sections"]
+            for item in section["work_items"]
+            for binding in item["capsule_bindings"]
+        ):
+            raise ProductGenerationError("product_candidate_plan_stale")
+        parameter_capsules = [
+            {
+                key: capsule[key]
+                for key in (
+                    "capsule_id",
+                    "version_id",
+                    "canonical_hash",
+                    "capability_key",
+                    "capability_kind",
+                    "input_contract",
+                    "output_contract",
+                )
+            }
+            for capsule in capsules
+        ]
+        verified = self._product_planner.get(
+            plan_token,
+            None,
+            parameter_capsules,
+        )
+        if verified.get("ok") is not True:
+            code = (
+                verified.get("error", {}).get("code")
+                if type(verified.get("error")) is dict
+                else None
+            )
+            raise ProductGenerationError(
+                code
+                if type(code) is str
+                else "product_candidate_plan_not_confirmed"
+            )
+        return verified["data"], capsules, product_scope, page_contracts
+
+    def confirm_product_candidate_acceptance(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if (
+                set(request)
+                != {"plan_token", "plan_digest", "acceptance_cases"}
+                or type(request["plan_token"]) is not str
+                or type(request["plan_digest"]) is not str
+                or _MANIFEST_DIGEST.fullmatch(request["plan_digest"]) is None
+                or type(request["acceptance_cases"]) is not list
+            ):
+                return self._error(
+                    "candidate_acceptance_confirmation_request_invalid"
+                )
+            with self._capsule_operation_lock:
+                workspace, capsules, _scope, _contracts = (
+                    self._confirmed_candidate_context(request["plan_token"])
+                )
+                plan = workspace["plan"]
+                confirmation = workspace["confirmation"]
+                if plan["canonical_digest"] != request["plan_digest"]:
+                    return self._error(
+                        "candidate_acceptance_confirmation_stale"
+                    )
+                input_contract, output_contract = (
+                    self._candidate_acceptance_contracts(capsules)
+                )
+                record = build_candidate_acceptance_confirmation(
+                    plan,
+                    confirmation,
+                    request["acceptance_cases"],
+                    input_contract,
+                    output_contract,
+                    _now(),
+                )
+                persisted = self._product_planner.confirm_candidate_acceptance(
+                    request["plan_token"],
+                    record,
+                )
+                if persisted.get("ok") is not True:
+                    return persisted
+            return self._ok(record)
+        except (
+            CandidateAcceptanceError,
+            CapsuleStoreError,
+            OSError,
+            ProductGenerationError,
+            ValueError,
+        ) as exc:
+            return self._exception_error(
+                exc,
+                "candidate_acceptance_confirmation_failed",
+            )
+
+    def get_confirmed_product_plan(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if (
+                set(request) != {"plan_token"}
+                or type(request["plan_token"]) is not str
+            ):
+                return self._error("product_plan_token_invalid")
+            with self._capsule_operation_lock:
+                workspace, _capsules, _scope, _contracts = (
+                    self._confirmed_candidate_context(request["plan_token"])
+                )
+                acceptance = (
+                    self._product_planner.get_candidate_acceptance_confirmation(
+                        request["plan_token"]
+                    )
+                )
+            acceptance_data = (
+                acceptance["data"]["acceptance_confirmation"]
+                if acceptance.get("ok") is True
+                else None
+            )
+            if (
+                acceptance.get("ok") is not True
+                and acceptance.get("error", {}).get("code")
+                != "candidate_acceptance_confirmation_required"
+            ):
+                return acceptance
+            plan = workspace["plan"]
+            confirmation = workspace["confirmation"]
+            parameters = [
+                {
+                    "name": binding["input_field"],
+                    "value": binding["value"],
+                    "source": binding["source"],
+                }
+                for binding in confirmation.get("parameter_binding", {}).get(
+                    "bindings",
+                    [],
+                )
+            ]
+            sections = []
+            for section in plan["sections"]:
+                sections.append(
+                    {
+                        "section_id": section["section_id"],
+                        "work_items": [
+                            {
+                                "title": item["title"],
+                                "summary": item["description"],
+                                "acceptance_intent": item[
+                                    "acceptance_intent"
+                                ],
+                                "delivery_wave": item.get("delivery_wave"),
+                                "dependency_count": len(item["depends_on"]),
+                                "capabilities": [
+                                    {
+                                        key: binding[key]
+                                        for key in (
+                                            "display_name",
+                                            "capability_kind",
+                                            "identity_status",
+                                        )
+                                    }
+                                    for binding in item["capsule_bindings"]
+                                ],
+                            }
+                            for item in section["work_items"]
+                        ],
+                    }
+                )
+            return self._ok(
+                {
+                    "schema_version": "agent_confirmed_product_plan.v1",
+                    "plan_token": request["plan_token"],
+                    "status": "confirmed",
+                    "goal": plan["goal"],
+                    "product_name": plan["product_name"],
+                    "plan_version": plan["plan_version"],
+                    "plan_digest": plan["canonical_digest"],
+                    "requirements": [
+                        {
+                            "statement": requirement["statement"],
+                            "source": requirement["source"],
+                        }
+                        for requirement in plan["requirements"]
+                    ],
+                    "sections": sections,
+                    "confirmation": {
+                        "schema_version": confirmation["schema_version"],
+                        "confirmed_at": confirmation["confirmed_at"],
+                        "parameters": parameters,
+                    },
+                    "candidate_acceptance": (
+                        {
+                            "confirmed": True,
+                            "confirmation_digest": acceptance_data[
+                                "canonical_digest"
+                            ],
+                            "confirmed_at": acceptance_data["confirmed_at"],
+                            "source": acceptance_data[
+                                "confirmation_source"
+                            ],
+                            "cases": [
+                                {
+                                    key: case[key]
+                                    for key in (
+                                        "input",
+                                        "expected_output",
+                                    )
+                                }
+                                for case in acceptance_data["cases"]
+                            ],
+                        }
+                        if type(acceptance_data) is dict
+                        else {"confirmed": False}
+                    ),
+                }
+            )
+        except (
+            CapsuleStoreError,
+            OSError,
+            ProductGenerationError,
+            ValueError,
+        ) as exc:
+            return self._exception_error(exc, "product_plan_workspace_failed")
+
     def _product_candidate_root(self) -> Path:
         return self._capsule_store.path.parent / PRODUCT_CANDIDATES_DIRNAME
 
@@ -3328,17 +3607,30 @@ class ReweaveAppService:
         self,
         plan_token: str,
         plan_digest: str,
-        acceptance_cases: list[dict[str, Any]],
+        acceptance_cases: list[dict[str, Any]] | None,
+        *,
+        acceptance_confirmation: dict[str, Any] | None = None,
+        read_only_plan: bool = False,
     ) -> dict[str, Any]:
-        catalog = self._product_planning_catalog()
-        restored = self._product_planner.get(plan_token, catalog)
-        if restored.get("ok") is not True or type(restored.get("data")) is not dict:
-            error = restored.get("error") if type(restored) is dict else None
-            code = error.get("code") if type(error) is dict else None
-            raise ProductGenerationError(
-                code if type(code) is str else "product_candidate_plan_unavailable"
+        if read_only_plan:
+            workspace, capsules, product_scope, page_contracts = (
+                self._confirmed_candidate_context(plan_token)
             )
-        workspace = restored["data"]
+        else:
+            catalog = self._product_planning_catalog()
+            restored = self._product_planner.get(plan_token, catalog)
+            if (
+                restored.get("ok") is not True
+                or type(restored.get("data")) is not dict
+            ):
+                error = restored.get("error") if type(restored) is dict else None
+                code = error.get("code") if type(error) is dict else None
+                raise ProductGenerationError(
+                    code
+                    if type(code) is str
+                    else "product_candidate_plan_unavailable"
+                )
+            workspace = restored["data"]
         plan = workspace.get("plan")
         confirmation = workspace.get("confirmation")
         if (
@@ -3348,19 +3640,22 @@ class ReweaveAppService:
             or plan.get("canonical_digest") != plan_digest
         ):
             raise ProductGenerationError("product_candidate_plan_not_confirmed")
-        capsule_ids = sorted(
-            {
-                str(binding["capsule_id"])
-                for section in plan.get("sections", [])
-                for item in section.get("work_items", [])
-                for binding in item.get("capsule_bindings", [])
-                if type(binding) is dict and binding.get("capsule_id")
-            }
-        )
-        capsules, product_scope, page_contracts = self._load_composer_capsules(
-            capsule_ids,
-            read_only=True,
-        )
+        if not read_only_plan:
+            capsule_ids = sorted(
+                {
+                    str(binding["capsule_id"])
+                    for section in plan.get("sections", [])
+                    for item in section.get("work_items", [])
+                    for binding in item.get("capsule_bindings", [])
+                    if type(binding) is dict and binding.get("capsule_id")
+                }
+            )
+            capsules, product_scope, page_contracts = (
+                self._load_composer_capsules(
+                    capsule_ids,
+                    read_only=True,
+                )
+            )
         execution = (
             compile_parameterized_plan_execution(
                 plan,
@@ -3385,6 +3680,34 @@ class ReweaveAppService:
         input_contract, output_contract = self._candidate_acceptance_contracts(
             selected
         )
+        if acceptance_confirmation is not None:
+            try:
+                confirmed_acceptance = (
+                    validate_candidate_acceptance_confirmation(
+                        plan,
+                        confirmation,
+                        acceptance_confirmation,
+                        input_contract,
+                        output_contract,
+                    )
+                )
+            except CandidateAcceptanceError as exc:
+                raise ProductGenerationError(exc.code) from exc
+            acceptance_cases = [
+                {
+                    key: case[key]
+                    for key in (
+                        "requirement_ids",
+                        "input",
+                        "expected_output",
+                    )
+                }
+                for case in confirmed_acceptance["cases"]
+            ]
+        if acceptance_cases is None:
+            raise ProductGenerationError(
+                "candidate_acceptance_confirmation_required"
+            )
         candidate_id = "candidate_" + execution["execution_digest"][:32]
         root = self._product_candidate_root()
         self._assert_candidate_path_safe(root)
@@ -3849,6 +4172,72 @@ class ReweaveAppService:
                         request["plan_token"],
                         request["plan_digest"],
                         request["acceptance_cases"],
+                    )
+                ),
+                read_only_candidate=True,
+            )
+        except ValueError as exc:
+            return self._exception_error(exc, "product_candidate_request_invalid")
+
+    def _build_confirmed_product_candidate(
+        self,
+        plan_token: str,
+        plan_digest: str,
+        acceptance_confirmation_digest: str,
+    ) -> dict[str, Any]:
+        restored = self._product_planner.get_candidate_acceptance_confirmation(
+            plan_token
+        )
+        if restored.get("ok") is not True:
+            error = restored.get("error") if type(restored) is dict else None
+            code = error.get("code") if type(error) is dict else None
+            raise ProductGenerationError(
+                code
+                if type(code) is str
+                else "candidate_acceptance_confirmation_required"
+            )
+        record = restored["data"]["acceptance_confirmation"]
+        if record.get("canonical_digest") != acceptance_confirmation_digest:
+            raise ProductGenerationError(
+                "candidate_acceptance_confirmation_stale"
+            )
+        return self._build_product_candidate(
+            plan_token,
+            plan_digest,
+            None,
+            acceptance_confirmation=record,
+            read_only_plan=True,
+        )
+
+    def start_confirmed_product_candidate(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if (
+                set(request)
+                != {
+                    "plan_token",
+                    "plan_digest",
+                    "acceptance_confirmation_digest",
+                }
+                or type(request["plan_token"]) is not str
+                or type(request["plan_digest"]) is not str
+                or type(request["acceptance_confirmation_digest"]) is not str
+                or _MANIFEST_DIGEST.fullmatch(request["plan_digest"]) is None
+                or _MANIFEST_DIGEST.fullmatch(
+                    request["acceptance_confirmation_digest"]
+                )
+                is None
+            ):
+                return self._error("product_candidate_request_invalid")
+            return self._submit_management_task(
+                "product_candidate_start_confirmed",
+                lambda _cancel: self._ok(
+                    self._build_confirmed_product_candidate(
+                        request["plan_token"],
+                        request["plan_digest"],
+                        request["acceptance_confirmation_digest"],
                     )
                 ),
                 read_only_candidate=True,

@@ -22,6 +22,10 @@ from pimos_lite.reweave_app_service import (
     ReweaveAppService,
     _validate_product_acceptance,
 )
+from pimos_lite.reweave_agent_stdio import (
+    AGENT_PROTOCOL_VERSION,
+    dispatch_agent_request,
+)
 from pimos_lite.reweave_capsule_store import (
     CapsuleWarehouseStore,
     canonicalize_capsule,
@@ -34,6 +38,7 @@ from pimos_lite.reweave_plan_execution import (
     CandidateAcceptanceError,
     PlanExecutionError,
     build_candidate_acceptance,
+    build_candidate_acceptance_confirmation,
     build_parameterized_execution_binding,
     build_parameterized_execution_offer,
     canonical_bytes,
@@ -41,6 +46,7 @@ from pimos_lite.reweave_plan_execution import (
     compile_plan_execution,
     compile_parameterized_plan_execution,
     evaluate_candidate_acceptance,
+    validate_candidate_acceptance_confirmation,
 )
 from pimos_lite.reweave_product_planner import (
     PLAN_SCHEMA_VERSION,
@@ -170,17 +176,72 @@ def _v2_composer_fixture(capsules: list[dict]) -> tuple[list[dict], list[dict]]:
 
 
 class _ConfirmedPlanner:
-    def __init__(self, plan: dict, confirmation: dict) -> None:
+    def __init__(
+        self,
+        plan: dict,
+        confirmation: dict,
+        acceptance_confirmation: dict | None = None,
+    ) -> None:
         self.plan = copy.deepcopy(plan)
         self.confirmation = copy.deepcopy(confirmation)
+        self.acceptance_confirmation = copy.deepcopy(
+            acceptance_confirmation
+        )
 
-    def get(self, _token: str, _catalog: dict) -> dict:
+    def get(
+        self,
+        _token: str,
+        _catalog: dict | None = None,
+        _parameter_capsules: list[dict] | None = None,
+    ) -> dict:
         return {
             "ok": True,
             "data": {
                 "status": "confirmed",
                 "plan": copy.deepcopy(self.plan),
                 "confirmation": copy.deepcopy(self.confirmation),
+            },
+        }
+
+    def get_candidate_acceptance_confirmation(self, _token: str) -> dict:
+        if self.acceptance_confirmation is None:
+            return {
+                "ok": False,
+                "error": {
+                    "code": "candidate_acceptance_confirmation_required",
+                    "message_key": "candidate_acceptance_confirmation_required",
+                },
+            }
+        return {
+            "ok": True,
+            "data": {
+                "acceptance_confirmation": copy.deepcopy(
+                    self.acceptance_confirmation
+                )
+            },
+        }
+
+    def confirm_candidate_acceptance(
+        self,
+        _token: str,
+        record: dict,
+    ) -> dict:
+        if (
+            self.acceptance_confirmation is not None
+            and self.acceptance_confirmation != record
+        ):
+            return {
+                "ok": False,
+                "error": {
+                    "code": "candidate_acceptance_confirmation_conflict",
+                    "message_key": "candidate_acceptance_confirmation_conflict",
+                },
+            }
+        self.acceptance_confirmation = copy.deepcopy(record)
+        return {
+            "ok": True,
+            "data": {
+                "acceptance_confirmation": copy.deepcopy(record)
             },
         }
 
@@ -1592,6 +1653,41 @@ class PlanExecutionV1Test(unittest.TestCase):
             "requirement_03",
             "requirement_04",
         ])
+        confirmation = build_candidate_acceptance_confirmation(
+            self.plan,
+            self.confirmation,
+            _acceptance_cases(),
+            input_contract,
+            output_contract,
+            NOW,
+        )
+        self.assertEqual(
+            validate_candidate_acceptance_confirmation(
+                self.plan,
+                self.confirmation,
+                confirmation,
+                input_contract,
+                output_contract,
+            ),
+            confirmation,
+        )
+        self.assertEqual(
+            confirmation["confirmation_source"],
+            "user_confirmed",
+        )
+        tampered = copy.deepcopy(confirmation)
+        tampered["cases"][0]["expected_output"]["total"] = 7
+        with self.assertRaisesRegex(
+            CandidateAcceptanceError,
+            "candidate_acceptance_confirmation_invalid",
+        ):
+            validate_candidate_acceptance_confirmation(
+                self.plan,
+                self.confirmation,
+                tampered,
+                input_contract,
+                output_contract,
+            )
 
         receipt = evaluate_candidate_acceptance(
             first,
@@ -1825,6 +1921,231 @@ class PlanExecutionV1Test(unittest.TestCase):
             candidate["composition_manifest"]["candidate_acceptance_port"],
             "candidate_acceptance.v1",
         )
+
+    def test_local_agent_entry_is_confirmed_bounded_and_recoverable(self) -> None:
+        self.service._product_planner = _ConfirmedPlanner(
+            self.plan,
+            self.confirmation,
+        )
+        confirmed = self.service.confirm_product_candidate_acceptance(
+            {
+                "plan_token": "plan_token_test",
+                "plan_digest": self.plan["canonical_digest"],
+                "acceptance_cases": _acceptance_cases(),
+            }
+        )
+        self.assertTrue(confirmed["ok"], confirmed)
+        acceptance_confirmation = confirmed["data"]
+        before = _store_snapshot(self.store)
+        source = self.root / "agent-source-sentinel"
+        target = self.root / "agent-target-sentinel"
+        source.write_text("source unchanged\n", encoding="utf-8")
+        target.write_text("target unchanged\n", encoding="utf-8")
+
+        def request(action: str, payload: dict, request_id: str) -> dict:
+            return dispatch_agent_request(
+                self.service,
+                {
+                    "protocol": AGENT_PROTOCOL_VERSION,
+                    "id": request_id,
+                    "action": action,
+                    "payload": payload,
+                },
+            )
+
+        invalid_version = dispatch_agent_request(
+            self.service,
+            {
+                "protocol": "reweave_agent_jsonl.v0",
+                "id": "invalid-version",
+                "action": "get_confirmed_product_plan",
+                "payload": {"plan_token": "plan_token_test"},
+            },
+        )
+        self.assertEqual(
+            invalid_version["error"]["code"],
+            "agent_protocol_version_invalid",
+        )
+        forbidden_action = request(
+            "confirm_product_candidate_acceptance",
+            {},
+            "forbidden-action",
+        )
+        self.assertEqual(
+            forbidden_action["error"]["code"],
+            "agent_action_not_allowed",
+        )
+        plan_response = request(
+            "get_confirmed_product_plan",
+            {"plan_token": "plan_token_test"},
+            "plan",
+        )
+        self.assertTrue(plan_response["ok"], plan_response)
+        self.assertTrue(
+            plan_response["data"]["candidate_acceptance"]["confirmed"]
+        )
+        self.assertEqual(
+            request(
+                "start_confirmed_product_candidate",
+                {
+                    "plan_token": "plan_token_test",
+                    "plan_digest": self.plan["canonical_digest"],
+                    "acceptance_confirmation_digest": acceptance_confirmation[
+                        "canonical_digest"
+                    ],
+                    "acceptance_cases": _acceptance_cases(),
+                },
+                "cases-forbidden",
+            )["error"]["code"],
+            "product_candidate_request_invalid",
+        )
+
+        with (
+            patch(
+                "pimos_lite.reweave_app_service._validate_product_static",
+                _quality_receipt,
+            ),
+            patch(
+                "pimos_lite.reweave_app_service._validate_product_runtime",
+                _runtime_receipt,
+            ),
+            patch(
+                "pimos_lite.reweave_app_service._validate_product_acceptance",
+                return_value=_acceptance_worker(),
+            ),
+        ):
+            start_payload = {
+                "plan_token": "plan_token_test",
+                "plan_digest": self.plan["canonical_digest"],
+                "acceptance_confirmation_digest": acceptance_confirmation[
+                    "canonical_digest"
+                ],
+            }
+            started = request(
+                "start_confirmed_product_candidate",
+                start_payload,
+                "start",
+            )
+            self.assertTrue(started["ok"], started)
+            run_id = started["data"]["run_id"]
+            for _ in range(3000):
+                task = request(
+                    "get_product_candidate_run",
+                    {"run_id": run_id},
+                    "poll",
+                )
+                if task["ok"] and task["data"]["status"] in {
+                    "completed",
+                    "failed",
+                    "cancelled",
+                }:
+                    break
+                time.sleep(0.01)
+            self.assertEqual(task["data"]["status"], "completed", task)
+            candidate = task["data"]["candidate"]
+
+            repeated = request(
+                "start_confirmed_product_candidate",
+                start_payload,
+                "repeat",
+            )
+            repeat_run = repeated["data"]["run_id"]
+            for _ in range(3000):
+                repeat_task = request(
+                    "get_product_candidate_run",
+                    {"run_id": repeat_run},
+                    "repeat-poll",
+                )
+                if repeat_task["ok"] and repeat_task["data"]["status"] in {
+                    "completed",
+                    "failed",
+                    "cancelled",
+                }:
+                    break
+                time.sleep(0.01)
+            self.assertEqual(
+                repeat_task["data"]["candidate"]["candidate_token"],
+                candidate["candidate_token"],
+            )
+
+        public = json.dumps(
+            {
+                "plan": plan_response,
+                "candidate": candidate,
+            },
+            ensure_ascii=False,
+        )
+        for forbidden in (
+            "workspace_id",
+            "candidate_id",
+            "execution_unit_id",
+            "work_item_id",
+            "binding_ref",
+            "capsule_id",
+            "version_id",
+            "canonical_hash",
+            ".sqlite3",
+            str(self.root),
+        ):
+            self.assertNotIn(forbidden, public)
+        self.assertEqual(_store_snapshot(self.store), before)
+        self.assertEqual(source.read_text(encoding="utf-8"), "source unchanged\n")
+        self.assertEqual(target.read_text(encoding="utf-8"), "target unchanged\n")
+        self.assertFalse((self.state / "products").exists())
+
+        forged = request(
+            "get_product_candidate",
+            {"candidate_token": "candidate_token_" + "0" * 48},
+            "forged",
+        )
+        self.assertFalse(forged["ok"])
+        self.assertEqual(
+            forged["error"]["code"],
+            "product_candidate_not_found",
+        )
+        stale_plan = copy.deepcopy(self.plan)
+        stale_plan["sections"][0]["work_items"][0]["capsule_bindings"][0][
+            "version_id"
+        ] = "version_expired"
+        self.service._product_planner = _ConfirmedPlanner(
+            stale_plan,
+            self.confirmation,
+            acceptance_confirmation,
+        )
+        stale = request(
+            "get_confirmed_product_plan",
+            {"plan_token": "plan_token_test"},
+            "stale",
+        )
+        self.assertFalse(stale["ok"])
+        self.assertEqual(
+            stale["error"]["code"],
+            "product_candidate_plan_stale",
+        )
+
+        restarted = ReweaveAppService(
+            _NoLegacyEngine(),
+            capsule_store=self.store,
+        )
+        try:
+            restored = dispatch_agent_request(
+                restarted,
+                {
+                    "protocol": AGENT_PROTOCOL_VERSION,
+                    "id": "restore",
+                    "action": "get_product_candidate",
+                    "payload": {
+                        "candidate_token": candidate["candidate_token"]
+                    },
+                },
+            )
+            self.assertTrue(restored["ok"], restored)
+            self.assertEqual(
+                restored["data"]["candidate_digest"],
+                candidate["candidate_digest"],
+            )
+        finally:
+            restarted.close()
 
     def test_candidate_is_isolated_idempotent_and_recoverable(self) -> None:
         self.service._product_planner = _ConfirmedPlanner(

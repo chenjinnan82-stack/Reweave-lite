@@ -23,6 +23,9 @@ PARAMETERIZED_EXECUTION_CONFIRMATION_VERSION = (
 )
 PARAMETERIZED_EXECUTION_BINDING_VERSION = "parameterized_execution_binding.v1"
 CANDIDATE_ACCEPTANCE_VERSION = "candidate_acceptance.v1"
+CANDIDATE_ACCEPTANCE_CONFIRMATION_VERSION = (
+    "candidate_acceptance_confirmation.v1"
+)
 CANDIDATE_ACCEPTANCE_RECEIPT_VERSION = "candidate_acceptance_receipt.v1"
 CANDIDATE_ACCEPTANCE_WORKER_VERSION = "candidate_acceptance_worker.v1"
 MAX_CANDIDATE_ACCEPTANCE_CASES = 16
@@ -682,6 +685,108 @@ def build_candidate_acceptance(
     return contract
 
 
+def build_candidate_acceptance_confirmation(
+    plan: dict[str, Any],
+    confirmation: dict[str, Any],
+    cases: list[dict[str, Any]],
+    input_contract: dict[str, Any],
+    output_contract: dict[str, Any],
+    confirmed_at: str,
+) -> dict[str, Any]:
+    """Canonicalize one user-owned acceptance specification before generation."""
+
+    if type(confirmed_at) is not str or not confirmed_at or len(confirmed_at) > 128:
+        raise CandidateAcceptanceError(
+            "candidate_acceptance_confirmation_invalid"
+        )
+    normalized = build_candidate_acceptance(
+        plan,
+        confirmation,
+        cases,
+        input_contract,
+        output_contract,
+        "0" * 64,
+    )
+    record = {
+        "schema_version": CANDIDATE_ACCEPTANCE_CONFIRMATION_VERSION,
+        "plan_digest": normalized["plan_digest"],
+        "plan_confirmation_digest": normalized["confirmation_digest"],
+        "requirement_ids": normalized["requirement_ids"],
+        "input_contract_digest": normalized["input_contract_digest"],
+        "output_contract_digest": normalized["output_contract_digest"],
+        "cases": normalized["cases"],
+        "confirmed_at": confirmed_at,
+        "confirmation_source": "user_confirmed",
+    }
+    record["canonical_digest"] = canonical_digest(record)
+    _acceptance_copy(record)
+    return record
+
+
+def validate_candidate_acceptance_confirmation(
+    plan: dict[str, Any],
+    confirmation: dict[str, Any],
+    record: dict[str, Any],
+    input_contract: dict[str, Any],
+    output_contract: dict[str, Any],
+) -> dict[str, Any]:
+    """Rebuild a stored acceptance confirmation and reject any divergence."""
+
+    row = _acceptance_exact(
+        record,
+        {
+            "schema_version",
+            "plan_digest",
+            "plan_confirmation_digest",
+            "requirement_ids",
+            "input_contract_digest",
+            "output_contract_digest",
+            "cases",
+            "confirmed_at",
+            "confirmation_source",
+            "canonical_digest",
+        },
+        "candidate_acceptance_confirmation_invalid",
+    )
+    if (
+        row["schema_version"] != CANDIDATE_ACCEPTANCE_CONFIRMATION_VERSION
+        or row["confirmation_source"] != "user_confirmed"
+        or type(row["cases"]) is not list
+    ):
+        raise CandidateAcceptanceError(
+            "candidate_acceptance_confirmation_invalid"
+        )
+    raw_cases = [
+        {
+            key: case[key]
+            for key in ("requirement_ids", "input", "expected_output")
+        }
+        if type(case) is dict
+        and set(case)
+        == {"case_id", "requirement_ids", "input", "expected_output"}
+        else {}
+        for case in row["cases"]
+    ]
+    try:
+        expected = build_candidate_acceptance_confirmation(
+            plan,
+            confirmation,
+            raw_cases,
+            input_contract,
+            output_contract,
+            row["confirmed_at"],
+        )
+    except (CandidateAcceptanceError, KeyError) as exc:
+        raise CandidateAcceptanceError(
+            "candidate_acceptance_confirmation_invalid"
+        ) from exc
+    if expected != row:
+        raise CandidateAcceptanceError(
+            "candidate_acceptance_confirmation_invalid"
+        )
+    return _acceptance_copy(row)
+
+
 def evaluate_candidate_acceptance(
     contract: dict[str, Any],
     worker_result: dict[str, Any],
@@ -1315,6 +1420,7 @@ def _compile_plan_execution(
 
 
 __all__ = [
+    "CANDIDATE_ACCEPTANCE_CONFIRMATION_VERSION",
     "CANDIDATE_ACCEPTANCE_RECEIPT_VERSION",
     "CANDIDATE_ACCEPTANCE_VERSION",
     "CANDIDATE_ACCEPTANCE_WORKER_VERSION",
@@ -1328,6 +1434,7 @@ __all__ = [
     "CandidateAcceptanceError",
     "PlanExecutionError",
     "build_candidate_acceptance",
+    "build_candidate_acceptance_confirmation",
     "build_parameterized_execution_binding",
     "build_parameterized_execution_offer",
     "canonical_bytes",
@@ -1335,5 +1442,6 @@ __all__ = [
     "compile_plan_execution",
     "compile_parameterized_plan_execution",
     "evaluate_candidate_acceptance",
+    "validate_candidate_acceptance_confirmation",
     "validate_parameterized_execution_binding",
 ]

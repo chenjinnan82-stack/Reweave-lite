@@ -9,6 +9,9 @@ from pathlib import Path
 import pytest
 
 import pimos_lite.reweave_product_planner as product_planner_module
+from pimos_lite.reweave_plan_execution import (
+    build_candidate_acceptance_confirmation,
+)
 from pimos_lite.reweave_product_planner import (
     FORMAL_MODEL_TIMEOUT_SECONDS,
     HTTP_TIMEOUT_SECONDS,
@@ -3163,6 +3166,39 @@ def test_parameter_offer_precedes_atomic_confirmation_and_cannot_be_rewritten(
     )
     assert recovered_snapshot["ok"] is True
     assert recovered_snapshot["data"]["confirmation"] == receipt
+
+    acceptance_confirmation = build_candidate_acceptance_confirmation(
+        plan,
+        receipt,
+        [
+            {
+                "requirement_ids": [plan["requirements"][0]["requirement_id"]],
+                "input": {"quantity": 3},
+                "expected_output": {"total": 30},
+            }
+        ],
+        contracts["interaction"][1]["events"]["calculate_requested"],
+        contracts["computation"][1],
+        "2026-07-24T00:00:00Z",
+    )
+    stored = planner.confirm_candidate_acceptance(
+        token,
+        acceptance_confirmation,
+    )
+    assert stored["ok"] is True
+    restarted = StubPlanner(root)
+    restored_acceptance = restarted.get_candidate_acceptance_confirmation(token)
+    assert restored_acceptance["ok"] is True
+    assert (
+        restored_acceptance["data"]["acceptance_confirmation"]
+        == acceptance_confirmation
+    )
+    tampered = copy.deepcopy(acceptance_confirmation)
+    tampered["cases"][0]["expected_output"]["total"] = 31
+    assert (
+        restarted.confirm_candidate_acceptance(token, tampered)["error"]["code"]
+        == "candidate_acceptance_confirmation_invalid"
+    )
     changed = copy.deepcopy(request)
     changed["values"][0]["value"] = 11
     assert (

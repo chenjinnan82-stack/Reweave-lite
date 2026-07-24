@@ -25,6 +25,8 @@ from urllib.parse import urlparse
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
 from pimos_lite.reweave_plan_execution import (
+    CANDIDATE_ACCEPTANCE_CONFIRMATION_VERSION,
+    MAX_CANDIDATE_ACCEPTANCE_CASES,
     PlanExecutionError,
     build_parameterized_execution_binding,
     build_parameterized_execution_offer,
@@ -1446,6 +1448,66 @@ class ProductPlanner:
             )
             self._save_workspace(confirmed_workspace)
         return _ok(self._workspace_projection(confirmed_workspace))
+
+    @_public_call
+    def confirm_candidate_acceptance(
+        self,
+        plan_token: str,
+        record: dict[str, Any],
+    ) -> dict[str, Any]:
+        workspace = self._workspace_by_token(plan_token)
+        plan = workspace.get("plan")
+        if (
+            workspace.get("status") != "confirmed"
+            or type(plan) is not dict
+            or type(workspace.get("confirmation")) is not dict
+        ):
+            raise ProductPlanningError(
+                "candidate_acceptance_confirmation_unavailable"
+            )
+        self._validate_candidate_acceptance_confirmation_binding(
+            workspace,
+            record,
+        )
+        path = self._candidate_acceptance_confirmation_path(workspace, plan)
+        with self._lock:
+            self._ensure_directory(path.parent)
+            try:
+                self._write_immutable(path, record)
+            except ProductPlanningError as exc:
+                if exc.code == "product_plan_confirmation_conflict":
+                    raise ProductPlanningError(
+                        "candidate_acceptance_confirmation_conflict"
+                    ) from exc
+                raise
+        return _ok({"acceptance_confirmation": copy.deepcopy(record)})
+
+    @_public_call
+    def get_candidate_acceptance_confirmation(
+        self,
+        plan_token: str,
+    ) -> dict[str, Any]:
+        workspace = self._workspace_by_token(plan_token)
+        plan = workspace.get("plan")
+        if (
+            workspace.get("status") != "confirmed"
+            or type(plan) is not dict
+            or type(workspace.get("confirmation")) is not dict
+        ):
+            raise ProductPlanningError(
+                "candidate_acceptance_confirmation_unavailable"
+            )
+        path = self._candidate_acceptance_confirmation_path(workspace, plan)
+        if path.is_symlink() or not path.is_file():
+            raise ProductPlanningError(
+                "candidate_acceptance_confirmation_required"
+            )
+        record = self._read_json(path)
+        self._validate_candidate_acceptance_confirmation_binding(
+            workspace,
+            record,
+        )
+        return _ok({"acceptance_confirmation": copy.deepcopy(record)})
 
     @_public_call
     def get(
@@ -3092,6 +3154,76 @@ class ProductPlanner:
         row = _stored_exact(value, {"plan", "confirmation"})
         if row["plan"] != plan or row["confirmation"] != confirmation:
             raise ProductPlanningError("product_workspace_corrupt")
+
+    def _validate_candidate_acceptance_confirmation_binding(
+        self,
+        workspace: dict[str, Any],
+        value: Any,
+    ) -> None:
+        plan = workspace.get("plan")
+        confirmation = workspace.get("confirmation")
+        row = _stored_exact(
+            value,
+            {
+                "schema_version",
+                "plan_digest",
+                "plan_confirmation_digest",
+                "requirement_ids",
+                "input_contract_digest",
+                "output_contract_digest",
+                "cases",
+                "confirmed_at",
+                "confirmation_source",
+                "canonical_digest",
+            },
+        )
+        body = {
+            key: item for key, item in row.items() if key != "canonical_digest"
+        }
+        if (
+            type(plan) is not dict
+            or type(confirmation) is not dict
+            or row["schema_version"]
+            != CANDIDATE_ACCEPTANCE_CONFIRMATION_VERSION
+            or row["plan_digest"] != plan["canonical_digest"]
+            or row["plan_confirmation_digest"]
+            != confirmation["receipt_digest"]
+            or type(row["requirement_ids"]) is not list
+            or not row["requirement_ids"]
+            or type(row["cases"]) is not list
+            or not 1
+            <= len(row["cases"])
+            <= MAX_CANDIDATE_ACCEPTANCE_CASES
+            or type(row["confirmed_at"]) is not str
+            or not row["confirmed_at"]
+            or row["confirmation_source"] != "user_confirmed"
+            or any(
+                _DIGEST.fullmatch(str(row[key])) is None
+                for key in (
+                    "input_contract_digest",
+                    "output_contract_digest",
+                    "canonical_digest",
+                )
+            )
+            or row["canonical_digest"] != _digest(body)
+        ):
+            raise ProductPlanningError(
+                "candidate_acceptance_confirmation_invalid"
+            )
+
+    def _candidate_acceptance_confirmation_path(
+        self,
+        workspace: dict[str, Any],
+        plan: dict[str, Any],
+    ) -> Path:
+        return (
+            self._workspace_dir(workspace["workspace_id"])
+            / "confirmed"
+            / (
+                "candidate_acceptance_v1_"
+                f"{plan['plan_version']}_{plan['canonical_digest']}.json"
+            )
+        )
 
     def _confirmation_snapshot_path(
         self,

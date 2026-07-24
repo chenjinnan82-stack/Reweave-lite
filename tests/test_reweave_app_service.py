@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import io
+import json
 import os
 import threading
 import unittest
@@ -17,6 +19,10 @@ from pimos_lite.reweave_app_service import (
     legacy_workbench_actions,
     public_product_actions,
     release_boundary_for_action,
+)
+from pimos_lite.reweave_agent_stdio import (
+    AGENT_PROTOCOL_VERSION,
+    serve_jsonl,
 )
 from pimos_lite.reweave_engine.local import LocalReweaveEngine
 from pimos_lite.reweave_engine.lumo_lite import LumoLiteReweaveEngine
@@ -102,6 +108,7 @@ class ReweaveAppServiceTest(unittest.TestCase):
             "cancel_product_plan_run",
             "get_product_plan_workspace",
             "confirm_product_plan",
+            "confirm_product_candidate_acceptance",
             "list_reusable_product_capabilities",
             "start_product_candidate",
             "get_product_candidate_run",
@@ -142,6 +149,10 @@ class ReweaveAppServiceTest(unittest.TestCase):
         self.assertIn("start_product_plan", public_product_actions())
         self.assertIn("suggest_product_plan_action", public_product_actions())
         self.assertIn("confirm_product_plan", public_product_actions())
+        self.assertIn(
+            "confirm_product_candidate_acceptance",
+            public_product_actions(),
+        )
         self.assertIn(
             "list_reusable_product_capabilities",
             public_product_actions(),
@@ -442,6 +453,81 @@ class ReweaveAppServiceTest(unittest.TestCase):
                 }
             ],
         )
+
+    def test_agent_jsonl_protocol_is_strict_and_redacts_capability_details(
+        self,
+    ) -> None:
+        class Service:
+            @staticmethod
+            def list_reusable_product_capabilities(_payload):
+                return {
+                    "ok": True,
+                    "data": {
+                        "schema_version": (
+                            "reweave_reusable_capability_catalog.v1"
+                        ),
+                        "warehouse_revision": 1,
+                        "capabilities": [
+                            {
+                                "capsule_id": "capsule_1",
+                                "version_id": "version_1",
+                                "display_name": "报价计算",
+                                "capability_key": "quote",
+                                "role_key": "compute",
+                                "variant_key": "default",
+                                "capability_kind": "computation",
+                                "canonical_hash": "a" * 64,
+                                "identity_status": "formal_exact_version",
+                                "input_contract": {},
+                                "output_contract": {},
+                                "source": {
+                                    "status": "formal_exact_source_verified",
+                                    "relationship": "exact",
+                                },
+                                "source_relpath": "/private/source.js",
+                                "html_text": "<main>private</main>",
+                            }
+                        ],
+                    },
+                }
+
+        requests = "\n".join(
+            [
+                json.dumps(
+                    {
+                        "protocol": AGENT_PROTOCOL_VERSION,
+                        "id": "catalog",
+                        "action": "list_reusable_product_capabilities",
+                        "payload": {},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "protocol": "reweave_agent_jsonl.v0",
+                        "id": "old",
+                        "action": "list_reusable_product_capabilities",
+                        "payload": {},
+                    }
+                ),
+                "{not-json",
+            ]
+        )
+        output = io.StringIO()
+        serve_jsonl(Service(), io.StringIO(requests), output)
+        rows = [json.loads(line) for line in output.getvalue().splitlines()]
+        self.assertTrue(rows[0]["ok"])
+        public = json.dumps(rows[0], ensure_ascii=False)
+        self.assertNotIn("source_relpath", public)
+        self.assertNotIn("/private/", public)
+        self.assertNotIn("html_text", public)
+        self.assertNotIn("capsule_id", public)
+        self.assertNotIn("version_id", public)
+        self.assertNotIn("canonical_hash", public)
+        self.assertEqual(
+            rows[1]["error"]["code"],
+            "agent_protocol_version_invalid",
+        )
+        self.assertEqual(rows[2]["error"]["code"], "agent_json_invalid")
 
 
 if __name__ == "__main__":
