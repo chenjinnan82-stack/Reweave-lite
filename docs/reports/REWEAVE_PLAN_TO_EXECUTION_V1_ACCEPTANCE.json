@@ -1,17 +1,19 @@
 {
   "schema_version": "reweave_plan_to_execution_v1_acceptance.v1",
-  "completed_date": "2026-07-23",
-  "verdict": "PARTIAL",
-  "verdict_reason": "The deterministic candidate_acceptance.v1 harness and product_candidate.v2 state boundary are implemented and directly verified. The real strong-model goal-to-correct-candidate gate remains PARTIAL for one reason: no new candidate has yet been generated and verified in a durable audit state against the user-confirmed 1→10, 3→30, and 10→100 cases. The former temporary candidate and raw QWebEngine evidence are unavailable, and runtime operation alone does not prove product-goal conformance.",
+  "completed_date": "2026-07-24",
+  "verdict": "PASS",
+  "verdict_reason": "A durable real Qwen3 14B run formed a zero-gap confirmed product_plan.v1 from the fixed local quote goal, bound user-confirmed unit_price=10, compiled byte-identical plan_execution.v2 results, and generated one review_ready product_candidate.v2. Real QWebEngine runtime and the exact 1→10, 3→30, and 10→100 business cases passed; idempotency, restart recovery, provenance, file reads, and zero-write boundaries were reverified.",
   "scope": {
     "plan_execution_v1": "PASS",
+    "plan_execution_v2": "PASS",
     "product_candidate_v1": "PASS",
     "product_candidate_v2": "PASS",
     "candidate_business_acceptance_harness_v1": "PASS",
     "parameterized_execution_binding_v1": "PASS",
+    "local_agent_capability_entry_v1": "PASS",
     "thin_review_only_viewer": "PASS",
     "real_strong_model_goal_to_operational_candidate": "HISTORICAL_PASS",
-    "real_strong_model_goal_to_correct_candidate": "PARTIAL"
+    "real_strong_model_goal_to_correct_candidate": "PASS"
   },
   "authority_boundary": {
     "model_may_propose_plan_semantics": true,
@@ -48,10 +50,11 @@
     ]
   },
   "real_strong_model_vertical_gate": {
-    "status": "PARTIAL",
+    "status": "PASS",
     "historical_operational_subgates": "PASS",
-    "current_evidence_availability": "REPORT_ONLY",
-    "product_goal_conformance": "NOT_FORMALLY_VERIFIED",
+    "current_evidence_availability": "DURABLE_AUDIT_STATE",
+    "product_goal_conformance": "PASS",
+    "evidence_manifest_digest": "7e8b3deab809f2032e3fe94669ec765b02dc22d6ecf379eb7974894724afda47",
     "scope": "bounded_quote_calculation_goal_to_isolated_candidate",
     "goal": "构建一个完全本地、无登录、无数据库、无网络的报价计算页面：用户输入 1–10 的商品数量，系统按固定单价 10 计算总价并展示。仅需页面展示、输入交互和本地确定性计算；不需要部署、持久化、账号或后台服务。",
     "goal_digest": "002cf76499cdd9a0a34b6b1b74aebc598fefd881ae1ad16775e2a9e0a79f4612",
@@ -69,70 +72,70 @@
     },
     "schema_probe": {
       "status": "passed",
-      "duration_ms": 10596,
-      "input_bytes": 681,
-      "output_bytes": 84,
-      "structured_response_digest": "a8ebd4cfb3312421477c3ecd0504b8363261e7e6aff1853ba048dacaace83ff5"
+      "call_count": 1
     },
     "planning_calls": [
       {
         "call_type": "requirements_outline",
-        "duration_ms": 25883,
+        "duration_ms": 24838,
         "input_bytes": 3097,
         "output_bytes": 1027,
         "structured_response_digest": "e4e23bd8f86702c37884a245bd7e46a87085dc4fa55d80f47f87f7732229c3eb"
       },
       {
         "call_type": "section_frontend",
-        "duration_ms": 30460,
-        "input_bytes": 4822,
-        "output_bytes": 1239,
-        "structured_response_digest": "0757a075386afb8f635cc544ab425f82c73f13d2203d4dc9e2bb24427eaaddeb"
+        "duration_ms": 17736,
+        "input_bytes": 4875,
+        "output_bytes": 627,
+        "structured_response_digest": "132dea55d3489e6a2234f1c82da277a845d1a60ea875c27a5cd16ef70fd81a24"
       },
       {
         "call_type": "section_backend",
-        "duration_ms": 25794,
-        "input_bytes": 4819,
-        "output_bytes": 1243,
-        "structured_response_digest": "a8222af603e6530419f39373cba3fb058722a222312f01cf7ebdefab6f7b6b05"
+        "duration_ms": 13514,
+        "input_bytes": 4872,
+        "output_bytes": 638,
+        "structured_response_digest": "e02d695b69bf7ddc703a527945946828177c2132ad0d9df184c25a8b6fae3e77"
       },
       {
         "call_type": "section_data",
-        "duration_ms": 28674,
-        "input_bytes": 4810,
-        "output_bytes": 1411,
-        "structured_response_digest": "4296a311b3a82b53f409f3fbae5c305f42b581d032691181fa28eb2f131d4ba1"
+        "duration_ms": 13591,
+        "input_bytes": 4863,
+        "output_bytes": 644,
+        "structured_response_digest": "f6077411604c9fc06d738b5538ff2b330605b3cc8a3587ba7cf01db6d8fb5b07"
       },
       {
         "call_type": "section_infrastructure",
-        "duration_ms": 29042,
-        "input_bytes": 4840,
-        "output_bytes": 1247,
-        "structured_response_digest": "d44d3e995dc6fc153e14d6a62f52cf7e5474f90c1ca52063b67c9e9de1c77c09"
+        "duration_ms": 27283,
+        "input_bytes": 4893,
+        "output_bytes": 1294,
+        "structured_response_digest": "6514db40093bc1164f15c509be1a3afcb34d2f6f59b769969ef1cda42bf92a06"
       }
     ],
     "confirmed_plan": {
       "plan_version": 1,
-      "canonical_digest": "8b146a8f03d1269a4fb6191a83225a2952c54aa58e1bf18e25849b7c2f85d028",
+      "canonical_digest": "6c408715c7f677dceed10538f3a681c2c1b82bb63d0fbf98a592288f31cd090b",
       "sections": 4,
       "requirements": 6,
-      "work_items": 12,
-      "binding_occurrences": 12,
+      "work_items": 6,
+      "binding_occurrences": 6,
       "exact_capsule_versions": 3,
       "gaps": 0,
       "requirements_fully_covered": true,
       "restart_restore": true
     },
     "execution_plan": {
-      "schema_version": "plan_execution.v1",
-      "execution_units": 12,
+      "schema_version": "plan_execution.v2",
+      "execution_units": 6,
       "formal_capsules": 3,
-      "execution_digest": "48e73e5f06e94338765d2f493eef4549f96da6c451f8b4d6a751fb8c337c8f4c",
-      "byte_equal_replay": true
+      "execution_digest": "13907d3c9b4e22c24eec358de3646b1b1f9fc5d49fc399049648a50a34c4e397",
+      "byte_equal_replay": true,
+      "user_confirmed_unit_price": 10
     },
     "candidate": {
-      "schema_version": "product_candidate.v1",
-      "candidate_digest": "de30602e84f101c16eb5f10c11f34e1d279b570af83abbbf282e6bae8de7f59d",
+      "schema_version": "product_candidate.v2",
+      "status": "review_ready",
+      "candidate_digest": "c283dce9cbf419f2f387d3ad704b1a305e53b9dac0edfb1a60c405cf3144b241",
+      "candidate_content_digest": "91a2c2377c366e86a798ec88f6396d28ce01b36290dcff8347f833cee4a087fd",
       "composer": "module_native_formal_product.v1",
       "composer_calls": 1,
       "files": 7,
@@ -140,15 +143,17 @@
       "provenance_files": 7,
       "static_validation": "passed",
       "real_qwebengine_runtime": "passed",
+      "product_goal_conformance": "passed",
+      "business_cases": [
+        "1→10",
+        "3→30",
+        "10→100"
+      ],
       "blocked_requests": 0,
       "console_messages": 0,
       "idempotent_repeat": true,
       "restart_restore": true,
       "opaque_token_restore_and_file_read": true
-    },
-    "memory": {
-      "peak_rss_kib": 14046320,
-      "ending_rss_kib": 13924944
     },
     "write_boundary": {
       "warehouse_revision_unchanged": true,
@@ -176,16 +181,16 @@
       "failure_code": "plan_execution_gap_present",
       "candidate_generated": false
     },
-    "claim_boundary": "The historical PASS applies only to bounded planning, deterministic execution compilation, isolated generation, static safety, and basic runtime operation with three exact formal capsules in one capability group. It does not prove that candidate behavior satisfies the goal's unit-price requirement, and it does not claim multi-capability composition or gap code generation."
+    "claim_boundary": "PASS applies to this fixed bounded goal, three exact formal capsules in one capability group, user-confirmed parameter binding, deterministic execution, isolated generation, and exact business acceptance. It does not claim multi-capability composition, gap code generation, product promotion, or user-project writes."
   },
   "candidate_gate": {
-    "schema_version": "product_candidate.v1",
+    "schema_version": "product_candidate.v2",
     "status": "PASS",
-    "evidence_status": "HISTORICAL_REPORT_ONLY",
+    "evidence_status": "DURABLE_REVERIFIED",
     "composer": "module_native_formal_product.v1",
     "candidate_files": 7,
-    "candidate_digest": "5db5987629f85f4031327513793be95de9c17d835840ac62cd1d9ba826b6d278",
-    "execution_digest": "3f7e5b45abd1e8d8d293a27a55c5bf875841b7556909061b50a9a26b4342f744",
+    "candidate_digest": "c283dce9cbf419f2f387d3ad704b1a305e53b9dac0edfb1a60c405cf3144b241",
+    "execution_digest": "13907d3c9b4e22c24eec358de3646b1b1f9fc5d49fc399049648a50a34c4e397",
     "idempotent_repeat": true,
     "restart_recovery": true,
     "file_hashes_verified_on_read": true,
@@ -278,12 +283,12 @@
         "failure_code": "candidate_output_mismatch"
       }
     ],
-    "fixed_unit_price_10_verified": false,
-    "claim_boundary": "The direct QWebEngine evidence proves deterministic matching and mismatch behavior for the harness. It does not verify the historical fixed-unit-price-10 goal or replace the pending durable 1→10, 3→30, and 10→100 vertical run."
+    "fixed_unit_price_10_verified": true,
+    "claim_boundary": "The direct matching/mismatch tests prove deterministic harness behavior. The separate durable real-Qwen3 vertical gate verifies the fixed unit-price-10 goal with exact 1→10, 3→30, and 10→100 cases; this remains a bounded single-capability-group result."
   },
   "parameterized_execution_binding_v1": {
     "status": "PASS",
-    "evidence_scope": "protocol_fixture",
+    "evidence_scope": "protocol_fixture_and_real_qwen3",
     "confirmation_version": "product_plan_confirmation.v2",
     "execution_version": "plan_execution.v2",
     "provenance_version": "product_candidate_provenance.v2",
@@ -311,7 +316,7 @@
         "status": "PASS"
       }
     ],
-    "claim_boundary": "The protocol fixture proves deterministic user-confirmed parameter binding, v2 execution, v2 provenance, runtime override rejection, and v1 byte compatibility. No generic formal capsule identities or real strong-model goal-to-correct-candidate run have yet been completed."
+    "claim_boundary": "The protocol fixture proves deterministic user-confirmed parameter binding, v2 execution, v2 provenance, runtime override rejection, and v1 byte compatibility. The durable real-Qwen3 run independently proves the same bounded unit_price=10 binding through a correct review_ready candidate."
   },
   "validation_gate": {
     "static_status": "passed",
@@ -319,10 +324,10 @@
     "network_apis_absent": true,
     "javascript_syntax": true,
     "real_qwebengine_runtime": "passed",
-    "runtime_operational_evidence": "HISTORICAL_PASS",
+    "runtime_operational_evidence": "DURABLE_PASS",
     "product_goal_conformance_harness": "IMPLEMENTED_AND_DIRECTLY_VERIFIED",
-    "durable_fixed_unit_price_10_vertical_evidence": "PENDING",
-    "current_raw_candidate_evidence_available": false,
+    "durable_fixed_unit_price_10_vertical_evidence": "PASS",
+    "current_raw_candidate_evidence_available": true,
     "blocked_requests": 0,
     "console_messages": 0,
     "interactive_runtime": {
@@ -416,7 +421,7 @@
           }
         }
       ],
-      "required_cases_execution_status": "NOT_YET_RUN_IN_A_DURABLE_AUDIT_STATE",
+      "required_cases_execution_status": "PASS_IN_DURABLE_REAL_QWEN3_AUDIT_STATE",
       "deterministic_gate": "Run each normalized case through a versioned candidate test port, validate input and expected output against existing data_contract.v1, compare the actual canonical output exactly, and record runtime_operational separately from product_goal_conformance.",
       "forbidden_approaches": [
         "natural_language_parsing",
@@ -482,7 +487,20 @@
     "real_formal_sqlite_capsules_used": true,
     "real_reweave_app_service_used": true,
     "real_module_native_composer_used": true,
-    "claim_boundary": "The original fixture gate remains historical deterministic-backend evidence. The real Qwen3 run remains historical evidence for bounded planning, generation, and operational runtime only; product-goal correctness is not proven until a new durable candidate is run through candidate_acceptance.v1 with the confirmed target-specific cases."
+    "claim_boundary": "The original fixture gate remains historical deterministic-backend evidence. The durable real-Qwen3 run now proves bounded planning, confirmed parameter binding, deterministic generation, operational runtime, and exact target-specific candidate_acceptance.v1 cases; it does not prove multi-capability composition or product promotion."
+  },
+  "local_agent_capability_entry_v1": {
+    "status": "PASS",
+    "public_action": "list_reusable_product_capabilities",
+    "implementation": "thin_reweave_app_service_action",
+    "uses_existing_catalog_loader": true,
+    "uses_existing_formal_capsule_loader": true,
+    "second_service_added": false,
+    "agent_framework_added": false,
+    "returns_exact_version_and_source_status": true,
+    "returns_code_or_internal_paths": false,
+    "existing_candidate_request_and_read_actions_reused": true,
+    "claim_boundary": "This is a narrow local public action over existing deterministic core capabilities. It does not add orchestration, autonomous planning, product promotion, or user-project writes."
   },
   "tests": {
     "python_compile": {
@@ -526,6 +544,22 @@
       "subtests_passed": 204,
       "failed": 0
     },
+    "local_agent_entry_regression": {
+      "passed": 33,
+      "subtests_passed": 27,
+      "failed": 0
+    },
+    "durable_real_qwen3_goal_to_candidate": {
+      "model_selection_calls": 1,
+      "schema_probe_calls": 1,
+      "planning_start_calls": 1,
+      "revision_calls": 0,
+      "candidate_generation_calls": 1,
+      "business_cases_passed": 3,
+      "business_cases_failed": 0,
+      "restart_restore": "PASS",
+      "file_reads_verified": 7
+    },
     "json_parse": "PASS",
     "git_diff_check": "PASS",
     "git_diff_cached_check": "PASS"
@@ -544,8 +578,6 @@
     "candidate_code_repairer_added": false
   },
   "deferred": [
-    "durable_fixed_unit_price_10_candidate_acceptance_vertical_gate",
-    "real_strong_model_goal_to_correct_candidate_revalidation",
     "multi_capability_composer",
     "gap_code_generation",
     "formal_frontend_candidate_review",
