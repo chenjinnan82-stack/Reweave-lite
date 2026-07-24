@@ -89,6 +89,7 @@ FORMAL_MODEL_TIMEOUT_SECONDS = 180
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _WORKSPACE_ID = re.compile(r"workspace_[0-9a-f]{32}\Z")
 _PLAN_TOKEN = re.compile(r"plan_token_[0-9a-f]{48}\Z")
+_HANDOFF_TOKEN = re.compile(r"handoff_token_[0-9a-f]{48}\Z")
 _SUGGESTION_RECEIPT = re.compile(r"suggestion_receipt_[0-9a-f]{48}\Z")
 _SAFE_REF = re.compile(r"[A-Za-z][A-Za-z0-9_.:-]{0,95}\Z")
 _RUNNING_STATES = frozenset({"model_probe", "planning"})
@@ -1508,6 +1509,108 @@ class ProductPlanner:
             record,
         )
         return _ok({"acceptance_confirmation": copy.deepcopy(record)})
+
+    @_public_call
+    def create_agent_handoff(
+        self,
+        plan_token: str,
+        acceptance_confirmation_digest: str,
+        capsule_facts_digest: str,
+    ) -> dict[str, Any]:
+        workspace = self._workspace_by_token(plan_token)
+        plan = workspace.get("plan")
+        confirmation = workspace.get("confirmation")
+        if (
+            workspace.get("status") != "confirmed"
+            or type(plan) is not dict
+            or type(confirmation) is not dict
+            or _DIGEST.fullmatch(acceptance_confirmation_digest) is None
+            or _DIGEST.fullmatch(capsule_facts_digest) is None
+        ):
+            raise ProductPlanningError("agent_handoff_confirmation_required")
+        acceptance_path = self._candidate_acceptance_confirmation_path(
+            workspace,
+            plan,
+        )
+        if acceptance_path.is_symlink() or not acceptance_path.is_file():
+            raise ProductPlanningError("agent_handoff_confirmation_required")
+        acceptance = self._read_json(acceptance_path)
+        self._validate_candidate_acceptance_confirmation_binding(
+            workspace,
+            acceptance,
+        )
+        if acceptance["canonical_digest"] != acceptance_confirmation_digest:
+            raise ProductPlanningError("agent_handoff_stale")
+        handoff_token = (
+            "handoff_token_" + uuid.uuid4().hex + uuid.uuid4().hex[:16]
+        )
+        token_digest = hashlib.sha256(handoff_token.encode("ascii")).hexdigest()
+        record = {
+            "schema_version": "agent_handoff.v1",
+            "token_digest": token_digest,
+            "plan_digest": plan["canonical_digest"],
+            "plan_confirmation_digest": confirmation["receipt_digest"],
+            "acceptance_confirmation_digest": acceptance_confirmation_digest,
+            "capsule_facts_digest": capsule_facts_digest,
+            "status": "active",
+            "created_at": _now(),
+            "revoked_at": None,
+        }
+        record["canonical_digest"] = _digest(record)
+        path = self._agent_handoff_path(workspace, token_digest)
+        with self._lock:
+            self._ensure_directory(path.parent)
+            self._write_immutable(path, record)
+        return _ok(
+            {
+                "handoff_token": handoff_token,
+                "status": "active",
+                "created_at": record["created_at"],
+            }
+        )
+
+    @_public_call
+    def resolve_agent_handoff(self, handoff_token: str) -> dict[str, Any]:
+        workspace, record, _path = self._find_agent_handoff(handoff_token)
+        if record["status"] == "revoked":
+            raise ProductPlanningError("agent_handoff_revoked")
+        self._validate_agent_handoff_binding(workspace, record)
+        return _ok(
+            {
+                "plan_token": workspace["plan_token"],
+                "plan_digest": record["plan_digest"],
+                "plan_confirmation_digest": record[
+                    "plan_confirmation_digest"
+                ],
+                "acceptance_confirmation_digest": record[
+                    "acceptance_confirmation_digest"
+                ],
+                "capsule_facts_digest": record["capsule_facts_digest"],
+                "status": "active",
+            }
+        )
+
+    @_public_call
+    def revoke_agent_handoff(self, handoff_token: str) -> dict[str, Any]:
+        _workspace, record, path = self._find_agent_handoff(handoff_token)
+        if record["status"] == "active":
+            record["status"] = "revoked"
+            record["revoked_at"] = _now()
+            record["canonical_digest"] = _digest(
+                {
+                    key: value
+                    for key, value in record.items()
+                    if key != "canonical_digest"
+                }
+            )
+            with self._lock:
+                self._atomic_write(path, record)
+        return _ok(
+            {
+                "status": "revoked",
+                "revoked_at": record["revoked_at"],
+            }
+        )
 
     @_public_call
     def get(
@@ -3224,6 +3327,129 @@ class ProductPlanner:
                 f"{plan['plan_version']}_{plan['canonical_digest']}.json"
             )
         )
+
+    def _agent_handoff_path(
+        self,
+        workspace: dict[str, Any],
+        token_digest: str,
+    ) -> Path:
+        if _DIGEST.fullmatch(token_digest) is None:
+            raise ProductPlanningError("agent_handoff_token_invalid")
+        return (
+            self._workspace_dir(workspace["workspace_id"])
+            / "confirmed"
+            / f"agent_handoff_v1_{token_digest}.json"
+        )
+
+    def _find_agent_handoff(
+        self,
+        handoff_token: str,
+    ) -> tuple[dict[str, Any], dict[str, Any], Path]:
+        if (
+            type(handoff_token) is not str
+            or _HANDOFF_TOKEN.fullmatch(handoff_token) is None
+        ):
+            raise ProductPlanningError("agent_handoff_token_invalid")
+        token_digest = hashlib.sha256(handoff_token.encode("ascii")).hexdigest()
+        # ponytail: bounded local workspace scan; add an index only if volume proves it.
+        for workspace in self._workspaces():
+            path = self._agent_handoff_path(workspace, token_digest)
+            if not path.exists() and not path.is_symlink():
+                continue
+            record = self._read_json(path)
+            self._validate_agent_handoff_record(record, token_digest)
+            return workspace, record, path
+        raise ProductPlanningError("agent_handoff_not_found")
+
+    def _validate_agent_handoff_record(
+        self,
+        value: Any,
+        token_digest: str,
+    ) -> None:
+        try:
+            row = _stored_exact(
+                value,
+                {
+                    "schema_version",
+                    "token_digest",
+                    "plan_digest",
+                    "plan_confirmation_digest",
+                    "acceptance_confirmation_digest",
+                    "capsule_facts_digest",
+                    "status",
+                    "created_at",
+                    "revoked_at",
+                    "canonical_digest",
+                },
+            )
+        except ProductPlanningError as exc:
+            raise ProductPlanningError("agent_handoff_invalid") from exc
+        body = {
+            key: item for key, item in row.items() if key != "canonical_digest"
+        }
+        if (
+            row["schema_version"] != "agent_handoff.v1"
+            or row["token_digest"] != token_digest
+            or any(
+                _DIGEST.fullmatch(str(row[key])) is None
+                for key in (
+                    "plan_digest",
+                    "plan_confirmation_digest",
+                    "acceptance_confirmation_digest",
+                    "capsule_facts_digest",
+                    "canonical_digest",
+                )
+            )
+            or row["status"] not in {"active", "revoked"}
+            or type(row["created_at"]) is not str
+            or not row["created_at"]
+            or (
+                row["status"] == "active"
+                and row["revoked_at"] is not None
+            )
+            or (
+                row["status"] == "revoked"
+                and (
+                    type(row["revoked_at"]) is not str
+                    or not row["revoked_at"]
+                )
+            )
+            or row["canonical_digest"] != _digest(body)
+        ):
+            raise ProductPlanningError("agent_handoff_invalid")
+
+    def _validate_agent_handoff_binding(
+        self,
+        workspace: dict[str, Any],
+        record: dict[str, Any],
+    ) -> None:
+        plan = workspace.get("plan")
+        confirmation = workspace.get("confirmation")
+        if (
+            workspace.get("status") != "confirmed"
+            or type(plan) is not dict
+            or type(confirmation) is not dict
+            or record["plan_digest"] != plan.get("canonical_digest")
+            or record["plan_confirmation_digest"]
+            != confirmation.get("receipt_digest")
+        ):
+            raise ProductPlanningError("agent_handoff_stale")
+        path = self._candidate_acceptance_confirmation_path(workspace, plan)
+        if path.is_symlink() or not path.is_file():
+            raise ProductPlanningError("agent_handoff_stale")
+        acceptance = self._read_json(path)
+        try:
+            self._validate_candidate_acceptance_confirmation_binding(
+                workspace,
+                acceptance,
+            )
+        except ProductPlanningError as exc:
+            raise ProductPlanningError("agent_handoff_stale") from exc
+        if (
+            acceptance["canonical_digest"]
+            != record["acceptance_confirmation_digest"]
+        ):
+            raise ProductPlanningError("agent_handoff_stale")
 
     def _confirmation_snapshot_path(
         self,

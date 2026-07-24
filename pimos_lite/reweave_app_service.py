@@ -114,6 +114,8 @@ PUBLIC_PRODUCT_ACTIONS = frozenset(
         "get_product_plan_workspace",
         "confirm_product_plan",
         "confirm_product_candidate_acceptance",
+        "create_local_agent_handoff",
+        "revoke_local_agent_handoff",
         "list_reusable_product_capabilities",
         "start_product_candidate",
         "get_product_candidate_run",
@@ -2896,6 +2898,191 @@ class ReweaveAppService:
                 else "product_candidate_plan_not_confirmed"
             )
         return verified["data"], capsules, product_scope, page_contracts
+
+    @staticmethod
+    def _agent_handoff_capsule_facts_digest(
+        capsules: list[dict[str, Any]],
+        product_scope: dict[str, Any],
+        page_contracts: list[dict[str, Any]],
+    ) -> str:
+        return plan_execution_digest(
+            {
+                "schema_version": "agent_handoff_capsule_facts.v1",
+                "capsules": sorted(
+                    [
+                        {
+                            key: capsule[key]
+                            for key in (
+                                "capsule_id",
+                                "version_id",
+                                "canonical_hash",
+                                "capability_key",
+                                "role_key",
+                                "variant_key",
+                                "capability_kind",
+                            )
+                        }
+                        for capsule in capsules
+                    ],
+                    key=lambda item: (
+                        item["capsule_id"],
+                        item["version_id"],
+                    ),
+                ),
+                "page_contracts": sorted(
+                    page_contracts,
+                    key=lambda item: (
+                        item["capsule_id"],
+                        item["version_id"],
+                    ),
+                ),
+                "product_scope": product_scope,
+            }
+        )
+
+    def _validated_candidate_acceptance_confirmation(
+        self,
+        plan_token: str,
+        workspace: dict[str, Any],
+        capsules: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        restored = self._product_planner.get_candidate_acceptance_confirmation(
+            plan_token
+        )
+        if restored.get("ok") is not True:
+            error = restored.get("error") if type(restored) is dict else None
+            code = error.get("code") if type(error) is dict else None
+            raise ProductGenerationError(
+                code
+                if type(code) is str
+                else "candidate_acceptance_confirmation_required"
+            )
+        try:
+            input_contract, output_contract = (
+                self._candidate_acceptance_contracts(capsules)
+            )
+            return validate_candidate_acceptance_confirmation(
+                workspace["plan"],
+                workspace["confirmation"],
+                restored["data"]["acceptance_confirmation"],
+                input_contract,
+                output_contract,
+            )
+        except CandidateAcceptanceError as exc:
+            raise ProductGenerationError(exc.code) from exc
+
+    def create_local_agent_handoff(
+        self,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if (
+                set(request) != {"plan_token"}
+                or type(request["plan_token"]) is not str
+            ):
+                return self._error("agent_handoff_request_invalid")
+            with self._capsule_operation_lock:
+                workspace, capsules, product_scope, page_contracts = (
+                    self._confirmed_candidate_context(request["plan_token"])
+                )
+                acceptance = (
+                    self._validated_candidate_acceptance_confirmation(
+                        request["plan_token"],
+                        workspace,
+                        capsules,
+                    )
+                )
+                result = self._product_planner.create_agent_handoff(
+                    request["plan_token"],
+                    acceptance["canonical_digest"],
+                    self._agent_handoff_capsule_facts_digest(
+                        capsules,
+                        product_scope,
+                        page_contracts,
+                    ),
+                )
+            return result
+        except (
+            CapsuleStoreError,
+            OSError,
+            ProductGenerationError,
+            ValueError,
+        ) as exc:
+            return self._exception_error(exc, "agent_handoff_create_failed")
+
+    def revoke_local_agent_handoff(
+        self,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if (
+                set(request) != {"handoff_token"}
+                or type(request["handoff_token"]) is not str
+            ):
+                return self._error("agent_handoff_request_invalid")
+            with self._capsule_operation_lock:
+                return self._product_planner.revoke_agent_handoff(
+                    request["handoff_token"]
+                )
+        except (OSError, ValueError) as exc:
+            return self._exception_error(exc, "agent_handoff_revoke_failed")
+
+    def _resolve_local_agent_handoff(
+        self,
+        handoff_token: str,
+    ) -> dict[str, Any]:
+        with self._capsule_operation_lock:
+            resolved = self._product_planner.resolve_agent_handoff(
+                handoff_token
+            )
+            if resolved.get("ok") is not True:
+                error = (
+                    resolved.get("error")
+                    if type(resolved) is dict
+                    else None
+                )
+                code = error.get("code") if type(error) is dict else None
+                raise ProductGenerationError(
+                    code if type(code) is str else "agent_handoff_invalid"
+                )
+            binding = resolved["data"]
+            try:
+                workspace, capsules, product_scope, page_contracts = (
+                    self._confirmed_candidate_context(binding["plan_token"])
+                )
+                acceptance = (
+                    self._validated_candidate_acceptance_confirmation(
+                        binding["plan_token"],
+                        workspace,
+                        capsules,
+                    )
+                )
+            except ProductGenerationError as exc:
+                raise ProductGenerationError("agent_handoff_stale") from exc
+            facts_digest = self._agent_handoff_capsule_facts_digest(
+                capsules,
+                product_scope,
+                page_contracts,
+            )
+            if (
+                workspace["plan"]["canonical_digest"]
+                != binding["plan_digest"]
+                or workspace["confirmation"]["receipt_digest"]
+                != binding["plan_confirmation_digest"]
+                or acceptance["canonical_digest"]
+                != binding["acceptance_confirmation_digest"]
+                or facts_digest != binding["capsule_facts_digest"]
+            ):
+                raise ProductGenerationError("agent_handoff_stale")
+        return {
+            "plan_token": binding["plan_token"],
+            "plan_digest": binding["plan_digest"],
+            "acceptance_confirmation_digest": binding[
+                "acceptance_confirmation_digest"
+            ],
+        }
 
     def confirm_product_candidate_acceptance(
         self, payload: dict[str, Any] | None = None

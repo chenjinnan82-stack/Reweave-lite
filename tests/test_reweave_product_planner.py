@@ -3193,6 +3193,47 @@ def test_parameter_offer_precedes_atomic_confirmation_and_cannot_be_rewritten(
         restored_acceptance["data"]["acceptance_confirmation"]
         == acceptance_confirmation
     )
+    handoff = restarted.create_agent_handoff(
+        token,
+        acceptance_confirmation["canonical_digest"],
+        "e" * 64,
+    )
+    assert handoff["ok"] is True
+    handoff_token = handoff["data"]["handoff_token"]
+    handoff_files = list(
+        (root / workspace["workspace_id"] / "confirmed").glob(
+            "agent_handoff_v1_*.json"
+        )
+    )
+    assert len(handoff_files) == 1
+    assert handoff_files[0].stat().st_mode & 0o777 == 0o600
+    assert handoff_token not in handoff_files[0].read_text(encoding="utf-8")
+    resolved_handoff = StubPlanner(root).resolve_agent_handoff(handoff_token)
+    assert resolved_handoff["ok"] is True
+    assert resolved_handoff["data"] == {
+        "plan_token": token,
+        "plan_digest": plan["canonical_digest"],
+        "plan_confirmation_digest": receipt["receipt_digest"],
+        "acceptance_confirmation_digest": acceptance_confirmation[
+            "canonical_digest"
+        ],
+        "capsule_facts_digest": "e" * 64,
+        "status": "active",
+    }
+    assert (
+        restarted.resolve_agent_handoff("handoff_token_" + "0" * 48)[
+            "error"
+        ]["code"]
+        == "agent_handoff_not_found"
+    )
+    revoked = restarted.revoke_agent_handoff(handoff_token)
+    assert revoked["ok"] is True
+    assert revoked["data"]["status"] == "revoked"
+    assert (
+        StubPlanner(root).resolve_agent_handoff(handoff_token)["error"]["code"]
+        == "agent_handoff_revoked"
+    )
+    assert restarted.revoke_agent_handoff(handoff_token)["ok"] is True
     tampered = copy.deepcopy(acceptance_confirmation)
     tampered["cases"][0]["expected_output"]["total"] = 31
     assert (

@@ -109,6 +109,8 @@ class ReweaveAppServiceTest(unittest.TestCase):
             "get_product_plan_workspace",
             "confirm_product_plan",
             "confirm_product_candidate_acceptance",
+            "create_local_agent_handoff",
+            "revoke_local_agent_handoff",
             "list_reusable_product_capabilities",
             "start_product_candidate",
             "get_product_candidate_run",
@@ -153,6 +155,8 @@ class ReweaveAppServiceTest(unittest.TestCase):
             "confirm_product_candidate_acceptance",
             public_product_actions(),
         )
+        self.assertIn("create_local_agent_handoff", public_product_actions())
+        self.assertIn("revoke_local_agent_handoff", public_product_actions())
         self.assertIn(
             "list_reusable_product_capabilities",
             public_product_actions(),
@@ -459,6 +463,16 @@ class ReweaveAppServiceTest(unittest.TestCase):
     ) -> None:
         class Service:
             @staticmethod
+            def _resolve_local_agent_handoff(token):
+                if token != "handoff_token_" + "1" * 48:
+                    raise ValueError("invalid")
+                return {
+                    "plan_token": "plan_token_internal",
+                    "plan_digest": "a" * 64,
+                    "acceptance_confirmation_digest": "b" * 64,
+                }
+
+            @staticmethod
             def list_reusable_product_capabilities(_payload):
                 return {
                     "ok": True,
@@ -496,6 +510,24 @@ class ReweaveAppServiceTest(unittest.TestCase):
                 json.dumps(
                     {
                         "protocol": AGENT_PROTOCOL_VERSION,
+                        "id": "unbound",
+                        "action": "list_reusable_product_capabilities",
+                        "payload": {},
+                    }
+                ),
+                json.dumps(
+                    {
+                        "protocol": AGENT_PROTOCOL_VERSION,
+                        "id": "bind",
+                        "action": "bind_user_handoff",
+                        "payload": {
+                            "handoff_token": "handoff_token_" + "1" * 48
+                        },
+                    }
+                ),
+                json.dumps(
+                    {
+                        "protocol": AGENT_PROTOCOL_VERSION,
                         "id": "catalog",
                         "action": "list_reusable_product_capabilities",
                         "payload": {},
@@ -515,8 +547,12 @@ class ReweaveAppServiceTest(unittest.TestCase):
         output = io.StringIO()
         serve_jsonl(Service(), io.StringIO(requests), output)
         rows = [json.loads(line) for line in output.getvalue().splitlines()]
-        self.assertTrue(rows[0]["ok"])
-        public = json.dumps(rows[0], ensure_ascii=False)
+        self.assertEqual(rows[0]["error"]["code"], "agent_session_unbound")
+        self.assertTrue(rows[1]["ok"])
+        self.assertEqual(rows[1]["data"], {"status": "bound"})
+        self.assertTrue(rows[2]["ok"])
+        public = json.dumps(rows[2], ensure_ascii=False)
+        self.assertNotIn("handoff_token_", json.dumps(rows[1]))
         self.assertNotIn("source_relpath", public)
         self.assertNotIn("/private/", public)
         self.assertNotIn("html_text", public)
@@ -524,10 +560,10 @@ class ReweaveAppServiceTest(unittest.TestCase):
         self.assertNotIn("version_id", public)
         self.assertNotIn("canonical_hash", public)
         self.assertEqual(
-            rows[1]["error"]["code"],
+            rows[3]["error"]["code"],
             "agent_protocol_version_invalid",
         )
-        self.assertEqual(rows[2]["error"]["code"], "agent_json_invalid")
+        self.assertEqual(rows[4]["error"]["code"], "agent_json_invalid")
 
 
 if __name__ == "__main__":

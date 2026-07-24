@@ -187,6 +187,8 @@ class _ConfirmedPlanner:
         self.acceptance_confirmation = copy.deepcopy(
             acceptance_confirmation
         )
+        self.handoff_token = "handoff_token_" + "1" * 48
+        self.handoff: dict | None = None
 
     def get(
         self,
@@ -243,6 +245,77 @@ class _ConfirmedPlanner:
             "data": {
                 "acceptance_confirmation": copy.deepcopy(record)
             },
+        }
+
+    def create_agent_handoff(
+        self,
+        _token: str,
+        acceptance_confirmation_digest: str,
+        capsule_facts_digest: str,
+    ) -> dict:
+        if (
+            self.acceptance_confirmation is None
+            or self.acceptance_confirmation["canonical_digest"]
+            != acceptance_confirmation_digest
+        ):
+            return {
+                "ok": False,
+                "error": {
+                    "code": "agent_handoff_confirmation_required",
+                    "message_key": "agent_handoff_confirmation_required",
+                },
+            }
+        self.handoff = {
+            "plan_token": "plan_token_test",
+            "plan_digest": self.plan["canonical_digest"],
+            "plan_confirmation_digest": self.confirmation["receipt_digest"],
+            "acceptance_confirmation_digest": (
+                acceptance_confirmation_digest
+            ),
+            "capsule_facts_digest": capsule_facts_digest,
+            "status": "active",
+        }
+        return {
+            "ok": True,
+            "data": {
+                "handoff_token": self.handoff_token,
+                "status": "active",
+                "created_at": NOW,
+            },
+        }
+
+    def resolve_agent_handoff(self, token: str) -> dict:
+        if token != self.handoff_token or self.handoff is None:
+            return {
+                "ok": False,
+                "error": {
+                    "code": "agent_handoff_not_found",
+                    "message_key": "agent_handoff_not_found",
+                },
+            }
+        if self.handoff["status"] == "revoked":
+            return {
+                "ok": False,
+                "error": {
+                    "code": "agent_handoff_revoked",
+                    "message_key": "agent_handoff_revoked",
+                },
+            }
+        return {"ok": True, "data": copy.deepcopy(self.handoff)}
+
+    def revoke_agent_handoff(self, token: str) -> dict:
+        if token != self.handoff_token or self.handoff is None:
+            return {
+                "ok": False,
+                "error": {
+                    "code": "agent_handoff_not_found",
+                    "message_key": "agent_handoff_not_found",
+                },
+            }
+        self.handoff["status"] = "revoked"
+        return {
+            "ok": True,
+            "data": {"status": "revoked", "revoked_at": NOW},
         }
 
 
@@ -1923,10 +1996,11 @@ class PlanExecutionV1Test(unittest.TestCase):
         )
 
     def test_local_agent_entry_is_confirmed_bounded_and_recoverable(self) -> None:
-        self.service._product_planner = _ConfirmedPlanner(
+        planner = _ConfirmedPlanner(
             self.plan,
             self.confirmation,
         )
+        self.service._product_planner = planner
         confirmed = self.service.confirm_product_candidate_acceptance(
             {
                 "plan_token": "plan_token_test",
@@ -1936,11 +2010,18 @@ class PlanExecutionV1Test(unittest.TestCase):
         )
         self.assertTrue(confirmed["ok"], confirmed)
         acceptance_confirmation = confirmed["data"]
+        handoff = self.service.create_local_agent_handoff(
+            {"plan_token": "plan_token_test"}
+        )
+        self.assertTrue(handoff["ok"], handoff)
+        handoff_token = handoff["data"]["handoff_token"]
         before = _store_snapshot(self.store)
         source = self.root / "agent-source-sentinel"
         target = self.root / "agent-target-sentinel"
         source.write_text("source unchanged\n", encoding="utf-8")
         target.write_text("target unchanged\n", encoding="utf-8")
+
+        session: dict = {}
 
         def request(action: str, payload: dict, request_id: str) -> dict:
             return dispatch_agent_request(
@@ -1951,6 +2032,7 @@ class PlanExecutionV1Test(unittest.TestCase):
                     "action": action,
                     "payload": payload,
                 },
+                session,
             )
 
         invalid_version = dispatch_agent_request(
@@ -1975,14 +2057,48 @@ class PlanExecutionV1Test(unittest.TestCase):
             forbidden_action["error"]["code"],
             "agent_action_not_allowed",
         )
+        unbound = request(
+            "get_confirmed_product_plan",
+            {},
+            "unbound",
+        )
+        self.assertEqual(
+            unbound["error"]["code"],
+            "agent_session_unbound",
+        )
+        bound = request(
+            "bind_user_handoff",
+            {"handoff_token": handoff_token},
+            "bind",
+        )
+        self.assertTrue(bound["ok"], bound)
+        self.assertEqual(bound["data"], {"status": "bound"})
+        self.assertNotIn(
+            handoff_token,
+            json.dumps(bound, ensure_ascii=False),
+        )
         plan_response = request(
             "get_confirmed_product_plan",
-            {"plan_token": "plan_token_test"},
+            {},
             "plan",
         )
         self.assertTrue(plan_response["ok"], plan_response)
         self.assertTrue(
             plan_response["data"]["candidate_acceptance"]["confirmed"]
+        )
+        with patch.object(
+            self.service,
+            "_agent_handoff_capsule_facts_digest",
+            return_value="f" * 64,
+        ):
+            capsule_fact_change = request(
+                "get_confirmed_product_plan",
+                {},
+                "capsule-fact-change",
+            )
+        self.assertEqual(
+            capsule_fact_change["error"]["code"],
+            "agent_handoff_stale",
         )
         invalid_confirmation = copy.deepcopy(acceptance_confirmation)
         invalid_confirmation["cases"][0]["input"]["quantity"] = 99
@@ -1993,25 +2109,17 @@ class PlanExecutionV1Test(unittest.TestCase):
                 if key != "canonical_digest"
             }
         )
-        self.service._product_planner = _ConfirmedPlanner(
-            self.plan,
-            self.confirmation,
-            invalid_confirmation,
-        )
+        planner.acceptance_confirmation = invalid_confirmation
         invalid_confirmation_response = request(
             "get_confirmed_product_plan",
-            {"plan_token": "plan_token_test"},
+            {},
             "invalid-confirmation",
         )
         self.assertEqual(
             invalid_confirmation_response["error"]["code"],
-            "candidate_acceptance_confirmation_invalid",
+            "agent_handoff_stale",
         )
-        self.service._product_planner = _ConfirmedPlanner(
-            self.plan,
-            self.confirmation,
-            acceptance_confirmation,
-        )
+        planner.acceptance_confirmation = acceptance_confirmation
         self.assertEqual(
             request(
                 "start_confirmed_product_candidate",
@@ -2025,7 +2133,7 @@ class PlanExecutionV1Test(unittest.TestCase):
                 },
                 "cases-forbidden",
             )["error"]["code"],
-            "product_candidate_request_invalid",
+            "agent_action_payload_invalid",
         )
 
         with (
@@ -2042,16 +2150,9 @@ class PlanExecutionV1Test(unittest.TestCase):
                 return_value=_acceptance_worker(),
             ),
         ):
-            start_payload = {
-                "plan_token": "plan_token_test",
-                "plan_digest": self.plan["canonical_digest"],
-                "acceptance_confirmation_digest": acceptance_confirmation[
-                    "canonical_digest"
-                ],
-            }
             started = request(
                 "start_confirmed_product_candidate",
-                start_payload,
+                {},
                 "start",
             )
             self.assertTrue(started["ok"], started)
@@ -2095,7 +2196,7 @@ class PlanExecutionV1Test(unittest.TestCase):
 
             repeated = request(
                 "start_confirmed_product_candidate",
-                start_payload,
+                {},
                 "repeat",
             )
             repeat_run = repeated["data"]["run_id"]
@@ -2156,27 +2257,37 @@ class PlanExecutionV1Test(unittest.TestCase):
         stale_plan["sections"][0]["work_items"][0]["capsule_bindings"][0][
             "version_id"
         ] = "version_expired"
-        self.service._product_planner = _ConfirmedPlanner(
-            stale_plan,
-            self.confirmation,
-            acceptance_confirmation,
-        )
+        planner.plan = stale_plan
         stale = request(
             "get_confirmed_product_plan",
-            {"plan_token": "plan_token_test"},
+            {},
             "stale",
         )
         self.assertFalse(stale["ok"])
         self.assertEqual(
             stale["error"]["code"],
-            "product_candidate_plan_stale",
+            "agent_handoff_stale",
         )
+        planner.plan = copy.deepcopy(self.plan)
 
         restarted = ReweaveAppService(
             _NoLegacyEngine(),
             capsule_store=self.store,
         )
         try:
+            restarted._product_planner = planner
+            restarted_session: dict = {}
+            rebound = dispatch_agent_request(
+                restarted,
+                {
+                    "protocol": AGENT_PROTOCOL_VERSION,
+                    "id": "rebind",
+                    "action": "bind_user_handoff",
+                    "payload": {"handoff_token": handoff_token},
+                },
+                restarted_session,
+            )
+            self.assertTrue(rebound["ok"], rebound)
             restored = dispatch_agent_request(
                 restarted,
                 {
@@ -2187,11 +2298,46 @@ class PlanExecutionV1Test(unittest.TestCase):
                         "candidate_token": candidate["candidate_token"]
                     },
                 },
+                restarted_session,
             )
             self.assertTrue(restored["ok"], restored)
             self.assertEqual(
                 restored["data"]["candidate_digest"],
                 candidate["candidate_digest"],
+            )
+            revoked = restarted.revoke_local_agent_handoff(
+                {"handoff_token": handoff_token}
+            )
+            self.assertTrue(revoked["ok"], revoked)
+            self.assertEqual(revoked["data"]["status"], "revoked")
+            after_revoke = dispatch_agent_request(
+                restarted,
+                {
+                    "protocol": AGENT_PROTOCOL_VERSION,
+                    "id": "revoked-session",
+                    "action": "get_confirmed_product_plan",
+                    "payload": {},
+                },
+                restarted_session,
+            )
+            self.assertEqual(
+                after_revoke["error"]["code"],
+                "agent_handoff_revoked",
+            )
+            fresh_session: dict = {}
+            rebound_revoked = dispatch_agent_request(
+                restarted,
+                {
+                    "protocol": AGENT_PROTOCOL_VERSION,
+                    "id": "rebind-revoked",
+                    "action": "bind_user_handoff",
+                    "payload": {"handoff_token": handoff_token},
+                },
+                fresh_session,
+            )
+            self.assertEqual(
+                rebound_revoked["error"]["code"],
+                "agent_handoff_revoked",
             )
         finally:
             restarted.close()

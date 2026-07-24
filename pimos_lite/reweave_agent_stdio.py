@@ -10,9 +10,10 @@ from typing import Any, TextIO
 from pimos_lite.reweave_app_service import ReweaveAppService
 
 
-AGENT_PROTOCOL_VERSION = "reweave_agent_jsonl.v1"
+AGENT_PROTOCOL_VERSION = "reweave_agent_jsonl.v2"
 AGENT_ACTIONS = frozenset(
     {
+        "bind_user_handoff",
         "list_reusable_product_capabilities",
         "get_confirmed_product_plan",
         "start_confirmed_product_candidate",
@@ -128,6 +129,30 @@ def _candidate_projection(value: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _plan_projection(value: dict[str, Any]) -> dict[str, Any]:
+    result = {
+        key: value.get(key)
+        for key in (
+            "schema_version",
+            "status",
+            "goal",
+            "product_name",
+            "plan_version",
+            "requirements",
+            "sections",
+            "confirmation",
+        )
+    }
+    acceptance = value.get("candidate_acceptance")
+    if type(acceptance) is dict:
+        result["candidate_acceptance"] = {
+            key: acceptance.get(key)
+            for key in ("confirmed", "confirmed_at", "source", "cases")
+            if acceptance.get(key) is not None
+        }
+    return result
+
+
 def _run_projection(value: dict[str, Any]) -> dict[str, Any]:
     result = {
         key: value.get(key)
@@ -195,7 +220,9 @@ def _file_projection(value: dict[str, Any]) -> dict[str, Any]:
 def dispatch_agent_request(
     service: ReweaveAppService,
     request: Any,
+    session: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
+    session = session if session is not None else {}
     request_id = request.get("id") if type(request) is dict else None
     if (
         type(request) is not dict
@@ -213,9 +240,102 @@ def dispatch_agent_request(
     action = request["action"]
     if type(action) is not str or action not in AGENT_ACTIONS:
         return _error(request_id, "agent_action_not_allowed")
+    payload = request["payload"]
+    if action == "bind_user_handoff":
+        if (
+            set(payload) != {"handoff_token"}
+            or type(payload["handoff_token"]) is not str
+        ):
+            return _error(request_id, "agent_handoff_request_invalid")
+        try:
+            service._resolve_local_agent_handoff(payload["handoff_token"])
+        except Exception as exc:
+            code = getattr(exc, "code", None)
+            return _error(
+                request_id,
+                code
+                if type(code) is str
+                and re.fullmatch(r"[a-z][a-z0-9_]{1,95}", code)
+                else "agent_handoff_invalid",
+            )
+        session.clear()
+        session.update(
+            {
+                "handoff_token": payload["handoff_token"],
+                "run_ids": set(),
+            }
+        )
+        return {
+            "protocol": AGENT_PROTOCOL_VERSION,
+            "id": request_id,
+            "ok": True,
+            "data": {"status": "bound"},
+        }
+    handoff_token = session.get("handoff_token")
+    if type(handoff_token) is not str:
+        return _error(request_id, "agent_session_unbound")
+    try:
+        binding = service._resolve_local_agent_handoff(handoff_token)
+    except Exception as exc:
+        code = getattr(exc, "code", None)
+        return _error(
+            request_id,
+            code
+            if type(code) is str
+            and re.fullmatch(r"[a-z][a-z0-9_]{1,95}", code)
+            else "agent_handoff_invalid",
+        )
+    expected_fields = {
+        "list_reusable_product_capabilities": set(),
+        "get_confirmed_product_plan": set(),
+        "start_confirmed_product_candidate": set(),
+        "get_product_candidate_run": {"run_id"},
+        "get_product_candidate": {"candidate_token"},
+        "read_product_candidate_file": {
+            "candidate_token",
+            "relative_path",
+        },
+    }[action]
+    if set(payload) != expected_fields or any(
+        type(payload[field]) is not str for field in expected_fields
+    ):
+        return _error(request_id, "agent_action_payload_invalid")
+    if action == "list_reusable_product_capabilities":
+        method_payload = {}
+    elif action == "get_confirmed_product_plan":
+        method_payload = {"plan_token": binding["plan_token"]}
+    elif action == "start_confirmed_product_candidate":
+        method_payload = {
+            "plan_token": binding["plan_token"],
+            "plan_digest": binding["plan_digest"],
+            "acceptance_confirmation_digest": binding[
+                "acceptance_confirmation_digest"
+            ],
+        }
+    else:
+        method_payload = payload
+    if action == "get_product_candidate_run":
+        if payload["run_id"] not in session["run_ids"]:
+            return _error(request_id, "agent_candidate_run_not_in_scope")
+    if action in {"get_product_candidate", "read_product_candidate_file"}:
+        scoped = service.get_product_candidate(
+            {"candidate_token": payload["candidate_token"]}
+        )
+        if scoped.get("ok") is not True:
+            error = scoped.get("error")
+            code = error.get("code") if type(error) is dict else None
+            return _error(
+                request_id,
+                code if type(code) is str else "agent_action_failed",
+            )
+        if (
+            scoped.get("data", {}).get("plan", {}).get("plan_digest")
+            != binding["plan_digest"]
+        ):
+            return _error(request_id, "agent_candidate_not_in_scope")
     method = getattr(service, action)
     try:
-        response = method(request["payload"])
+        response = method(method_payload)
     except Exception:
         return _error(request_id, "agent_internal_error")
     if type(response) is not dict or type(response.get("ok")) is not bool:
@@ -229,13 +349,32 @@ def dispatch_agent_request(
         )
     data = response.get("data")
     if action == "start_confirmed_product_candidate":
+        run_id = response.get("run_id")
+        if type(run_id) is not str:
+            return _error(request_id, "agent_internal_error")
+        session["run_ids"].add(run_id)
         data = {
-            "run_id": response.get("run_id"),
+            "run_id": run_id,
             "status": response.get("status"),
         }
     elif action == "list_reusable_product_capabilities":
         data = _capability_projection(data)
+    elif action == "get_confirmed_product_plan":
+        data = _plan_projection(data)
     elif action == "get_product_candidate_run":
+        candidate = (
+            data.get("data", {}).get("data")
+            if type(data) is dict
+            and type(data.get("data")) is dict
+            and data.get("data", {}).get("ok") is True
+            else None
+        )
+        if (
+            type(candidate) is dict
+            and candidate.get("plan", {}).get("plan_digest")
+            != binding["plan_digest"]
+        ):
+            return _error(request_id, "agent_candidate_not_in_scope")
         data = _run_projection(data)
     elif action == "get_product_candidate":
         data = _candidate_projection(data)
@@ -259,6 +398,7 @@ def serve_jsonl(
     input_stream: TextIO,
     output_stream: TextIO,
 ) -> None:
+    session: dict[str, Any] = {}
     for line in input_stream:
         if not line.strip():
             continue
@@ -275,7 +415,7 @@ def serve_jsonl(
             except (UnicodeError, ValueError, json.JSONDecodeError):
                 response = _error(None, "agent_json_invalid")
             else:
-                response = dispatch_agent_request(service, request)
+                response = dispatch_agent_request(service, request, session)
         output_stream.write(
             json.dumps(
                 response,
