@@ -15,6 +15,7 @@ REQUIRED_SURFACE_FILES = (
     "pimos_lite/desktop_reweave_static.py",
     "pimos_lite/reweave_app_service.py",
     "pimos_lite/reweave_plan_execution.py",
+    "pimos_lite/reweave_page_capability_contract.py",
     "pimos_lite/reweave_product_planner.py",
     "pimos_lite/composer/module_native.py",
     "pimos_lite/reweave_capsule_store.py",
@@ -229,6 +230,8 @@ def _role(relative: str) -> str:
         return "application_service"
     if relative == "pimos_lite/reweave_plan_execution.py":
         return "confirmed_plan_execution_compiler"
+    if relative == "pimos_lite/reweave_page_capability_contract.py":
+        return "formal_page_capability_contract"
     if relative == "pimos_lite/reweave_product_planner.py":
         return "local_product_planner"
     if relative == "pimos_lite/composer/module_native.py":

@@ -21,7 +21,14 @@ from pimos_lite.reweave_app_service import (
     ReweaveAppService,
     _validate_product_acceptance,
 )
-from pimos_lite.reweave_capsule_store import CapsuleWarehouseStore
+from pimos_lite.reweave_capsule_store import (
+    CapsuleWarehouseStore,
+    canonicalize_capsule,
+)
+from pimos_lite.reweave_page_capability_contract import (
+    build_formal_identity_binding_v2,
+    build_page_capability_declaration_v2,
+)
 from pimos_lite.reweave_plan_execution import (
     CandidateAcceptanceError,
     PlanExecutionError,
@@ -50,6 +57,115 @@ from tests.test_reweave_phase5_generation import (
 
 NOW = "2026-07-23T00:00:00Z"
 SECTIONS = ("frontend", "backend", "data", "infrastructure")
+
+
+def _formal_payload(capsule: dict) -> dict:
+    return {
+        key: capsule[key]
+        for key in (
+            "capability_kind",
+            "activation",
+            "input_contract",
+            "output_contract",
+            "error_contract",
+            "runtime_allowlist",
+            "dom_scope",
+            "usage_scope",
+            "html",
+            "css",
+            "javascript_modules",
+        )
+    } | {
+        "assets": [
+            {
+                key: asset[key]
+                for key in ("logical_path", "media_type", "sha256")
+            }
+            for asset in capsule["assets"]
+        ]
+    }
+
+
+def _page_capability_elements() -> list[dict]:
+    return [
+        {
+            "selector": "[data-action='calculate']",
+            "tag": "button",
+            "reads": [],
+            "writes": [],
+            "events": ["click"],
+        },
+        {
+            "selector": "[data-ref='quantity']",
+            "tag": "input",
+            "reads": ["value"],
+            "writes": [],
+            "events": [],
+        },
+        {
+            "selector": "[data-ref='total']",
+            "tag": "output",
+            "reads": [],
+            "writes": ["textContent"],
+            "events": [],
+        },
+    ]
+
+
+def _bind_page_declaration(
+    capsules: list[dict],
+    projections: list[dict],
+    kind: str,
+    elements: list[dict],
+) -> None:
+    capsule = next(row for row in capsules if row["capability_kind"] == kind)
+    declaration = build_page_capability_declaration_v2(
+        capability_kind=kind,
+        elements=elements,
+    )
+    binding = build_formal_identity_binding_v2(
+        canonical_payload_digest=canonicalize_capsule(
+            _formal_payload(capsule)
+        ).sha256,
+        page_capability_declaration=declaration,
+    )
+    capsule["canonical_hash"] = binding["formal_identity_digest"]
+    projection = next(
+        (
+            row
+            for row in projections
+            if row["capability_kind"] == kind
+        ),
+        None,
+    )
+    value = {
+        "capsule_id": capsule["capsule_id"],
+        "version_id": capsule["version_id"],
+        "capability_kind": kind,
+        "canonical_hash": binding["formal_identity_digest"],
+        "page_capability_declaration": declaration,
+    }
+    if projection is None:
+        projections.append(value)
+    else:
+        projection.clear()
+        projection.update(value)
+
+
+def _v2_composer_fixture(capsules: list[dict]) -> tuple[list[dict], list[dict]]:
+    result = copy.deepcopy(capsules)
+    interaction = next(
+        row for row in result if row["capability_kind"] == "interaction"
+    )
+    interaction["html"] += '<aside data-ref="interaction-only"></aside>'
+    interaction["css"] += (
+        "\n__CAPSULE_ROOT__ [data-ref='quantity'] { inline-size: 8rem; }\n"
+    )
+    projections: list[dict] = []
+    elements = _page_capability_elements()
+    _bind_page_declaration(result, projections, "presentation", elements)
+    _bind_page_declaration(result, projections, "interaction", elements)
+    return result, projections
 
 
 class _ConfirmedPlanner:
@@ -595,6 +711,260 @@ class PlanExecutionV1Test(unittest.TestCase):
                 capsules=mismatched,
             )
 
+    def test_composer_consumes_verified_page_capabilities(self) -> None:
+        capsules, projections = _v2_composer_fixture(self.capsules)
+        arguments = {
+            "task": "隔离候选",
+            "product_id": "product_" + "d" * 32,
+            "generated_at": NOW,
+            "candidate_acceptance_port": True,
+        }
+        composition = compose_capsule_product(
+            **arguments,
+            capsules=capsules,
+            verified_page_contracts=projections,
+        )
+        repeated = compose_capsule_product(
+            **arguments,
+            capsules=list(reversed(copy.deepcopy(capsules))),
+            verified_page_contracts=list(reversed(copy.deepcopy(projections))),
+        )
+        self.assertEqual(composition, repeated)
+        self.assertIn("data-action=\"calculate\"", composition["files"]["index.html"])
+        self.assertNotIn("interaction-only", composition["files"]["index.html"])
+        self.assertIn("inline-size: 8rem", composition["files"]["styles.css"])
+        presentation = next(
+            row for row in capsules if row["capability_kind"] == "presentation"
+        )
+        self.assertEqual(
+            composition["provenance"]["file_provenance"]["index.html"],
+            [presentation["version_id"]],
+        )
+        serialized = json.dumps(composition, ensure_ascii=False)
+        for private in (
+            "page_capability_declaration",
+            "page_capability_contract.v2",
+            "formal_capsule_identity.v2",
+        ):
+            self.assertNotIn(private, serialized)
+
+        single = [presentation]
+        single_projection = [
+            row
+            for row in projections
+            if row["capability_kind"] == "presentation"
+        ]
+        self.assertEqual(
+            compose_capsule_product(
+                **arguments,
+                capsules=single,
+                verified_page_contracts=single_projection,
+            )["status"],
+            "composed",
+        )
+
+    def test_composer_page_capabilities_fail_closed(self) -> None:
+        base_capsules, base_projections = _v2_composer_fixture(self.capsules)
+        arguments = {
+            "task": "隔离候选",
+            "product_id": "product_" + "e" * 32,
+            "generated_at": NOW,
+        }
+        selectors = {
+            row["selector"]: row for row in _page_capability_elements()
+        }
+        provider_cases = {
+            "page_capability_element_missing": [
+                copy.deepcopy(selectors["[data-action='calculate']"]),
+                copy.deepcopy(selectors["[data-ref='quantity']"]),
+            ],
+            "page_capability_event_missing": [
+                {**copy.deepcopy(row), "events": []}
+                if row["selector"] == "[data-action='calculate']"
+                else copy.deepcopy(row)
+                for row in selectors.values()
+            ],
+            "page_capability_read_missing": [
+                {**copy.deepcopy(row), "reads": []}
+                if row["selector"] == "[data-ref='quantity']"
+                else copy.deepcopy(row)
+                for row in selectors.values()
+            ],
+            "page_capability_write_missing": [
+                {**copy.deepcopy(row), "writes": []}
+                if row["selector"] == "[data-ref='total']"
+                else copy.deepcopy(row)
+                for row in selectors.values()
+            ],
+        }
+        for expected, elements in provider_cases.items():
+            with self.subTest(expected=expected):
+                capsules = copy.deepcopy(base_capsules)
+                projections = copy.deepcopy(base_projections)
+                _bind_page_declaration(
+                    capsules,
+                    projections,
+                    "presentation",
+                    elements,
+                )
+                with self.assertRaisesRegex(ValueError, expected):
+                    compose_capsule_product(
+                        **arguments,
+                        capsules=capsules,
+                        verified_page_contracts=projections,
+                    )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "formal_page_contract_version_mismatch",
+        ):
+            compose_capsule_product(
+                **arguments,
+                capsules=base_capsules,
+                verified_page_contracts=[
+                    row
+                    for row in base_projections
+                    if row["capability_kind"] == "presentation"
+                ],
+            )
+
+        interaction_capsules = [
+            row
+            for row in base_capsules
+            if row["capability_kind"] != "presentation"
+        ]
+        interaction_projection = [
+            row
+            for row in base_projections
+            if row["capability_kind"] == "interaction"
+        ]
+        with self.assertRaisesRegex(
+            ValueError,
+            "formal_page_contract_provider_missing",
+        ):
+            compose_capsule_product(
+                **arguments,
+                capsules=interaction_capsules,
+                verified_page_contracts=interaction_projection,
+            )
+
+        tamper_cases = {
+            "capsule_id": "capsule_unknown",
+            "version_id": "version_unknown",
+            "capability_kind": "interaction",
+            "canonical_hash": "f" * 64,
+        }
+        for field, value in tamper_cases.items():
+            with self.subTest(field=field):
+                projections = copy.deepcopy(base_projections)
+                projection = next(
+                    row
+                    for row in projections
+                    if row["capability_kind"] == "presentation"
+                )
+                projection[field] = value
+                with self.assertRaisesRegex(
+                    ValueError,
+                    "formal_page_contract_identity_invalid",
+                ):
+                    compose_capsule_product(
+                        **arguments,
+                        capsules=base_capsules,
+                        verified_page_contracts=projections,
+                    )
+
+        declaration_tamper = copy.deepcopy(base_projections)
+        declaration_tamper[0]["page_capability_declaration"][
+            "canonical_digest"
+        ] = "f" * 64
+        with self.assertRaisesRegex(
+            ValueError,
+            "formal_page_contract_identity_invalid",
+        ):
+            compose_capsule_product(
+                **arguments,
+                capsules=base_capsules,
+                verified_page_contracts=declaration_tamper,
+            )
+
+        computation = next(
+            row
+            for row in base_capsules
+            if row["capability_kind"] == "computation"
+        )
+        computation_projection = copy.deepcopy(base_projections[0])
+        computation_projection.update(
+            {
+                "capsule_id": computation["capsule_id"],
+                "version_id": computation["version_id"],
+                "capability_kind": "computation",
+                "canonical_hash": computation["canonical_hash"],
+            }
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "formal_page_contract_identity_invalid",
+        ):
+            compose_capsule_product(
+                **arguments,
+                capsules=base_capsules,
+                verified_page_contracts=[computation_projection],
+            )
+
+        with self.assertRaisesRegex(
+            ValueError,
+            "formal_capsule_identity_invalid",
+        ):
+            compose_capsule_product(
+                **arguments,
+                capsules=base_capsules,
+            )
+
+    def test_candidate_path_forwards_verified_page_contracts(self) -> None:
+        capsules, projections = _v2_composer_fixture(self.capsules)
+        execution = {
+            "schema_version": "plan_execution.v1",
+            "execution_digest": "a" * 64,
+            "composer_request": {
+                "task": "隔离候选",
+                "product_id": "product_" + "f" * 32,
+                "generated_at": NOW,
+                "capsule_ids": [
+                    row["capsule_id"] for row in capsules
+                ],
+            },
+        }
+        self.service._product_planner = _ConfirmedPlanner(
+            self.plan,
+            self.confirmation,
+        )
+        with (
+            patch.object(
+                self.service,
+                "_load_composer_capsules",
+                return_value=(capsules, {"kind": "general"}, projections),
+            ),
+            patch(
+                "pimos_lite.reweave_app_service.compile_plan_execution",
+                return_value=execution,
+            ),
+            patch(
+                "pimos_lite.reweave_app_service.compose_capsule_product",
+                side_effect=ValueError("projection_probe"),
+            ) as composer,
+            self.assertRaisesRegex(ProductGenerationError, "projection_probe"),
+        ):
+            self.service._build_product_candidate(
+                "plan_token_projection",
+                self.plan["canonical_digest"],
+                _acceptance_cases(),
+            )
+        self.assertEqual(composer.call_count, 1)
+        self.assertEqual(
+            composer.call_args.kwargs["verified_page_contracts"],
+            projections,
+        )
+
     def test_parameterized_offer_binding_and_v1_bytes_are_strict(self) -> None:
         old_execution = compile_plan_execution(
             self.plan,
@@ -622,6 +992,17 @@ class PlanExecutionV1Test(unittest.TestCase):
         self.assertEqual(
             canonical_digest(old_composition),
             "5ac25055962d58afd40b346658480bf20f9f24202473d01ead6be3011962bc36",
+        )
+        self.assertEqual(
+            old_composition,
+            compose_capsule_product(
+                task="隔离候选",
+                product_id="product_" + "b" * 32,
+                generated_at=NOW,
+                capsules=copy.deepcopy(self.capsules),
+                candidate_acceptance_port=True,
+                verified_page_contracts=[],
+            ),
         )
 
         capsules, plan, confirmation, offer = self._parameterized_fixture()

@@ -670,7 +670,9 @@ class CapsuleCoreCodeProjectionTest(unittest.TestCase):
             self.assertNotIn(forbidden, serialized)
         self.assertEqual(self.store.current_revision(), revision)
 
-    def test_v2_page_identity_uses_existing_loader_and_blocks_composer(self) -> None:
+    def test_v2_page_identity_uses_existing_loader_and_composer_projection(
+        self,
+    ) -> None:
         canonical = canonicalize_capsule(self.payload)
         declaration = build_page_capability_declaration_v2(
             capability_kind="presentation",
@@ -753,11 +755,15 @@ class CapsuleCoreCodeProjectionTest(unittest.TestCase):
             projection["data"]["canonical_hash"],
             binding["formal_identity_digest"],
         )
-        with self.assertRaisesRegex(
-            ProductGenerationError,
-            "formal_page_contract_composer_not_integrated",
-        ):
-            self.service._load_composer_capsules([capsule_id], read_only=True)
+        composer_capsules, composer_scope, composer_contracts = (
+            self.service._load_composer_capsules(
+                [capsule_id],
+                read_only=True,
+            )
+        )
+        self.assertEqual(composer_capsules, capsules)
+        self.assertEqual(composer_scope, product_scope)
+        self.assertEqual(composer_contracts, contracts)
 
         orphan_id, orphan_version = _seed_capsule(
             self.store,
@@ -1040,6 +1046,61 @@ class Phase5FormalGenerationTest(unittest.TestCase):
         self.assertEqual(len(products), 1)
         return products[0]
 
+    def test_formal_generation_and_recovery_forward_page_contracts(self) -> None:
+        capsules, product_scope = self.service._load_generation_capsules(
+            list(self.ids.values()),
+            read_only=True,
+        )
+        page_contracts = [{"projection": "verified"}]
+        with (
+            patch.object(
+                self.service,
+                "_load_composer_capsules",
+                return_value=(capsules, product_scope, page_contracts),
+            ),
+            patch(
+                "pimos_lite.reweave_app_service.compose_capsule_product",
+                side_effect=ValueError("projection_probe"),
+            ) as composer,
+            self.assertRaisesRegex(ProductGenerationError, "projection_probe"),
+        ):
+            self.service._generate_formal_product(
+                "Build a quote calculator",
+                list(self.ids.values()),
+            )
+        self.assertEqual(
+            composer.call_args.kwargs["verified_page_contracts"],
+            page_contracts,
+        )
+
+        record = {
+            "manifest": {
+                "task": "Build a quote calculator",
+                "product_id": "product_" + "a" * 32,
+                "generated_at": NOW,
+            }
+        }
+        with (
+            patch(
+                "pimos_lite.reweave_app_service.compose_capsule_product",
+                side_effect=ValueError("projection_probe"),
+            ) as composer,
+            self.assertRaisesRegex(
+                ProductGenerationError,
+                "formal_capsule_selection_expired",
+            ),
+        ):
+            self.service._assert_recoverable_product_matches_composition(
+                record,
+                capsules,
+                product_scope,
+                page_contracts,
+            )
+        self.assertEqual(
+            composer.call_args.kwargs["verified_page_contracts"],
+            page_contracts,
+        )
+
     def test_formal_initial_state_does_not_load_historical_modules(self) -> None:
         script = """
 import sys
@@ -1221,6 +1282,10 @@ for name in sys.modules:
 
         self.assertTrue(result.get("ok"), result)
         self.assertEqual(composer.call_count, 1)
+        self.assertEqual(
+            composer.call_args.kwargs["verified_page_contracts"],
+            [],
+        )
         patch_data = result["data"]
         self.assertEqual(patch_data["status"], "ready_for_review")
         self.assertEqual(

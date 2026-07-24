@@ -3291,7 +3291,7 @@ class ReweaveAppService:
                 if type(binding) is dict and binding.get("capsule_id")
             }
         )
-        capsules, product_scope = self._load_composer_capsules(
+        capsules, product_scope, page_contracts = self._load_composer_capsules(
             capsule_ids,
             read_only=True,
         )
@@ -3305,6 +3305,16 @@ class ReweaveAppService:
         selected = [
             selected_by_id[capsule_id]
             for capsule_id in execution["composer_request"]["capsule_ids"]
+        ]
+        selected_identities = {
+            (capsule["capsule_id"], capsule["version_id"])
+            for capsule in selected
+        }
+        selected_page_contracts = [
+            projection
+            for projection in page_contracts
+            if (projection["capsule_id"], projection["version_id"])
+            in selected_identities
         ]
         input_contract, output_contract = self._candidate_acceptance_contracts(
             selected
@@ -3361,20 +3371,10 @@ class ReweaveAppService:
                 task=execution["composer_request"]["task"],
                 product_id=execution["composer_request"]["product_id"],
                 generated_at=execution["composer_request"]["generated_at"],
-                capsules=[
-                    {
-                        key: value
-                        for key, value in capsule.items()
-                        if (
-                            key != "canonical_hash"
-                            or execution["schema_version"]
-                            == PARAMETERIZED_PLAN_EXECUTION_VERSION
-                        )
-                    }
-                    for capsule in selected
-                ],
+                capsules=selected,
                 candidate_acceptance_port=True,
                 parameter_binding=execution.get("parameter_binding"),
+                verified_page_contracts=selected_page_contracts,
             )
         except ValueError as exc:
             code = str(exc)
@@ -5323,7 +5323,9 @@ class ReweaveAppService:
                 raise StaticWebTargetError(
                     "target_snapshot_mismatch", {"phase": "authorization"}
                 )
-            capsules, product_scope = self._load_composer_capsules(list(raw_ids))
+            capsules, product_scope, page_contracts = self._load_composer_capsules(
+                list(raw_ids)
+            )
             if product_scope != {"kind": "general"}:
                 raise StaticWebTargetError(
                     "target_usage_scope_mismatch", {"phase": "authorization"}
@@ -5340,14 +5342,8 @@ class ReweaveAppService:
                     task=task,
                     product_id=identity["product_id"],
                     generated_at="content-addressed",
-                    capsules=[
-                        {
-                            key: value
-                            for key, value in capsule.items()
-                            if key != "canonical_hash"
-                        }
-                        for capsule in capsules
-                    ],
+                    capsules=capsules,
+                    verified_page_contracts=page_contracts,
                 )
             except ValueError as exc:
                 code = str(exc)
@@ -5623,18 +5619,15 @@ class ReweaveAppService:
         capsule_ids: list[str],
         *,
         read_only: bool = False,
-    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        capsules, product_scope, page_contracts = (
-            self._load_generation_capsules_with_page_contracts(
-                capsule_ids,
-                read_only=read_only,
-            )
+    ) -> tuple[
+        list[dict[str, Any]],
+        dict[str, Any],
+        list[dict[str, Any]],
+    ]:
+        return self._load_generation_capsules_with_page_contracts(
+            capsule_ids,
+            read_only=read_only,
         )
-        if page_contracts:
-            raise ProductGenerationError(
-                "formal_page_contract_composer_not_integrated"
-            )
-        return capsules, product_scope
 
     def _assert_generation_capsules_current(
         self, connection: sqlite3.Connection, capsules: list[dict[str, Any]]
@@ -5787,7 +5780,9 @@ class ReweaveAppService:
     def _generate_formal_product(
         self, task: str, capsule_ids: list[str]
     ) -> dict[str, Any]:
-        capsules, product_scope = self._load_composer_capsules(capsule_ids)
+        capsules, product_scope, page_contracts = self._load_composer_capsules(
+            capsule_ids
+        )
         product_id = f"product_{uuid.uuid4().hex}"
         generated_at = _now()
         try:
@@ -5795,10 +5790,8 @@ class ReweaveAppService:
                 task=task,
                 product_id=product_id,
                 generated_at=generated_at,
-                capsules=[
-                    {key: value for key, value in capsule.items() if key != "canonical_hash"}
-                    for capsule in capsules
-                ],
+                capsules=capsules,
+                verified_page_contracts=page_contracts,
             )
         except ValueError as exc:
             code = str(exc)
@@ -6285,6 +6278,7 @@ class ReweaveAppService:
         record: dict[str, Any],
         capsules: list[dict[str, Any]],
         product_scope: dict[str, Any],
+        page_contracts: list[dict[str, Any]],
     ) -> None:
         manifest = record["manifest"]
         try:
@@ -6292,10 +6286,8 @@ class ReweaveAppService:
                 task=manifest["task"],
                 product_id=manifest["product_id"],
                 generated_at=manifest["generated_at"],
-                capsules=[
-                    {key: value for key, value in capsule.items() if key != "canonical_hash"}
-                    for capsule in capsules
-                ],
+                capsules=capsules,
+                verified_page_contracts=page_contracts,
             )
         except ValueError as exc:
             raise ProductGenerationError("formal_capsule_selection_expired") from exc
@@ -6383,7 +6375,9 @@ class ReweaveAppService:
             if record["status"] != "usage_registration_incomplete":
                 return self._error(str(record["status"]))
             capsule_ids = [str(row["capsule_id"]) for row in record["manifest"]["capsules"]]
-            capsules, product_scope = self._load_composer_capsules(capsule_ids)
+            capsules, product_scope, page_contracts = (
+                self._load_composer_capsules(capsule_ids)
+            )
             product_root = Path(record["path"])
             for filename, validator in (
                 ("quality_gate.json", _validate_product_static),
@@ -6409,7 +6403,7 @@ class ReweaveAppService:
                         "product_validation_receipt_mismatch"
                     )
             self._assert_recoverable_product_matches_composition(
-                record, capsules, product_scope
+                record, capsules, product_scope, page_contracts
             )
             self._register_product_usage(
                 record["manifest"], record["manifest_digest"], capsules
