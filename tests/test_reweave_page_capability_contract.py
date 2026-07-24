@@ -4,10 +4,14 @@ import copy
 import unittest
 
 from pimos_lite.reweave_page_capability_contract import (
+    FORMAL_CAPSULE_IDENTITY_VERSION,
     PAGE_CAPABILITY_CONTRACT_VERSION,
     PAGE_CAPABILITY_DECLARATION_VERSION,
+    build_formal_identity_binding_v2,
     build_page_capability_declaration_v2,
     build_page_capability_contract_v2,
+    normalize_page_capability_declaration_v2,
+    verify_formal_capsule_identity,
 )
 
 
@@ -74,6 +78,135 @@ class PageCapabilityContractV2Tests(unittest.TestCase):
         self.assertNotIn("requires", presentation)
         self.assertIn("requires", interaction)
         self.assertNotIn("provides", interaction)
+
+    def test_formal_identity_binds_payload_and_declaration_digests(self) -> None:
+        declaration = build_page_capability_declaration_v2(
+            capability_kind="presentation",
+            elements=self.provides,
+        )
+        binding = build_formal_identity_binding_v2(
+            canonical_payload_digest="a" * 64,
+            page_capability_declaration=declaration,
+        )
+        self.assertEqual(
+            binding["schema_version"],
+            FORMAL_CAPSULE_IDENTITY_VERSION,
+        )
+        self.assertEqual(binding["canonical_payload_digest"], "a" * 64)
+        self.assertEqual(
+            binding["page_capability_declaration_digest"],
+            declaration["canonical_digest"],
+        )
+        self.assertNotEqual(binding["formal_identity_digest"], "a" * 64)
+        summary = {
+            "page_capability_declaration": declaration,
+            "formal_identity_binding": binding,
+        }
+        self.assertEqual(
+            verify_formal_capsule_identity(
+                capability_kind="presentation",
+                canonical_payload_digest="a" * 64,
+                stored_canonical_hash=binding["formal_identity_digest"],
+                extraction_summary=summary,
+            ),
+            binding,
+        )
+
+    def test_v1_v2_identity_matrix_fails_closed(self) -> None:
+        payload_digest = "a" * 64
+        self.assertIsNone(
+            verify_formal_capsule_identity(
+                capability_kind="presentation",
+                canonical_payload_digest=payload_digest,
+                stored_canonical_hash=payload_digest,
+                extraction_summary={},
+            )
+        )
+        declaration = build_page_capability_declaration_v2(
+            capability_kind="presentation",
+            elements=self.provides,
+        )
+        binding = build_formal_identity_binding_v2(
+            canonical_payload_digest=payload_digest,
+            page_capability_declaration=declaration,
+        )
+        invalid = (
+            {"page_capability_declaration": declaration},
+            {"formal_identity_binding": binding},
+            {
+                "page_capability_declaration": None,
+                "formal_identity_binding": None,
+            },
+            {
+                "page_capability_declaration": declaration,
+                "formal_identity_binding": None,
+            },
+            {
+                "page_capability_declaration": declaration,
+                "formal_identity_binding": {
+                    **binding,
+                    "schema_version": "formal_capsule_identity.v999",
+                },
+            },
+        )
+        for summary in invalid:
+            with self.subTest(summary=summary):
+                with self.assertRaisesRegex(
+                    ValueError, "formal_capsule_identity_invalid"
+                ):
+                    verify_formal_capsule_identity(
+                        capability_kind="presentation",
+                        canonical_payload_digest=payload_digest,
+                        stored_canonical_hash=binding["formal_identity_digest"],
+                        extraction_summary=summary,
+                    )
+        with self.assertRaisesRegex(ValueError, "formal_capsule_identity_invalid"):
+            verify_formal_capsule_identity(
+                capability_kind="presentation",
+                canonical_payload_digest=payload_digest,
+                stored_canonical_hash=payload_digest,
+                extraction_summary={
+                    "page_capability_declaration": None,
+                    "formal_identity_binding": None,
+                },
+            )
+        with self.assertRaisesRegex(ValueError, "formal_capsule_identity_invalid"):
+            verify_formal_capsule_identity(
+                capability_kind="computation",
+                canonical_payload_digest=payload_digest,
+                stored_canonical_hash=binding["formal_identity_digest"],
+                extraction_summary={
+                    "page_capability_declaration": declaration,
+                    "formal_identity_binding": binding,
+                },
+            )
+
+    def test_declaration_or_binding_tampering_fails_closed(self) -> None:
+        declaration = build_page_capability_declaration_v2(
+            capability_kind="presentation",
+            elements=self.provides,
+        )
+        tampered = copy.deepcopy(declaration)
+        tampered["provides"][0]["events"] = []
+        with self.assertRaisesRegex(
+            ValueError, "page_capability_declaration_invalid"
+        ):
+            normalize_page_capability_declaration_v2(tampered)
+
+        binding = build_formal_identity_binding_v2(
+            canonical_payload_digest="a" * 64,
+            page_capability_declaration=declaration,
+        )
+        with self.assertRaisesRegex(ValueError, "formal_capsule_identity_invalid"):
+            verify_formal_capsule_identity(
+                capability_kind="presentation",
+                canonical_payload_digest="a" * 64,
+                stored_canonical_hash="b" * 64,
+                extraction_summary={
+                    "page_capability_declaration": declaration,
+                    "formal_identity_binding": binding,
+                },
+            )
 
     def test_selector_quote_style_is_not_semantic(self) -> None:
         double_quoted = copy.deepcopy(self.requires)

@@ -21,6 +21,10 @@ from pimos_lite.reweave_capsule_store import (
     SchemaVersionError,
     canonicalize_capsule,
 )
+from pimos_lite.reweave_page_capability_contract import (
+    build_formal_identity_binding_v2,
+    build_page_capability_declaration_v2,
+)
 
 
 NOW = "2026-07-15T00:00:00Z"
@@ -1276,6 +1280,118 @@ class CapsuleWarehouseStoreTest(unittest.TestCase):
         inspected = self.store.inspect_restore(backup["path"])
         self.assertEqual(inspected["user_version"], 1)
 
+    def test_v2_formal_identity_survives_backup_and_rejects_evidence_tampering(
+        self,
+    ) -> None:
+        payload = canonical_payload()
+        payload.update(
+            capability_kind="presentation",
+            activation={
+                "mode": "declared_input_render",
+                "entry_module": "presentation.js",
+                "entrypoint": "render",
+            },
+            runtime_allowlist=["local_computation", "scoped_ui_update"],
+            dom_scope={
+                "root_contract": "capsule_root",
+                "selectors": ["[data-ref='total']"],
+                "classes": [],
+                "attributes": [],
+                "events": [],
+            },
+            html=(
+                "<section data-capsule-root>"
+                '<span data-ref="total"></span></section>'
+            ),
+            css="__CAPSULE_ROOT__ { display: block; }\n",
+            javascript_modules=[
+                {
+                    "path": "presentation.js",
+                    "source": (
+                        "export function render(root, input) { "
+                        "root.querySelector(\"[data-ref='total']\").textContent = "
+                        "String(input.total); }\n"
+                    ),
+                }
+            ],
+        )
+        canonical = canonicalize_capsule({**payload, "assets": []})
+        declaration = build_page_capability_declaration_v2(
+            capability_kind="presentation",
+            elements=[
+                {
+                    "selector": "[data-ref='total']",
+                    "tag": "span",
+                    "reads": [],
+                    "writes": ["textContent"],
+                    "events": [],
+                }
+            ],
+        )
+        binding = build_formal_identity_binding_v2(
+            canonical_payload_digest=canonical.sha256,
+            page_capability_declaration=declaration,
+        )
+        summary = {
+            "page_capability_declaration": declaration,
+            "formal_identity_binding": binding,
+        }
+        self._seed_project_and_active_version(
+            payload=payload,
+            extraction_summary=summary,
+            canonical_hash=binding["formal_identity_digest"],
+        )
+        with self.store.transaction() as connection:
+            connection.execute(
+                "INSERT INTO capsule_sources VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "source-v2",
+                    "version-1",
+                    "project-1",
+                    "project:project-1",
+                    "project",
+                    "index.html",
+                    "source-hash",
+                    binding["formal_identity_digest"],
+                    "exact",
+                    NOW,
+                ),
+            )
+        backup = self.store.create_backup("manual")
+        self.assertEqual(
+            self.store.inspect_restore(backup["path"])["user_version"],
+            1,
+        )
+        self.assertTrue(
+            self.store.restore_backup(
+                backup["path"],
+                expected_sha256=backup["sha256"],
+            )["restored"]
+        )
+
+        tampered = self.root / "v2-formal-identity-tampered.sqlite3"
+        shutil.copy2(backup["path"], tampered)
+        connection = sqlite3.connect(tampered)
+        trigger_sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' "
+            "AND name = 'capsule_versions_no_update'"
+        ).fetchone()[0]
+        connection.execute("DROP TRIGGER capsule_versions_no_update")
+        broken = copy.deepcopy(summary)
+        broken["page_capability_declaration"]["provides"][0]["writes"] = []
+        connection.execute(
+            "UPDATE capsule_versions SET extraction_summary_json = ? "
+            "WHERE version_id = 'version-1'",
+            (compact_json(broken),),
+        )
+        connection.execute(trigger_sql)
+        connection.commit()
+        connection.close()
+        with self.assertRaisesRegex(
+            CapsuleStoreError, "capsule_version_formal_identity"
+        ):
+            self.store.inspect_restore(tampered)
+
     def test_backup_retention_preserves_manual_and_keeps_seven_auto(self) -> None:
         manual = [self.store.create_backup("manual") for _ in range(2)]
         for _ in range(8):
@@ -2460,10 +2576,15 @@ class CapsuleWarehouseStoreTest(unittest.TestCase):
                     store_module._verify_database(tampered, expected_version=2)
 
     def _seed_project_and_active_version(
-        self, *, asset_content: bytes | None = None
+        self,
+        *,
+        asset_content: bytes | None = None,
+        payload: dict[str, object] | None = None,
+        extraction_summary: dict[str, object] | None = None,
+        canonical_hash: str | None = None,
     ) -> None:
         self.store.initialize()
-        payload = canonical_payload()
+        payload = copy.deepcopy(payload) if payload is not None else canonical_payload()
         asset_digest = (
             hashlib.sha256(asset_content).hexdigest()
             if asset_content is not None
@@ -2548,7 +2669,7 @@ class CapsuleWarehouseStoreTest(unittest.TestCase):
                     "quote_calculation",
                     "total_price",
                     "default",
-                    "computation",
+                    canonical.payload["capability_kind"],
                     "disabled",
                     None,
                     NOW,
@@ -2563,10 +2684,10 @@ class CapsuleWarehouseStoreTest(unittest.TestCase):
                     "capsule-1",
                     1,
                     "extraction.v1",
-                    "{}",
+                    compact_json(extraction_summary or {}),
                     "redaction.v1",
                     1,
-                    canonical.sha256,
+                    canonical_hash or canonical.sha256,
                     compact_json(canonical.payload["activation"]),
                     compact_json(canonical.payload["input_contract"]),
                     compact_json(canonical.payload["output_contract"]),

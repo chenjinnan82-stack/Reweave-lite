@@ -1819,15 +1819,46 @@ alice&#64;example.com</main><script type="module" src="./compute.js"></script>
 
         self.assertEqual(prepared.artifact.assets, ())
         self.assertNotIn("outside.png", prepared.artifact.canonical_payload["html"])
-        declaration = json.loads(prepared.review["sanitized_candidate_json"])[
-            "page_capability_declaration"
-        ]
+        summary = json.loads(prepared.review["sanitized_candidate_json"])
+        declaration = summary["page_capability_declaration"]
+        binding = summary["formal_identity_binding"]
         self.assertEqual(declaration["capability_kind"], "presentation")
         self.assertEqual(
             declaration["provides"][0]["selector"],
             "[data-ref='title']",
         )
         self.assertIn("textContent", declaration["provides"][0]["writes"])
+        self.assertEqual(
+            binding["canonical_payload_digest"],
+            prepared.artifact.canonical_payload_digest,
+        )
+        self.assertEqual(
+            binding["page_capability_declaration_digest"],
+            declaration["canonical_digest"],
+        )
+        self.assertEqual(
+            prepared.artifact.version_canonical_hash,
+            binding["formal_identity_digest"],
+        )
+        self.assertNotEqual(
+            prepared.artifact.version_canonical_hash,
+            prepared.artifact.canonical_payload_digest,
+        )
+        with (
+            patch.object(self.stage3, "_hash_matches", return_value=[]) as matches,
+            patch.object(
+                self.stage3,
+                "_runtime_validation",
+                return_value={
+                    "schema_version": "qweb_validation.v1",
+                    "status": "passed",
+                    "acceptance_scope": "test_only",
+                },
+            ),
+        ):
+            outcome = self.stage3.shared_stage3_gate(prepared)
+        self.assertEqual(outcome.kind, "review_required")
+        matches.assert_called_once_with(binding["formal_identity_digest"])
         self.assertNotIn(
             "page_capability_declaration",
             prepared.artifact.canonical_payload,
@@ -1928,6 +1959,44 @@ class Stage3PySideFlowTest(unittest.TestCase):
         ]
         self.assertEqual(declaration["capability_kind"], "interaction")
         self.assertEqual(len(declaration["requires"]), 2)
+
+        published = self.stage3.publish_review(
+            review["review_id"],
+            decision="publish_general",
+            capability_key="quote_calculation",
+            role_key="quote_input",
+            display_name="Quote input",
+        )
+        with self.store.read_connection() as connection:
+            review_row = connection.execute(
+                "SELECT candidate_canonical_hash, sanitized_candidate_json "
+                "FROM review_items WHERE review_id = ?",
+                (review["review_id"],),
+            ).fetchone()
+            version_row = connection.execute(
+                "SELECT canonical_hash, extraction_summary_json "
+                "FROM capsule_versions WHERE version_id = ?",
+                (published["version_id"],),
+            ).fetchone()
+            source_row = connection.execute(
+                "SELECT candidate_canonical_hash FROM capsule_sources "
+                "WHERE version_id = ? AND relationship = 'published_implementation'",
+                (published["version_id"],),
+            ).fetchone()
+        summary = json.loads(version_row["extraction_summary_json"])
+        binding = summary["formal_identity_binding"]
+        identity_digest = binding["formal_identity_digest"]
+        self.assertEqual(review_row["candidate_canonical_hash"], identity_digest)
+        self.assertEqual(version_row["canonical_hash"], identity_digest)
+        self.assertEqual(source_row["candidate_canonical_hash"], identity_digest)
+        self.assertEqual(
+            binding["page_capability_declaration_digest"],
+            summary["page_capability_declaration"]["canonical_digest"],
+        )
+        self.assertNotEqual(
+            binding["canonical_payload_digest"],
+            identity_digest,
+        )
 
     def test_real_qwebengine_rejects_observably_non_idempotent_dispose(self) -> None:
         payload = {

@@ -20,6 +20,9 @@ from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import quote
 
+from pimos_lite.reweave_page_capability_contract import (
+    verify_formal_capsule_identity,
+)
 from pimos_lite.reweave_source_registry import state_dir
 
 SCHEMA_VERSION = 1
@@ -3130,6 +3133,7 @@ def _assert_canonical_versions(connection: sqlite3.Connection) -> None:
             )
 
         try:
+            extraction_summary = _load_strict_json(row["extraction_summary_json"])
             canonical = canonicalize_capsule(
                 {
                     "capability_kind": row["capability_kind"],
@@ -3152,10 +3156,24 @@ def _assert_canonical_versions(connection: sqlite3.Connection) -> None:
             raise CapsuleStoreError(
                 "persistent data invariant failed: capsule_version_canonical_payload"
             ) from exc
-        if type(row["canonical_hash"]) is not str or row["canonical_hash"] != canonical.sha256:
-            raise CapsuleStoreError(
-                "persistent data invariant failed: capsule_version_canonical_hash"
+        try:
+            verify_formal_capsule_identity(
+                capability_kind=str(row["capability_kind"]),
+                canonical_payload_digest=canonical.sha256,
+                stored_canonical_hash=row["canonical_hash"],
+                extraction_summary=extraction_summary,
             )
+        except (TypeError, ValueError) as exc:
+            invariant = (
+                "capsule_version_canonical_hash"
+                if type(extraction_summary) is dict
+                and "page_capability_declaration" not in extraction_summary
+                and "formal_identity_binding" not in extraction_summary
+                else "capsule_version_formal_identity"
+            )
+            raise CapsuleStoreError(
+                f"persistent data invariant failed: {invariant}"
+            ) from exc
 
 
 def _load_strict_json(raw: Any) -> Any:

@@ -74,6 +74,9 @@ from pimos_lite.reweave_javascript_source import (
     JavascriptSourceError,
     JavascriptSourceService,
 )
+from pimos_lite.reweave_page_capability_contract import (
+    verify_formal_capsule_identity,
+)
 from pimos_lite.reweave_source_registry import state_dir
 from pimos_lite.reweave_static_web_target import (
     TARGET_AUTHORIZATION_MODE,
@@ -3288,7 +3291,7 @@ class ReweaveAppService:
                 if type(binding) is dict and binding.get("capsule_id")
             }
         )
-        capsules, product_scope = self._load_generation_capsules(
+        capsules, product_scope = self._load_composer_capsules(
             capsule_ids,
             read_only=True,
         )
@@ -4344,7 +4347,14 @@ class ReweaveAppService:
                     "assets": assets,
                 }
             )
-            if canonical.sha256 != row["canonical_hash"]:
+            try:
+                verify_formal_capsule_identity(
+                    capability_kind=str(row["capability_kind"]),
+                    canonical_payload_digest=canonical.sha256,
+                    stored_canonical_hash=row["canonical_hash"],
+                    extraction_summary=parsed["extraction_summary"],
+                )
+            except ValueError:
                 return self._error("capsule_core_code_projection_unavailable")
 
             activation = canonical.payload["activation"]
@@ -4383,7 +4393,7 @@ class ReweaveAppService:
                     "version_id": version_id,
                     "project_id": project_id,
                     "source_identity": source_identity,
-                    "canonical_hash": canonical.sha256,
+                    "canonical_hash": str(row["canonical_hash"]),
                     "capability_kind": row["capability_kind"],
                     "validation": {
                         "contract_version": validation_fields[0],
@@ -5313,7 +5323,7 @@ class ReweaveAppService:
                 raise StaticWebTargetError(
                     "target_snapshot_mismatch", {"phase": "authorization"}
                 )
-            capsules, product_scope = self._load_generation_capsules(list(raw_ids))
+            capsules, product_scope = self._load_composer_capsules(list(raw_ids))
             if product_scope != {"kind": "general"}:
                 raise StaticWebTargetError(
                     "target_usage_scope_mismatch", {"phase": "authorization"}
@@ -5405,6 +5415,7 @@ class ReweaveAppService:
         capsule_ids: list[str],
         *,
         read_only: bool = False,
+        _page_contracts: list[dict[str, Any]] | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
         if not read_only:
             self._ensure_capsule_management()
@@ -5517,8 +5528,45 @@ class ReweaveAppService:
                         ],
                     }
                 )
-                if canonical.sha256 != row["canonical_hash"]:
-                    raise ProductGenerationError("formal_capsule_canonical_mismatch")
+                try:
+                    identity = verify_formal_capsule_identity(
+                        capability_kind=str(row["capability_kind"]),
+                        canonical_payload_digest=canonical.sha256,
+                        stored_canonical_hash=row["canonical_hash"],
+                        extraction_summary=extraction_summary,
+                    )
+                except ValueError as exc:
+                    code = (
+                        "formal_capsule_canonical_mismatch"
+                        if "page_capability_declaration" not in extraction_summary
+                        and "formal_identity_binding" not in extraction_summary
+                        else "formal_capsule_identity_invalid"
+                    )
+                    raise ProductGenerationError(code) from exc
+                if identity is not None and _page_contracts is not None:
+                    if (
+                        connection.execute(
+                            "SELECT 1 FROM capsule_sources WHERE version_id = ? "
+                            "AND relationship IN ('exact', 'published_implementation') "
+                            "AND candidate_canonical_hash = ? LIMIT 1",
+                            (row["version_id"], row["canonical_hash"]),
+                        ).fetchone()
+                        is None
+                    ):
+                        raise ProductGenerationError(
+                            "formal_capsule_source_identity_invalid"
+                        )
+                    _page_contracts.append(
+                        {
+                            "capsule_id": capsule_id,
+                            "version_id": str(row["version_id"]),
+                            "capability_kind": str(row["capability_kind"]),
+                            "canonical_hash": str(row["canonical_hash"]),
+                            "page_capability_declaration": extraction_summary[
+                                "page_capability_declaration"
+                            ],
+                        }
+                    )
                 loaded.append(
                     {
                         "capsule_id": capsule_id,
@@ -5555,6 +5603,38 @@ class ReweaveAppService:
             else {"kind": "general"}
         )
         return loaded, product_scope
+
+    def _load_generation_capsules_with_page_contracts(
+        self,
+        capsule_ids: list[str],
+        *,
+        read_only: bool = False,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any], list[dict[str, Any]]]:
+        verified: list[dict[str, Any]] = []
+        capsules, product_scope = self._load_generation_capsules(
+            capsule_ids,
+            read_only=read_only,
+            _page_contracts=verified,
+        )
+        return capsules, product_scope, verified
+
+    def _load_composer_capsules(
+        self,
+        capsule_ids: list[str],
+        *,
+        read_only: bool = False,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+        capsules, product_scope, page_contracts = (
+            self._load_generation_capsules_with_page_contracts(
+                capsule_ids,
+                read_only=read_only,
+            )
+        )
+        if page_contracts:
+            raise ProductGenerationError(
+                "formal_page_contract_composer_not_integrated"
+            )
+        return capsules, product_scope
 
     def _assert_generation_capsules_current(
         self, connection: sqlite3.Connection, capsules: list[dict[str, Any]]
@@ -5707,7 +5787,7 @@ class ReweaveAppService:
     def _generate_formal_product(
         self, task: str, capsule_ids: list[str]
     ) -> dict[str, Any]:
-        capsules, product_scope = self._load_generation_capsules(capsule_ids)
+        capsules, product_scope = self._load_composer_capsules(capsule_ids)
         product_id = f"product_{uuid.uuid4().hex}"
         generated_at = _now()
         try:
@@ -6303,7 +6383,7 @@ class ReweaveAppService:
             if record["status"] != "usage_registration_incomplete":
                 return self._error(str(record["status"]))
             capsule_ids = [str(row["capsule_id"]) for row in record["manifest"]["capsules"]]
-            capsules, product_scope = self._load_generation_capsules(capsule_ids)
+            capsules, product_scope = self._load_composer_capsules(capsule_ids)
             product_root = Path(record["path"])
             for filename, validator in (
                 ("quality_gate.json", _validate_product_static),

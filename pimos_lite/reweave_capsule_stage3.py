@@ -54,6 +54,7 @@ from pimos_lite.reweave_javascript_source import (
     JavascriptSourceService,
 )
 from pimos_lite.reweave_page_capability_contract import (
+    build_formal_identity_binding_v2,
     build_page_capability_contract_v2,
     build_page_capability_declaration_v2,
     normalize_page_capability_selector,
@@ -258,7 +259,8 @@ class CleanAsset:
 @dataclass(frozen=True)
 class Stage3Artifact:
     canonical_payload: dict[str, Any]
-    canonical_hash: str
+    canonical_payload_digest: str
+    formal_identity_binding: dict[str, str] | None
     assets: tuple[CleanAsset, ...]
     cleaning_summary: dict[str, Any]
     security_result: dict[str, Any]
@@ -268,6 +270,12 @@ class Stage3Artifact:
     model_digest: str | None = None
     supervised_at: str | None = None
     validation: dict[str, Any] | None = None
+
+    @property
+    def version_canonical_hash(self) -> str:
+        if self.formal_identity_binding is None:
+            return self.canonical_payload_digest
+        return self.formal_identity_binding["formal_identity_digest"]
 
 
 @dataclass(frozen=True)
@@ -4379,7 +4387,8 @@ class ReweaveCapsuleStage3:
             review=review,
             artifact=Stage3Artifact(
                 canonical_payload=canonical.payload,
-                canonical_hash=canonical.sha256,
+                canonical_payload_digest=canonical.sha256,
+                formal_identity_binding=None,
                 assets=(),
                 cleaning_summary={
                     "schema_version": "capsule_cleaning.v1",
@@ -4420,7 +4429,7 @@ class ReweaveCapsuleStage3:
         if outcome.kind == "rules_revalidated":
             comparison = self._equivalence_comparison(
                 outcome.prepared,
-                self._hash_matches(outcome.prepared.artifact.canonical_hash),
+                self._hash_matches(outcome.prepared.artifact.version_canonical_hash),
             )
             comparison["reason_codes"] = [
                 "manual_rules_revalidation_required",
@@ -4474,7 +4483,7 @@ class ReweaveCapsuleStage3:
             return self._record_gate_failure(
                 outcome.prepared.review,
                 outcome.error_code,
-                canonical_hash=outcome.prepared.artifact.canonical_hash,
+                canonical_hash=outcome.prepared.artifact.version_canonical_hash,
                 supervision=outcome.supervision,
                 response_hash=outcome.response_hash,
                 model=outcome.model,
@@ -4498,7 +4507,7 @@ class ReweaveCapsuleStage3:
         representative = self._same_run_representative(prepared)
         if representative is not None:
             return _Stage3GateOutcome("same_run", prepared, version=representative)
-        matches = self._hash_matches(prepared.artifact.canonical_hash)
+        matches = self._hash_matches(prepared.artifact.version_canonical_hash)
         eligible = [
             row
             for row in matches
@@ -4539,7 +4548,8 @@ class ReweaveCapsuleStage3:
             )
         artifact = Stage3Artifact(
             canonical_payload=prepared.artifact.canonical_payload,
-            canonical_hash=prepared.artifact.canonical_hash,
+            canonical_payload_digest=prepared.artifact.canonical_payload_digest,
+            formal_identity_binding=prepared.artifact.formal_identity_binding,
             assets=prepared.artifact.assets,
             cleaning_summary=prepared.artifact.cleaning_summary,
             security_result=prepared.artifact.security_result,
@@ -4777,7 +4787,7 @@ class ReweaveCapsuleStage3:
                 prepared,
                 status=status,
                 sanitized=safe,
-                canonical_hash=prepared.artifact.canonical_hash,
+                canonical_hash=prepared.artifact.version_canonical_hash,
                 supervision=outcome.supervision,
                 response_hash=outcome.response_hash,
                 comparison=comparison,
@@ -4788,7 +4798,7 @@ class ReweaveCapsuleStage3:
             "review_id": prepared.review["review_id"],
             "status": status,
             "error_code": code,
-            "canonical_hash": prepared.artifact.canonical_hash,
+            "canonical_hash": prepared.artifact.version_canonical_hash,
         }
 
     def _persist_ephemeral_review_required(
@@ -4830,7 +4840,7 @@ class ReweaveCapsuleStage3:
                 prepared,
                 status="review_required",
                 sanitized=sanitized,
-                canonical_hash=artifact.canonical_hash,
+                canonical_hash=artifact.version_canonical_hash,
                 supervision=artifact.supervision,
                 response_hash=artifact.supervision_response_hash,
                 comparison=outcome.comparison,
@@ -4840,7 +4850,7 @@ class ReweaveCapsuleStage3:
         return {
             "review_id": prepared.review["review_id"],
             "status": "review_required",
-            "canonical_hash": artifact.canonical_hash,
+            "canonical_hash": artifact.version_canonical_hash,
             "validation_scope": artifact.validation.get("acceptance_scope"),
         }
 
@@ -4886,7 +4896,7 @@ class ReweaveCapsuleStage3:
             ).fetchone()
             if (
                 current is None
-                or current["canonical_hash"] != prepared.artifact.canonical_hash
+                or current["canonical_hash"] != prepared.artifact.version_canonical_hash
                 or not self._eligible_exact(dict(current))
                 or not self._exact_origin_compatible(prepared.review, dict(current))
                 or not self._exact_model_current(dict(current), connection)
@@ -4900,7 +4910,7 @@ class ReweaveCapsuleStage3:
                 prepared,
                 status="duplicate",
                 sanitized=safe,
-                canonical_hash=prepared.artifact.canonical_hash,
+                canonical_hash=prepared.artifact.version_canonical_hash,
                 supervision=None,
                 response_hash=None,
                 comparison=comparison,
@@ -4912,7 +4922,7 @@ class ReweaveCapsuleStage3:
                 (
                     version["version_id"],
                     prepared.review["review_id"],
-                    prepared.artifact.canonical_hash,
+                    prepared.artifact.version_canonical_hash,
                 ),
             )
             if bound.rowcount != 1:
@@ -4929,7 +4939,7 @@ class ReweaveCapsuleStage3:
                     f"project:{prepared.review['project_id']}",
                     prepared.review["source_relpath"],
                     prepared.review["source_hash"],
-                    prepared.artifact.canonical_hash,
+                    prepared.artifact.version_canonical_hash,
                     _now(),
                 ),
             )
@@ -4940,7 +4950,7 @@ class ReweaveCapsuleStage3:
             "status": "duplicate",
             "capsule_id": version["capsule_id"],
             "version_id": version["version_id"],
-            "canonical_hash": prepared.artifact.canonical_hash,
+            "canonical_hash": prepared.artifact.version_canonical_hash,
         }
 
     def publish_review(
@@ -5029,7 +5039,7 @@ class ReweaveCapsuleStage3:
         }:
             raise Stage3Error("publication_decision_invalid")
         prepared = self._prepare(review)
-        if prepared.artifact.canonical_hash != review["candidate_canonical_hash"]:
+        if prepared.artifact.version_canonical_hash != review["candidate_canonical_hash"]:
             raise Stage3Error("candidate_changed_since_validation")
         evidence = self._evidence(review)
         capability_kind = prepared.artifact.canonical_payload["capability_kind"]
@@ -5049,7 +5059,8 @@ class ReweaveCapsuleStage3:
             review=prepared.review,
             artifact=Stage3Artifact(
                 canonical_payload=prepared.artifact.canonical_payload,
-                canonical_hash=prepared.artifact.canonical_hash,
+                canonical_payload_digest=prepared.artifact.canonical_payload_digest,
+                formal_identity_binding=prepared.artifact.formal_identity_binding,
                 assets=prepared.artifact.assets,
                 cleaning_summary=prepared.artifact.cleaning_summary,
                 security_result=prepared.artifact.security_result,
@@ -5180,13 +5191,14 @@ class ReweaveCapsuleStage3:
             )
         else:
             prepared = self._prepare(review)
-        if prepared.artifact.canonical_hash != retained["canonical_hash"]:
+        if prepared.artifact.version_canonical_hash != retained["canonical_hash"]:
             raise Stage3Error("candidate_changed_since_validation")
         prepared = _PreparedReview(
             review=prepared.review,
             artifact=Stage3Artifact(
                 canonical_payload=prepared.artifact.canonical_payload,
-                canonical_hash=prepared.artifact.canonical_hash,
+                canonical_payload_digest=prepared.artifact.canonical_payload_digest,
+                formal_identity_binding=prepared.artifact.formal_identity_binding,
                 assets=prepared.artifact.assets,
                 cleaning_summary=prepared.artifact.cleaning_summary,
                 security_result=prepared.artifact.security_result,
@@ -5307,7 +5319,8 @@ class ReweaveCapsuleStage3:
             review=review_for_publish,
             artifact=Stage3Artifact(
                 canonical_payload=canonical.payload,
-                canonical_hash=canonical.sha256,
+                canonical_payload_digest=canonical.sha256,
+                formal_identity_binding=None,
                 assets=(),
                 cleaning_summary=cleaning,
                 security_result=evidence.get("security_result"),
@@ -5689,9 +5702,20 @@ class ReweaveCapsuleStage3:
             "css_cleaned": bool(cleaned_css),
             "asset_count": len(assets),
         }
+        prepared_review = dict(review)
+        formal_identity_binding = None
+        if page_capability_declaration is not None:
+            summary["page_capability_declaration"] = page_capability_declaration
+            formal_identity_binding = build_formal_identity_binding_v2(
+                canonical_payload_digest=canonical.sha256,
+                page_capability_declaration=page_capability_declaration,
+            )
+            summary["formal_identity_binding"] = formal_identity_binding
+            prepared_review["sanitized_candidate_json"] = _json(summary)
         artifact = Stage3Artifact(
             canonical_payload=canonical.payload,
-            canonical_hash=canonical.sha256,
+            canonical_payload_digest=canonical.sha256,
+            formal_identity_binding=formal_identity_binding,
             assets=assets,
             cleaning_summary=cleaning,
             security_result={
@@ -5701,10 +5725,6 @@ class ReweaveCapsuleStage3:
                 "listener_bindings": security.get("listener_bindings", []),
             },
         )
-        prepared_review = dict(review)
-        if page_capability_declaration is not None:
-            summary["page_capability_declaration"] = page_capability_declaration
-            prepared_review["sanitized_candidate_json"] = _json(summary)
         return _PreparedReview(
             review=prepared_review,
             artifact=artifact,
@@ -5800,7 +5820,8 @@ class ReweaveCapsuleStage3:
             review=review,
             artifact=Stage3Artifact(
                 canonical_payload=canonical.payload,
-                canonical_hash=canonical.sha256,
+                canonical_payload_digest=canonical.sha256,
+                formal_identity_binding=None,
                 assets=(),
                 cleaning_summary={
                     "schema_version": "capsule_cleaning.v1",
@@ -5931,7 +5952,7 @@ class ReweaveCapsuleStage3:
         }
         return {
             "schema_version": "capsule_supervision_input.v1",
-            "canonical_hash": prepared.artifact.canonical_hash,
+            "canonical_hash": prepared.artifact.version_canonical_hash,
             "capability_kind": payload["capability_kind"],
             "activation": activation,
             "input_contract": payload["input_contract"],
@@ -6423,7 +6444,7 @@ class ReweaveCapsuleStage3:
                 (
                     prepared.review["run_id"],
                     prepared.review["review_id"],
-                    prepared.artifact.canonical_hash,
+                    prepared.artifact.version_canonical_hash,
                 ),
             ).fetchone()
         return dict(row) if row is not None else None
@@ -6607,14 +6628,14 @@ class ReweaveCapsuleStage3:
                         "role_key": row["role_key"],
                         "variant_key": row["variant_key"],
                         "canonical_hash_equal": row["canonical_hash"]
-                        == prepared.artifact.canonical_hash,
+                        == prepared.artifact.version_canonical_hash,
                         "contract_match": contract_match,
                         "scope_revalidation_match": scope_revalidation_match,
                     }
                 )
         return {
             "schema_version": "equivalence_comparison.v1",
-            "candidate_canonical_hash": prepared.artifact.canonical_hash,
+            "candidate_canonical_hash": prepared.artifact.version_canonical_hash,
             "automatic_semantic_merge": False,
             "candidates": candidates,
         }
@@ -6652,7 +6673,7 @@ class ReweaveCapsuleStage3:
                 "WHERE review_id = ?",
                 (
                     status,
-                    artifact.canonical_hash,
+                    artifact.version_canonical_hash,
                     _json(sanitized),
                     _json(artifact.supervision),
                     artifact.supervision_response_hash,
@@ -6666,7 +6687,7 @@ class ReweaveCapsuleStage3:
         return {
             "review_id": prepared.review["review_id"],
             "status": status,
-            "canonical_hash": artifact.canonical_hash,
+            "canonical_hash": artifact.version_canonical_hash,
             "validation_scope": artifact.validation.get("acceptance_scope")
             if artifact.validation
             else None,
@@ -7001,7 +7022,7 @@ class ReweaveCapsuleStage3:
             if (
                 current is None
                 or current["capsule_id"] != version["capsule_id"]
-                or current["canonical_hash"] != prepared.artifact.canonical_hash
+                or current["canonical_hash"] != prepared.artifact.version_canonical_hash
                 or not self._eligible_exact(dict(current))
                 or not self._exact_origin_compatible(review, dict(current))
                 or not self._exact_model_current(dict(current), connection)
@@ -7015,7 +7036,7 @@ class ReweaveCapsuleStage3:
                 "retained_version_id = ?, equivalence_comparison_json = ?, updated_at = ? "
                 "WHERE review_id = ? AND candidate_status = 'extracted' AND decision IS NULL",
                 (
-                    prepared.artifact.canonical_hash,
+                    prepared.artifact.version_canonical_hash,
                     _json(sanitized),
                     version["version_id"],
                     comparison,
@@ -7037,7 +7058,7 @@ class ReweaveCapsuleStage3:
                     f"project:{review['project_id']}",
                     review["source_relpath"],
                     review["source_hash"],
-                    prepared.artifact.canonical_hash,
+                    prepared.artifact.version_canonical_hash,
                     now,
                 ),
             )
@@ -7061,7 +7082,7 @@ class ReweaveCapsuleStage3:
         if comparison_target is None:
             raise Stage3Error("retained_version_not_in_comparison_evidence")
         prepared = self._prepare(review)
-        if prepared.artifact.canonical_hash != review["candidate_canonical_hash"]:
+        if prepared.artifact.version_canonical_hash != review["candidate_canonical_hash"]:
             raise Stage3Error("candidate_changed_since_validation")
         with self.store.read_connection() as connection:
             target = connection.execute(
@@ -7116,7 +7137,7 @@ class ReweaveCapsuleStage3:
                         f"project:{source_review['project_id']}",
                         source_review["source_relpath"],
                         source_review["source_hash"],
-                        prepared.artifact.canonical_hash,
+                        prepared.artifact.version_canonical_hash,
                         now,
                     ),
                 )
@@ -7432,7 +7453,7 @@ class ReweaveCapsuleStage3:
                         _json(review_summary),
                         REDACTION_RULES_VERSION,
                         CANONICALIZATION_VERSION,
-                        artifact.canonical_hash,
+                        artifact.version_canonical_hash,
                         _json(payload["activation"]),
                         _json(payload["input_contract"]),
                         _json(payload["output_contract"]),
@@ -7485,7 +7506,7 @@ class ReweaveCapsuleStage3:
                         f"project:{prepared.review['project_id']}",
                         prepared.review["source_relpath"],
                         prepared.review["source_hash"],
-                        artifact.canonical_hash,
+                        artifact.version_canonical_hash,
                         now,
                     ),
                 )
@@ -7503,7 +7524,7 @@ class ReweaveCapsuleStage3:
                             f"project:{follower['project_id']}",
                             follower["source_relpath"],
                             follower["source_hash"],
-                            artifact.canonical_hash,
+                            artifact.version_canonical_hash,
                             now,
                         ),
                     )
@@ -7531,7 +7552,7 @@ class ReweaveCapsuleStage3:
                     "candidate_canonical_hash = ?, sanitized_candidate_json = ?, updated_at = ? "
                     "WHERE review_id = ? AND candidate_status = 'publishable' AND decision IS ?",
                     (
-                        artifact.canonical_hash,
+                        artifact.version_canonical_hash,
                         _json(review_summary),
                         now,
                         prepared.review["review_id"],
@@ -7591,5 +7612,5 @@ class ReweaveCapsuleStage3:
             "capsule_id": capsule_id,
             "version_id": version_id,
             "version_number": version_number,
-            "canonical_hash": artifact.canonical_hash,
+            "canonical_hash": artifact.version_canonical_hash,
         }

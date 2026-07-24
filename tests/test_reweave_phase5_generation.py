@@ -41,6 +41,10 @@ from pimos_lite.reweave_capsule_store import (
     CapsuleWarehouseStore,
     canonicalize_capsule,
 )
+from pimos_lite.reweave_page_capability_contract import (
+    build_formal_identity_binding_v2,
+    build_page_capability_declaration_v2,
+)
 from pimos_lite.reweave_static_web_target import TARGET_AUTHORIZATION_MODE
 from scripts import run_public_reweave_demo
 
@@ -355,6 +359,7 @@ def _seed_capsule(
     status: str = "active",
     payload: dict[str, object] | None = None,
     canonical_hash_override: str | None = None,
+    extraction_summary_override: dict[str, object] | None = None,
     activation_json_override: str | None = None,
     validation_contract_version_override: str | None = None,
 ) -> tuple[str, str]:
@@ -409,7 +414,7 @@ def _seed_capsule(
                 capsule_id,
                 1,
                 EXTRACTION_CONTRACT_VERSION,
-                _json(evidence["extraction"]),
+                _json(extraction_summary_override or evidence["extraction"]),
                 REDACTION_RULES_VERSION,
                 CANONICALIZATION_VERSION,
                 canonical_hash_override or canonical.sha256,
@@ -664,6 +669,131 @@ class CapsuleCoreCodeProjectionTest(unittest.TestCase):
         ):
             self.assertNotIn(forbidden, serialized)
         self.assertEqual(self.store.current_revision(), revision)
+
+    def test_v2_page_identity_uses_existing_loader_and_blocks_composer(self) -> None:
+        canonical = canonicalize_capsule(self.payload)
+        declaration = build_page_capability_declaration_v2(
+            capability_kind="presentation",
+            elements=[
+                {
+                    "selector": "[data-ref='total']",
+                    "tag": "output",
+                    "reads": [],
+                    "writes": ["textContent"],
+                    "events": [],
+                }
+            ],
+        )
+        binding = build_formal_identity_binding_v2(
+            canonical_payload_digest=canonical.sha256,
+            page_capability_declaration=declaration,
+        )
+        extraction_summary = {
+            **_version_evidence("presentation")["extraction"],
+            "page_capability_declaration": declaration,
+            "formal_identity_binding": binding,
+        }
+        capsule_id, version_id = _seed_capsule(
+            self.store,
+            "presentation",
+            capability_key="page_identity_v2",
+            suffix="page_identity_v2",
+            payload=self.payload,
+            canonical_hash_override=binding["formal_identity_digest"],
+            extraction_summary_override=extraction_summary,
+        )
+        self._link_source(
+            version_id,
+            binding["formal_identity_digest"],
+            "page-identity-v2-source",
+        )
+
+        with patch.object(
+            self.service,
+            "_load_generation_capsules",
+            wraps=self.service._load_generation_capsules,
+        ) as existing_loader:
+            capsules, product_scope, contracts = (
+                self.service._load_generation_capsules_with_page_contracts(
+                    [capsule_id],
+                    read_only=True,
+                )
+            )
+        existing_loader.assert_called_once()
+        self.assertEqual(existing_loader.call_args.args, ([capsule_id],))
+        self.assertTrue(existing_loader.call_args.kwargs["read_only"])
+        self.assertIs(
+            existing_loader.call_args.kwargs["_page_contracts"],
+            contracts,
+        )
+        self.assertEqual(product_scope, {"kind": "general"})
+        self.assertEqual(capsules[0]["canonical_hash"], binding["formal_identity_digest"])
+        self.assertEqual(
+            contracts,
+            [
+                {
+                    "capsule_id": capsule_id,
+                    "version_id": version_id,
+                    "capability_kind": "presentation",
+                    "canonical_hash": binding["formal_identity_digest"],
+                    "page_capability_declaration": declaration,
+                }
+            ],
+        )
+
+        projection = self.service.get_capsule_core_code_projection(
+            {
+                "capsule_id": capsule_id,
+                "version_id": version_id,
+                "project_id": self.project_id,
+            }
+        )
+        self.assertTrue(projection["ok"], projection)
+        self.assertEqual(
+            projection["data"]["canonical_hash"],
+            binding["formal_identity_digest"],
+        )
+        with self.assertRaisesRegex(
+            ProductGenerationError,
+            "formal_page_contract_composer_not_integrated",
+        ):
+            self.service._load_composer_capsules([capsule_id], read_only=True)
+
+        orphan_id, orphan_version = _seed_capsule(
+            self.store,
+            "presentation",
+            capability_key="page_identity_v2_orphan",
+            suffix="page_identity_v2_orphan",
+            payload=self.payload,
+            canonical_hash_override=binding["formal_identity_digest"],
+            extraction_summary_override=extraction_summary,
+        )
+        with self.store.transaction() as connection:
+            connection.execute(
+                "INSERT INTO capsule_sources "
+                "(source_link_id, version_id, project_id, source_identity, source_kind, "
+                "source_relpath, source_hash, candidate_canonical_hash, relationship, read_at) "
+                "VALUES (?, ?, ?, ?, 'project', 'index.html', ?, ?, 'human_equivalent', ?)",
+                (
+                    "page-identity-v2-human-source",
+                    orphan_version,
+                    self.project_id,
+                    f"project:{self.project_id}",
+                    hashlib.sha256(
+                        (self.source / "index.html").read_bytes()
+                    ).hexdigest(),
+                    canonical.sha256,
+                    NOW,
+                ),
+            )
+        with self.assertRaisesRegex(
+            ProductGenerationError,
+            "formal_capsule_source_identity_invalid",
+        ):
+            self.service._load_generation_capsules_with_page_contracts(
+                [orphan_id],
+                read_only=True,
+            )
 
     def test_projection_fails_closed_for_identity_status_and_eligibility(self) -> None:
         self._assert_unavailable(version_id="version_wrong")

@@ -15,6 +15,7 @@ from typing import Any
 
 PAGE_CAPABILITY_CONTRACT_VERSION = "page_capability_contract.v2"
 PAGE_CAPABILITY_DECLARATION_VERSION = "page_capability_declaration.v2"
+FORMAL_CAPSULE_IDENTITY_VERSION = "formal_capsule_identity.v2"
 
 _MAX_ELEMENTS = 64
 _SELECTOR = re.compile(
@@ -26,6 +27,7 @@ _READS = frozenset(
 )
 _WRITES = _READS
 _EVENTS = frozenset({"change", "click", "input", "reset", "select", "submit"})
+_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 
 
 def build_page_capability_contract_v2(
@@ -74,6 +76,99 @@ def build_page_capability_declaration_v2(
         field: _normalize_elements(elements),
     }
     return {**body, "canonical_digest": _canonical_digest(body)}
+
+
+def normalize_page_capability_declaration_v2(value: Any) -> dict[str, Any]:
+    """Validate and return one canonical persisted declaration."""
+    if type(value) is not dict:
+        raise ValueError("page_capability_declaration_invalid")
+    capability_kind = value.get("capability_kind")
+    field = (
+        "provides"
+        if capability_kind == "presentation"
+        else "requires"
+        if capability_kind == "interaction"
+        else None
+    )
+    if (
+        field is None
+        or set(value)
+        != {"schema_version", "capability_kind", field, "canonical_digest"}
+        or value.get("schema_version") != PAGE_CAPABILITY_DECLARATION_VERSION
+    ):
+        raise ValueError("page_capability_declaration_invalid")
+    expected = build_page_capability_declaration_v2(
+        capability_kind=capability_kind,
+        elements=value[field],
+    )
+    if value != expected:
+        raise ValueError("page_capability_declaration_invalid")
+    return expected
+
+
+def build_formal_identity_binding_v2(
+    *,
+    canonical_payload_digest: str,
+    page_capability_declaration: dict[str, Any],
+) -> dict[str, str]:
+    """Bind one canonical payload to one canonical page declaration."""
+    if (
+        type(canonical_payload_digest) is not str
+        or _DIGEST.fullmatch(canonical_payload_digest) is None
+    ):
+        raise ValueError("formal_capsule_identity_invalid")
+    declaration = normalize_page_capability_declaration_v2(
+        page_capability_declaration
+    )
+    body = {
+        "schema_version": FORMAL_CAPSULE_IDENTITY_VERSION,
+        "canonical_payload_digest": canonical_payload_digest,
+        "page_capability_declaration_digest": declaration["canonical_digest"],
+    }
+    return {**body, "formal_identity_digest": _canonical_digest(body)}
+
+
+def verify_formal_capsule_identity(
+    *,
+    capability_kind: str,
+    canonical_payload_digest: str,
+    stored_canonical_hash: str,
+    extraction_summary: dict[str, Any],
+) -> dict[str, str] | None:
+    """Verify the v1 payload identity or v2 page-capability identity matrix."""
+    if (
+        capability_kind not in {"presentation", "interaction", "computation"}
+        or type(canonical_payload_digest) is not str
+        or _DIGEST.fullmatch(canonical_payload_digest) is None
+        or type(stored_canonical_hash) is not str
+        or _DIGEST.fullmatch(stored_canonical_hash) is None
+        or type(extraction_summary) is not dict
+    ):
+        raise ValueError("formal_capsule_identity_invalid")
+    has_declaration = "page_capability_declaration" in extraction_summary
+    has_binding = "formal_identity_binding" in extraction_summary
+    if not has_declaration and not has_binding:
+        if stored_canonical_hash != canonical_payload_digest:
+            raise ValueError("formal_capsule_identity_invalid")
+        return None
+    if not has_declaration or not has_binding or capability_kind == "computation":
+        raise ValueError("formal_capsule_identity_invalid")
+    declaration = extraction_summary["page_capability_declaration"]
+    binding = extraction_summary["formal_identity_binding"]
+    if type(binding) is not dict or binding.get("schema_version") != (
+        FORMAL_CAPSULE_IDENTITY_VERSION
+    ):
+        raise ValueError("formal_capsule_identity_invalid")
+    normalized_declaration = normalize_page_capability_declaration_v2(declaration)
+    if normalized_declaration["capability_kind"] != capability_kind:
+        raise ValueError("formal_capsule_identity_invalid")
+    expected = build_formal_identity_binding_v2(
+        canonical_payload_digest=canonical_payload_digest,
+        page_capability_declaration=normalized_declaration,
+    )
+    if binding != expected or stored_canonical_hash != expected["formal_identity_digest"]:
+        raise ValueError("formal_capsule_identity_invalid")
+    return expected
 
 
 def normalize_page_capability_selector(value: Any) -> str:
@@ -141,9 +236,13 @@ def _canonical_digest(value: dict[str, Any]) -> str:
 
 
 __all__ = [
+    "FORMAL_CAPSULE_IDENTITY_VERSION",
     "PAGE_CAPABILITY_CONTRACT_VERSION",
     "PAGE_CAPABILITY_DECLARATION_VERSION",
+    "build_formal_identity_binding_v2",
     "build_page_capability_declaration_v2",
     "build_page_capability_contract_v2",
+    "normalize_page_capability_declaration_v2",
     "normalize_page_capability_selector",
+    "verify_formal_capsule_identity",
 ]
