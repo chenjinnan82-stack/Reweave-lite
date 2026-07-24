@@ -24,6 +24,13 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
+from pimos_lite.reweave_plan_execution import (
+    PlanExecutionError,
+    build_parameterized_execution_binding,
+    build_parameterized_execution_offer,
+    validate_parameterized_execution_binding,
+)
+
 
 PLAN_SCHEMA_VERSION = "product_plan.v1"
 WORKSPACE_SCHEMA_VERSION = "product_workspace.v3"
@@ -1279,6 +1286,8 @@ class ProductPlanner:
         plan_digest: str,
         reviewed_plan: dict[str, Any],
         catalog: dict[str, Any],
+        parameter_capsules: list[dict[str, Any]] | None = None,
+        parameter_confirmation: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         workspace = self._workspace_by_token(plan_token)
         plan = workspace.get("plan")
@@ -1296,8 +1305,61 @@ class ProductPlanner:
                 "product_plan_capsule_stale",
                 {"stale_work_items": stale},
             )
+        offer: dict[str, Any] | None = None
+        parameter_binding: dict[str, Any] | None = None
+        if parameter_capsules is not None:
+            try:
+                offer = build_parameterized_execution_offer(
+                    plan,
+                    parameter_capsules,
+                )
+                if parameter_confirmation is not None:
+                    if offer is None:
+                        raise PlanExecutionError(
+                            "parameterized_execution_confirmation_invalid"
+                        )
+                    parameter_binding = build_parameterized_execution_binding(
+                        plan,
+                        offer,
+                        parameter_confirmation,
+                    )
+            except PlanExecutionError as exc:
+                return _error(exc.code, self._workspace_projection(workspace))
+        elif parameter_confirmation is not None:
+            return _error(
+                "parameterized_execution_confirmation_invalid",
+                self._workspace_projection(workspace),
+            )
         if workspace.get("status") == "confirmed":
             self._validate_confirmed_snapshot(workspace)
+            if workspace["confirmation"].get("schema_version") == (
+                "product_plan_confirmation.v2"
+            ):
+                if offer is None:
+                    return _error(
+                        "parameterized_execution_binding_stale",
+                        self._workspace_projection(workspace),
+                    )
+                try:
+                    self._validate_stored_confirmation(
+                        workspace["confirmation"],
+                        plan,
+                        offer,
+                    )
+                except ProductPlanningError:
+                    return _error(
+                        "parameterized_execution_binding_stale",
+                        self._workspace_projection(workspace),
+                    )
+            stored_binding = workspace["confirmation"].get("parameter_binding")
+            if (
+                parameter_confirmation is not None
+                and stored_binding != parameter_binding
+            ):
+                return _error(
+                    "product_plan_confirmation_conflict",
+                    self._workspace_projection(workspace),
+                )
             return _ok(self._workspace_projection(workspace))
         if workspace.get("status") != "plan_review":
             raise ProductPlanningError("product_plan_confirmation_stale")
@@ -1309,7 +1371,22 @@ class ProductPlanner:
             )
             if existing["plan"] != plan:
                 raise ProductPlanningError("product_plan_confirmation_conflict")
-            self._validate_stored_confirmation(existing["confirmation"], plan)
+            stored_schema = existing["confirmation"].get("schema_version")
+            if stored_schema == "product_plan_confirmation.v2" and offer is None:
+                raise ProductPlanningError(
+                    "parameterized_execution_binding_stale"
+                )
+            self._validate_stored_confirmation(
+                existing["confirmation"],
+                plan,
+                offer if stored_schema == "product_plan_confirmation.v2" else None,
+            )
+            if (
+                parameter_confirmation is not None
+                and existing["confirmation"].get("parameter_binding")
+                != parameter_binding
+            ):
+                raise ProductPlanningError("product_plan_confirmation_conflict")
             recovered = copy.deepcopy(workspace)
             recovered["confirmation"] = existing["confirmation"]
             recovered["status"] = "confirmed"
@@ -1323,8 +1400,16 @@ class ProductPlanner:
                 raise ProductPlanningError("product_planning_model_digest_changed")
         except ProductPlanningError as exc:
             return _error(exc.code, self._workspace_projection(workspace))
+        if offer is not None and parameter_binding is None:
+            projection = self._workspace_projection(workspace)
+            projection["parameter_offer"] = offer
+            return _error("parameter_confirmation_required", projection)
         receipt = {
-            "schema_version": "product_plan_confirmation.v1",
+            "schema_version": (
+                "product_plan_confirmation.v2"
+                if parameter_binding is not None
+                else "product_plan_confirmation.v1"
+            ),
             "plan_id": plan["plan_id"],
             "plan_version": plan["plan_version"],
             "plan_digest": plan_digest,
@@ -1345,6 +1430,8 @@ class ProductPlanner:
             "candidate_generated": False,
             "product_usage_written": False,
         }
+        if parameter_binding is not None:
+            receipt["parameter_binding"] = parameter_binding
         receipt["receipt_digest"] = _digest(receipt)
         confirmed_workspace = copy.deepcopy(workspace)
         confirmed_workspace["confirmation"] = receipt
@@ -1365,6 +1452,7 @@ class ProductPlanner:
         self,
         plan_token: str,
         catalog: dict[str, Any] | None = None,
+        parameter_capsules: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         workspace = self._workspace_by_token(plan_token)
         if catalog is not None:
@@ -1400,6 +1488,32 @@ class ProductPlanner:
                         "workspace": self._workspace_projection(invalidated),
                         "stale_work_items": plan_stale or diff_stale,
                     },
+                )
+        confirmation = workspace.get("confirmation")
+        if (
+            parameter_capsules is not None
+            and type(confirmation) is dict
+            and confirmation.get("schema_version")
+            == "product_plan_confirmation.v2"
+        ):
+            try:
+                offer = build_parameterized_execution_offer(
+                    workspace["plan"],
+                    parameter_capsules,
+                )
+                if offer is None:
+                    raise PlanExecutionError(
+                        "parameterized_execution_binding_stale"
+                    )
+                self._validate_stored_confirmation(
+                    confirmation,
+                    workspace["plan"],
+                    offer,
+                )
+            except (PlanExecutionError, ProductPlanningError):
+                return _error(
+                    "parameterized_execution_binding_stale",
+                    self._workspace_projection(workspace),
                 )
         return _ok(self._workspace_projection(workspace))
 
@@ -2756,29 +2870,44 @@ class ProductPlanner:
             ):
                 raise ProductPlanningError("product_workspace_corrupt")
 
-    def _validate_stored_confirmation(self, value: Any, plan: Any) -> None:
+    def _validate_stored_confirmation(
+        self,
+        value: Any,
+        plan: Any,
+        parameter_offer: dict[str, Any] | None = None,
+    ) -> None:
         if value is None:
             return
+        common_keys = {
+            "schema_version",
+            "plan_id",
+            "plan_version",
+            "plan_digest",
+            "confirmed_at",
+            "capsule_revalidation",
+            "warehouse_revision",
+            "product_generated",
+            "candidate_generated",
+            "product_usage_written",
+            "receipt_digest",
+        }
+        schema_version = value.get("schema_version") if type(value) is dict else None
         row = _stored_exact(
             value,
-            {
-                "schema_version",
-                "plan_id",
-                "plan_version",
-                "plan_digest",
-                "confirmed_at",
-                "capsule_revalidation",
-                "warehouse_revision",
-                "product_generated",
-                "candidate_generated",
-                "product_usage_written",
-                "receipt_digest",
-            },
+            (
+                common_keys
+                if schema_version == "product_plan_confirmation.v1"
+                else {*common_keys, "parameter_binding"}
+            ),
         )
         canonical = {key: item for key, item in row.items() if key != "receipt_digest"}
         if (
             type(plan) is not dict
-            or row["schema_version"] != "product_plan_confirmation.v1"
+            or row["schema_version"]
+            not in {
+                "product_plan_confirmation.v1",
+                "product_plan_confirmation.v2",
+            }
             or row["plan_id"] != plan["plan_id"]
             or row["plan_version"] != plan["plan_version"]
             or row["plan_digest"] != plan["canonical_digest"]
@@ -2820,6 +2949,15 @@ class ProductPlanner:
         ]
         if row["capsule_revalidation"] != expected:
             raise ProductPlanningError("product_workspace_corrupt")
+        if row["schema_version"] == "product_plan_confirmation.v2":
+            try:
+                validate_parameterized_execution_binding(
+                    plan,
+                    row["parameter_binding"],
+                    parameter_offer,
+                )
+            except PlanExecutionError as exc:
+                raise ProductPlanningError("product_workspace_corrupt") from exc
 
     def _ensure_directory(self, path: Path) -> None:
         try:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -282,7 +283,7 @@ class ReweaveAppServiceTest(unittest.TestCase):
             )
 
         self.assertEqual(
-            service.submit_product_plan_answers(
+                service.submit_product_plan_answers(
                 {
                     "plan_token": "plan_token_public",
                     "question_set_digest": "1" * 64,
@@ -291,6 +292,150 @@ class ReweaveAppServiceTest(unittest.TestCase):
                 }
             )["error"]["code"],
             "product_plan_answers_invalid",
+        )
+
+    def test_parameter_confirmation_uses_existing_strict_public_action(self) -> None:
+        class Planner:
+            def __init__(self) -> None:
+                self.calls: list[tuple] = []
+                self.get_calls: list[tuple] = []
+                self.plan: dict = {}
+                self.status = "plan_review"
+                self.confirmation = None
+
+            def confirm(self, *args):
+                self.calls.append(args)
+                if args[2] != self.plan:
+                    return {
+                        "ok": False,
+                        "error": {"code": "product_plan_confirmation_stale"},
+                    }
+                return {"ok": True, "data": {"forwarded": True}}
+
+            def get(self, *args):
+                self.get_calls.append(args)
+                return {
+                    "ok": True,
+                    "data": {
+                        "status": self.status,
+                        "plan": self.plan,
+                        "plan_diff": None,
+                        "confirmation": self.confirmation,
+                    },
+                }
+
+        service = object.__new__(ReweaveAppService)
+        planner = Planner()
+        service._product_planner = planner
+        service._capsule_operation_lock = threading.RLock()
+        service._product_planning_catalog = lambda: {
+            "warehouse_revision": 1,
+            "capsules": [],
+        }
+        loaded = {
+            "capsule_id": "capsule_parameterized",
+            "version_id": "version_parameterized_1",
+            "canonical_hash": "a" * 64,
+            "capability_key": "parameterized_quote",
+            "capability_kind": "computation",
+            "input_contract": {},
+            "output_contract": {},
+            "private_source": "must-not-forward",
+        }
+        service._load_generation_capsules = lambda ids, read_only: (
+            [loaded],
+            {},
+        )
+        reviewed_plan = {
+            "canonical_digest": "b" * 64,
+            "sections": [
+                {
+                    "work_items": [
+                        {
+                            "capsule_bindings": [
+                                {"capsule_id": "capsule_parameterized"}
+                            ]
+                        }
+                    ]
+                }
+            ]
+        }
+        planner.plan = reviewed_plan
+        base = {
+            "plan_token": "plan_token_public",
+            "plan_digest": "b" * 64,
+            "reviewed_plan": reviewed_plan,
+        }
+        self.assertTrue(service.confirm_product_plan(base)["ok"])
+        self.assertIsNone(planner.calls[-1][5])
+        self.assertEqual(
+            planner.calls[-1][4],
+            [
+                {
+                    key: loaded[key]
+                    for key in (
+                        "capsule_id",
+                        "version_id",
+                        "canonical_hash",
+                        "capability_key",
+                        "capability_kind",
+                        "input_contract",
+                        "output_contract",
+                    )
+                }
+            ],
+        )
+        confirmation = {
+            "schema_version": "parameterized_execution_confirmation.v1",
+            "offer_digest": "c" * 64,
+            "values": [
+                {"binding_id": "parameter_binding_public", "value": 10}
+            ],
+        }
+        self.assertTrue(
+            service.confirm_product_plan(
+                {**base, "parameter_confirmation": confirmation}
+            )["ok"]
+        )
+        self.assertEqual(planner.calls[-1][5], confirmation)
+        self.assertEqual(
+            service.confirm_product_plan({**base, "extra": True})["error"][
+                "code"
+            ],
+            "product_plan_confirmation_invalid",
+        )
+        self.assertEqual(
+            service.confirm_product_plan(
+                {**base, "reviewed_plan": {"sections": 1}}
+            )["error"]["code"],
+            "product_plan_confirmation_stale",
+        )
+        self.assertIsNone(planner.calls[-1][4])
+        planner.status = "confirmed"
+        planner.confirmation = {
+            "schema_version": "product_plan_confirmation.v2",
+        }
+        restored = service.get_product_plan_workspace(
+            {"plan_token": "plan_token_public"}
+        )
+        self.assertTrue(restored["ok"])
+        self.assertEqual(len(planner.get_calls[-1]), 3)
+        self.assertEqual(
+            planner.get_calls[-1][2],
+            [
+                {
+                    key: loaded[key]
+                    for key in (
+                        "capsule_id",
+                        "version_id",
+                        "canonical_hash",
+                        "capability_key",
+                        "capability_kind",
+                        "input_contract",
+                        "output_contract",
+                    )
+                }
+            ],
         )
 
 

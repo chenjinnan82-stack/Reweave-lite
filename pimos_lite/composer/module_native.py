@@ -23,9 +23,12 @@ from typing import Any
 from pimos_lite.reweave_data_contract import (
     DataContractError,
     contracts_compatible,
+    data_contract_accepts,
     generate_synthetic_fixtures,
     normalize_capsule_contracts,
+    normalize_data_contract,
 )
+from pimos_lite.reweave_capsule_store import canonicalize_capsule
 from pimos_lite.reweave_process_environment import restricted_subprocess_environment
 
 
@@ -81,6 +84,10 @@ REGION_MERGE_CONTRACT_VERSION = "module_native_region_merge_contract.v1"
 WIRING_RECEIPT_VERSION = "module_native_wiring_receipt.v1"
 FORMAL_PRODUCT_COMPOSER_VERSION = "module_native_formal_product.v1"
 FORMAL_PRODUCT_MANIFEST_VERSION = "module_native_product_composition.v1"
+PARAMETERIZED_FORMAL_PRODUCT_COMPOSER_VERSION = "module_native_formal_product.v2"
+PARAMETERIZED_FORMAL_PRODUCT_MANIFEST_VERSION = (
+    "module_native_product_composition.v2"
+)
 DETERMINISTIC_COMPUTATION_ADAPTER = "deterministic_computation_adapter"
 COMPUTATION_ADAPTER_V1 = "computation_adapter.v1"
 COMPUTATION_ADAPTER_V2 = "computation_adapter.v2"
@@ -102,6 +109,7 @@ def compose_capsule_product(
     generated_at: str,
     capsules: list[dict[str, Any]],
     candidate_acceptance_port: bool = False,
+    parameter_binding: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Compose eligible formal capsules supplied entirely in memory.
 
@@ -131,6 +139,10 @@ def compose_capsule_product(
             row["version_id"],
         ),
     )
+    if parameter_binding is not None and any(
+        "canonical_hash" not in row for row in normalized
+    ):
+        raise ValueError("formal_capsule_identity_invalid")
     capability_keys = {row["capability_key"] for row in normalized}
     kinds = [row["capability_kind"] for row in normalized]
     if len(capability_keys) != 1:
@@ -144,7 +156,12 @@ def compose_capsule_product(
     if len({row["html"] for row in dom_rows}) != 1:
         raise ValueError("product_dom_contract_mismatch")
 
-    connections = _formal_connections(by_kind)
+    normalized_parameter_binding = (
+        _normalize_parameter_binding(by_kind, parameter_binding)
+        if parameter_binding is not None
+        else None
+    )
+    connections = _formal_connections(by_kind, normalized_parameter_binding)
     asset_files, asset_rewrites, asset_provenance = _formal_assets(normalized)
     root_id = f"reweave-{product_id.removeprefix('product_')}-root"
     root_selector = f"#{root_id}"
@@ -177,6 +194,7 @@ def compose_capsule_product(
         connections,
         root_id,
         candidate_acceptance_port,
+        normalized_parameter_binding,
     )
     app_text = "\n".join(
         [
@@ -214,8 +232,18 @@ def compose_capsule_product(
         }
         for row in ordered
     ]
+    composer_version = (
+        PARAMETERIZED_FORMAL_PRODUCT_COMPOSER_VERSION
+        if normalized_parameter_binding is not None
+        else FORMAL_PRODUCT_COMPOSER_VERSION
+    )
+    manifest_version = (
+        PARAMETERIZED_FORMAL_PRODUCT_MANIFEST_VERSION
+        if normalized_parameter_binding is not None
+        else FORMAL_PRODUCT_MANIFEST_VERSION
+    )
     provenance = {
-        "composer_version": FORMAL_PRODUCT_COMPOSER_VERSION,
+        "composer_version": composer_version,
         "capsules": capsule_receipts,
         "file_provenance": {
             "index.html": [row["version_id"] for row in dom_rows],
@@ -226,8 +254,12 @@ def compose_capsule_product(
     }
     if candidate_acceptance_port:
         provenance["candidate_acceptance_port"] = "candidate_acceptance.v1"
+    if normalized_parameter_binding is not None:
+        provenance["parameter_binding_digest"] = normalized_parameter_binding[
+            "canonical_digest"
+        ]
     composition_manifest = {
-        "schema_version": FORMAL_PRODUCT_MANIFEST_VERSION,
+        "schema_version": manifest_version,
         "product_id": product_id,
         "generated_at": generated_at,
         "capability_key": next(iter(capability_keys)),
@@ -237,9 +269,13 @@ def compose_capsule_product(
     }
     if candidate_acceptance_port:
         composition_manifest["candidate_acceptance_port"] = "candidate_acceptance.v1"
+    if normalized_parameter_binding is not None:
+        composition_manifest["parameter_binding_digest"] = (
+            normalized_parameter_binding["canonical_digest"]
+        )
     return {
         "status": "composed",
-        "composer_version": FORMAL_PRODUCT_COMPOSER_VERSION,
+        "composer_version": composer_version,
         "files": {
             "index.html": index_text,
             "styles.css": styles_text,
@@ -259,10 +295,14 @@ def _normalize_formal_capsule(value: Any) -> dict[str, Any]:
         "css", "javascript_modules", "assets",
     }
     origin_fields = {"candidate_origin", "adapter_contract_version"}
-    if type(value) is not dict or set(value) not in {
+    identity_fields = {"canonical_hash"}
+    allowed = {
         frozenset(required),
         frozenset(required | origin_fields),
-    }:
+        frozenset(required | identity_fields),
+        frozenset(required | origin_fields | identity_fields),
+    }
+    if type(value) is not dict or set(value) not in allowed:
         raise ValueError("formal_capsule_object_invalid")
     row = dict(value)
     row.setdefault("candidate_origin", None)
@@ -270,6 +310,10 @@ def _normalize_formal_capsule(value: Any) -> dict[str, Any]:
     for key in ("capsule_id", "version_id"):
         if type(row[key]) is not str or not re.fullmatch(r"[A-Za-z0-9_-]{3,128}", row[key]):
             raise ValueError("formal_capsule_identity_invalid")
+    if "canonical_hash" in row and not re.fullmatch(
+        r"[0-9a-f]{64}", str(row["canonical_hash"])
+    ):
+        raise ValueError("formal_capsule_identity_invalid")
     for key in ("capability_key", "role_key", "variant_key"):
         if type(row[key]) is not str or not re.fullmatch(r"[a-z][a-z0-9_]{0,95}", row[key]):
             raise ValueError("formal_capsule_key_invalid")
@@ -309,7 +353,7 @@ def _normalize_formal_capsule(value: Any) -> dict[str, Any]:
         raise ValueError("computation_dom_content_forbidden")
     if kind != "computation" and not row["html"]:
         raise ValueError("dom_capsule_html_required")
-    return {
+    normalized = {
         **row,
         "activation": activation,
         "input_contract": input_contract,
@@ -321,6 +365,41 @@ def _normalize_formal_capsule(value: Any) -> dict[str, Any]:
         "javascript_modules": modules,
         "assets": assets,
     }
+    if "canonical_hash" in value:
+        canonical_payload = {
+            key: normalized[key]
+            for key in (
+                "capability_kind",
+                "activation",
+                "input_contract",
+                "output_contract",
+                "error_contract",
+                "runtime_allowlist",
+                "dom_scope",
+                "usage_scope",
+                "html",
+                "css",
+                "javascript_modules",
+            )
+        } | {
+            "assets": [
+                {
+                    key: asset[key]
+                    for key in ("logical_path", "media_type", "sha256")
+                }
+                for asset in normalized["assets"]
+            ]
+        }
+        try:
+            canonical = canonicalize_capsule(canonical_payload)
+        except ValueError as exc:
+            raise ValueError("formal_capsule_identity_invalid") from exc
+        if (
+            canonical.payload != canonical_payload
+            or canonical.sha256 != normalized["canonical_hash"]
+        ):
+            raise ValueError("formal_capsule_identity_invalid")
+    return normalized
 
 
 def _normalize_activation(kind: str, value: Any) -> dict[str, str]:
@@ -465,15 +544,161 @@ def _normalize_usage_scope(value: Any) -> dict[str, str]:
     raise ValueError("formal_capsule_usage_scope_invalid")
 
 
-def _formal_connections(by_kind: dict[str, dict[str, Any]]) -> list[dict[str, str]]:
+def _parameter_contract(field: str, value: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema": "data_contract.v1",
+        "type": "object",
+        "properties": {field: value},
+        "required": [field],
+        "additional_properties": False,
+    }
+
+
+def _canonical_digest(value: Any) -> str:
+    return hashlib.sha256(
+        json.dumps(
+            value,
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+    ).hexdigest()
+
+
+def _normalize_parameter_binding(
+    by_kind: dict[str, dict[str, Any]],
+    value: Any,
+) -> dict[str, Any]:
+    computation = by_kind.get("computation")
+    interaction = by_kind.get("interaction")
+    if computation is None or interaction is None:
+        raise ValueError("parameterized_execution_contract_incompatible")
+    keys = {
+        "schema_version",
+        "offer_digest",
+        "plan_digest",
+        "bindings",
+        "canonical_digest",
+    }
+    if type(value) is not dict or set(value) != keys:
+        raise ValueError("parameterized_execution_binding_invalid")
+    body = {key: item for key, item in value.items() if key != "canonical_digest"}
+    if (
+        value["schema_version"] != "parameterized_execution_binding.v1"
+        or not re.fullmatch(r"[0-9a-f]{64}", str(value["offer_digest"]))
+        or not re.fullmatch(r"[0-9a-f]{64}", str(value["plan_digest"]))
+        or type(value["bindings"]) is not list
+        or not 1 <= len(value["bindings"]) <= 16
+        or value["canonical_digest"] != _canonical_digest(body)
+    ):
+        raise ValueError("parameterized_execution_binding_invalid")
+    try:
+        computation_input = normalize_data_contract(computation["input_contract"])
+        events = interaction["output_contract"]["events"]
+        if type(events) is not dict or len(events) != 1:
+            raise DataContractError("parameterized_event_contract_invalid")
+        runtime_input = normalize_data_contract(next(iter(events.values())))
+    except (DataContractError, KeyError, TypeError) as exc:
+        raise ValueError("parameterized_execution_contract_incompatible") from exc
+    if (
+        computation_input["type"] != "object"
+        or runtime_input["type"] != "object"
+        or set(computation_input["properties"]) != set(computation_input["required"])
+        or set(runtime_input["properties"]) != set(runtime_input["required"])
+    ):
+        raise ValueError("parameterized_execution_contract_incompatible")
+    result: list[dict[str, Any]] = []
+    fields: set[str] = set()
+    for raw in value["bindings"]:
+        binding_keys = {
+            "binding_id",
+            "capsule_id",
+            "version_id",
+            "canonical_hash",
+            "input_contract_digest",
+            "requirement_ids",
+            "work_item_ids",
+            "input_field",
+            "value",
+            "value_digest",
+            "source",
+        }
+        if type(raw) is not dict or set(raw) != binding_keys:
+            raise ValueError("parameterized_execution_binding_invalid")
+        field = raw["input_field"]
+        if (
+            type(raw["binding_id"]) is not str
+            or not raw["binding_id"].startswith("parameter_binding_")
+            or raw["capsule_id"] != computation["capsule_id"]
+            or raw["version_id"] != computation["version_id"]
+            or not re.fullmatch(r"[0-9a-f]{64}", str(raw["canonical_hash"]))
+            or raw["canonical_hash"] != computation.get("canonical_hash")
+            or raw["input_contract_digest"] != _canonical_digest(computation_input)
+            or type(field) is not str
+            or field in fields
+            or field not in computation_input["required"]
+            or field in runtime_input["properties"]
+            or computation_input["properties"][field].get("type") != "integer"
+            or type(raw["value"]) is not int
+            or raw["value_digest"] != _canonical_digest(raw["value"])
+            or raw["source"] != "user_confirmed"
+            or type(raw["requirement_ids"]) is not list
+            or not raw["requirement_ids"]
+            or raw["requirement_ids"] != sorted(set(raw["requirement_ids"]))
+            or type(raw["work_item_ids"]) is not list
+            or not raw["work_item_ids"]
+            or raw["work_item_ids"] != sorted(set(raw["work_item_ids"]))
+            or not data_contract_accepts(
+                _parameter_contract(field, computation_input["properties"][field]),
+                {field: raw["value"]},
+            )
+        ):
+            raise ValueError("parameterized_execution_binding_invalid")
+        fields.add(field)
+        result.append(dict(raw))
+    if fields != set(computation_input["required"]) - set(
+        runtime_input["properties"]
+    ):
+        raise ValueError("parameterized_execution_binding_incomplete")
+    for field, source_contract in runtime_input["properties"].items():
+        target_contract = computation_input["properties"].get(field)
+        if target_contract is None or not contracts_compatible(
+            _parameter_contract(field, source_contract),
+            _parameter_contract(field, target_contract),
+        ):
+            raise ValueError("parameterized_execution_contract_incompatible")
+    if result != sorted(result, key=lambda item: item["input_field"]):
+        raise ValueError("parameterized_execution_binding_invalid")
+    return {**body, "bindings": result, "canonical_digest": value["canonical_digest"]}
+
+
+def _formal_connections(
+    by_kind: dict[str, dict[str, Any]],
+    parameter_binding: dict[str, Any] | None = None,
+) -> list[dict[str, str]]:
     presentation = by_kind.get("presentation")
     interaction = by_kind.get("interaction")
     computation = by_kind.get("computation")
     connections: list[dict[str, str]] = []
     if interaction and computation:
+        computation_input = computation["input_contract"]
+        if parameter_binding is not None:
+            event_contract = next(iter(interaction["output_contract"]["events"].values()))
+            runtime_fields = sorted(event_contract["properties"])
+            computation_input = {
+                "schema": "data_contract.v1",
+                "type": "object",
+                "properties": {
+                    field: computation["input_contract"]["properties"][field]
+                    for field in runtime_fields
+                },
+                "required": runtime_fields,
+                "additional_properties": False,
+            }
         matches = [
             name for name, contract in interaction["output_contract"]["events"].items()
-            if contracts_compatible(contract, computation["input_contract"])
+            if contracts_compatible(contract, computation_input)
         ]
         if len(matches) != 1:
             raise ValueError("product_interaction_computation_wiring_ambiguous")
@@ -627,6 +852,7 @@ def _formal_bootstrap(
     connections: list[dict[str, str]],
     root_id: str,
     candidate_acceptance_port: bool,
+    parameter_binding: dict[str, Any] | None = None,
 ) -> str:
     samples = {
         kind: generate_synthetic_fixtures(row["input_contract"])["normal"][0]
@@ -651,8 +877,24 @@ def _formal_bootstrap(
         "computation_input": by_kind.get("computation", {}).get("input_contract"),
         "computation_output": by_kind.get("computation", {}).get("output_contract"),
     }
+    bootstrap_config: dict[str, Any] = {
+        "samples": samples,
+        "event": event,
+        "contracts": contracts,
+    }
+    if parameter_binding is not None:
+        bootstrap_config["parameter_binding"] = [
+            {
+                "input_field": item["input_field"],
+                "value": item["value"],
+            }
+            for item in parameter_binding["bindings"]
+        ]
+        bootstrap_config["runtime_sample"] = generate_synthetic_fixtures(
+            next(iter(contracts["interaction_events"].values()))
+        )["normal"][0]
     payload = json.dumps(
-        {"samples": samples, "event": event, "contracts": contracts},
+        bootstrap_config,
         ensure_ascii=False, sort_keys=True, separators=(",", ":"), allow_nan=False,
     )
     acceptance_port = (
@@ -675,6 +917,53 @@ def _formal_bootstrap(
   }"""
         if candidate_acceptance_port
         else ""
+    )
+    compute_function = (
+        """  const fixedBindings = freeze(JSON.parse(JSON.stringify(config.parameter_binding)));
+  const parameterInput = (value) => {
+    for (const item of fixedBindings) {
+      if (own(value, item.input_field)) throw new Error("parameter_binding_runtime_override");
+    }
+    const runtime = safe(value, config.contracts.interaction_events[config.event], "interaction_output_contract_violation");
+    const merged = {};
+    for (const key of Object.keys(runtime).sort()) merged[key] = runtime[key];
+    for (const item of fixedBindings) merged[item.input_field] = item.value;
+    return safe(merged, config.contracts.computation_input, "computation_input_contract_violation");
+  };
+  const compute = (value) => {
+    if (!computation) return value;
+    const input = parameterInput(value);
+    const result = computation."""
+        + by_kind.get("computation", {}).get("activation", {}).get(
+            "entrypoint", "compute"
+        )
+        + """(input);
+    if (!result || result.ok !== true || !result.value || typeof result.value !== "object" || Array.isArray(result.value)) throw new Error("computation_result_invalid");
+    return safe(result.value, config.contracts.computation_output, "computation_output_contract_violation");
+  };
+"""
+        if parameter_binding is not None
+        else f"""  const compute = (value) => {{
+    if (!computation) return value;
+    const input = safe(value, config.contracts.computation_input, "computation_input_contract_violation");
+    const result = computation.{by_kind.get('computation', {}).get('activation', {}).get('entrypoint', 'compute')}(input);
+    if (!result || result.ok !== true || !result.value || typeof result.value !== "object" || Array.isArray(result.value)) throw new Error("computation_result_invalid");
+    return safe(result.value, config.contracts.computation_output, "computation_output_contract_violation");
+  }};
+"""
+    )
+    runtime_override_guard = (
+        """    for (const item of fixedBindings) {
+      if (own(value, item.input_field)) throw new Error("parameter_binding_runtime_override");
+    }
+"""
+        if parameter_binding is not None
+        else ""
+    )
+    initial_render = (
+        "  if (computation) render(compute(config.runtime_sample));"
+        if parameter_binding is not None
+        else "  if (computation) render(compute(config.samples.computation));"
     )
     return f"""(() => {{
   const root = document.getElementById({json.dumps(root_id)});
@@ -752,24 +1041,17 @@ def _formal_bootstrap(
     const result = presentation.{by_kind.get('presentation', {}).get('activation', {}).get('entrypoint', 'render')}(root, input);
     if (result !== undefined) throw new Error("presentation_return_invalid");
   }};
-  const compute = (value) => {{
-    if (!computation) return value;
-    const input = safe(value, config.contracts.computation_input, "computation_input_contract_violation");
-    const result = computation.{by_kind.get('computation', {}).get('activation', {}).get('entrypoint', 'compute')}(input);
-    if (!result || result.ok !== true || !result.value || typeof result.value !== "object" || Array.isArray(result.value)) throw new Error("computation_result_invalid");
-    return safe(result.value, config.contracts.computation_output, "computation_output_contract_violation");
-  }};
-  const dispatch = (name, value) => {{
+{compute_function}  const dispatch = (name, value) => {{
     if (disposed) throw new Error("emit_after_dispose");
     if (name !== config.event && config.event) throw new Error("undeclared_product_event");
-    const output = safe(value, config.contracts.interaction_events[name], "interaction_output_contract_violation");
+{runtime_override_guard}    const output = safe(value, config.contracts.interaction_events[name], "interaction_output_contract_violation");
     emissionCount += 1;
     const computed = compute(output);
     render(computed);
     globalThis.__reweave_result = {{schema_version:"reweave_product_runtime_result.v1",status:"passed",acceptance_scope:"real_qwebengine_product_bootstrap",emission_count:emissionCount}};
     return computed;
   }};
-  if (computation) render(compute(config.samples.computation));
+{initial_render}
   else if (presentation) render(config.samples.presentation);
   let dispose = () => {{ disposed = true; }};
   if (interaction) {{

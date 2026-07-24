@@ -16,15 +16,19 @@ from pimos_lite.composer.module_native import compose_capsule_product
 from pimos_lite.reweave_app_service import (
     ProductGenerationError,
     ReweaveAppService,
+    _validate_product_acceptance,
 )
 from pimos_lite.reweave_capsule_store import CapsuleWarehouseStore
 from pimos_lite.reweave_plan_execution import (
     CandidateAcceptanceError,
     PlanExecutionError,
     build_candidate_acceptance,
+    build_parameterized_execution_binding,
+    build_parameterized_execution_offer,
     canonical_bytes,
     canonical_digest,
     compile_plan_execution,
+    compile_parameterized_plan_execution,
     evaluate_candidate_acceptance,
 )
 from pimos_lite.reweave_product_planner import (
@@ -34,6 +38,7 @@ from pimos_lite.reweave_product_planner import (
 )
 from tests.test_reweave_phase5_generation import (
     _NoLegacyEngine,
+    _capsule_payload,
     _quality_receipt,
     _runtime_receipt,
     _seed_capsule,
@@ -252,6 +257,43 @@ def _acceptance_worker(actual_total: int = 6) -> dict:
     }
 
 
+def _parameterized_payload(kind: str) -> dict[str, object]:
+    payload = copy.deepcopy(_capsule_payload(kind))
+    total = {
+        "schema": "data_contract.v1",
+        "type": "object",
+        "properties": {
+            "total": {"type": "integer", "minimum": 10, "maximum": 100}
+        },
+        "required": ["total"],
+        "additional_properties": False,
+    }
+    if kind == "presentation":
+        payload["input_contract"] = total
+    elif kind == "computation":
+        payload["input_contract"] = {
+            "schema": "data_contract.v1",
+            "type": "object",
+            "properties": {
+                "quantity": {"type": "integer", "minimum": 1, "maximum": 10},
+                "unit_price": {"type": "integer", "minimum": 1, "maximum": 100},
+            },
+            "required": ["quantity", "unit_price"],
+            "additional_properties": False,
+        }
+        payload["output_contract"] = total
+        payload["javascript_modules"] = [
+            {
+                "path": "computation.js",
+                "source": """export function compute(input) {
+  return {ok: true, value: {total: input.quantity * input.unit_price}};
+}
+""",
+            }
+        ]
+    return payload
+
+
 @unittest.skipUnless(shutil.which("node"), "Node.js is required")
 class PlanExecutionV1Test(unittest.TestCase):
     def setUp(self) -> None:
@@ -279,6 +321,54 @@ class PlanExecutionV1Test(unittest.TestCase):
         self.service.close()
         self.environment.stop()
         self.temporary.cleanup()
+
+    def _parameterized_fixture(
+        self,
+        value: int = 10,
+    ) -> tuple[list[dict], dict, dict, dict]:
+        capsule_ids = []
+        for kind in ("presentation", "interaction", "computation"):
+            capsule_id, _version_id = _seed_capsule(
+                self.store,
+                kind,
+                capability_key="parameterized_quote_calculation",
+                suffix=f"parameterized_{kind}",
+                payload=_parameterized_payload(kind),
+            )
+            capsule_ids.append(capsule_id)
+        capsules, _scope = self.service._load_generation_capsules(
+            capsule_ids,
+            read_only=True,
+        )
+        revision = self.service._product_planning_catalog()["warehouse_revision"]
+        plan, old_confirmation = _confirmed_plan(capsules, revision)
+        offer = build_parameterized_execution_offer(plan, capsules)
+        assert offer is not None
+        binding = build_parameterized_execution_binding(
+            plan,
+            offer,
+            {
+                "schema_version": "parameterized_execution_confirmation.v1",
+                "offer_digest": offer["offer_digest"],
+                "values": [
+                    {
+                        "binding_id": offer["bindings"][0]["binding_id"],
+                        "value": value,
+                    }
+                ],
+            },
+        )
+        confirmation = {
+            **{
+                key: item
+                for key, item in old_confirmation.items()
+                if key != "receipt_digest"
+            },
+            "schema_version": "product_plan_confirmation.v2",
+            "parameter_binding": binding,
+        }
+        confirmation["receipt_digest"] = canonical_digest(confirmation)
+        return capsules, plan, confirmation, offer
 
     def test_compiler_is_deterministic_and_fail_closed(self) -> None:
         first = compile_plan_execution(
@@ -418,6 +508,326 @@ class PlanExecutionV1Test(unittest.TestCase):
             "plan_execution_dom_capsule_required",
         ):
             compile_plan_execution(no_dom_plan, no_dom_confirmation, self.capsules)
+
+    def test_parameterized_offer_binding_and_v1_bytes_are_strict(self) -> None:
+        old_execution = compile_plan_execution(
+            self.plan,
+            self.confirmation,
+            self.capsules,
+        )
+        self.assertEqual(
+            canonical_digest(old_execution),
+            "803c4497227d74fa15c964038df6d5fb86f996103af69e2fc62bf5202d97ade3",
+        )
+        old_composition = compose_capsule_product(
+            task="隔离候选",
+            product_id="product_" + "b" * 32,
+            generated_at=NOW,
+            capsules=[
+                {
+                    key: value
+                    for key, value in capsule.items()
+                    if key != "canonical_hash"
+                }
+                for capsule in self.capsules
+            ],
+            candidate_acceptance_port=True,
+        )
+        self.assertEqual(
+            canonical_digest(old_composition),
+            "5ac25055962d58afd40b346658480bf20f9f24202473d01ead6be3011962bc36",
+        )
+
+        capsules, plan, confirmation, offer = self._parameterized_fixture()
+        self.assertEqual(
+            offer,
+            build_parameterized_execution_offer(
+                copy.deepcopy(plan),
+                copy.deepcopy(capsules),
+            ),
+        )
+        self.assertEqual(
+            [row["input_field"] for row in offer["bindings"]],
+            ["unit_price"],
+        )
+        execution = compile_parameterized_plan_execution(
+            plan,
+            confirmation,
+            capsules,
+        )
+        repeated = compile_parameterized_plan_execution(
+            copy.deepcopy(plan),
+            copy.deepcopy(confirmation),
+            copy.deepcopy(capsules),
+        )
+        self.assertEqual(execution["schema_version"], "plan_execution.v2")
+        self.assertEqual(canonical_bytes(execution), canonical_bytes(repeated))
+        self.assertEqual(
+            execution["parameter_binding"],
+            confirmation["parameter_binding"],
+        )
+        composition = compose_capsule_product(
+            task=execution["composer_request"]["task"],
+            product_id=execution["composer_request"]["product_id"],
+            generated_at=execution["composer_request"]["generated_at"],
+            capsules=copy.deepcopy(capsules),
+            candidate_acceptance_port=True,
+            parameter_binding=execution["parameter_binding"],
+        )
+        self.assertEqual(
+            composition["composer_version"],
+            "module_native_formal_product.v2",
+        )
+        self.assertEqual(
+            composition["provenance"]["parameter_binding_digest"],
+            confirmation["parameter_binding"]["canonical_digest"],
+        )
+        missing_identity = copy.deepcopy(capsules)
+        missing_identity[0].pop("canonical_hash")
+        with self.assertRaisesRegex(
+            ValueError,
+            "formal_capsule_identity_invalid",
+        ):
+            compose_capsule_product(
+                task=execution["composer_request"]["task"],
+                product_id=execution["composer_request"]["product_id"],
+                generated_at=execution["composer_request"]["generated_at"],
+                capsules=missing_identity,
+                candidate_acceptance_port=True,
+                parameter_binding=execution["parameter_binding"],
+            )
+        tampered_binding = copy.deepcopy(execution["parameter_binding"])
+        tampered_binding["bindings"][0]["canonical_hash"] = "f" * 64
+        tampered_binding["canonical_digest"] = canonical_digest(
+            {
+                key: value
+                for key, value in tampered_binding.items()
+                if key != "canonical_digest"
+            }
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "parameterized_execution_binding_invalid",
+        ):
+            compose_capsule_product(
+                task=execution["composer_request"]["task"],
+                product_id=execution["composer_request"]["product_id"],
+                generated_at=execution["composer_request"]["generated_at"],
+                capsules=copy.deepcopy(capsules),
+                candidate_acceptance_port=True,
+                parameter_binding=tampered_binding,
+            )
+
+        forged_capsules = copy.deepcopy(capsules)
+        forged_computation = next(
+            item
+            for item in forged_capsules
+            if item["capability_kind"] == "computation"
+        )
+        forged_computation["canonical_hash"] = "f" * 64
+        forged_binding = copy.deepcopy(execution["parameter_binding"])
+        forged_item = forged_binding["bindings"][0]
+        forged_item["canonical_hash"] = "f" * 64
+        forged_item["binding_id"] = "parameter_binding_" + canonical_digest(
+            {
+                "plan_digest": plan["canonical_digest"],
+                "capsule_id": forged_item["capsule_id"],
+                "version_id": forged_item["version_id"],
+                "canonical_hash": forged_item["canonical_hash"],
+                "input_field": forged_item["input_field"],
+            }
+        )[:24]
+        forged_binding["canonical_digest"] = canonical_digest(
+            {
+                key: value
+                for key, value in forged_binding.items()
+                if key != "canonical_digest"
+            }
+        )
+        with self.assertRaisesRegex(
+            ValueError,
+            "formal_capsule_identity_invalid",
+        ):
+            compose_capsule_product(
+                task=execution["composer_request"]["task"],
+                product_id=execution["composer_request"]["product_id"],
+                generated_at=execution["composer_request"]["generated_at"],
+                capsules=forged_capsules,
+                candidate_acceptance_port=True,
+                parameter_binding=forged_binding,
+            )
+
+        changed_binding = build_parameterized_execution_binding(
+            plan,
+            offer,
+            {
+                "schema_version": "parameterized_execution_confirmation.v1",
+                "offer_digest": offer["offer_digest"],
+                "values": [
+                    {
+                        "binding_id": offer["bindings"][0]["binding_id"],
+                        "value": 11,
+                    }
+                ],
+            },
+        )
+        changed_confirmation = {
+            **{
+                key: item
+                for key, item in confirmation.items()
+                if key not in {"receipt_digest", "parameter_binding"}
+            },
+            "parameter_binding": changed_binding,
+        }
+        changed_confirmation["receipt_digest"] = canonical_digest(
+            changed_confirmation
+        )
+        changed = compile_parameterized_plan_execution(
+            plan,
+            changed_confirmation,
+            capsules,
+        )
+        self.assertNotEqual(
+            confirmation["receipt_digest"],
+            changed_confirmation["receipt_digest"],
+        )
+        self.assertNotEqual(
+            execution["execution_digest"],
+            changed["execution_digest"],
+        )
+        self.assertNotEqual(
+            execution["composer_request"]["product_id"],
+            changed["composer_request"]["product_id"],
+        )
+
+        base_request = {
+            "schema_version": "parameterized_execution_confirmation.v1",
+            "offer_digest": offer["offer_digest"],
+            "values": [
+                {
+                    "binding_id": offer["bindings"][0]["binding_id"],
+                    "value": 10,
+                }
+            ],
+        }
+        for request in (
+            {**base_request, "values": []},
+            {**base_request, "values": base_request["values"] * 2},
+            {
+                **base_request,
+                "values": [
+                    {"binding_id": "parameter_binding_unknown", "value": 10}
+                ],
+            },
+            {
+                **base_request,
+                "values": [
+                    {
+                        "binding_id": offer["bindings"][0]["binding_id"],
+                        "value": True,
+                    }
+                ],
+            },
+            {
+                **base_request,
+                "values": [
+                    {
+                        "binding_id": offer["bindings"][0]["binding_id"],
+                        "value": 101,
+                    }
+                ],
+            },
+        ):
+            with self.subTest(request=request), self.assertRaises(
+                PlanExecutionError
+            ):
+                build_parameterized_execution_binding(plan, offer, request)
+
+        computation = next(
+            row for row in capsules if row["capability_kind"] == "computation"
+        )
+        for contract in (
+            {"type": "string", "min_length": 1, "max_length": 8},
+            {
+                "type": "array",
+                "items": {"type": "integer", "minimum": 1, "maximum": 10},
+                "min_items": 1,
+                "max_items": 2,
+            },
+            {
+                "type": "object",
+                "properties": {
+                    "amount": {"type": "integer", "minimum": 1, "maximum": 10}
+                },
+                "required": ["amount"],
+                "additional_properties": False,
+            },
+        ):
+            unsupported = copy.deepcopy(capsules)
+            target = next(
+                row
+                for row in unsupported
+                if row["capability_kind"] == "computation"
+            )
+            target["input_contract"]["properties"]["unit_price"] = contract
+            with self.subTest(contract=contract), self.assertRaisesRegex(
+                PlanExecutionError,
+                "parameterized_execution_parameter_unsupported",
+            ):
+                build_parameterized_execution_offer(plan, unsupported)
+
+        optional = copy.deepcopy(capsules)
+        target = next(
+            row for row in optional if row["capability_kind"] == "computation"
+        )
+        target["input_contract"]["required"] = ["quantity"]
+        with self.assertRaisesRegex(
+            PlanExecutionError,
+            "parameterized_execution_contract_incompatible",
+        ):
+            build_parameterized_execution_offer(plan, optional)
+        stale = copy.deepcopy(capsules)
+        target = next(
+            row for row in stale if row["capability_kind"] == "computation"
+        )
+        target["input_contract"]["properties"]["unit_price"]["maximum"] = 99
+        with self.assertRaisesRegex(
+            PlanExecutionError,
+            "parameterized_execution_binding_stale",
+        ):
+            compile_parameterized_plan_execution(plan, confirmation, stale)
+        sensitive = copy.deepcopy(capsules)
+        target = next(
+            row for row in sensitive if row["capability_kind"] == "computation"
+        )
+        target["input_contract"]["properties"]["unit_price"]["sensitive"] = True
+        with self.assertRaisesRegex(
+            PlanExecutionError,
+            "parameterized_execution_contract_incompatible",
+        ):
+            build_parameterized_execution_offer(plan, sensitive)
+        too_many = copy.deepcopy(capsules)
+        target = next(
+            row for row in too_many if row["capability_kind"] == "computation"
+        )
+        for index in range(17):
+            field = f"parameter_{index:02d}"
+            target["input_contract"]["properties"][field] = {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 100,
+            }
+            target["input_contract"]["required"].append(field)
+        target["input_contract"]["required"].sort()
+        with self.assertRaisesRegex(
+            PlanExecutionError,
+            "parameterized_execution_binding_count_invalid",
+        ):
+            build_parameterized_execution_offer(plan, too_many)
+        self.assertEqual(
+            computation["input_contract"]["required"],
+            ["quantity", "unit_price"],
+        )
 
     def test_candidate_acceptance_contract_is_strict_and_deterministic(self) -> None:
         input_contract, output_contract = self.service._candidate_acceptance_contracts(
@@ -601,6 +1011,46 @@ class PlanExecutionV1Test(unittest.TestCase):
                 output_contract,
                 "a" * 64,
             )
+
+    def test_candidate_port_receives_input_but_never_expected_output(self) -> None:
+        result = {
+            "schema_version": "candidate_acceptance_worker.v1",
+            "status": "completed",
+            "cases": [],
+            "blocked_requests": [],
+            "console_messages": [],
+            "acceptance_scope": "candidate_business_acceptance",
+        }
+        completed = type(
+            "Completed",
+            (),
+            {
+                "returncode": 0,
+                "stdout": json.dumps(result, separators=(",", ":")),
+            },
+        )()
+        with patch(
+            "pimos_lite.reweave_app_service.subprocess.run",
+            return_value=completed,
+        ) as run:
+            _validate_product_acceptance(
+                self.root,
+                {
+                    "cases": [
+                        {
+                            "case_id": "case_01",
+                            "input": {"quantity": 3},
+                            "expected_output": {"total": 30},
+                        }
+                    ]
+                },
+            )
+        request = json.loads(run.call_args.kwargs["input"])
+        self.assertEqual(
+            request["cases"],
+            [{"case_id": "case_01", "input": {"quantity": 3}}],
+        )
+        self.assertNotIn("expected_output", json.dumps(request))
 
     def test_acceptance_port_is_candidate_only(self) -> None:
         capsules = [
@@ -1008,6 +1458,100 @@ class PlanExecutionV1Test(unittest.TestCase):
             },
         )
         self.assertNotIn("requirement_ids", candidate["acceptance"]["cases"][0])
+
+    @unittest.skipUnless(
+        Path(".venv-reweave/bin/python").is_file()
+        or Path(".venv-reweave/Scripts/python.exe").is_file(),
+        "PySide worker environment is required",
+    )
+    def test_real_qweb_parameter_binding_is_applied_and_cannot_be_overridden(
+        self,
+    ) -> None:
+        _capsules, plan, confirmation, _offer = self._parameterized_fixture()
+        self.service._product_planner = _ConfirmedPlanner(plan, confirmation)
+        cases = [
+            {
+                "requirement_ids": ["requirement_03"],
+                "input": {"quantity": quantity},
+                "expected_output": {"total": expected},
+            }
+            for quantity, expected in ((1, 10), (3, 30), (10, 100))
+        ]
+        started = self.service.start_product_candidate(
+            {
+                "plan_token": "plan_token_parameterized_qweb",
+                "plan_digest": plan["canonical_digest"],
+                "acceptance_cases": cases,
+            }
+        )
+        task = _poll(self.service, started["run_id"])
+        self.assertEqual(task["status"], "completed", task)
+        candidate = task["data"]["data"]
+        self.assertEqual(candidate["status"], "review_ready")
+        self.assertEqual(
+            [row["actual_output"] for row in candidate["acceptance"]["cases"]],
+            [{"total": 10}, {"total": 30}, {"total": 100}],
+        )
+        self.assertEqual(
+            candidate["provenance"]["schema_version"],
+            "product_candidate_provenance.v2",
+        )
+        self.assertEqual(
+            candidate["provenance"]["parameter_binding"],
+            confirmation["parameter_binding"],
+        )
+        repeated = self.service.start_product_candidate(
+            {
+                "plan_token": "plan_token_parameterized_qweb",
+                "plan_digest": plan["canonical_digest"],
+                "acceptance_cases": cases,
+            }
+        )
+        repeated_candidate = _poll(self.service, repeated["run_id"])[
+            "data"
+        ]["data"]
+        self.assertEqual(
+            repeated_candidate["candidate_digest"],
+            candidate["candidate_digest"],
+        )
+
+        candidate_dir = next(
+            (self.state / "product_candidates").glob("candidate_*")
+        )
+        override = _validate_product_acceptance(
+            candidate_dir / "product",
+            {
+                "cases": [
+                    {
+                        "case_id": "case_override",
+                        "input": {"quantity": 3, "unit_price": 99},
+                    }
+                ]
+            },
+        )
+        self.assertEqual(
+            override["cases"],
+            [
+                {
+                    "case_id": "case_override",
+                    "status": "failed",
+                    "actual_output": None,
+                    "error_code": "candidate_case_execution_failed",
+                }
+            ],
+        )
+        restarted = ReweaveAppService(
+            _NoLegacyEngine(),
+            capsule_store=self.store,
+        )
+        try:
+            restored = restarted.get_product_candidate(
+                {"candidate_token": candidate["candidate_token"]}
+            )
+            self.assertTrue(restored["ok"], restored)
+            self.assertEqual(restored["data"], candidate)
+        finally:
+            restarted.close()
 
     def test_runtime_failure_prevents_acceptance_and_candidate_persistence(self) -> None:
         self.service._product_planner = _ConfirmedPlanner(

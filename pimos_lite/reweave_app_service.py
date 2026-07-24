@@ -58,11 +58,13 @@ from pimos_lite.reweave_plan_execution import (
     CANDIDATE_ACCEPTANCE_RECEIPT_VERSION,
     CANDIDATE_ACCEPTANCE_VERSION,
     MAX_CANDIDATE_ACCEPTANCE_CASES,
+    PARAMETERIZED_PLAN_EXECUTION_VERSION,
     PLAN_EXECUTION_VERSION,
     CandidateAcceptanceError,
     build_candidate_acceptance,
     canonical_bytes as plan_execution_bytes,
     canonical_digest as plan_execution_digest,
+    compile_parameterized_plan_execution,
     compile_plan_execution,
     evaluate_candidate_acceptance,
 )
@@ -2601,9 +2603,54 @@ class ReweaveAppService:
             ):
                 return self._error("product_plan_token_invalid")
             with self._capsule_operation_lock:
+                catalog = self._product_planning_catalog()
+                restored = self._product_planner.get(
+                    request["plan_token"],
+                    catalog,
+                )
+                data = restored.get("data") if type(restored) is dict else None
+                confirmation = (
+                    data.get("confirmation") if type(data) is dict else None
+                )
+                plan = data.get("plan") if type(data) is dict else None
+                if (
+                    restored.get("ok") is not True
+                    or type(confirmation) is not dict
+                    or confirmation.get("schema_version")
+                    != "product_plan_confirmation.v2"
+                    or type(plan) is not dict
+                ):
+                    return restored
+                capsule_ids = sorted(
+                    {
+                        binding["capsule_id"]
+                        for section in plan["sections"]
+                        for item in section["work_items"]
+                        for binding in item["capsule_bindings"]
+                    }
+                )
+                capsules, _scope = self._load_generation_capsules(
+                    capsule_ids,
+                    read_only=True,
+                )
                 return self._product_planner.get(
                     request["plan_token"],
-                    self._product_planning_catalog(),
+                    catalog,
+                    [
+                        {
+                            key: capsule[key]
+                            for key in (
+                                "capsule_id",
+                                "version_id",
+                                "canonical_hash",
+                                "capability_key",
+                                "capability_kind",
+                                "input_contract",
+                                "output_contract",
+                            )
+                        }
+                        for capsule in capsules
+                    ],
                 )
         except (CapsuleStoreError, OSError, ProductGenerationError, ValueError) as exc:
             return self._exception_error(exc, "product_plan_workspace_failed")
@@ -2613,19 +2660,76 @@ class ReweaveAppService:
     ) -> dict[str, Any]:
         try:
             request = self._payload(payload)
+            expected = {"plan_token", "plan_digest", "reviewed_plan"}
             if (
-                set(request) != {"plan_token", "plan_digest", "reviewed_plan"}
+                set(request) not in (expected, {*expected, "parameter_confirmation"})
                 or type(request["plan_token"]) is not str
                 or type(request["plan_digest"]) is not str
                 or type(request["reviewed_plan"]) is not dict
+                or (
+                    "parameter_confirmation" in request
+                    and type(request["parameter_confirmation"]) is not dict
+                )
             ):
                 return self._error("product_plan_confirmation_invalid")
             with self._capsule_operation_lock:
+                restored = self._product_planner.get(request["plan_token"])
+                if restored.get("ok") is not True:
+                    return restored
+                stored = restored.get("data")
+                stored_plan = stored.get("plan") if type(stored) is dict else None
+                if (
+                    type(stored_plan) is not dict
+                    or stored_plan != request["reviewed_plan"]
+                    or stored_plan.get("canonical_digest")
+                    != request["plan_digest"]
+                    or stored.get("status") not in {"plan_review", "confirmed"}
+                    or stored.get("plan_diff") is not None
+                ):
+                    return self._product_planner.confirm(
+                        request["plan_token"],
+                        request["plan_digest"],
+                        request["reviewed_plan"],
+                        self._product_planning_catalog(),
+                        None,
+                        request.get("parameter_confirmation"),
+                    )
+                capsule_ids = sorted(
+                    {
+                        str(binding["capsule_id"])
+                        for section in stored_plan["sections"]
+                        for item in section["work_items"]
+                        for binding in item["capsule_bindings"]
+                    }
+                )
+                parameter_capsules: list[dict[str, Any]] = []
+                if capsule_ids:
+                    loaded, _scope = self._load_generation_capsules(
+                        capsule_ids,
+                        read_only=True,
+                    )
+                    parameter_capsules = [
+                        {
+                            key: capsule[key]
+                            for key in (
+                                "capsule_id",
+                                "version_id",
+                                "canonical_hash",
+                                "capability_key",
+                                "capability_kind",
+                                "input_contract",
+                                "output_contract",
+                            )
+                        }
+                        for capsule in loaded
+                    ]
                 return self._product_planner.confirm(
                     request["plan_token"],
                     request["plan_digest"],
                     request["reviewed_plan"],
                     self._product_planning_catalog(),
+                    parameter_capsules,
+                    request.get("parameter_confirmation"),
                 )
         except (CapsuleStoreError, OSError, ProductGenerationError, ValueError) as exc:
             return self._exception_error(exc, "product_plan_confirmation_failed")
@@ -2792,7 +2896,8 @@ class ReweaveAppService:
             raise ProductGenerationError("product_candidate_invalid") from exc
         if (
             type(execution) is not dict
-            or execution.get("schema_version") != PLAN_EXECUTION_VERSION
+            or execution.get("schema_version")
+            not in {PLAN_EXECUTION_VERSION, PARAMETERIZED_PLAN_EXECUTION_VERSION}
             or execution.get("execution_digest") != record["execution_digest"]
             or plan_execution_digest(
                 {
@@ -2891,14 +2996,46 @@ class ReweaveAppService:
         if change_paths != file_paths:
             raise ProductGenerationError("product_candidate_invalid")
         receipts = record["provenance"].get("file_provenance")
+        parameterized_execution = (
+            execution["schema_version"] == PARAMETERIZED_PLAN_EXECUTION_VERSION
+        )
+        expected_provenance_version = (
+            "product_candidate_provenance.v2"
+            if parameterized_execution
+            else "product_candidate_provenance.v1"
+        )
+        provenance_keys = {
+            "schema_version",
+            "plan_id",
+            "plan_version",
+            "plan_digest",
+            "execution_digest",
+            "composer_version",
+            "file_provenance",
+            "source_project_write",
+            "target_project_write",
+            "model_source_generation",
+        }
+        if parameterized_execution:
+            provenance_keys.update({"confirmation_digest", "parameter_binding"})
         if (
+            set(record["provenance"]) != provenance_keys
+            or
             record["provenance"].get("schema_version")
-            != "product_candidate_provenance.v1"
+            != expected_provenance_version
             or type(receipts) is not list
             or {receipt.get("path") for receipt in receipts if type(receipt) is dict}
             != file_paths
             or record["validation"].get("static", {}).get("status") != "passed"
             or record["validation"].get("runtime", {}).get("status") != "passed"
+        ):
+            raise ProductGenerationError("product_candidate_invalid")
+        if parameterized_execution and (
+            type(execution.get("parameter_binding")) is not dict
+            or record["provenance"].get("confirmation_digest")
+            != execution.get("confirmation_digest")
+            or record["provenance"].get("parameter_binding")
+            != execution.get("parameter_binding")
         ):
             raise ProductGenerationError("product_candidate_invalid")
         for receipt in receipts:
@@ -3155,7 +3292,12 @@ class ReweaveAppService:
             capsule_ids,
             read_only=True,
         )
-        execution = compile_plan_execution(plan, confirmation, capsules)
+        execution = (
+            compile_parameterized_plan_execution(plan, confirmation, capsules)
+            if confirmation.get("schema_version")
+            == "product_plan_confirmation.v2"
+            else compile_plan_execution(plan, confirmation, capsules)
+        )
         selected_by_id = {capsule["capsule_id"]: capsule for capsule in capsules}
         selected = [
             selected_by_id[capsule_id]
@@ -3217,10 +3359,19 @@ class ReweaveAppService:
                 product_id=execution["composer_request"]["product_id"],
                 generated_at=execution["composer_request"]["generated_at"],
                 capsules=[
-                    {key: value for key, value in capsule.items() if key != "canonical_hash"}
+                    {
+                        key: value
+                        for key, value in capsule.items()
+                        if (
+                            key != "canonical_hash"
+                            or execution["schema_version"]
+                            == PARAMETERIZED_PLAN_EXECUTION_VERSION
+                        )
+                    }
                     for capsule in selected
                 ],
                 candidate_acceptance_port=True,
+                parameter_binding=execution.get("parameter_binding"),
             )
         except ValueError as exc:
             code = str(exc)
@@ -3314,7 +3465,12 @@ class ReweaveAppService:
             all_unit_ids = sorted(units)
             all_versions = set(version_units)
             provenance = {
-                "schema_version": "product_candidate_provenance.v1",
+                "schema_version": (
+                    "product_candidate_provenance.v2"
+                    if execution["schema_version"]
+                    == PARAMETERIZED_PLAN_EXECUTION_VERSION
+                    else "product_candidate_provenance.v1"
+                ),
                 "plan_id": execution["plan_id"],
                 "plan_version": execution["plan_version"],
                 "plan_digest": execution["plan_digest"],
@@ -3344,6 +3500,11 @@ class ReweaveAppService:
                 "target_project_write": False,
                 "model_source_generation": False,
             }
+            if execution["schema_version"] == PARAMETERIZED_PLAN_EXECUTION_VERSION:
+                provenance["confirmation_digest"] = execution[
+                    "confirmation_digest"
+                ]
+                provenance["parameter_binding"] = execution["parameter_binding"]
             _write_product_file(
                 product_root,
                 "provenance.json",

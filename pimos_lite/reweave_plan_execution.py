@@ -9,11 +9,18 @@ from typing import Any
 
 from pimos_lite.reweave_data_contract import (
     DataContractError,
+    contracts_compatible,
     data_contract_accepts,
     normalize_data_contract,
 )
 
 PLAN_EXECUTION_VERSION = "plan_execution.v1"
+PARAMETERIZED_PLAN_EXECUTION_VERSION = "plan_execution.v2"
+PARAMETERIZED_EXECUTION_OFFER_VERSION = "parameterized_execution_offer.v1"
+PARAMETERIZED_EXECUTION_CONFIRMATION_VERSION = (
+    "parameterized_execution_confirmation.v1"
+)
+PARAMETERIZED_EXECUTION_BINDING_VERSION = "parameterized_execution_binding.v1"
 CANDIDATE_ACCEPTANCE_VERSION = "candidate_acceptance.v1"
 CANDIDATE_ACCEPTANCE_RECEIPT_VERSION = "candidate_acceptance_receipt.v1"
 CANDIDATE_ACCEPTANCE_WORKER_VERSION = "candidate_acceptance_worker.v1"
@@ -22,6 +29,7 @@ MAX_CANDIDATE_ACCEPTANCE_BYTES = 1024 * 1024
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _PLAN_ID = re.compile(r"plan_[0-9a-f]{32}\Z")
 _SECTION_IDS = ("frontend", "backend", "data", "infrastructure")
+MAX_PARAMETERIZED_EXECUTION_BINDINGS = 16
 
 
 class PlanExecutionError(ValueError):
@@ -94,6 +102,468 @@ def _json_exact(left: Any, right: Any) -> bool:
     return left == right
 
 
+def _parameter_field_contract(field: str, contract: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "schema": "data_contract.v1",
+        "type": "object",
+        "properties": {field: contract},
+        "required": [field],
+        "additional_properties": False,
+    }
+
+
+def _plan_parameter_context(
+    plan: dict[str, Any],
+) -> tuple[
+    dict[tuple[str, str], dict[str, Any]],
+    set[str],
+    set[str],
+]:
+    if type(plan) is not dict:
+        raise PlanExecutionError("parameterized_execution_plan_invalid")
+    canonical = {key: value for key, value in plan.items() if key != "canonical_digest"}
+    if (
+        plan.get("schema_version") != "product_plan.v1"
+        or _DIGEST.fullmatch(str(plan.get("canonical_digest"))) is None
+        or plan["canonical_digest"] != canonical_digest(canonical)
+        or type(plan.get("requirements")) is not list
+        or type(plan.get("sections")) is not list
+    ):
+        raise PlanExecutionError("parameterized_execution_plan_invalid")
+    requirement_ids = {
+        row.get("requirement_id")
+        for row in plan["requirements"]
+        if type(row) is dict and type(row.get("requirement_id")) is str
+    }
+    if len(requirement_ids) != len(plan["requirements"]) or None in requirement_ids:
+        raise PlanExecutionError("parameterized_execution_plan_invalid")
+    work_item_ids: set[str] = set()
+    context: dict[tuple[str, str], dict[str, Any]] = {}
+    for section in plan["sections"]:
+        if type(section) is not dict or type(section.get("work_items")) is not list:
+            raise PlanExecutionError("parameterized_execution_plan_invalid")
+        for work_item in section["work_items"]:
+            if (
+                type(work_item) is not dict
+                or type(work_item.get("work_item_id")) is not str
+                or work_item["work_item_id"] in work_item_ids
+                or type(work_item.get("requirement_ids")) is not list
+                or not work_item["requirement_ids"]
+                or set(work_item["requirement_ids"]) - requirement_ids
+                or type(work_item.get("capsule_bindings")) is not list
+            ):
+                raise PlanExecutionError("parameterized_execution_plan_invalid")
+            work_item_ids.add(work_item["work_item_id"])
+            for binding in work_item["capsule_bindings"]:
+                if (
+                    type(binding) is not dict
+                    or type(binding.get("capsule_id")) is not str
+                    or type(binding.get("version_id")) is not str
+                    or _DIGEST.fullmatch(str(binding.get("canonical_hash"))) is None
+                ):
+                    raise PlanExecutionError("parameterized_execution_plan_invalid")
+                key = (binding["capsule_id"], binding["version_id"])
+                item = context.setdefault(
+                    key,
+                    {
+                        "canonical_hash": binding["canonical_hash"],
+                        "work_item_ids": set(),
+                        "requirement_ids": set(),
+                    },
+                )
+                if item["canonical_hash"] != binding["canonical_hash"]:
+                    raise PlanExecutionError("parameterized_execution_plan_invalid")
+                item["work_item_ids"].add(work_item["work_item_id"])
+                item["requirement_ids"].update(work_item["requirement_ids"])
+    return context, requirement_ids, work_item_ids
+
+
+def build_parameterized_execution_offer(
+    plan: dict[str, Any],
+    capsules: list[dict[str, Any]],
+) -> dict[str, Any] | None:
+    """Derive public integer execution parameters from exact formal contracts."""
+
+    context, _requirement_ids, _work_item_ids = _plan_parameter_context(plan)
+    if type(capsules) is not list:
+        raise PlanExecutionError("parameterized_execution_capsule_invalid")
+    selected: list[dict[str, Any]] = []
+    seen: set[tuple[str, str]] = set()
+    for capsule in capsules:
+        if type(capsule) is not dict:
+            raise PlanExecutionError("parameterized_execution_capsule_invalid")
+        key = (capsule.get("capsule_id"), capsule.get("version_id"))
+        if (
+            key not in context
+            or key in seen
+            or _DIGEST.fullmatch(str(capsule.get("canonical_hash"))) is None
+            or capsule["canonical_hash"] != context[key]["canonical_hash"]
+            or capsule.get("capability_kind")
+            not in {"presentation", "interaction", "computation"}
+        ):
+            raise PlanExecutionError("parameterized_execution_capsule_invalid")
+        seen.add(key)
+        selected.append(capsule)
+    if seen != set(context):
+        raise PlanExecutionError("parameterized_execution_capsule_invalid")
+    computations = [
+        item for item in selected if item["capability_kind"] == "computation"
+    ]
+    interactions = [
+        item for item in selected if item["capability_kind"] == "interaction"
+    ]
+    if len(computations) != 1 or len(interactions) != 1:
+        return None
+    computation = computations[0]
+    interaction = interactions[0]
+    if computation.get("capability_key") != interaction.get("capability_key"):
+        raise PlanExecutionError("parameterized_execution_contract_incompatible")
+    try:
+        computation_input = normalize_data_contract(computation["input_contract"])
+        interaction_output = interaction["output_contract"]
+        if (
+            type(interaction_output) is not dict
+            or set(interaction_output) != {"schema", "events"}
+            or interaction_output.get("schema") != "event_outputs.v1"
+            or type(interaction_output.get("events")) is not dict
+            or len(interaction_output["events"]) != 1
+        ):
+            raise DataContractError("parameterized_event_contract_invalid")
+        runtime_input = normalize_data_contract(
+            next(iter(interaction_output["events"].values()))
+        )
+    except (DataContractError, KeyError, TypeError) as exc:
+        raise PlanExecutionError(
+            "parameterized_execution_contract_incompatible"
+        ) from exc
+    if (
+        computation_input["type"] != "object"
+        or runtime_input["type"] != "object"
+        or set(computation_input["properties"]) != set(computation_input["required"])
+        or set(runtime_input["properties"]) != set(runtime_input["required"])
+        or set(runtime_input["properties"]) - set(computation_input["properties"])
+    ):
+        raise PlanExecutionError("parameterized_execution_contract_incompatible")
+    for field, source_contract in runtime_input["properties"].items():
+        target_contract = computation_input["properties"][field]
+        if not contracts_compatible(
+            _parameter_field_contract(field, source_contract),
+            _parameter_field_contract(field, target_contract),
+        ):
+            raise PlanExecutionError("parameterized_execution_contract_incompatible")
+    parameter_fields = sorted(
+        set(computation_input["required"]) - set(runtime_input["properties"])
+    )
+    if not parameter_fields:
+        return None
+    if len(parameter_fields) > MAX_PARAMETERIZED_EXECUTION_BINDINGS:
+        raise PlanExecutionError("parameterized_execution_binding_count_invalid")
+    if set(runtime_input["properties"]) & set(parameter_fields):
+        raise PlanExecutionError("parameterized_execution_contract_incompatible")
+    computation_key = (
+        computation["capsule_id"],
+        computation["version_id"],
+    )
+    references = context[computation_key]
+    input_contract_digest = canonical_digest(computation_input)
+    bindings: list[dict[str, Any]] = []
+    for field in parameter_fields:
+        value_contract = computation_input["properties"][field]
+        if value_contract.get("type") != "integer":
+            raise PlanExecutionError("parameterized_execution_parameter_unsupported")
+        binding_id = "parameter_binding_" + canonical_digest(
+            {
+                "plan_digest": plan["canonical_digest"],
+                "capsule_id": computation["capsule_id"],
+                "version_id": computation["version_id"],
+                "canonical_hash": computation["canonical_hash"],
+                "input_field": field,
+            }
+        )[:24]
+        bindings.append(
+            {
+                "binding_id": binding_id,
+                "capsule_id": computation["capsule_id"],
+                "version_id": computation["version_id"],
+                "canonical_hash": computation["canonical_hash"],
+                "input_contract_digest": input_contract_digest,
+                "requirement_ids": sorted(references["requirement_ids"]),
+                "work_item_ids": sorted(references["work_item_ids"]),
+                "input_field": field,
+                "value_contract": value_contract,
+            }
+        )
+    body = {
+        "schema_version": PARAMETERIZED_EXECUTION_OFFER_VERSION,
+        "plan_digest": plan["canonical_digest"],
+        "bindings": bindings,
+    }
+    return {**body, "offer_digest": canonical_digest(body)}
+
+
+def _validate_parameter_offer(
+    plan: dict[str, Any],
+    offer: dict[str, Any],
+) -> list[dict[str, Any]]:
+    context, requirement_ids, work_item_ids = _plan_parameter_context(plan)
+    row = _exact(
+        offer,
+        {"schema_version", "plan_digest", "bindings", "offer_digest"},
+        "parameterized_execution_offer_invalid",
+    )
+    body = {key: value for key, value in row.items() if key != "offer_digest"}
+    if (
+        row["schema_version"] != PARAMETERIZED_EXECUTION_OFFER_VERSION
+        or row["plan_digest"] != plan["canonical_digest"]
+        or type(row["bindings"]) is not list
+        or not 1 <= len(row["bindings"]) <= MAX_PARAMETERIZED_EXECUTION_BINDINGS
+        or row["offer_digest"] != canonical_digest(body)
+    ):
+        raise PlanExecutionError("parameterized_execution_offer_invalid")
+    result: list[dict[str, Any]] = []
+    binding_ids: set[str] = set()
+    fields: set[str] = set()
+    for raw in row["bindings"]:
+        item = _exact(
+            raw,
+            {
+                "binding_id",
+                "capsule_id",
+                "version_id",
+                "canonical_hash",
+                "input_contract_digest",
+                "requirement_ids",
+                "work_item_ids",
+                "input_field",
+                "value_contract",
+            },
+            "parameterized_execution_offer_invalid",
+        )
+        key = (item["capsule_id"], item["version_id"])
+        try:
+            value_contract = normalize_data_contract(
+                _parameter_field_contract(
+                    item["input_field"],
+                    item["value_contract"],
+                )
+            )["properties"][item["input_field"]]
+        except (DataContractError, KeyError, TypeError) as exc:
+            raise PlanExecutionError(
+                "parameterized_execution_offer_invalid"
+            ) from exc
+        if (
+            type(item["binding_id"]) is not str
+            or not item["binding_id"].startswith("parameter_binding_")
+            or item["binding_id"] in binding_ids
+            or type(item["input_field"]) is not str
+            or not item["input_field"]
+            or item["input_field"] in fields
+            or key not in context
+            or context[key]["canonical_hash"] != item["canonical_hash"]
+            or _DIGEST.fullmatch(str(item["input_contract_digest"])) is None
+            or value_contract["type"] != "integer"
+            or type(item["requirement_ids"]) is not list
+            or item["requirement_ids"] != sorted(set(item["requirement_ids"]))
+            or not item["requirement_ids"]
+            or set(item["requirement_ids"]) - requirement_ids
+            or type(item["work_item_ids"]) is not list
+            or item["work_item_ids"] != sorted(set(item["work_item_ids"]))
+            or not item["work_item_ids"]
+            or set(item["work_item_ids"]) - work_item_ids
+        ):
+            raise PlanExecutionError("parameterized_execution_offer_invalid")
+        binding_ids.add(item["binding_id"])
+        fields.add(item["input_field"])
+        result.append({**item, "value_contract": value_contract})
+    if result != sorted(result, key=lambda item: item["input_field"]):
+        raise PlanExecutionError("parameterized_execution_offer_invalid")
+    return result
+
+
+def build_parameterized_execution_binding(
+    plan: dict[str, Any],
+    offer: dict[str, Any],
+    confirmation: dict[str, Any],
+) -> dict[str, Any]:
+    offered = _validate_parameter_offer(plan, offer)
+    request = _exact(
+        confirmation,
+        {"schema_version", "offer_digest", "values"},
+        "parameterized_execution_confirmation_invalid",
+    )
+    if (
+        request["schema_version"]
+        != PARAMETERIZED_EXECUTION_CONFIRMATION_VERSION
+        or request["offer_digest"] != offer["offer_digest"]
+        or type(request["values"]) is not list
+    ):
+        raise PlanExecutionError("parameterized_execution_confirmation_invalid")
+    values: dict[str, int] = {}
+    for raw in request["values"]:
+        item = _exact(
+            raw,
+            {"binding_id", "value"},
+            "parameterized_execution_confirmation_invalid",
+        )
+        if (
+            type(item["binding_id"]) is not str
+            or item["binding_id"] in values
+            or type(item["value"]) is not int
+        ):
+            raise PlanExecutionError("parameterized_execution_confirmation_invalid")
+        values[item["binding_id"]] = item["value"]
+    if set(values) != {item["binding_id"] for item in offered}:
+        raise PlanExecutionError("parameterized_execution_confirmation_invalid")
+    bindings = []
+    for item in offered:
+        value = values[item["binding_id"]]
+        if not data_contract_accepts(
+            _parameter_field_contract(item["input_field"], item["value_contract"]),
+            {item["input_field"]: value},
+        ):
+            raise PlanExecutionError("parameterized_execution_value_invalid")
+        bindings.append(
+            {
+                key: item[key]
+                for key in (
+                    "binding_id",
+                    "capsule_id",
+                    "version_id",
+                    "canonical_hash",
+                    "input_contract_digest",
+                    "requirement_ids",
+                    "work_item_ids",
+                    "input_field",
+                )
+            }
+            | {
+                "value": value,
+                "value_digest": canonical_digest(value),
+                "source": "user_confirmed",
+            }
+        )
+    body = {
+        "schema_version": PARAMETERIZED_EXECUTION_BINDING_VERSION,
+        "offer_digest": offer["offer_digest"],
+        "plan_digest": plan["canonical_digest"],
+        "bindings": bindings,
+    }
+    return {**body, "canonical_digest": canonical_digest(body)}
+
+
+def validate_parameterized_execution_binding(
+    plan: dict[str, Any],
+    binding: dict[str, Any],
+    offer: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    context, requirement_ids, work_item_ids = _plan_parameter_context(plan)
+    row = _exact(
+        binding,
+        {
+            "schema_version",
+            "offer_digest",
+            "plan_digest",
+            "bindings",
+            "canonical_digest",
+        },
+        "parameterized_execution_binding_invalid",
+    )
+    body = {key: value for key, value in row.items() if key != "canonical_digest"}
+    if (
+        row["schema_version"] != PARAMETERIZED_EXECUTION_BINDING_VERSION
+        or row["plan_digest"] != plan["canonical_digest"]
+        or _DIGEST.fullmatch(str(row["offer_digest"])) is None
+        or type(row["bindings"]) is not list
+        or not 1 <= len(row["bindings"]) <= MAX_PARAMETERIZED_EXECUTION_BINDINGS
+        or row["canonical_digest"] != canonical_digest(body)
+    ):
+        raise PlanExecutionError("parameterized_execution_binding_invalid")
+    bindings: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    fields: set[str] = set()
+    for raw in row["bindings"]:
+        item = _exact(
+            raw,
+            {
+                "binding_id",
+                "capsule_id",
+                "version_id",
+                "canonical_hash",
+                "input_contract_digest",
+                "requirement_ids",
+                "work_item_ids",
+                "input_field",
+                "value",
+                "value_digest",
+                "source",
+            },
+            "parameterized_execution_binding_invalid",
+        )
+        key = (item["capsule_id"], item["version_id"])
+        expected_id = "parameter_binding_" + canonical_digest(
+            {
+                "plan_digest": plan["canonical_digest"],
+                "capsule_id": item["capsule_id"],
+                "version_id": item["version_id"],
+                "canonical_hash": item["canonical_hash"],
+                "input_field": item["input_field"],
+            }
+        )[:24]
+        if (
+            type(item["binding_id"]) is not str
+            or item["binding_id"] in seen
+            or item["binding_id"] != expected_id
+            or type(item["capsule_id"]) is not str
+            or type(item["version_id"]) is not str
+            or _DIGEST.fullmatch(str(item["canonical_hash"])) is None
+            or key not in context
+            or context[key]["canonical_hash"] != item["canonical_hash"]
+            or _DIGEST.fullmatch(str(item["input_contract_digest"])) is None
+            or type(item["requirement_ids"]) is not list
+            or item["requirement_ids"] != sorted(set(item["requirement_ids"]))
+            or not item["requirement_ids"]
+            or set(item["requirement_ids"]) - requirement_ids
+            or item["requirement_ids"]
+            != sorted(context[key]["requirement_ids"])
+            or type(item["work_item_ids"]) is not list
+            or item["work_item_ids"] != sorted(set(item["work_item_ids"]))
+            or not item["work_item_ids"]
+            or set(item["work_item_ids"]) - work_item_ids
+            or item["work_item_ids"] != sorted(context[key]["work_item_ids"])
+            or type(item["input_field"]) is not str
+            or not item["input_field"]
+            or item["input_field"] in fields
+            or type(item["value"]) is not int
+            or item["value_digest"] != canonical_digest(item["value"])
+            or item["source"] != "user_confirmed"
+        ):
+            raise PlanExecutionError("parameterized_execution_binding_invalid")
+        seen.add(item["binding_id"])
+        fields.add(item["input_field"])
+        bindings.append(dict(item))
+    if bindings != sorted(bindings, key=lambda item: item["input_field"]):
+        raise PlanExecutionError("parameterized_execution_binding_invalid")
+    if offer is not None:
+        expected = build_parameterized_execution_binding(
+            plan,
+            offer,
+            {
+                "schema_version": PARAMETERIZED_EXECUTION_CONFIRMATION_VERSION,
+                "offer_digest": offer["offer_digest"],
+                "values": [
+                    {
+                        "binding_id": item["binding_id"],
+                        "value": item["value"],
+                    }
+                    for item in bindings
+                ],
+            },
+        )
+        if expected != row:
+            raise PlanExecutionError("parameterized_execution_binding_stale")
+    return {**body, "canonical_digest": row["canonical_digest"]}
+
+
 def build_candidate_acceptance(
     plan: dict[str, Any],
     confirmation: dict[str, Any],
@@ -125,7 +595,11 @@ def build_candidate_acceptance(
         or plan.get("canonical_digest") != canonical_digest(plan_body)
         or type(plan.get("requirements")) is not list
         or type(confirmation) is not dict
-        or confirmation.get("schema_version") != "product_plan_confirmation.v1"
+        or confirmation.get("schema_version")
+        not in {
+            "product_plan_confirmation.v1",
+            "product_plan_confirmation.v2",
+        }
         or confirmation.get("plan_id") != plan.get("plan_id")
         or confirmation.get("plan_version") != plan.get("plan_version")
         or confirmation.get("plan_digest") != plan.get("canonical_digest")
@@ -384,6 +858,49 @@ def compile_plan_execution(
     capsules: list[dict[str, Any]],
 ) -> dict[str, Any]:
     """Compile one fully capsule-backed confirmed plan into one composer request."""
+    return _compile_plan_execution(
+        plan,
+        confirmation,
+        capsules,
+        execution_version=PLAN_EXECUTION_VERSION,
+        parameter_binding=None,
+    )
+
+
+def compile_parameterized_plan_execution(
+    plan: dict[str, Any],
+    confirmation: dict[str, Any],
+    capsules: list[dict[str, Any]],
+) -> dict[str, Any]:
+    """Compile one parameter-confirmed plan without changing the v1 contract."""
+    if type(confirmation) is not dict:
+        raise PlanExecutionError("plan_execution_confirmation_invalid")
+    offer = build_parameterized_execution_offer(plan, capsules)
+    if offer is None:
+        raise PlanExecutionError("parameterized_execution_binding_required")
+    binding = validate_parameterized_execution_binding(
+        plan,
+        confirmation.get("parameter_binding"),
+        offer,
+    )
+    return _compile_plan_execution(
+        plan,
+        confirmation,
+        capsules,
+        execution_version=PARAMETERIZED_PLAN_EXECUTION_VERSION,
+        parameter_binding=binding,
+    )
+
+
+def _compile_plan_execution(
+    plan: dict[str, Any],
+    confirmation: dict[str, Any],
+    capsules: list[dict[str, Any]],
+    *,
+    execution_version: str,
+    parameter_binding: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Shared exact compiler; the parameter-free branch preserves v1 bytes."""
 
     plan_keys = {
         "schema_version", "plan_id", "plan_version", "parent_plan_digest",
@@ -445,6 +962,10 @@ def compile_plan_execution(
         "product_generated", "candidate_generated", "product_usage_written",
         "receipt_digest",
     }
+    expected_confirmation_version = "product_plan_confirmation.v1"
+    if parameter_binding is not None:
+        confirmation_keys = {*confirmation_keys, "parameter_binding"}
+        expected_confirmation_version = "product_plan_confirmation.v2"
     confirmation = _exact(
         confirmation,
         confirmation_keys,
@@ -454,7 +975,7 @@ def compile_plan_execution(
         key: value for key, value in confirmation.items() if key != "receipt_digest"
     }
     if (
-        confirmation["schema_version"] != "product_plan_confirmation.v1"
+        confirmation["schema_version"] != expected_confirmation_version
         or confirmation["plan_id"] != plan["plan_id"]
         or confirmation["plan_version"] != plan["plan_version"]
         or confirmation["plan_digest"] != plan["canonical_digest"]
@@ -465,6 +986,10 @@ def compile_plan_execution(
         or confirmation["candidate_generated"] is not False
         or confirmation["product_usage_written"] is not False
         or confirmation["receipt_digest"] != canonical_digest(confirmation_body)
+        or (
+            parameter_binding is not None
+            and confirmation.get("parameter_binding") != parameter_binding
+        )
     ):
         raise PlanExecutionError("plan_execution_confirmation_invalid")
 
@@ -711,16 +1236,19 @@ def compile_plan_execution(
         }
         for capsule in selected
     ]
-    composition_key = canonical_digest(
-        {
-            "contract": PLAN_EXECUTION_VERSION,
-            "plan_digest": plan["canonical_digest"],
-            "confirmation_digest": confirmation["receipt_digest"],
-            "capsules": capsule_identities,
-        }
-    )
+    composition_facts = {
+        "contract": execution_version,
+        "plan_digest": plan["canonical_digest"],
+        "confirmation_digest": confirmation["receipt_digest"],
+        "capsules": capsule_identities,
+    }
+    if parameter_binding is not None:
+        composition_facts["parameter_binding_digest"] = parameter_binding[
+            "canonical_digest"
+        ]
+    composition_key = canonical_digest(composition_facts)
     execution = {
-        "schema_version": PLAN_EXECUTION_VERSION,
+        "schema_version": execution_version,
         "plan_id": plan["plan_id"],
         "plan_version": plan["plan_version"],
         "plan_digest": plan["canonical_digest"],
@@ -735,6 +1263,11 @@ def compile_plan_execution(
             "capsule_ids": [capsule["capsule_id"] for capsule in selected],
         },
     }
+    if parameter_binding is not None:
+        execution["parameter_binding"] = parameter_binding
+        execution["composer_request"]["parameter_binding_digest"] = (
+            parameter_binding["canonical_digest"]
+        )
     execution["execution_digest"] = canonical_digest(execution)
     return execution
 
@@ -744,12 +1277,21 @@ __all__ = [
     "CANDIDATE_ACCEPTANCE_VERSION",
     "CANDIDATE_ACCEPTANCE_WORKER_VERSION",
     "MAX_CANDIDATE_ACCEPTANCE_CASES",
+    "MAX_PARAMETERIZED_EXECUTION_BINDINGS",
     "PLAN_EXECUTION_VERSION",
+    "PARAMETERIZED_EXECUTION_BINDING_VERSION",
+    "PARAMETERIZED_EXECUTION_CONFIRMATION_VERSION",
+    "PARAMETERIZED_EXECUTION_OFFER_VERSION",
+    "PARAMETERIZED_PLAN_EXECUTION_VERSION",
     "CandidateAcceptanceError",
     "PlanExecutionError",
     "build_candidate_acceptance",
+    "build_parameterized_execution_binding",
+    "build_parameterized_execution_offer",
     "canonical_bytes",
     "canonical_digest",
     "compile_plan_execution",
+    "compile_parameterized_plan_execution",
     "evaluate_candidate_acceptance",
+    "validate_parameterized_execution_binding",
 ]

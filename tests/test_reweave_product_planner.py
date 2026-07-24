@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import shutil
 from pathlib import Path
 
 import pytest
@@ -2878,7 +2879,10 @@ def test_revision_rejects_a_no_op_modification(tmp_path: Path) -> None:
     assert "diff.no_effect" not in stored
 
 
-def test_confirmation_revalidates_only_exact_bound_capsules(tmp_path: Path) -> None:
+def test_confirmation_revalidates_only_exact_bound_capsules(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     planner = StubPlanner(tmp_path / "product_workspaces")
     select_small(planner)
     queue_plan(planner)
@@ -2897,11 +2901,52 @@ def test_confirmation_revalidates_only_exact_bound_capsules(tmp_path: Path) -> N
     assert stale["error"]["code"] == "product_plan_capsule_stale"
     assert stale["data"]["stale_work_items"]
 
+    monkeypatch.setattr(
+        product_planner_module,
+        "_now",
+        lambda: "2026-07-24T00:00:00Z",
+    )
+    compatibility_root = tmp_path / "compatibility_workspaces"
+    shutil.copytree(planner.root, compatibility_root)
     request_count = len(planner.requests)
     confirmed = planner.confirm(token, digest, created["data"]["plan"], catalog())
+    formal_capsule = catalog()["capsules"][0]
+    compatibility = StubPlanner(compatibility_root).confirm(
+        token,
+        digest,
+        created["data"]["plan"],
+        catalog(),
+        [
+            {
+                key: formal_capsule[key]
+                for key in (
+                    "capsule_id",
+                    "version_id",
+                    "canonical_hash",
+                    "capability_key",
+                    "capability_kind",
+                )
+            }
+            | {"input_contract": {}, "output_contract": {}}
+        ],
+    )
     assert confirmed["ok"] is True
+    assert compatibility["ok"] is True, compatibility
+    assert json.dumps(
+        confirmed["data"]["confirmation"],
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    ) == json.dumps(
+        compatibility["data"]["confirmation"],
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
     assert len(planner.requests) == request_count
     receipt = confirmed["data"]["confirmation"]
+    assert receipt["schema_version"] == "product_plan_confirmation.v1"
+    assert "parameter_binding" not in receipt
     assert receipt["product_generated"] is False
     assert receipt["candidate_generated"] is False
     assert receipt["product_usage_written"] is False
@@ -2918,6 +2963,265 @@ def test_confirmation_revalidates_only_exact_bound_capsules(tmp_path: Path) -> N
         token, digest, created["data"]["plan"], catalog(with_capsule=False)
     )
     assert stale_repeat["error"]["code"] == "product_plan_capsule_stale"
+
+
+def test_parameter_offer_precedes_atomic_confirmation_and_cannot_be_rewritten(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "product_workspaces"
+    planner = StubPlanner(root)
+    select_small(planner)
+    queue_plan(planner)
+    created = planner.start("规划参数化报价", catalog())
+    token = created["data"]["plan_token"]
+    plan = copy.deepcopy(created["data"]["plan"])
+
+    rows = []
+    facts = []
+    contracts = {
+        "presentation": (
+            {
+                "schema": "data_contract.v1",
+                "type": "object",
+                "properties": {
+                    "total": {"type": "integer", "minimum": 10, "maximum": 100}
+                },
+                "required": ["total"],
+                "additional_properties": False,
+            },
+            {"schema": "no_output.v1"},
+        ),
+        "interaction": (
+            {
+                "schema": "data_contract.v1",
+                "type": "object",
+                "properties": {},
+                "required": [],
+                "additional_properties": False,
+            },
+            {
+                "schema": "event_outputs.v1",
+                "events": {
+                    "calculate_requested": {
+                        "schema": "data_contract.v1",
+                        "type": "object",
+                        "properties": {
+                            "quantity": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 10,
+                            }
+                        },
+                        "required": ["quantity"],
+                        "additional_properties": False,
+                    }
+                },
+            },
+        ),
+        "computation": (
+            {
+                "schema": "data_contract.v1",
+                "type": "object",
+                "properties": {
+                    "quantity": {"type": "integer", "minimum": 1, "maximum": 10},
+                    "unit_price": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 100,
+                    },
+                },
+                "required": ["quantity", "unit_price"],
+                "additional_properties": False,
+            },
+            {
+                "schema": "data_contract.v1",
+                "type": "object",
+                "properties": {
+                    "total": {"type": "integer", "minimum": 10, "maximum": 100}
+                },
+                "required": ["total"],
+                "additional_properties": False,
+            },
+        ),
+    }
+    for index, kind in enumerate(
+        ("presentation", "interaction", "computation"),
+        start=1,
+    ):
+        row = {
+            "capsule_id": f"capsule_parameter_{kind}",
+            "version_id": f"version_parameter_{kind}_1",
+            "display_name": f"参数化 {kind}",
+            "capability_key": "parameterized_quote",
+            "role_key": kind,
+            "variant_key": "default",
+            "capability_kind": kind,
+            "canonical_hash": str(index) * 64,
+            "identity_status": "formal_exact_version",
+        }
+        rows.append(row)
+        facts.append(
+            {
+                key: row[key]
+                for key in (
+                    "capsule_id",
+                    "version_id",
+                    "canonical_hash",
+                    "capability_key",
+                    "capability_kind",
+                )
+            }
+            | {
+                "input_contract": contracts[kind][0],
+                "output_contract": contracts[kind][1],
+            }
+        )
+    by_kind = {row["capability_kind"]: row for row in rows}
+    chosen = ("presentation", "interaction", "computation", "presentation")
+    for section, kind in zip(plan["sections"], chosen, strict=True):
+        binding = section["work_items"][0]["capsule_bindings"][0]
+        row = by_kind[kind]
+        binding.update(
+            {
+                "capsule_id": row["capsule_id"],
+                "version_id": row["version_id"],
+                "display_name": row["display_name"],
+                "capability_kind": row["capability_kind"],
+                "canonical_hash": row["canonical_hash"],
+            }
+        )
+    plan["canonical_digest"] = planner._plan_digest(plan)
+    workspace = planner._workspace_by_token(token)
+    workspace["plan"] = plan
+    planner._save_workspace(workspace)
+    formal_catalog = {"warehouse_revision": 8, "capsules": rows}
+
+    required = planner.confirm(
+        token,
+        plan["canonical_digest"],
+        plan,
+        formal_catalog,
+        facts,
+    )
+    assert required["error"]["code"] == "parameter_confirmation_required"
+    offer = required["data"]["parameter_offer"]
+    assert offer["plan_digest"] == plan["canonical_digest"]
+    assert [row["input_field"] for row in offer["bindings"]] == ["unit_price"]
+    assert planner.get(token)["data"]["status"] == "plan_review"
+    assert planner.get(token)["data"]["confirmation"] is None
+
+    request = {
+        "schema_version": "parameterized_execution_confirmation.v1",
+        "offer_digest": offer["offer_digest"],
+        "values": [
+            {
+                "binding_id": offer["bindings"][0]["binding_id"],
+                "value": 10,
+            }
+        ],
+    }
+    confirmed = planner.confirm(
+        token,
+        plan["canonical_digest"],
+        plan,
+        formal_catalog,
+        facts,
+        request,
+    )
+    assert confirmed["ok"] is True
+    receipt = confirmed["data"]["confirmation"]
+    assert receipt["schema_version"] == "product_plan_confirmation.v2"
+    assert receipt["parameter_binding"]["bindings"][0]["value"] == 10
+    assert receipt["receipt_digest"] == product_planner_module._digest(
+        {key: value for key, value in receipt.items() if key != "receipt_digest"}
+    )
+    assert (
+        planner.confirm(
+            token,
+            plan["canonical_digest"],
+            plan,
+            formal_catalog,
+            facts,
+            request,
+        )["data"]["confirmation"]
+        == receipt
+    )
+    recovery_root = tmp_path / "parameterized_recovery"
+    shutil.copytree(root, recovery_root)
+    recovery_planner = StubPlanner(recovery_root)
+    interrupted = recovery_planner._workspace_by_token(token)
+    interrupted["status"] = "plan_review"
+    interrupted["confirmation"] = None
+    recovery_planner._save_workspace(interrupted)
+    recovered_snapshot = recovery_planner.confirm(
+        token,
+        plan["canonical_digest"],
+        plan,
+        formal_catalog,
+        facts,
+        request,
+    )
+    assert recovered_snapshot["ok"] is True
+    assert recovered_snapshot["data"]["confirmation"] == receipt
+    changed = copy.deepcopy(request)
+    changed["values"][0]["value"] = 11
+    assert (
+        planner.confirm(
+            token,
+            plan["canonical_digest"],
+            plan,
+            formal_catalog,
+            facts,
+            changed,
+        )["error"]["code"]
+        == "product_plan_confirmation_conflict"
+    )
+    restored = StubPlanner(root).get(token, formal_catalog, facts)
+    assert restored["ok"] is True
+    assert restored["data"]["confirmation"] == receipt
+    tampered = copy.deepcopy(receipt)
+    tampered_binding = tampered["parameter_binding"]
+    tampered_binding["bindings"][0]["capsule_id"] = "capsule_outside_plan"
+    tampered_binding["canonical_digest"] = product_planner_module._digest(
+        {
+            key: value
+            for key, value in tampered_binding.items()
+            if key != "canonical_digest"
+        }
+    )
+    tampered["receipt_digest"] = product_planner_module._digest(
+        {key: value for key, value in tampered.items() if key != "receipt_digest"}
+    )
+    with pytest.raises(
+        ProductPlanningError,
+        match="product_workspace_corrupt",
+    ):
+        planner._validate_stored_confirmation(tampered, plan)
+    tampered_value = copy.deepcopy(receipt)
+    value_binding = tampered_value["parameter_binding"]
+    value_binding["bindings"][0]["value"] = 1_000
+    value_binding["bindings"][0]["value_digest"] = product_planner_module._digest(
+        1_000
+    )
+    value_binding["canonical_digest"] = product_planner_module._digest(
+        {
+            key: value
+            for key, value in value_binding.items()
+            if key != "canonical_digest"
+        }
+    )
+    tampered_value["receipt_digest"] = product_planner_module._digest(
+        {
+            key: value
+            for key, value in tampered_value.items()
+            if key != "receipt_digest"
+        }
+    )
+    with pytest.raises(
+        ProductPlanningError,
+        match="product_workspace_corrupt",
+    ):
+        planner._validate_stored_confirmation(tampered_value, plan, offer)
 
 
 def test_workspace_restore_revalidates_only_relevant_exact_capsules(

@@ -8,6 +8,7 @@
     "product_candidate_v1": "PASS",
     "product_candidate_v2": "PASS",
     "candidate_business_acceptance_harness_v1": "PASS",
+    "parameterized_execution_binding_v1": "PASS",
     "thin_review_only_viewer": "PASS",
     "real_strong_model_goal_to_operational_candidate": "HISTORICAL_PASS",
     "real_strong_model_goal_to_correct_candidate": "PARTIAL"
@@ -279,6 +280,38 @@
     ],
     "fixed_unit_price_10_verified": false,
     "claim_boundary": "The direct QWebEngine evidence proves deterministic matching and mismatch behavior for the harness. It does not verify the historical fixed-unit-price-10 goal or replace the pending durable 1→10, 3→30, and 10→100 vertical run."
+  },
+  "parameterized_execution_binding_v1": {
+    "status": "PASS",
+    "evidence_scope": "protocol_fixture",
+    "confirmation_version": "product_plan_confirmation.v2",
+    "execution_version": "plan_execution.v2",
+    "provenance_version": "product_candidate_provenance.v2",
+    "parameter_offer_source": "awaiting_confirmation_canonical_plan",
+    "parameter_source": "user_confirmed",
+    "runtime_parameter_override_rejected": true,
+    "v1_byte_compatibility": true,
+    "qwebengine_cases": [
+      {
+        "quantity": 1,
+        "unit_price": 10,
+        "expected_total": 10,
+        "status": "PASS"
+      },
+      {
+        "quantity": 3,
+        "unit_price": 10,
+        "expected_total": 30,
+        "status": "PASS"
+      },
+      {
+        "quantity": 10,
+        "unit_price": 10,
+        "expected_total": 100,
+        "status": "PASS"
+      }
+    ],
+    "claim_boundary": "The protocol fixture proves deterministic user-confirmed parameter binding, v2 execution, v2 provenance, runtime override rejection, and v1 byte compatibility. No generic formal capsule identities or real strong-model goal-to-correct-candidate run have yet been completed."
   },
   "validation_gate": {
     "static_status": "passed",
