@@ -1,8 +1,8 @@
 {
   "schema_version": "reweave_plan_to_execution_v1_acceptance.v1",
-  "completed_date": "2026-07-24",
+  "completed_date": "2026-07-25",
   "verdict": "PASS",
-  "verdict_reason": "A durable real Qwen3 14B run formed a zero-gap confirmed product_plan.v1 from the fixed local quote goal, bound user-confirmed unit_price=10, compiled byte-identical plan_execution.v2 results, and generated one review_ready product_candidate.v2. Real QWebEngine runtime and the exact 1→10, 3→30, and 10→100 business cases passed; idempotency, restart recovery, provenance, file reads, and zero-write boundaries were reverified.",
+  "verdict_reason": "A durable real Qwen3 14B run formed a zero-gap confirmed product_plan.v1 from the fixed local quote goal, bound user-confirmed unit_price=10, compiled byte-identical plan_execution.v2 results, and generated one review_ready product_candidate.v2. Real QWebEngine runtime and the exact 1→10, 3→30, and 10→100 business cases passed. A separate durable audit then proved that an independent local JSONL Agent process can use only the user-confirmed acceptance credential to request the same bounded candidate, read its public files and validation result, hit the idempotent result, and recover it after process restart without exposing internal evidence files or changing protected state.",
   "scope": {
     "plan_execution_v1": "PASS",
     "plan_execution_v2": "PASS",
@@ -11,6 +11,7 @@
     "candidate_business_acceptance_harness_v1": "PASS",
     "parameterized_execution_binding_v1": "PASS",
     "local_agent_capability_entry_v1": "PASS",
+    "local_agent_jsonl_v1": "PASS",
     "thin_review_only_viewer": "PASS",
     "real_strong_model_goal_to_operational_candidate": "HISTORICAL_PASS",
     "real_strong_model_goal_to_correct_candidate": "PASS"
@@ -497,10 +498,80 @@
     "uses_existing_formal_capsule_loader": true,
     "second_service_added": false,
     "agent_framework_added": false,
-    "returns_exact_version_and_source_status": true,
+    "returns_formal_identity_and_source_status_without_raw_ids": true,
+    "raw_version_id_or_canonical_hash_returned": false,
     "returns_code_or_internal_paths": false,
     "existing_candidate_request_and_read_actions_reused": true,
     "claim_boundary": "This is a narrow local public action over existing deterministic core capabilities. It does not add orchestration, autonomous planning, product promotion, or user-project writes."
+  },
+  "local_agent_jsonl_v1": {
+    "status": "PASS",
+    "protocol": "reweave_agent_jsonl.v1",
+    "transport": "independent_local_process_stdio",
+    "process_starts": 2,
+    "network_service_added": false,
+    "new_dependency_added": false,
+    "acceptance_authority": {
+      "record_version": "candidate_acceptance_confirmation.v1",
+      "separate_user_confirmation_record": true,
+      "confirmation_source": "user_confirmed",
+      "confirmed_cases": [
+        "1→10",
+        "3→30",
+        "10→100"
+      ],
+      "agent_submits_confirmation_credential_only": true,
+      "agent_can_submit_or_modify_cases": false
+    },
+    "independent_process_flow": [
+      "list_reusable_product_capabilities",
+      "get_confirmed_product_plan",
+      "start_confirmed_product_candidate",
+      "get_product_candidate_run",
+      "read_product_candidate_file",
+      "repeat_request_idempotency",
+      "process_restart",
+      "get_product_candidate",
+      "read_product_candidate_file"
+    ],
+    "candidate": {
+      "status": "review_ready",
+      "runtime_operational": "passed",
+      "product_goal_conformance": "passed",
+      "business_cases_passed": 3,
+      "business_cases_failed": 0,
+      "idempotent": true,
+      "restart_recovered": true,
+      "public_files_read_and_re_read": 5
+    },
+    "projection_boundary": {
+      "raw_version_ids_visible": false,
+      "absolute_paths_visible": false,
+      "database_rows_visible": false,
+      "raw_prompt_or_response_visible": false,
+      "internal_manifest_readable": false,
+      "internal_provenance_readable": false,
+      "validation_summary_visible": true
+    },
+    "write_boundary": {
+      "original_qwen3_state_unchanged": true,
+      "isolated_warehouse_unchanged": true,
+      "products_absent": true,
+      "usage_unchanged": true,
+      "user_source_target_unchanged": true,
+      "repository_unchanged": true
+    },
+    "durable_evidence": {
+      "directory_name": "local-agent-jsonl-v1-04",
+      "checksum_manifest_digest": "1a88d098e22f48406bfb9aedf8b9a3e20cfd0bc01182ad603cdb98b95355796e",
+      "checksum_entries": 21,
+      "historical_failed_attempts_retained": [
+        "local-agent-jsonl-v1-01:source_evidence_manifest_mismatch",
+        "local-agent-jsonl-v1-02:source_state_digest_mismatch",
+        "local-agent-jsonl-v1-03:agent_public_projection_leak"
+      ]
+    },
+    "claim_boundary": "This proves bounded same-user local-process access to the existing deterministic candidate core. It does not authorize planning, model selection, acceptance-case authoring, formal capsule mutation, user-project writes, product promotion, or autonomous orchestration."
   },
   "tests": {
     "python_compile": {
@@ -549,6 +620,25 @@
       "subtests_passed": 27,
       "failed": 0
     },
+    "local_agent_security_correction": {
+      "targeted_passed": 1,
+      "related_suite_passed": 97,
+      "related_suite_deselected": 3,
+      "subtests_passed": 27,
+      "failed": 0
+    },
+    "durable_local_agent_process_gate": {
+      "independent_process_starts": 2,
+      "candidate_generation_requests": 1,
+      "idempotency_requests": 1,
+      "model_calls": 0,
+      "business_cases_passed": 3,
+      "business_cases_failed": 0,
+      "restart_restore": "PASS",
+      "public_file_reads": 10,
+      "json_parse": "PASS",
+      "checksum_verification": "PASS"
+    },
     "durable_real_qwen3_goal_to_candidate": {
       "model_selection_calls": 1,
       "schema_probe_calls": 1,
@@ -575,7 +665,8 @@
     "ordinary_formal_product_exposes_acceptance_port": false,
     "second_composer_added": false,
     "second_app_service_added": false,
-    "candidate_code_repairer_added": false
+    "candidate_code_repairer_added": false,
+    "agent_internal_manifest_or_provenance_readable": false
   },
   "deferred": [
     "multi_capability_composer",
