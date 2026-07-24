@@ -7,7 +7,7 @@ import json
 import re
 from typing import Any
 
-from pimos_lite.composer.module_native import formal_page_contract_digest
+from pimos_lite import reweave_page_capability_contract as page_contract
 from pimos_lite.reweave_data_contract import (
     DataContractError,
     contracts_compatible,
@@ -857,6 +857,8 @@ def compile_plan_execution(
     plan: dict[str, Any],
     confirmation: dict[str, Any],
     capsules: list[dict[str, Any]],
+    *,
+    verified_page_contracts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Compile one fully capsule-backed confirmed plan into one composer request."""
     return _compile_plan_execution(
@@ -865,6 +867,7 @@ def compile_plan_execution(
         capsules,
         execution_version=PLAN_EXECUTION_VERSION,
         parameter_binding=None,
+        verified_page_contracts=verified_page_contracts,
     )
 
 
@@ -872,6 +875,8 @@ def compile_parameterized_plan_execution(
     plan: dict[str, Any],
     confirmation: dict[str, Any],
     capsules: list[dict[str, Any]],
+    *,
+    verified_page_contracts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Compile one parameter-confirmed plan without changing the v1 contract."""
     if type(confirmation) is not dict:
@@ -890,6 +895,7 @@ def compile_parameterized_plan_execution(
         capsules,
         execution_version=PARAMETERIZED_PLAN_EXECUTION_VERSION,
         parameter_binding=binding,
+        verified_page_contracts=verified_page_contracts,
     )
 
 
@@ -900,6 +906,7 @@ def _compile_plan_execution(
     *,
     execution_version: str,
     parameter_binding: dict[str, Any] | None,
+    verified_page_contracts: list[dict[str, Any]] | None,
 ) -> dict[str, Any]:
     """Shared exact compiler; the parameter-free branch preserves v1 bytes."""
 
@@ -1196,13 +1203,38 @@ def _compile_plan_execution(
     if not ({"presentation", "interaction"} & set(capability_kinds)):
         raise PlanExecutionError("plan_execution_dom_capsule_required")
     try:
-        formal_page_contract_digest(selected)
-    except ValueError as exc:
-        code = (
-            "plan_execution_dom_contract_mismatch"
-            if str(exc) == "product_dom_contract_mismatch"
-            else "plan_execution_capsule_invalid"
+        page_contract.validate_formal_page_contract(
+            selected,
+            verified_page_contracts=verified_page_contracts,
         )
+    except ValueError as exc:
+        code = {
+            "product_dom_contract_mismatch": "plan_execution_dom_contract_mismatch",
+            "formal_page_contract_identity_invalid": (
+                "plan_execution_page_contract_identity_invalid"
+            ),
+            "formal_page_contract_version_mismatch": (
+                "plan_execution_page_contract_version_mismatch"
+            ),
+            "formal_page_contract_provider_missing": (
+                "plan_execution_page_contract_provider_missing"
+            ),
+            "page_capability_element_missing": (
+                "plan_execution_page_capability_element_missing"
+            ),
+            "page_capability_element_mismatch": (
+                "plan_execution_page_capability_element_mismatch"
+            ),
+            "page_capability_event_missing": (
+                "plan_execution_page_capability_event_missing"
+            ),
+            "page_capability_read_missing": (
+                "plan_execution_page_capability_read_missing"
+            ),
+            "page_capability_write_missing": (
+                "plan_execution_page_capability_write_missing"
+            ),
+        }.get(str(exc), "plan_execution_capsule_invalid")
         raise PlanExecutionError(code) from exc
 
     unit_ids = {

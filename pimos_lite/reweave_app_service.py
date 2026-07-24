@@ -3296,25 +3296,25 @@ class ReweaveAppService:
             read_only=True,
         )
         execution = (
-            compile_parameterized_plan_execution(plan, confirmation, capsules)
+            compile_parameterized_plan_execution(
+                plan,
+                confirmation,
+                capsules,
+                verified_page_contracts=page_contracts,
+            )
             if confirmation.get("schema_version")
             == "product_plan_confirmation.v2"
-            else compile_plan_execution(plan, confirmation, capsules)
+            else compile_plan_execution(
+                plan,
+                confirmation,
+                capsules,
+                verified_page_contracts=page_contracts,
+            )
         )
         selected_by_id = {capsule["capsule_id"]: capsule for capsule in capsules}
         selected = [
             selected_by_id[capsule_id]
             for capsule_id in execution["composer_request"]["capsule_ids"]
-        ]
-        selected_identities = {
-            (capsule["capsule_id"], capsule["version_id"])
-            for capsule in selected
-        }
-        selected_page_contracts = [
-            projection
-            for projection in page_contracts
-            if (projection["capsule_id"], projection["version_id"])
-            in selected_identities
         ]
         input_contract, output_contract = self._candidate_acceptance_contracts(
             selected
@@ -3374,7 +3374,7 @@ class ReweaveAppService:
                 capsules=selected,
                 candidate_acceptance_port=True,
                 parameter_binding=execution.get("parameter_binding"),
-                verified_page_contracts=selected_page_contracts,
+                verified_page_contracts=page_contracts,
             )
         except ValueError as exc:
             code = str(exc)

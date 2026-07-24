@@ -12,6 +12,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from pimos_lite import reweave_page_capability_contract as page_contract
 from pimos_lite.composer.module_native import (
     compose_capsule_product,
     formal_page_contract_digest,
@@ -763,6 +764,196 @@ class PlanExecutionV1Test(unittest.TestCase):
             "composed",
         )
 
+    def test_v2_page_contract_is_shared_by_execution_and_composer(self) -> None:
+        capsules, projections = _v2_composer_fixture(self.capsules)
+        revision = self.service._product_planning_catalog()["warehouse_revision"]
+        plan, confirmation = _confirmed_plan(capsules, revision)
+        with patch(
+            "pimos_lite.reweave_page_capability_contract."
+            "validate_formal_page_contract",
+            wraps=page_contract.validate_formal_page_contract,
+        ) as validator:
+            execution = compile_plan_execution(
+                plan,
+                confirmation,
+                capsules,
+                verified_page_contracts=projections,
+            )
+            composition = compose_capsule_product(
+                task="隔离候选",
+                product_id="product_" + "9" * 32,
+                generated_at=NOW,
+                capsules=capsules,
+                verified_page_contracts=projections,
+            )
+        self.assertEqual(validator.call_count, 2)
+        self.assertEqual(execution["schema_version"], "plan_execution.v1")
+        serialized = json.dumps(execution, ensure_ascii=False)
+        self.assertNotIn("page_capability", serialized)
+        self.assertIn("data-action=\"calculate\"", composition["files"]["index.html"])
+        self.assertNotIn("interaction-only", composition["files"]["index.html"])
+        self.assertIn("inline-size: 8rem", composition["files"]["styles.css"])
+
+    def test_parameterized_execution_accepts_the_same_v2_contract(self) -> None:
+        capsules, _plan, _confirmation, _offer = self._parameterized_fixture()
+        capsules, projections = _v2_composer_fixture(capsules)
+        revision = self.service._product_planning_catalog()["warehouse_revision"]
+        plan, confirmation_v1 = _confirmed_plan(capsules, revision)
+        offer = build_parameterized_execution_offer(plan, capsules)
+        assert offer is not None
+        binding = build_parameterized_execution_binding(
+            plan,
+            offer,
+            {
+                "schema_version": "parameterized_execution_confirmation.v1",
+                "offer_digest": offer["offer_digest"],
+                "values": [
+                    {
+                        "binding_id": offer["bindings"][0]["binding_id"],
+                        "value": 10,
+                    }
+                ],
+            },
+        )
+        confirmation = {
+            **{
+                key: value
+                for key, value in confirmation_v1.items()
+                if key != "receipt_digest"
+            },
+            "schema_version": "product_plan_confirmation.v2",
+            "parameter_binding": binding,
+        }
+        confirmation["receipt_digest"] = canonical_digest(confirmation)
+        execution = compile_parameterized_plan_execution(
+            plan,
+            confirmation,
+            capsules,
+            verified_page_contracts=projections,
+        )
+        self.assertEqual(execution["schema_version"], "plan_execution.v2")
+        self.assertNotIn(
+            "page_capability",
+            json.dumps(execution, ensure_ascii=False),
+        )
+
+    def test_v2_execution_page_contract_errors_are_stable(self) -> None:
+        selectors = {
+            row["selector"]: row for row in _page_capability_elements()
+        }
+        provider_cases = {
+            "plan_execution_page_capability_element_missing": [
+                copy.deepcopy(selectors["[data-action='calculate']"]),
+                copy.deepcopy(selectors["[data-ref='quantity']"]),
+            ],
+            "plan_execution_page_capability_element_mismatch": [
+                {**copy.deepcopy(row), "tag": "a"}
+                if row["selector"] == "[data-action='calculate']"
+                else copy.deepcopy(row)
+                for row in selectors.values()
+            ],
+            "plan_execution_page_capability_event_missing": [
+                {**copy.deepcopy(row), "events": []}
+                if row["selector"] == "[data-action='calculate']"
+                else copy.deepcopy(row)
+                for row in selectors.values()
+            ],
+            "plan_execution_page_capability_read_missing": [
+                {**copy.deepcopy(row), "reads": []}
+                if row["selector"] == "[data-ref='quantity']"
+                else copy.deepcopy(row)
+                for row in selectors.values()
+            ],
+            "plan_execution_page_capability_write_missing": [
+                {**copy.deepcopy(row), "writes": []}
+                if row["selector"] == "[data-ref='total']"
+                else copy.deepcopy(row)
+                for row in selectors.values()
+            ],
+        }
+        revision = self.service._product_planning_catalog()["warehouse_revision"]
+        for expected, elements in provider_cases.items():
+            with self.subTest(expected=expected):
+                capsules, projections = _v2_composer_fixture(self.capsules)
+                _bind_page_declaration(
+                    capsules,
+                    projections,
+                    "presentation",
+                    elements,
+                )
+                plan, confirmation = _confirmed_plan(capsules, revision)
+                with self.assertRaisesRegex(PlanExecutionError, expected):
+                    compile_plan_execution(
+                        plan,
+                        confirmation,
+                        capsules,
+                        verified_page_contracts=projections,
+                    )
+
+        capsules, projections = _v2_composer_fixture(self.capsules)
+        plan, confirmation = _confirmed_plan(capsules, revision)
+        with self.assertRaisesRegex(
+            PlanExecutionError,
+            "plan_execution_page_contract_version_mismatch",
+        ):
+            compile_plan_execution(
+                plan,
+                confirmation,
+                capsules,
+                verified_page_contracts=projections[:1],
+            )
+
+        tampered = copy.deepcopy(projections)
+        tampered[0]["canonical_hash"] = "f" * 64
+        with self.assertRaisesRegex(
+            PlanExecutionError,
+            "plan_execution_page_contract_identity_invalid",
+        ):
+            compile_plan_execution(
+                plan,
+                confirmation,
+                capsules,
+                verified_page_contracts=tampered,
+            )
+
+        interaction = next(
+            row for row in capsules if row["capability_kind"] == "interaction"
+        )
+        computation = next(
+            row for row in capsules if row["capability_kind"] == "computation"
+        )
+        provider_plan = copy.deepcopy(self.plan)
+        for section in provider_plan["sections"]:
+            target = computation if section["section_id"] == "data" else interaction
+            section["work_items"][0]["capsule_bindings"] = [_binding(target)]
+        provider_confirmation = copy.deepcopy(self.confirmation)
+        provider_confirmation["capsule_revalidation"] = [
+            {
+                "capsule_id": binding["capsule_id"],
+                "version_id": binding["version_id"],
+                "eligibility_status": "active_current_eligible",
+                "review_status": "user_confirmed",
+            }
+            for section in provider_plan["sections"]
+            for item in section["work_items"]
+            for binding in item["capsule_bindings"]
+        ]
+        _refresh(provider_plan, provider_confirmation)
+        with self.assertRaisesRegex(
+            PlanExecutionError,
+            "plan_execution_page_contract_provider_missing",
+        ):
+            compile_plan_execution(
+                provider_plan,
+                provider_confirmation,
+                capsules,
+                verified_page_contracts=[
+                    row
+                    for row in projections
+                    if row["capability_kind"] == "interaction"
+                ],
+            )
+
     def test_composer_page_capabilities_fail_closed(self) -> None:
         base_capsules, base_projections = _v2_composer_fixture(self.capsules)
         arguments = {
@@ -947,7 +1138,7 @@ class PlanExecutionV1Test(unittest.TestCase):
             patch(
                 "pimos_lite.reweave_app_service.compile_plan_execution",
                 return_value=execution,
-            ),
+            ) as compiler,
             patch(
                 "pimos_lite.reweave_app_service.compose_capsule_product",
                 side_effect=ValueError("projection_probe"),
@@ -960,7 +1151,11 @@ class PlanExecutionV1Test(unittest.TestCase):
                 _acceptance_cases(),
             )
         self.assertEqual(composer.call_count, 1)
-        self.assertEqual(
+        self.assertIs(
+            compiler.call_args.kwargs["verified_page_contracts"],
+            projections,
+        )
+        self.assertIs(
             composer.call_args.kwargs["verified_page_contracts"],
             projections,
         )

@@ -171,6 +171,130 @@ def verify_formal_capsule_identity(
     return expected
 
 
+def validate_formal_page_contract(
+    capsules: list[dict[str, Any]],
+    verified_page_contracts: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Validate one formal v1 HTML contract or one verified v2 capability set."""
+    if type(capsules) is not list or not capsules:
+        raise ValueError("formal_page_contract_identity_invalid")
+    projections = _normalize_verified_page_contracts(verified_page_contracts)
+    by_identity: dict[tuple[str, str], dict[str, Any]] = {}
+    payload_digests: dict[tuple[str, str], str] = {}
+    for capsule in capsules:
+        if (
+            type(capsule) is not dict
+            or capsule.get("capability_kind")
+            not in {"presentation", "interaction", "computation"}
+            or type(capsule.get("capsule_id")) is not str
+            or type(capsule.get("version_id")) is not str
+        ):
+            raise ValueError("formal_page_contract_identity_invalid")
+        identity = (capsule["capsule_id"], capsule["version_id"])
+        if identity in by_identity:
+            raise ValueError("formal_page_contract_identity_invalid")
+        try:
+            payload_digest = _canonical_digest(_formal_capsule_payload(capsule))
+        except (KeyError, TypeError, ValueError) as exc:
+            raise ValueError("formal_page_contract_identity_invalid") from exc
+        by_identity[identity] = capsule
+        payload_digests[identity] = payload_digest
+
+    projected = {
+        (row["capsule_id"], row["version_id"]): row for row in projections
+    }
+    if not set(projected).issubset(by_identity):
+        raise ValueError("formal_page_contract_identity_invalid")
+    if any(
+        by_identity[identity]["capability_kind"] == "computation"
+        for identity in projected
+    ):
+        raise ValueError("formal_page_contract_identity_invalid")
+
+    dom_rows = [
+        row for row in capsules if row["capability_kind"] != "computation"
+    ]
+    if not dom_rows:
+        raise ValueError("product_dom_capsule_required")
+    modes: set[str] = set()
+    declarations: dict[str, dict[str, Any]] = {}
+    for row in capsules:
+        identity = (row["capsule_id"], row["version_id"])
+        payload_digest = payload_digests[identity]
+        projection = projected.get(identity)
+        if row["capability_kind"] == "computation":
+            if projection is not None or (
+                projections and row.get("canonical_hash") != payload_digest
+            ):
+                raise ValueError("formal_page_contract_identity_invalid")
+            continue
+        if projection is None:
+            if (
+                "canonical_hash" in row
+                and row["canonical_hash"] != payload_digest
+            ):
+                raise ValueError("formal_page_contract_version_mismatch")
+            modes.add("v1")
+            continue
+        if (
+            projection["capability_kind"] != row["capability_kind"]
+            or projection["canonical_hash"] != row.get("canonical_hash")
+        ):
+            raise ValueError("formal_page_contract_identity_invalid")
+        try:
+            binding = build_formal_identity_binding_v2(
+                canonical_payload_digest=payload_digest,
+                page_capability_declaration=projection[
+                    "page_capability_declaration"
+                ],
+            )
+        except ValueError as exc:
+            raise ValueError("formal_page_contract_identity_invalid") from exc
+        if binding["formal_identity_digest"] != row.get("canonical_hash"):
+            raise ValueError("formal_page_contract_identity_invalid")
+        declarations[row["capability_kind"]] = projection[
+            "page_capability_declaration"
+        ]
+        modes.add("v2")
+
+    if len(modes) != 1:
+        raise ValueError("formal_page_contract_version_mismatch")
+    presentation = next(
+        (row for row in dom_rows if row["capability_kind"] == "presentation"),
+        None,
+    )
+    interaction = next(
+        (row for row in dom_rows if row["capability_kind"] == "interaction"),
+        None,
+    )
+    provider = presentation or dom_rows[0]
+    if modes == {"v1"}:
+        html_values = {row["html"] for row in dom_rows}
+        if len(html_values) != 1:
+            raise ValueError("product_dom_contract_mismatch")
+        contract_digest = hashlib.sha256(
+            next(iter(html_values)).encode("utf-8")
+        ).hexdigest()
+    else:
+        if interaction is not None and presentation is None:
+            raise ValueError("formal_page_contract_provider_missing")
+        if presentation is None:
+            raise ValueError("formal_page_contract_provider_missing")
+        if interaction is None:
+            contract_digest = declarations["presentation"]["canonical_digest"]
+        else:
+            contract_digest = build_page_capability_contract_v2(
+                presentation_provides=declarations["presentation"]["provides"],
+                interaction_requires=declarations["interaction"]["requires"],
+            )["canonical_digest"]
+        provider = presentation
+    return {
+        "mode": next(iter(modes)),
+        "provider_identity": (provider["capsule_id"], provider["version_id"]),
+        "contract_digest": contract_digest,
+    }
+
+
 def normalize_page_capability_selector(value: Any) -> str:
     if type(value) is not str:
         raise ValueError("page_capability_selector_invalid")
@@ -224,6 +348,72 @@ def _normalize_capabilities(value: Any, allowed: frozenset[str]) -> list[str]:
     return list(value)
 
 
+def _normalize_verified_page_contracts(value: Any) -> list[dict[str, Any]]:
+    if value is None:
+        return []
+    if type(value) is not list or len(value) > 2:
+        raise ValueError("formal_page_contract_identity_invalid")
+    required = {
+        "capsule_id",
+        "version_id",
+        "capability_kind",
+        "canonical_hash",
+        "page_capability_declaration",
+    }
+    result: list[dict[str, Any]] = []
+    identities: set[tuple[str, str]] = set()
+    for item in value:
+        if type(item) is not dict or set(item) != required:
+            raise ValueError("formal_page_contract_identity_invalid")
+        identity = (item["capsule_id"], item["version_id"])
+        if (
+            any(type(part) is not str for part in identity)
+            or identity in identities
+            or item["capability_kind"] not in {"presentation", "interaction"}
+            or type(item["canonical_hash"]) is not str
+            or _DIGEST.fullmatch(item["canonical_hash"]) is None
+        ):
+            raise ValueError("formal_page_contract_identity_invalid")
+        try:
+            declaration = normalize_page_capability_declaration_v2(
+                item["page_capability_declaration"]
+            )
+        except ValueError as exc:
+            raise ValueError("formal_page_contract_identity_invalid") from exc
+        if declaration["capability_kind"] != item["capability_kind"]:
+            raise ValueError("formal_page_contract_identity_invalid")
+        identities.add(identity)
+        result.append({**item, "page_capability_declaration": declaration})
+    return result
+
+
+def _formal_capsule_payload(capsule: dict[str, Any]) -> dict[str, Any]:
+    return {
+        key: capsule[key]
+        for key in (
+            "capability_kind",
+            "activation",
+            "input_contract",
+            "output_contract",
+            "error_contract",
+            "runtime_allowlist",
+            "dom_scope",
+            "usage_scope",
+            "html",
+            "css",
+            "javascript_modules",
+        )
+    } | {
+        "assets": [
+            {
+                key: asset[key]
+                for key in ("logical_path", "media_type", "sha256")
+            }
+            for asset in capsule["assets"]
+        ]
+    }
+
+
 def _canonical_digest(value: dict[str, Any]) -> str:
     encoded = json.dumps(
         value,
@@ -244,5 +434,6 @@ __all__ = [
     "build_page_capability_contract_v2",
     "normalize_page_capability_declaration_v2",
     "normalize_page_capability_selector",
+    "validate_formal_page_contract",
     "verify_formal_capsule_identity",
 ]
