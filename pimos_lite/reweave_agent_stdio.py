@@ -23,6 +23,7 @@ AGENT_ACTIONS = frozenset(
 )
 _REQUEST_ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
 _MAX_REQUEST_BYTES = 1024 * 1024
+_INTERNAL_CANDIDATE_FILES = frozenset({"manifest.json", "provenance.json"})
 
 
 def _error(request_id: str | None, code: str) -> dict[str, Any]:
@@ -67,8 +68,18 @@ def _candidate_projection(value: dict[str, Any]) -> dict[str, Any]:
             for key in ("plan_version", "plan_digest")
         },
         "entry": value.get("entry"),
-        "files": value.get("files"),
-        "file_changes": value.get("file_changes"),
+        "files": [
+            item
+            for item in value.get("files", [])
+            if type(item) is dict
+            and item.get("path") not in _INTERNAL_CANDIDATE_FILES
+        ],
+        "file_changes": [
+            item
+            for item in value.get("file_changes", [])
+            if type(item) is dict
+            and item.get("path") not in _INTERNAL_CANDIDATE_FILES
+        ],
         "acceptance": {
             "status": acceptance.get("status"),
             "runtime_operational": acceptance.get("runtime_operational"),
@@ -229,6 +240,11 @@ def dispatch_agent_request(
     elif action == "get_product_candidate":
         data = _candidate_projection(data)
     elif action == "read_product_candidate_file":
+        if (
+            type(data) is dict
+            and data.get("path") in _INTERNAL_CANDIDATE_FILES
+        ):
+            return _error(request_id, "agent_candidate_file_not_readable")
         data = _file_projection(data)
     return {
         "protocol": AGENT_PROTOCOL_VERSION,

@@ -2071,6 +2071,27 @@ class PlanExecutionV1Test(unittest.TestCase):
                 time.sleep(0.01)
             self.assertEqual(task["data"]["status"], "completed", task)
             candidate = task["data"]["candidate"]
+            self.assertNotIn(
+                "manifest.json",
+                {item["path"] for item in candidate["files"]},
+            )
+            self.assertNotIn(
+                "provenance.json",
+                {item["path"] for item in candidate["files"]},
+            )
+            for hidden in ("manifest.json", "provenance.json"):
+                hidden_file = request(
+                    "read_product_candidate_file",
+                    {
+                        "candidate_token": candidate["candidate_token"],
+                        "relative_path": hidden,
+                    },
+                    f"hidden-{hidden}",
+                )
+                self.assertEqual(
+                    hidden_file["error"]["code"],
+                    "agent_candidate_file_not_readable",
+                )
 
             repeated = request(
                 "start_confirmed_product_candidate",
