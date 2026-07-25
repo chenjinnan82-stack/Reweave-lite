@@ -620,6 +620,11 @@
     },
     "claim_boundary": "This proves durable local same-user authorization over an existing confirmed plan and its user-confirmed acceptance record. Remote agents, multiple accounts, shared-machine isolation, automatic expiry, renewal, product promotion, and user-project writes remain out of scope."
   },
+  "standalone_product_delivery_v1": {
+    "functional_status": "PASS",
+    "exported_product_runtime": "PASS",
+    "visual_status": "PENDING_USER_CONFIRMATION"
+  },
   "tests": {
     "python_compile": {
       "status": "PASS",
