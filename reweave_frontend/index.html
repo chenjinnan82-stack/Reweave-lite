@@ -60,7 +60,7 @@
       </div>
       <nav class="delivery-switch" aria-label="Delivery mode" data-i18n-aria-label="deliveryMode">
         <button type="button" class="delivery-switch-button active" aria-current="page" data-i18n="standaloneProduct">Standalone product</button>
-        <button type="button" id="btn-open-product-plan" class="delivery-switch-button">Product plan prototype</button>
+        <button type="button" id="btn-open-product-plan" class="delivery-switch-button">Product</button>
         <button type="button" id="btn-open-target" class="delivery-switch-button hidden" disabled data-i18n="targetIntegration">Target integration</button>
       </nav>
       <div class="top-bar-right">
@@ -183,47 +183,88 @@ preview: pending</div>
     </footer>
   </section>
 
-  <!-- Prototype-only product planning. No model, bridge, network, candidate, or write path. -->
-  <section id="screen-product-plan" class="screen screen-product-plan hidden" aria-label="Product plan prototype">
+  <!-- Product flow. Internal identities remain in the service and scene closure. -->
+  <section id="screen-product-plan" class="screen screen-product-plan hidden" aria-label="Product">
     <header class="product-plan-bar">
-      <button type="button" id="btn-product-plan-back" class="btn-ghost">Back to standalone product</button>
+      <button type="button" id="btn-product-plan-back" class="btn-ghost">Back</button>
       <div>
-        <span id="product-plan-kicker" class="product-plan-kicker">READ-ONLY LOW-FIDELITY PROTOTYPE</span>
-        <strong id="product-plan-title">Product plan overview</strong>
+        <span id="product-plan-kicker" class="product-plan-kicker">LOCAL PRODUCT WORKFLOW</span>
+        <strong id="product-plan-title">Create a product</strong>
       </div>
-      <label class="product-plan-mode" for="product-plan-developer-mode">
-        <input type="checkbox" id="product-plan-developer-mode">
-        <span id="product-plan-developer-label">Developer mode</span>
-      </label>
+      <span id="product-plan-status" class="product-plan-status" aria-live="polite"></span>
     </header>
     <main id="product-plan-stage" class="product-plan-stage">
-      <section id="product-plan-overview" class="product-plan-overview" aria-labelledby="product-plan-overview-title">
-        <h1 id="product-plan-overview-title" class="sr-only">Product plan overview</h1>
+      <section id="product-plan-compose" class="product-plan-flow" aria-labelledby="product-plan-compose-title">
+        <h1 id="product-plan-compose-title">What do you want to build?</h1>
         <label class="product-plan-goal-field" for="product-plan-goal">
           <span id="product-plan-goal-label">Product goal</span>
           <textarea id="product-plan-goal" rows="3" autocomplete="off"></textarea>
         </label>
-        <button type="button" id="btn-submit-product-goal" class="btn-amber">Build prototype plan</button>
-        <div id="product-plan-fixture" class="product-plan-fixture hidden">
-          <p id="product-plan-prototype-note" class="prototype-note">Prototype data</p>
-          <div id="product-plan-sections" tabindex="-1"></div>
-        </div>
+        <button type="button" id="btn-submit-product-goal" class="btn-primary">Create plan</button>
       </section>
-      <section id="product-plan-review" class="product-plan-review hidden" aria-labelledby="product-review-title">
-        <button type="button" id="btn-product-review-back" class="btn-ghost">Back to plan overview</button>
-        <p id="product-review-path" class="product-review-path"></p>
+
+      <section id="product-plan-progress" class="product-plan-flow hidden" aria-labelledby="product-plan-progress-title">
+        <p class="product-plan-progress-mark" aria-hidden="true">◌</p>
+        <h1 id="product-plan-progress-title" tabindex="-1">Preparing your product plan</h1>
+        <p id="product-plan-progress-copy"></p>
+        <button type="button" id="btn-cancel-product-plan" class="product-plan-text-action">Cancel</button>
+      </section>
+
+      <section id="product-plan-questions" class="product-plan-flow hidden" aria-labelledby="product-plan-questions-title">
+        <h1 id="product-plan-questions-title" tabindex="-1">A decision is needed</h1>
+        <p id="product-plan-questions-copy"></p>
+        <form id="product-plan-question-form"></form>
+        <button type="button" id="btn-submit-product-answers" class="btn-primary">Continue</button>
+      </section>
+
+      <section id="product-plan-review" class="product-plan-flow hidden" aria-labelledby="product-review-title">
+        <p id="product-review-goal" class="product-review-path"></p>
         <h1 id="product-review-title" tabindex="-1"></h1>
-        <p id="product-review-prototype-note" class="prototype-note">Prototype data</p>
-        <p id="product-review-summary" class="product-review-summary"></p>
-        <div id="product-review-items" class="product-review-items"></div>
-        <section class="product-review-empty" aria-live="polite">
-          <h2 id="product-review-empty">Real candidates have not been generated</h2>
-          <p>No files, Diff, plan evidence, or validation result exists in this prototype.</p>
+        <div id="product-plan-sections"></div>
+        <section class="product-acceptance" aria-labelledby="product-acceptance-title">
+          <h2 id="product-acceptance-title">Key outcomes</h2>
+          <p id="product-acceptance-copy"></p>
+          <div id="product-acceptance-cases"></div>
+          <button type="button" id="btn-add-product-acceptance-case" class="product-plan-text-action">Add outcome</button>
+          <div id="product-parameter-confirmation" class="product-parameter-confirmation hidden"></div>
         </section>
-        <section class="product-plan-developer-only" aria-labelledby="product-plan-developer-title">
-          <h2 id="product-plan-developer-title">Prototype state</h2>
-          <pre id="product-plan-developer-evidence"></pre>
-        </section>
+        <p id="product-plan-review-error" class="product-plan-inline-error hidden" aria-live="polite"></p>
+        <button type="button" id="btn-confirm-and-generate" class="btn-primary">Confirm and generate</button>
+      </section>
+
+      <section id="product-candidate-review" class="product-plan-flow hidden" aria-labelledby="product-candidate-title">
+        <p id="product-candidate-state" class="product-candidate-state"></p>
+        <h1 id="product-candidate-title" tabindex="-1"></h1>
+        <p id="product-candidate-summary"></p>
+        <div id="product-candidate-validation" class="product-candidate-validation"></div>
+        <div class="product-candidate-actions">
+          <button type="button" id="btn-preview-product-candidate" class="product-plan-text-action">Preview product</button>
+          <button type="button" id="btn-save-product-candidate" class="btn-primary">Save product</button>
+        </div>
+        <p id="product-candidate-action-result" aria-live="polite"></p>
+        <details class="product-candidate-files">
+          <summary id="product-candidate-files-summary">Files</summary>
+          <div class="product-candidate-file-review">
+            <div id="product-candidate-file-list" role="list"></div>
+            <div>
+              <div class="product-candidate-file-tabs" role="tablist">
+                <button type="button" id="btn-product-file-content" class="product-plan-text-action" role="tab" aria-selected="true">Content</button>
+                <button type="button" id="btn-product-file-diff" class="product-plan-text-action" role="tab" aria-selected="false">Changes</button>
+              </div>
+              <pre id="product-candidate-file-body" tabindex="0"></pre>
+            </div>
+          </div>
+        </details>
+        <details class="product-candidate-details">
+          <summary id="product-candidate-details-summary">Implementation details</summary>
+          <div id="product-candidate-details-body"></div>
+        </details>
+      </section>
+
+      <section id="product-plan-failed" class="product-plan-flow hidden" aria-labelledby="product-plan-failed-title">
+        <h1 id="product-plan-failed-title" tabindex="-1">This step could not be completed</h1>
+        <p id="product-plan-failed-copy"></p>
+        <button type="button" id="btn-retry-product-flow" class="btn-primary">Try again</button>
       </section>
     </main>
   </section>
@@ -232,7 +273,6 @@ preview: pending</div>
   <section id="screen-capsule-warehouse" class="screen screen-capsule-warehouse hidden" aria-label="Capsule Warehouse">
     <header class="warehouse-scene-bar">
       <button type="button" id="btn-warehouse-scene-back" class="btn-ghost warehouse-scene-back" data-i18n="back">Back</button>
-      <button type="button" id="btn-warehouse-return-product-plan" class="btn-ghost hidden">Back to plan Review</button>
       <div class="warehouse-scene-identity">
         <span class="warehouse-scene-kicker" data-i18n="warehouseReadOnly">READ-ONLY WAREHOUSE</span>
         <strong data-i18n="capsuleWarehouse">Capsule Warehouse</strong>

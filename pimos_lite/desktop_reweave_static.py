@@ -3,10 +3,14 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import logging
+import os
 import sys
-from pathlib import Path
+import tempfile
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -134,6 +138,7 @@ class ReweaveBridge:
                 super().__init__(parent)
                 self._engine = engine
                 self._parent_widget = parent
+                self._candidate_preview_windows: list[Any] = []
 
             @staticmethod
             def _phase4_error(code: str, message_key: str) -> str:
@@ -328,6 +333,293 @@ class ReweaveBridge:
             @Slot(str, result=str)
             def confirm_product_plan(self, payload_json: str = "") -> str:
                 return self._phase4_call("confirm_product_plan", payload_json)
+
+            @Slot(str, result=str)
+            def confirm_product_candidate_acceptance(
+                self, payload_json: str = ""
+            ) -> str:
+                return self._phase4_call(
+                    "confirm_product_candidate_acceptance", payload_json
+                )
+
+            @Slot(str, result=str)
+            def get_confirmed_product_plan(self, payload_json: str = "") -> str:
+                return self._phase4_call(
+                    "get_confirmed_product_plan", payload_json
+                )
+
+            @Slot(str, result=str)
+            def start_confirmed_product_candidate(
+                self, payload_json: str = ""
+            ) -> str:
+                return self._phase4_call(
+                    "start_confirmed_product_candidate", payload_json
+                )
+
+            @Slot(str, result=str)
+            def get_product_candidate_run(self, payload_json: str = "") -> str:
+                return self._phase4_call(
+                    "get_product_candidate_run", payload_json
+                )
+
+            @Slot(str, result=str)
+            def get_product_candidate(self, payload_json: str = "") -> str:
+                return self._phase4_call("get_product_candidate", payload_json)
+
+            @Slot(str, result=str)
+            def read_product_candidate_file(
+                self, payload_json: str = ""
+            ) -> str:
+                return self._phase4_call(
+                    "read_product_candidate_file", payload_json
+                )
+
+            @Slot(str, result=str)
+            def choose_product_candidate_export_folder(
+                self, payload_json: str = ""
+            ) -> str:
+                try:
+                    request = json.loads(payload_json) if payload_json else {}
+                except json.JSONDecodeError:
+                    return self._phase4_error("invalid_payload", "invalidPayload")
+                if (
+                    not isinstance(request, dict)
+                    or set(request) != {"plan_token", "candidate_token"}
+                    or not isinstance(request.get("plan_token"), str)
+                    or not isinstance(request.get("candidate_token"), str)
+                ):
+                    return self._phase4_error(
+                        "product_candidate_export_request_invalid",
+                        "product_candidate_export_request_invalid",
+                    )
+                try:
+                    _, _, _, _, _, QFileDialog = import_qt_webengine()
+                    parent = QFileDialog.getExistingDirectory(
+                        self._parent_widget, "Save product"
+                    )
+                except Exception:
+                    logger.error("Product candidate folder chooser failed")
+                    return self._phase4_error("internal_error", "internalError")
+                if not parent:
+                    return json.dumps({"ok": False, "cancelled": True})
+                return self._phase4_call(
+                    "export_product_candidate",
+                    json.dumps(
+                        {
+                            "plan_token": request["plan_token"],
+                            "candidate_token": request["candidate_token"],
+                            "destination_parent": parent,
+                        }
+                    ),
+                )
+
+            @Slot(str, result=str)
+            def preview_product_candidate(self, payload_json: str = "") -> str:
+                try:
+                    request = json.loads(payload_json) if payload_json else {}
+                except json.JSONDecodeError:
+                    return self._phase4_error("invalid_payload", "invalidPayload")
+                if (
+                    not isinstance(request, dict)
+                    or set(request) != {"candidate_token"}
+                    or not isinstance(request.get("candidate_token"), str)
+                ):
+                    return self._phase4_error(
+                        "product_candidate_token_invalid",
+                        "product_candidate_token_invalid",
+                    )
+                verified = self._engine.get_product_candidate(request)
+                if not isinstance(verified, dict) or verified.get("ok") is not True:
+                    return json.dumps(verified)
+                candidate = verified.get("data")
+                if (
+                    not isinstance(candidate, dict)
+                    or candidate.get("status") != "review_ready"
+                ):
+                    return self._phase4_error(
+                        "product_candidate_preview_not_ready",
+                        "product_candidate_preview_not_ready",
+                    )
+                try:
+                    files = candidate.get("files")
+                    entry_record = candidate.get("entry")
+                    if (
+                        not isinstance(files, list)
+                        or not isinstance(entry_record, dict)
+                        or set(entry_record) != {"path", "kind"}
+                        or not isinstance(entry_record.get("path"), str)
+                    ):
+                        raise ValueError("candidate_projection_invalid")
+                    temporary = tempfile.TemporaryDirectory(
+                        prefix="reweave-candidate-preview-"
+                    )
+                    product_root = Path(temporary.name)
+                    os.chmod(product_root, 0o700)
+                    allowed: set[Path] = set()
+                    for metadata in files:
+                        if not isinstance(metadata, dict):
+                            raise ValueError("candidate_file_invalid")
+                        logical = PurePosixPath(str(metadata.get("path") or ""))
+                        if (
+                            logical.is_absolute()
+                            or not logical.parts
+                            or any(part in {"", ".", ".."} for part in logical.parts)
+                        ):
+                            raise ValueError("candidate_file_invalid")
+                        opened = self._engine.read_product_candidate_file(
+                            {
+                                "candidate_token": request["candidate_token"],
+                                "relative_path": logical.as_posix(),
+                            }
+                        )
+                        data_record = (
+                            opened.get("data")
+                            if isinstance(opened, dict)
+                            and opened.get("ok") is True
+                            else None
+                        )
+                        if (
+                            not isinstance(data_record, dict)
+                            or data_record.get("path") != logical.as_posix()
+                            or data_record.get("sha256") != metadata.get("sha256")
+                        ):
+                            raise ValueError("candidate_file_invalid")
+                        if data_record.get("encoding") == "utf-8":
+                            data = str(data_record.get("content") or "").encode("utf-8")
+                        elif data_record.get("encoding") == "base64":
+                            data = base64.b64decode(
+                                str(data_record.get("content") or ""),
+                                validate=True,
+                            )
+                        else:
+                            raise ValueError("candidate_file_invalid")
+                        if (
+                            len(data) != metadata.get("size_bytes")
+                            or hashlib.sha256(data).hexdigest()
+                            != metadata.get("sha256")
+                        ):
+                            raise ValueError("candidate_file_invalid")
+                        target = product_root.joinpath(*logical.parts)
+                        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                        for parent in (target.parent, *target.parent.parents):
+                            if parent == product_root.parent:
+                                break
+                            os.chmod(parent, 0o700)
+                        with target.open("xb") as stream:
+                            stream.write(data)
+                        os.chmod(target, 0o600)
+                        allowed.add(target.resolve(strict=True))
+                    entry = product_root.joinpath(
+                        *PurePosixPath(entry_record["path"]).parts
+                    ).resolve(strict=True)
+                    if entry not in allowed:
+                        raise ValueError("entry_not_allowed")
+
+                    (
+                        _,
+                        QMainWindow,
+                        QWebEngineView,
+                        QWebEngineSettings,
+                        QUrl,
+                        _,
+                    ) = import_qt_webengine()
+                    from PySide6.QtWebEngineCore import (
+                        QWebEnginePage,
+                        QWebEngineProfile,
+                        QWebEngineUrlRequestInterceptor,
+                    )
+
+                    class CandidateInterceptor(QWebEngineUrlRequestInterceptor):
+                        def __init__(self, parent=None):
+                            super().__init__(parent)
+                            self.blocked_count = 0
+
+                        def interceptRequest(self, info):
+                            url = info.requestUrl()
+                            if (
+                                url.scheme().lower() == "about"
+                                and url.toString() == "about:blank"
+                            ):
+                                return
+                            if url.isLocalFile():
+                                try:
+                                    if Path(url.toLocalFile()).resolve(strict=True) in allowed:
+                                        return
+                                except OSError:
+                                    pass
+                            self.blocked_count += 1
+                            info.block(True)
+
+                    class CandidatePage(QWebEnginePage):
+                        def acceptNavigationRequest(
+                            self, url, navigation_type, is_main_frame
+                        ):
+                            del navigation_type, is_main_frame
+                            if (
+                                url.scheme().lower() == "about"
+                                and url.toString() == "about:blank"
+                            ):
+                                return True
+                            if not url.isLocalFile():
+                                return False
+                            try:
+                                return (
+                                    Path(url.toLocalFile()).resolve(strict=True)
+                                    in allowed
+                                )
+                            except OSError:
+                                return False
+
+                    window = QMainWindow(self._parent_widget)
+                    window.setWindowTitle("Reweave · Product preview")
+                    window.resize(960, 720)
+                    view = QWebEngineView(window)
+                    profile = QWebEngineProfile(view)
+                    interceptor = CandidateInterceptor(profile)
+                    profile.setUrlRequestInterceptor(interceptor)
+                    page = CandidatePage(profile, view)
+                    view.setPage(page)
+                    settings = page.settings()
+                    settings.setAttribute(
+                        QWebEngineSettings.LocalContentCanAccessFileUrls, True
+                    )
+                    settings.setAttribute(
+                        QWebEngineSettings.LocalContentCanAccessRemoteUrls, False
+                    )
+                    settings.setAttribute(QWebEngineSettings.DnsPrefetchEnabled, False)
+                    settings.setAttribute(QWebEngineSettings.LocalStorageEnabled, False)
+                    settings.setAttribute(QWebEngineSettings.JavascriptEnabled, True)
+                    settings.setAttribute(
+                        QWebEngineSettings.JavascriptCanOpenWindows, False
+                    )
+                    view._reweave_candidate_profile = profile
+                    view._reweave_candidate_interceptor = interceptor
+                    view._reweave_candidate_temporary = temporary
+                    window.setCentralWidget(view)
+                    window._reweave_candidate_allowed = allowed
+                    self._candidate_preview_windows.append(window)
+                    window.destroyed.connect(
+                        lambda *_args, current=window: (
+                            self._candidate_preview_windows.remove(current)
+                            if current in self._candidate_preview_windows
+                            else None
+                        )
+                    )
+                    view.load(QUrl.fromLocalFile(str(entry)))
+                    window.show()
+                except Exception:
+                    logger.error("Product candidate preview failed")
+                    return self._phase4_error("internal_error", "internalError")
+                return json.dumps(
+                    {
+                        "ok": True,
+                        "data": {
+                            "status": "opened",
+                            "network_access": False,
+                            "outside_file_access": False,
+                        },
+                    }
+                )
 
             @Slot(str, result=str)
             def list_review_items(self, payload_json: str = "") -> str:

@@ -896,28 +896,26 @@
     syncAppState: syncAppState,
   });
   var productPlanScene = window.ReweaveProductPlanScene.create({
-    getCapsules: function () {
-      return data && Array.isArray(data.capsules) ? data.capsules : [];
+    canPlanProduct: function () {
+      return !!(
+        desktopShellState &&
+        desktopShellState.canPlanProduct === true &&
+        desktopShellState.productPlanning &&
+        desktopShellState.productPlanning.selected_model
+      );
     },
     getLocale: function () {
       return locale;
     },
+    getPlanningState: function () {
+      return desktopShellState && desktopShellState.productPlanning;
+    },
+    call: function (method, payload) {
+      return bridgeCall(method, JSON.stringify(payload || {})).then(function (raw) {
+        return parseBridgeJson(raw);
+      });
+    },
     showScreen: showScreen,
-    getWarehouseState: function () {
-      return capsuleWarehouseScene.getState();
-    },
-    openWarehouse: function (capsuleId) {
-      var entry = $("btn-capsule-warehouse");
-      if (!entry) return;
-      entry.click();
-      window.setTimeout(function () {
-        var query = $("warehouse-scene-query");
-        if (!query) return;
-        query.value = capsuleId;
-        query.dispatchEvent(new Event("input", { bubbles: true }));
-        query.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-      }, 0);
-    },
   });
   var targetIntegration = window.ReweaveTargetWorkflow.create({
     getBridge: function () {
@@ -5474,8 +5472,18 @@
       bridge: {
         available: hasDesktopBridge(),
         ready: bridgeReady,
-        shell: desktopShellState,
-        previewPath: lastPreviewPath || null,
+        shell: desktopShellState
+          ? {
+              canGenerateProduct: desktopShellState.canGenerateProduct === true,
+              canPlanProduct: desktopShellState.canPlanProduct === true,
+              planningWorkspaceCount:
+                desktopShellState.productPlanning &&
+                Array.isArray(desktopShellState.productPlanning.workspaces)
+                  ? desktopShellState.productPlanning.workspaces.length
+                  : 0,
+            }
+          : null,
+        previewAvailable: !!lastPreviewPath,
       },
       warehouse: capsuleWarehouseScene.getState(),
       productPlan: productPlanScene.getState(),

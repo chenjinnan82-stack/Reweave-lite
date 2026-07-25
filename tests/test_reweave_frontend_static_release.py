@@ -177,7 +177,7 @@ def test_capsule_core_code_projection_is_exact_formal_and_fail_closed() -> None:
         assert result.stdout.strip() == "undefined"
 
 
-def test_product_plan_ide_prototype_is_one_frontend_only_scene() -> None:
+def test_product_flow_uses_real_planning_candidate_and_native_export_actions() -> None:
     node = shutil.which("node")
     index = (ROOT / "reweave_frontend" / "index.html").read_text(encoding="utf-8")
     app = (ROOT / "reweave_frontend" / "app.js").read_text(encoding="utf-8")
@@ -185,6 +185,9 @@ def test_product_plan_ide_prototype_is_one_frontend_only_scene() -> None:
         encoding="utf-8"
     )
     styles = (ROOT / "reweave_frontend" / "styles.css").read_text(encoding="utf-8")
+    desktop = (ROOT / "pimos_lite" / "desktop_reweave_static.py").read_text(
+        encoding="utf-8"
+    )
     audit = (ROOT / "pimos_lite" / "reweave_release_surface_audit.py").read_text(
         encoding="utf-8"
     )
@@ -201,27 +204,35 @@ def test_product_plan_ide_prototype_is_one_frontend_only_scene() -> None:
     ) < index.index('src="target_workflow.js"')
     assert 'id="screen-product-plan"' in index
     assert 'id="btn-open-product-plan"' in index
-    assert 'id="btn-warehouse-return-product-plan"' in index
-    assert 'id="product-plan-developer-mode"' in index
-    assert 'id="product-review-empty"' in index
+    assert 'id="product-plan-question-form"' in index
+    assert 'id="product-acceptance-cases"' in index
+    assert 'id="btn-confirm-and-generate"' in index
+    assert 'id="btn-preview-product-candidate"' in index
+    assert 'id="btn-save-product-candidate"' in index
+    assert "prototype-only" not in index.lower()
     assert "window.ReweaveProductPlanScene = { create: create };" in scene
     assert "productPlan: productPlanScene.getState()," in app
     assert "productPlanScene.bind();" in app
-    assert "productPlanScene.consumeWarehouseReturn()" in app
     assert '"reweave_frontend/product_plan_scene.js",' in audit
-    assert scene.count('id: "frontend"') == 1
-    assert scene.count('id: "backend"') == 1
-    assert scene.count('id: "data"') == 1
-    assert scene.count('id: "infrastructure"') == 1
-    assert 'scope: "prototype_only"' in scene
-    assert 'evidence_status: "prototype_navigation_only"' in scene
-    assert "formal_match_claimed: false" in scene
-    assert "validation_claimed: false" in scene
-    assert "fixture_label_visible: state.fixtureVisible" in scene
-    assert "真实候选尚未生成" in scene
+    for action in (
+        "start_product_plan",
+        "submit_product_plan_answers",
+        "get_product_plan_run",
+        "get_product_plan_workspace",
+        "confirm_product_plan",
+        "confirm_product_candidate_acceptance",
+        "get_confirmed_product_plan",
+        "start_confirmed_product_candidate",
+        "get_product_candidate_run",
+        "read_product_candidate_file",
+        "preview_product_candidate",
+        "choose_product_candidate_export_folder",
+    ):
+        assert action in scene
+    assert 'scope: "prototype_only"' not in scene
+    assert "FIXTURE" not in scene
     assert "innerHTML" not in scene
     for forbidden in (
-        "bridgeCall(",
         "XMLHttpRequest",
         "fetch(",
         "WebSocket",
@@ -235,8 +246,45 @@ def test_product_plan_ide_prototype_is_one_frontend_only_scene() -> None:
     ):
         assert forbidden not in scene
     assert ".product-plan-section" in styles
-    assert ".screen-product-plan.developer-mode .product-plan-developer-only" in styles
+    assert ".product-acceptance-row" in styles
+    assert ".product-candidate-file-review" in styles
     assert "@media (prefers-reduced-motion: reduce)" in styles
+
+    get_state = scene[scene.index("    function getState()") : scene.index(
+        "\n    return {", scene.index("    function getState()")
+    )]
+    for forbidden in (
+        "planToken",
+        "candidateToken",
+        "workspace_id",
+        "canonical_digest",
+        "candidate_digest",
+        "version_id",
+    ):
+        assert forbidden not in get_state
+
+    for slot in (
+        "confirm_product_candidate_acceptance",
+        "get_confirmed_product_plan",
+        "start_confirmed_product_candidate",
+        "get_product_candidate_run",
+        "get_product_candidate",
+        "read_product_candidate_file",
+        "choose_product_candidate_export_folder",
+        "preview_product_candidate",
+    ):
+        assert f"def {slot}(" in desktop
+    chooser = desktop[
+        desktop.index("            def choose_product_candidate_export_folder(") :
+        desktop.index(
+            "\n            @Slot(str, result=str)\n            def preview_product_candidate(",
+            desktop.index("            def choose_product_candidate_export_folder("),
+        )
+    ]
+    assert "destination_parent" in chooser
+    assert '"destination_parent": parent' in chooser
+    assert '"path"' not in chooser
+    assert "str(exc)" not in chooser
 
 
 def test_product_plan_ide_prototype_acceptance_stays_prototype_only() -> None:

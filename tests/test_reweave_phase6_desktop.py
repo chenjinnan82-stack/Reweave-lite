@@ -1622,18 +1622,22 @@ def test_capsule_warehouse_read_only_scene_with_real_service(
             app.processEvents()
 
 
-def test_product_plan_ide_prototype_round_trip_is_read_only(
+def test_product_flow_builds_previews_exports_and_restores_real_candidate(
     tmp_path: Path, monkeypatch
 ) -> None:
+    if shutil.which("node") is None:
+        pytest.skip("Node is required for module_native composition")
+    if not (ROOT / "node_modules" / "esbuild" / "package.json").is_file():
+        pytest.skip("npm ci is required for module_native composition")
     if sys.platform.startswith("linux") and not (
         os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
     ):
         pytest.skip("A desktop GUI session is required")
     pytest.importorskip("PySide6.QtWebEngineCore")
 
-    if os.environ.get("REWEAVE_PRODUCT_PLAN_CHILD") != "1":
+    if os.environ.get("REWEAVE_PRODUCT_FLOW_CHILD") != "1":
         child_env = os.environ.copy()
-        child_env["REWEAVE_PRODUCT_PLAN_CHILD"] = "1"
+        child_env["REWEAVE_PRODUCT_FLOW_CHILD"] = "1"
         child_env.pop("PYTEST_ADDOPTS", None)
         child = subprocess.run(
             [
@@ -1645,97 +1649,327 @@ def test_product_plan_ide_prototype_round_trip_is_read_only(
                 "-q",
                 (
                     "tests/test_reweave_phase6_desktop.py::"
-                    "test_product_plan_ide_prototype_round_trip_is_read_only"
+                    "test_product_flow_builds_previews_exports_and_restores_real_candidate"
                 ),
             ],
             cwd=ROOT,
             env=child_env,
             capture_output=True,
             text=True,
-            timeout=180,
+            timeout=360,
         )
         assert child.returncode == 0, child.stdout + child.stderr
         return
 
-    from PySide6.QtCore import QCoreApplication, QEvent
+    import copy
+
+    from PySide6.QtCore import QCoreApplication, QEvent, QUrl
     from PySide6.QtWebEngineCore import QWebEngineProfile
 
     from pimos_lite import desktop_reweave_static as desktop
     from pimos_lite.reweave_app_service import ReweaveAppService
     from pimos_lite.reweave_capsule_store import CapsuleWarehouseStore
-    from tests.test_reweave_phase5_generation import _seed_capsule
+    from pimos_lite.reweave_plan_execution import (
+        build_parameterized_execution_binding,
+        build_parameterized_execution_offer,
+        canonical_digest,
+    )
+    from tests.test_reweave_phase5_generation import (
+        _NoLegacyEngine,
+        _seed_capsule,
+    )
+    from tests.test_reweave_plan_execution import (
+        _confirmed_plan,
+        _parameterized_payload,
+        _refresh,
+        _store_snapshot,
+    )
 
-    source_root = tmp_path / "readonly-source"
+    goal = (
+        "构建一个完全本地的报价计算页面：输入 1–10 的商品数量，"
+        "按确认的固定单价计算并显示总价。"
+    )
+    plan_token = "plan_token_" + "d" * 48
+    source_root = tmp_path / "source-sentinel"
+    target_root = tmp_path / "target-sentinel"
     source_root.mkdir()
-    (source_root / "index.html").write_text("<main>prototype source</main>\n", encoding="utf-8")
-    untouched_target = tmp_path / "untouched-target"
-    untouched_target.mkdir()
-    (untouched_target / "sentinel.txt").write_text("do not write\n", encoding="utf-8")
+    target_root.mkdir()
+    (source_root / "outside.js").write_text(
+        "window.__outsideLoaded = true;\n", encoding="utf-8"
+    )
+    (target_root / "sentinel.txt").write_text("unchanged\n", encoding="utf-8")
     state_dir = tmp_path / "state"
+    export_parent = tmp_path / "saved-products"
+    export_parent.mkdir()
     monkeypatch.setenv("REWEAVE_STATE_DIR", str(state_dir))
     store = CapsuleWarehouseStore(state_dir / "capsule_warehouse.sqlite3")
     store.initialize()
-    service = ReweaveAppService(capsule_store=store)
+    service = ReweaveAppService(_NoLegacyEngine(), capsule_store=store)
+    capsule_ids = []
+    for kind in ("presentation", "interaction", "computation"):
+        capsule_id, _version_id = _seed_capsule(
+            store,
+            kind,
+            capability_key="parameterized_quote_calculation",
+            suffix=f"desktop_{kind}",
+            payload=_parameterized_payload(kind),
+        )
+        capsule_ids.append(capsule_id)
+    capsules, _scope = service._load_generation_capsules(
+        capsule_ids,
+        read_only=True,
+    )
+    plan, base_confirmation = _confirmed_plan(
+        capsules,
+        service._product_planning_catalog()["warehouse_revision"],
+    )
+    plan["goal"] = goal
+    plan["goal_digest"] = canonical_digest(goal)
+    for requirement in plan["requirements"]:
+        requirement["source_digest"] = plan["goal_digest"]
+    _refresh(plan, base_confirmation)
+    question_set = {
+        "schema_version": "product_plan_question_set.v1",
+        "purpose": "initial",
+        "questions": [
+            {
+                "question_id": "question_local_runtime",
+                "prompt": "是否保持完全本地运行？",
+                "options": [
+                    {
+                        "option_id": "option_local_only",
+                        "label": "完全本地",
+                        "impact": "不使用登录、数据库、网络或后台服务。",
+                        "recommended": True,
+                        "forms_gap": False,
+                    },
+                    {
+                        "option_id": "option_networked",
+                        "label": "允许联网",
+                        "impact": "这会扩大当前产品范围。",
+                        "recommended": False,
+                        "forms_gap": True,
+                    },
+                ],
+                "allow_custom": True,
+            }
+        ],
+    }
+    question_set["digest"] = canonical_digest(question_set)
 
-    root = service._capsule_intake.bind_source_root(
-        source_root, root_kind="single_project"
-    )
-    project = service._capsule_intake.confirm_project(
-        str(service._capsule_intake.discover_projects(str(root["root_id"]))[0]["project_id"])
-    )
-    project_id = str(project["project_id"])
-    capsule_id, version_id = _seed_capsule(
-        store,
-        "presentation",
-        capability_key="product_plan_prototype_navigation",
-        suffix="product_plan_prototype",
-    )
-    with store.transaction() as connection:
-        connection.execute(
-            "UPDATE projects SET display_name = ? WHERE project_id = ?",
-            ("Prototype source", project_id),
-        )
-        canonical_hash = str(
-            connection.execute(
-                "SELECT canonical_hash FROM capsule_versions WHERE version_id = ?",
-                (version_id,),
-            ).fetchone()[0]
-        )
-        connection.execute(
-            "INSERT INTO capsule_sources "
-            "(source_link_id, version_id, project_id, source_identity, source_kind, "
-            "source_relpath, source_hash, candidate_canonical_hash, relationship, read_at) "
-            "VALUES (?, ?, ?, ?, 'project', 'index.html', ?, ?, 'exact', ?)",
-            (
-                "product-plan-prototype-source",
-                version_id,
-                project_id,
-                f"project:{project_id}",
-                hashlib.sha256((source_root / "index.html").read_bytes()).hexdigest(),
-                canonical_hash,
-                "2026-07-20T00:00:00Z",
-            ),
-        )
-        store.bump_revision(connection)
+    class DesktopPlanner:
+        def __init__(
+            self,
+            *,
+            status: str = "idle",
+            confirmation: dict | None = None,
+            acceptance_confirmation: dict | None = None,
+        ) -> None:
+            self.status = status
+            self.confirmation = copy.deepcopy(confirmation)
+            self.acceptance_confirmation = copy.deepcopy(
+                acceptance_confirmation
+            )
 
-    def warehouse_state() -> dict[str, object]:
-        tables = ("capsules", "capsule_versions", "capsule_sources", "product_capsule_usage")
-        with store.read_connection() as connection:
-            rows = [
+        def _projection(self) -> dict[str, object]:
+            return {
+                "plan_token": plan_token,
+                "goal": goal,
+                "status": self.status,
+                "question_set": (
+                    copy.deepcopy(question_set)
+                    if self.status == "needs_clarification"
+                    else None
+                ),
+                "plan": (
+                    copy.deepcopy(plan)
+                    if self.status in {"plan_review", "confirmed"}
+                    else None
+                ),
+                "plan_diff": None,
+                "confirmation": copy.deepcopy(self.confirmation),
+            }
+
+        def initial_state(self) -> dict[str, object]:
+            workspaces = []
+            if self.status != "idle":
+                workspaces.append(
+                    {
+                        "plan_token": plan_token,
+                        "display_name": plan["product_name"],
+                        "status": self.status,
+                        "updated_at": "2026-07-25T00:00:00Z",
+                        "plan_version": plan["plan_version"],
+                        "confirmed": self.status == "confirmed",
+                    }
+                )
+            return {
+                "ok": True,
+                "data": {
+                    "schema_version": "product_planning_state.v1",
+                    "available": True,
+                    "selected_model": {
+                        "name": "protocol-fixture",
+                        "digest": "e" * 64,
+                        "parameter_count": 1,
+                        "parameter_size": "1B",
+                    },
+                    "workspaces": workspaces,
+                    "candidate_generation_available": True,
+                    "product_generation_performed": False,
+                },
+            }
+
+        def start(
+            self,
+            requested_goal,
+            _catalog,
+            _cancel,
+            *,
+            resume_plan_token=None,
+            phase_callback=None,
+        ):
+            assert requested_goal == goal
+            assert resume_plan_token is None
+            if phase_callback:
+                phase_callback("requirements_outline")
+            time.sleep(1.0)
+            self.status = "needs_clarification"
+            return {"ok": True, "data": self._projection()}
+
+        def answer(
+            self,
+            token,
+            digest,
+            answers,
+            _catalog,
+            _cancel,
+            *,
+            phase_callback=None,
+        ):
+            assert token == plan_token
+            assert digest == question_set["digest"]
+            assert answers == [
                 {
-                    "table": table,
-                    "rows": [
-                        dict(row)
-                        for row in connection.execute(f"SELECT * FROM {table} ORDER BY rowid")
-                    ],
+                    "question_id": "question_local_runtime",
+                    "source": "option",
+                    "value": "option_local_only",
                 }
-                for table in tables
             ]
-        return {"revision": store.current_revision(), "sha256": _canonical_sha256(rows)}
+            if phase_callback:
+                phase_callback("frontend")
+            self.status = "plan_review"
+            return {"ok": True, "data": self._projection()}
 
+        def get(self, token, _catalog=None, _parameter_capsules=None):
+            if token != plan_token or self.status == "idle":
+                return {
+                    "ok": False,
+                    "error": {
+                        "code": "product_plan_not_found",
+                        "message_key": "product_plan_not_found",
+                    },
+                }
+            return {"ok": True, "data": self._projection()}
+
+        def confirm(
+            self,
+            token,
+            digest,
+            reviewed_plan,
+            _catalog,
+            parameter_capsules=None,
+            parameter_confirmation=None,
+        ):
+            assert token == plan_token
+            assert digest == plan["canonical_digest"]
+            assert reviewed_plan == plan
+            offer = build_parameterized_execution_offer(
+                plan,
+                parameter_capsules or [],
+            )
+            assert offer is not None
+            if parameter_confirmation is None:
+                projection = self._projection()
+                projection["parameter_offer"] = offer
+                return {
+                    "ok": False,
+                    "error": {
+                        "code": "parameter_confirmation_required",
+                        "message_key": "parameter_confirmation_required",
+                    },
+                    "data": projection,
+                }
+            binding = build_parameterized_execution_binding(
+                plan,
+                offer,
+                parameter_confirmation,
+            )
+            receipt = {
+                key: value
+                for key, value in base_confirmation.items()
+                if key != "receipt_digest"
+            }
+            receipt["schema_version"] = "product_plan_confirmation.v2"
+            receipt["parameter_binding"] = binding
+            receipt["receipt_digest"] = canonical_digest(receipt)
+            if self.confirmation is not None and self.confirmation != receipt:
+                return {
+                    "ok": False,
+                    "error": {
+                        "code": "product_plan_confirmation_conflict",
+                        "message_key": "product_plan_confirmation_conflict",
+                    },
+                }
+            self.confirmation = copy.deepcopy(receipt)
+            self.status = "confirmed"
+            return {"ok": True, "data": self._projection()}
+
+        def confirm_candidate_acceptance(self, token, record):
+            assert token == plan_token
+            if (
+                self.acceptance_confirmation is not None
+                and self.acceptance_confirmation != record
+            ):
+                return {
+                    "ok": False,
+                    "error": {
+                        "code": "candidate_acceptance_confirmation_conflict",
+                        "message_key": "candidate_acceptance_confirmation_conflict",
+                    },
+                }
+            self.acceptance_confirmation = copy.deepcopy(record)
+            return {
+                "ok": True,
+                "data": {
+                    "acceptance_confirmation": copy.deepcopy(record),
+                },
+            }
+
+        def get_candidate_acceptance_confirmation(self, token):
+            assert token == plan_token
+            if self.acceptance_confirmation is None:
+                return {
+                    "ok": False,
+                    "error": {
+                        "code": "candidate_acceptance_confirmation_required",
+                        "message_key": "candidate_acceptance_confirmation_required",
+                    },
+                }
+            return {
+                "ok": True,
+                "data": {
+                    "acceptance_confirmation": copy.deepcopy(
+                        self.acceptance_confirmation
+                    )
+                },
+            }
+
+    planner = DesktopPlanner()
+    service._product_planner = planner
+    warehouse_before = _store_snapshot(store)
     source_before = _tree_state(source_root)
-    target_before = _tree_state(untouched_target)
-    warehouse_before = warehouse_state()
+    target_before = _tree_state(target_root)
     usage_before = _usage_state(store)
     products_before = _tree_state(state_dir / "products")
 
@@ -1746,7 +1980,11 @@ def test_product_plan_ide_prototype_round_trip_is_read_only(
     profile = QWebEngineProfile.defaultProfile()
     profile.setCachePath(str(tmp_path / "qweb-cache"))
     profile.setPersistentStoragePath(str(tmp_path / "qweb-storage"))
-    window = None
+
+    class FixedDirectoryDialog:
+        @staticmethod
+        def getExistingDirectory(*_args, **_kwargs):
+            return str(export_parent)
 
     def pump(seconds: float = 0.03) -> None:
         deadline = time.monotonic() + seconds
@@ -1754,13 +1992,41 @@ def test_product_plan_ide_prototype_round_trip_is_read_only(
             app.processEvents()
             time.sleep(0.005)
 
+    def close_window(window) -> None:
+        if window is None:
+            return
+        for preview in list(
+            getattr(window, "_reweave_bridge", object())._candidate_preview_windows
+            if hasattr(getattr(window, "_reweave_bridge", None), "_candidate_preview_windows")
+            else []
+        ):
+            preview.close()
+            preview.deleteLater()
+        window._reweave_close_service()
+        window.close()
+        window.deleteLater()
+        pump()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+        app.processEvents()
+
+    window = None
+    restarted_window = None
+    restarted_service = None
     try:
-        with patch.object(desktop, "ReweaveAppService", return_value=service):
+        with (
+            patch.object(
+                desktop,
+                "import_qt_webengine",
+                return_value=(*qt_parts[:5], FixedDirectoryDialog),
+            ),
+            patch.object(desktop, "ReweaveAppService", return_value=service),
+        ):
             window, bridge = desktop.create_reweave_window()
+            window._reweave_bridge = bridge
             page = window.centralWidget().page()
             window.show()
 
-            def js(expression: str, timeout: float = 15) -> object:
+            def js(expression: str, timeout: float = 20) -> object:
                 result: list[object] = []
                 page.runJavaScript(expression, result.append)
                 deadline = time.monotonic() + timeout
@@ -1780,11 +2046,6 @@ def test_product_plan_ide_prototype_round_trip_is_read_only(
                     pump(0.08)
                 raise TimeoutError(f"{label}:{last!r}")
 
-            def product_state() -> dict[str, object]:
-                return json.loads(
-                    str(js("JSON.stringify(window.ReweavePrototype.getState().productPlan)"))
-                )
-
             wait_js(
                 "document.readyState === 'complete' && !!window.reweaveBridge && "
                 "!document.getElementById('screen-main').classList.contains('hidden')",
@@ -1792,154 +2053,380 @@ def test_product_plan_ide_prototype_round_trip_is_read_only(
                 "desktop main screen",
             )
             bridge_calls: list[str] = []
-            original_phase4_call = bridge._phase4_call
+            original_call = bridge._phase4_call
 
-            def observe_phase4_call(method_name: str, payload_json: str = "") -> str:
+            def observe_call(method_name: str, payload_json: str = "") -> str:
                 bridge_calls.append(method_name)
-                return original_phase4_call(method_name, payload_json)
+                return original_call(method_name, payload_json)
 
-            bridge._phase4_call = observe_phase4_call
+            bridge._phase4_call = observe_call
 
-            # Prime the already-existing warehouse read cache outside the measured prototype flow.
-            js("document.getElementById('btn-capsule-warehouse').click(); true")
-            wait_js(
-                "!window.ReweavePrototype.getState().warehouse.source_relations_loading",
-                30,
-                "warehouse read cache",
-            )
-            assert bridge_calls == ["get_capsule_detail"]
-            js("document.getElementById('btn-warehouse-scene-back').click(); true")
-            wait_js(
-                "!document.getElementById('screen-main').classList.contains('hidden')",
-                10,
-                "return from cache prime",
-            )
-            measured_bridge_start = len(bridge_calls)
-            js(
-                "window.__productPlanNetworkCalls = 0; "
-                "window.__productPlanXhrOpen = XMLHttpRequest.prototype.open; "
-                "XMLHttpRequest.prototype.open = function () { "
-                "window.__productPlanNetworkCalls += 1; "
-                "return window.__productPlanXhrOpen.apply(this, arguments); }; true"
-            )
+            def assert_product_frame() -> None:
+                frame = json.loads(
+                    str(
+                        js(
+                            "JSON.stringify((() => {"
+                            "const bar=document.querySelector('.product-plan-bar').getBoundingClientRect();"
+                            "const stage=document.getElementById('product-plan-stage').getBoundingClientRect();"
+                            "const back=document.getElementById('btn-product-plan-back').getBoundingClientRect();"
+                            "return {scroll_x:window.scrollX,scroll_y:window.scrollY,"
+                            "bar_left:bar.left,bar_top:bar.top,bar_right:bar.right,bar_bottom:bar.bottom,"
+                            "back_left:back.left,back_right:back.right,stage_top:stage.top,"
+                            "viewport_width:window.innerWidth,viewport_height:window.innerHeight};"
+                            "})())"
+                        )
+                    )
+                )
+                assert frame["scroll_x"] == 0, frame
+                assert frame["scroll_y"] == 0, frame
+                assert frame["bar_left"] == 0, frame
+                assert frame["bar_top"] == 0, frame
+                assert frame["bar_right"] == frame["viewport_width"], frame
+                assert 0 <= frame["back_left"] < frame["back_right"], frame
+                assert frame["back_right"] <= frame["viewport_width"], frame
+                assert frame["stage_top"] >= frame["bar_bottom"], frame
+                assert frame["viewport_height"] >= 720, frame
 
+            assert (
+                js("document.getElementById('btn-open-product-plan').disabled")
+                is False
+            ), js("JSON.stringify(window.ReweavePrototype.getState())")
             js("document.getElementById('btn-open-product-plan').click(); true")
             wait_js(
-                "window.ReweavePrototype.getState().productPlan.active === true",
+                "window.ReweavePrototype.getState().productPlan.active === true && "
+                "window.ReweavePrototype.getState().productPlan.view === 'compose'",
                 10,
-                "product plan scene",
+                "product compose",
             )
-            goal = "Build a local operations dashboard"
+            assert_product_frame()
+            assert (
+                js("document.getElementById('btn-submit-product-goal').disabled")
+                is False
+            )
             js(
-                "(() => { const goal = document.getElementById('product-plan-goal'); "
-                f"goal.value = {json.dumps(goal)}; goal.focus(); "
+                "(() => { const input = document.getElementById('product-plan-goal'); "
+                f"input.value = {json.dumps(goal)}; "
                 "document.getElementById('btn-submit-product-goal').click(); return true; })()"
             )
             wait_js(
-                "window.ReweavePrototype.getState().productPlan.fixture_visible === true",
-                10,
-                "prototype fixture",
+                "window.ReweavePrototype.getState().productPlan.view === 'progress'",
+                5,
+                "real planning status",
             )
-            overview = product_state()
-            assert overview["scope"] == "prototype_only"
-            assert overview["prototype_id"] == "product-plan-prototype-001"
-            assert overview["goal_entered"] is True
+            assert_product_frame()
+            wait_js(
+                "['questions','failed'].includes("
+                "window.ReweavePrototype.getState().productPlan.view)",
+                30,
+                "blocking question",
+            )
+            assert (
+                json.loads(
+                    str(
+                        js(
+                            "JSON.stringify(window.ReweavePrototype.getState().productPlan)"
+                        )
+                    )
+                )["view"]
+                == "questions"
+            ), (
+                bridge_calls,
+                [
+                    {
+                        key: value
+                        for key, value in task.items()
+                        if key not in {"cancel_event", "future"}
+                    }
+                    for task in service._management_tasks.values()
+                ],
+            )
+            assert_product_frame()
+            assert "start_product_plan" in bridge_calls
+            assert "get_product_plan_run" in bridge_calls
+            js(
+                "document.querySelector('#product-plan-question-form input[type=radio]').click(); "
+                "document.getElementById('btn-submit-product-answers').click(); true"
+            )
+            wait_js(
+                "window.ReweavePrototype.getState().productPlan.view === 'review' && "
+                "window.ReweavePrototype.getState().productPlan.acceptance_supported === true",
+                30,
+                "plan and acceptance shape",
+            )
             assert js("document.querySelectorAll('.product-plan-section').length") == 4
-            assert js(
-                "Array.from(document.querySelectorAll('.prototype-note')).some(function (item) { "
-                "return !item.closest('.hidden') && item.textContent.includes('原型数据'); })"
+            assert js("document.querySelectorAll('.product-plan-work-item').length") == 4
+            assert js("document.getElementById('product-review-title').textContent") == (
+                "本地报价产品"
+            )
+            js(
+                "document.getElementById('btn-add-product-acceptance-case').click(); "
+                "document.getElementById('btn-add-product-acceptance-case').click(); true"
+            )
+            js(
+                "(() => {"
+                "const inputs = document.querySelectorAll('[data-acceptance-field=input]');"
+                "const outputs = document.querySelectorAll('[data-acceptance-field=expected]');"
+                "['1','3','10'].forEach(function(value,index){"
+                "inputs[index].value=value; inputs[index].dispatchEvent(new Event('input',{bubbles:true}));"
+                "});"
+                "['10','30','100'].forEach(function(value,index){"
+                "outputs[index].value=value; outputs[index].dispatchEvent(new Event('input',{bubbles:true}));"
+                "});"
+                "return true;"
+                "})()"
+            )
+            assert_product_frame()
+            js("document.getElementById('btn-confirm-and-generate').click(); true")
+            wait_js(
+                "!document.getElementById('product-parameter-confirmation').classList.contains('hidden') "
+                "&& !!document.querySelector('#product-parameter-confirmation input')",
+                30,
+                "parameter confirmation",
+            )
+            js(
+                "(() => { const input = document.querySelector('#product-parameter-confirmation input'); "
+                "input.value='10'; input.dispatchEvent(new Event('input',{bubbles:true})); "
+                "document.getElementById('btn-confirm-and-generate').click(); return true; })()"
+            )
+            wait_js(
+                "window.ReweavePrototype.getState().productPlan.candidate_status === 'review_ready'",
+                180,
+                "review-ready candidate",
+            )
+            assert bridge_calls.count("confirm_product_plan") == 2
+            assert bridge_calls.count("confirm_product_candidate_acceptance") == 1
+            assert bridge_calls.count("start_confirmed_product_candidate") == 1
+            assert bridge_calls.count("suggest_product_plan_action") == 0
+            assert bridge_calls.count("generate_product") == 0
+            assert_product_frame()
+            candidate_records = list(
+                (state_dir / "product_candidates").glob("*/candidate.json")
+            )
+            assert len(candidate_records) == 1
+            candidate_record = json.loads(
+                candidate_records[0].read_text(encoding="utf-8")
+            )
+            candidate_token = candidate_record["candidate_token"]
+            candidate = service.get_product_candidate(
+                {"candidate_token": candidate_token}
+            )["data"]
+            assert candidate["schema_version"] == "product_candidate.v2"
+            assert candidate["status"] == "review_ready"
+            assert candidate["acceptance"]["runtime_operational"] == "passed"
+            assert candidate["acceptance"]["product_goal_conformance"] == "passed"
+            assert [
+                (
+                    row["input"]["quantity"],
+                    row["expected_output"]["total"],
+                    row["actual_output"]["total"],
+                )
+                for row in candidate["acceptance"]["cases"]
+            ] == [(1, 10, 10), (3, 30, 30), (10, 100, 100)]
+            assert len(candidate["files"]) == 7
+            assert {
+                row["path"] for row in candidate["provenance"]["file_provenance"]
+            } == {row["path"] for row in candidate["files"]}
+
+            js("document.getElementById('btn-preview-product-candidate').click(); true")
+            deadline = time.monotonic() + 30
+            while not bridge._candidate_preview_windows and time.monotonic() < deadline:
+                pump(0.08)
+            assert len(bridge._candidate_preview_windows) == 1
+            preview = bridge._candidate_preview_windows[0]
+            preview_page = preview.centralWidget().page()
+
+            def preview_js(expression: str, timeout: float = 20) -> object:
+                result: list[object] = []
+                preview_page.runJavaScript(expression, result.append)
+                deadline = time.monotonic() + timeout
+                while not result and time.monotonic() < deadline:
+                    pump()
+                if not result:
+                    raise TimeoutError("preview_javascript_callback_timeout")
+                return result[0]
+
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                if preview_js(
+                    "document.readyState === 'complete' && "
+                    "!!document.querySelector('[data-ref=quantity]')"
+                ):
+                    break
+                pump(0.08)
+            else:
+                raise TimeoutError("candidate preview did not load")
+            preview_js(
+                "(() => { const quantity=document.querySelector('[data-ref=quantity]'); "
+                "quantity.value='3'; document.querySelector('[data-action=calculate]').click(); "
+                "return true; })()"
+            )
+            deadline = time.monotonic() + 10
+            while time.monotonic() < deadline:
+                if str(
+                    preview_js(
+                        "document.querySelector('[data-ref=total]').textContent"
+                    )
+                ) == "30":
+                    break
+                pump(0.08)
+            else:
+                raise AssertionError("candidate preview returned the wrong total")
+            assert (
+                preview_page.acceptNavigationRequest(
+                    QUrl("https://example.invalid/"), None, True
+                )
+                is False
+            )
+            assert (
+                preview_page.acceptNavigationRequest(
+                    QUrl.fromLocalFile(str(source_root / "outside.js")),
+                    None,
+                    False,
+                )
+                is False
+            )
+            assert (
+                preview_page.settings().testAttribute(
+                    qt_parts[3].LocalContentCanAccessRemoteUrls
+                )
+                is False
             )
 
-            js(
-                "(() => { const frontend = document.querySelector('[data-section-id=frontend]'); "
-                "const backend = document.querySelector('[data-section-id=backend]'); "
-                "if (frontend.open) frontend.querySelector('summary').click(); "
-                "if (!backend.open) backend.querySelector('summary').click(); return true; })()"
-            )
-            pump(0.1)
-            js(
-                "(() => { const toggle = document.getElementById('product-plan-developer-mode'); "
-                "toggle.click(); const stage = document.getElementById('product-plan-stage'); "
-                "stage.style.height = '180px'; stage.scrollTop = 90; "
-                "const button = document.getElementById('btn-open-product-review-backend'); "
-                "button.focus(); button.click(); return true; })()"
-            )
+            js("document.getElementById('btn-save-product-candidate').click(); true")
             wait_js(
-                "window.ReweavePrototype.getState().productPlan.view === 'review' && "
-                "window.ReweavePrototype.getState().productPlan.section_id === 'backend'",
-                10,
-                "backend review",
+                "document.getElementById('product-candidate-action-result').textContent.includes('保存')",
+                30,
+                "candidate saved",
             )
-            review_state = product_state()
-            assert review_state["developer_mode"] is True
-            assert review_state["expanded"] == {
-                "frontend": False,
-                "backend": True,
-                "data": False,
-                "infrastructure": False,
-            }
-            assert js("document.getElementById('product-review-empty').textContent") == (
-                "真实候选尚未生成"
+            saved_roots = [item for item in export_parent.iterdir() if item.is_dir()]
+            assert len(saved_roots) == 1
+            saved_root = saved_roots[0]
+            for metadata in candidate["files"]:
+                exported = saved_root / metadata["path"]
+                assert exported.is_file() and not exported.is_symlink()
+                assert hashlib.sha256(exported.read_bytes()).hexdigest() == (
+                    metadata["sha256"]
+                )
+            js("document.getElementById('btn-save-product-candidate').click(); true")
+            wait_js(
+                "document.getElementById('product-candidate-action-result').textContent.includes('已经')",
+                30,
+                "candidate save idempotency",
             )
-            evidence = json.loads(
-                str(js("document.getElementById('product-plan-developer-evidence').textContent"))
-            )
-            assert evidence["scope"] == "prototype_only"
-            assert evidence["candidate"] == {
-                "capsule_id": capsule_id,
-                "evidence_status": "prototype_navigation_only",
-                "formal_match_claimed": False,
-                "validation_claimed": False,
-            }
-            assert evidence["calls"] == {"bridge": 0, "network": 0, "model": 0}
-            assert evidence["writes"] == 0
+            assert len(list(export_parent.iterdir())) == 1
 
-            js(
-                "(() => { const stage = document.getElementById('product-plan-stage'); "
-                "const capsule = document.querySelector("
-                "'.product-review-capsule[data-capsule-id]'); capsule.focus(); "
-                "stage.scrollTop = 70; capsule.click(); return true; })()"
+            public_state = str(
+                js("JSON.stringify(window.ReweavePrototype.getState())")
             )
-            wait_js(
-                "window.ReweavePrototype.getState().warehouse.active === true && "
-                "window.ReweavePrototype.getState().warehouse.view === 'project' && "
-                f"window.ReweavePrototype.getState().warehouse.focused_node === {json.dumps('capsule:' + capsule_id)}",
-                15,
-                "focused warehouse capsule",
+            markup = str(js("document.documentElement.outerHTML"))
+            visible = str(js("document.body.innerText"))
+            for secret in (
+                plan_token,
+                candidate_token,
+                str(tmp_path),
+                "workspace_id",
+                "candidate_id",
+                ".sqlite3",
+            ):
+                assert secret not in public_state
+                assert secret not in markup
+                assert secret not in visible
+
+            first_candidate_digest = candidate["candidate_digest"]
+            first_file_hashes = {
+                item["path"]: item["sha256"] for item in candidate["files"]
+            }
+            first_confirmation = copy.deepcopy(planner.confirmation)
+            first_acceptance = copy.deepcopy(planner.acceptance_confirmation)
+
+        close_window(window)
+        window = None
+        restarted_planner = DesktopPlanner(
+            status="confirmed",
+            confirmation=first_confirmation,
+            acceptance_confirmation=first_acceptance,
+        )
+        restarted_service = ReweaveAppService(
+            _NoLegacyEngine(),
+            capsule_store=store,
+        )
+        restarted_service._product_planner = restarted_planner
+        with (
+            patch.object(
+                desktop,
+                "import_qt_webengine",
+                return_value=(*qt_parts[:5], FixedDirectoryDialog),
+            ),
+            patch.object(
+                desktop,
+                "ReweaveAppService",
+                return_value=restarted_service,
+            ),
+        ):
+            restarted_window, _restarted_bridge = desktop.create_reweave_window()
+            restarted_page = restarted_window.centralWidget().page()
+            restarted_window.show()
+
+            def restarted_js(expression: str, timeout: float = 20) -> object:
+                result: list[object] = []
+                restarted_page.runJavaScript(expression, result.append)
+                deadline = time.monotonic() + timeout
+                while not result and time.monotonic() < deadline:
+                    pump()
+                if not result:
+                    raise TimeoutError("restart_javascript_callback_timeout")
+                return result[0]
+
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                if restarted_js(
+                    "document.readyState === 'complete' && !!window.reweaveBridge"
+                ):
+                    break
+                pump(0.08)
+            else:
+                raise TimeoutError("restarted desktop did not load")
+            restarted_js(
+                "document.getElementById('btn-open-product-plan').click(); true"
             )
-            assert js(
-                "!document.getElementById('btn-warehouse-return-product-plan').classList.contains('hidden')"
+            deadline = time.monotonic() + 90
+            while time.monotonic() < deadline:
+                if restarted_js(
+                    "window.ReweavePrototype.getState().productPlan.candidate_status === "
+                    "'review_ready'"
+                ):
+                    break
+                pump(0.08)
+            else:
+                raise TimeoutError("restarted candidate did not restore")
+            restored = restarted_service.get_product_candidate(
+                {"candidate_token": candidate_token}
             )
-            assert js("document.getElementById('warehouse-scene-query').value") == capsule_id
-            assert bridge_calls[measured_bridge_start:] == []
-            js("document.getElementById('btn-warehouse-return-product-plan').click(); true")
-            wait_js(
-                "!document.getElementById('screen-product-plan').classList.contains('hidden') && "
-                "window.ReweavePrototype.getState().productPlan.view === 'review' && "
-                "document.activeElement.classList.contains('product-review-capsule')",
-                10,
-                "product review restored",
-            )
-            restored = product_state()
-            assert restored["section_id"] == "backend"
-            assert restored["developer_mode"] is True
-            assert restored["expanded"] == review_state["expanded"]
-            assert js("document.getElementById('product-plan-stage').scrollTop") == 70
-            assert js("window.__productPlanNetworkCalls") == 0
-            assert bridge_calls[measured_bridge_start:] == []
-            assert str(js("document.documentElement.textContent")).find(str(source_root.resolve())) == -1
-            assert _tree_state(source_root) == source_before
-            assert _tree_state(untouched_target) == target_before
-            assert warehouse_state() == warehouse_before
-            assert _usage_state(store) == usage_before
-            assert _tree_state(state_dir / "products") == products_before
+            assert restored["ok"], restored
+            assert restored["data"]["candidate_digest"] == first_candidate_digest
+            assert {
+                item["path"]: item["sha256"] for item in restored["data"]["files"]
+            } == first_file_hashes
+            for relative_path, expected_hash in first_file_hashes.items():
+                opened = restarted_service.read_product_candidate_file(
+                    {
+                        "candidate_token": candidate_token,
+                        "relative_path": relative_path,
+                    }
+                )
+                assert opened["ok"], opened
+                assert opened["data"]["sha256"] == expected_hash
+
+        assert _store_snapshot(store) == warehouse_before
+        assert _usage_state(store) == usage_before
+        assert _tree_state(source_root) == source_before
+        assert _tree_state(target_root) == target_before
+        assert _tree_state(state_dir / "products") == products_before
     finally:
-        if window is not None:
-            window.close()
-            window.deleteLater()
-            pump()
-            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
-            app.processEvents()
+        close_window(restarted_window)
+        close_window(window)
+        if restarted_service is not None:
+            restarted_service.close()
         service.close()
 
 
@@ -3141,7 +3628,8 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
                     "tree: document.getElementById('generated-tree').textContent.trim(),"
                     "capsule_meta: document.getElementById('gen-capsules-used').textContent,"
                     "response: document.getElementById('reweave-response').textContent,"
-                    "preview_path: window.ReweavePrototype.getState().bridge.previewPath,"
+                    "preview_path_present: Object.prototype.hasOwnProperty.call("
+                    "window.ReweavePrototype.getState().bridge, 'previewPath'),"
                     "used_ids: window.ReweavePrototype.getState().usedCapsuleIds"
                     "})"
                 )
@@ -3150,7 +3638,7 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
             assert restored_ui["tree"] == "", restored_ui
             assert "0" in restored_ui["capsule_meta"], restored_ui
             assert restored_ui["response"] == "", restored_ui
-            assert restored_ui["preview_path"] is None, restored_ui
+            assert restored_ui["preview_path_present"] is False, restored_ui
             assert restored_ui["used_ids"] == [], restored_ui
             historical = service.get_initial_state()["capsuleIngestionV1"][
                 "historicalProducts"
