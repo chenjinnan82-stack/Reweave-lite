@@ -8,9 +8,13 @@ against sanitized HTML before this contract is integrated into formal flows.
 from __future__ import annotations
 
 import hashlib
-import json
 import re
 from typing import Any
+
+from pimos_lite.reweave_canonical import (
+    canonical_json_digest,
+    canonicalize_capsule,
+)
 
 
 PAGE_CAPABILITY_CONTRACT_VERSION = "page_capability_contract.v2"
@@ -176,8 +180,6 @@ def validate_formal_page_contract(
     verified_page_contracts: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     """Validate one formal v1 HTML contract or one verified v2 capability set."""
-    from pimos_lite.reweave_capsule_store import canonicalize_capsule
-
     if type(capsules) is not list or not capsules:
         raise ValueError("formal_page_contract_identity_invalid")
     projections = _normalize_verified_page_contracts(verified_page_contracts)
@@ -422,14 +424,7 @@ def _formal_capsule_payload(capsule: dict[str, Any]) -> dict[str, Any]:
 
 
 def _canonical_digest(value: dict[str, Any]) -> str:
-    encoded = json.dumps(
-        value,
-        ensure_ascii=False,
-        sort_keys=True,
-        separators=(",", ":"),
-        allow_nan=False,
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    return canonical_json_digest(value)
 
 
 __all__ = [

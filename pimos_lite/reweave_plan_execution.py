@@ -2,12 +2,15 @@
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 from typing import Any
 
 from pimos_lite import reweave_page_capability_contract as page_contract
+from pimos_lite.reweave_canonical import (
+    canonical_json_bytes,
+    canonical_json_digest,
+)
 from pimos_lite.reweave_data_contract import (
     DataContractError,
     contracts_compatible,
@@ -50,19 +53,16 @@ class CandidateAcceptanceError(ValueError):
 
 def canonical_bytes(value: Any) -> bytes:
     try:
-        return json.dumps(
-            value,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
+        return canonical_json_bytes(value)
     except (TypeError, ValueError, UnicodeEncodeError) as exc:
         raise PlanExecutionError("plan_execution_json_invalid") from exc
 
 
 def canonical_digest(value: Any) -> str:
-    return hashlib.sha256(canonical_bytes(value)).hexdigest()
+    try:
+        return canonical_json_digest(value)
+    except (TypeError, ValueError, UnicodeEncodeError) as exc:
+        raise PlanExecutionError("plan_execution_json_invalid") from exc
 
 
 def _exact(value: Any, keys: set[str], code: str) -> dict[str, Any]:

@@ -13,13 +13,17 @@ import threading
 import unicodedata
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import cache
 from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import quote
 
+from pimos_lite.reweave_canonical import (
+    CanonicalCapsule,
+    canonicalize_capsule,
+    validate_logical_path,
+)
 from pimos_lite.reweave_page_capability_contract import (
     verify_formal_capsule_identity,
 )
@@ -44,24 +48,6 @@ _SCHEMA_FINGERPRINT_SHA256 = {
     1: "31ca94b97ad9e6539f9d62f5938759232aa1a6f3cdac49950962f03555b48bd1",
     2: "2f5c245eee172d57abc065d1c63ad76e11925aec6a021d586a9384c4cbde2ada",
 }
-_CANONICAL_FIELDS = frozenset(
-    {
-        "capability_kind",
-        "activation",
-        "input_contract",
-        "output_contract",
-        "error_contract",
-        "runtime_allowlist",
-        "dom_scope",
-        "usage_scope",
-        "html",
-        "css",
-        "javascript_modules",
-        "assets",
-    }
-)
-_CAPABILITY_KINDS = frozenset({"presentation", "interaction", "computation"})
-_MEDIA_TYPES = frozenset({"image/png", "image/jpeg", "image/webp"})
 _TABLES = frozenset(
     {
         "warehouse_state",
@@ -123,13 +109,6 @@ class CapsuleStoreError(RuntimeError):
 
 class SchemaVersionError(CapsuleStoreError):
     """The database schema is unsupported or incomplete."""
-
-
-@dataclass(frozen=True)
-class CanonicalCapsule:
-    payload: dict[str, Any]
-    json_bytes: bytes
-    sha256: str
 
 
 SCHEMA_SQL_V1 = r"""
@@ -1911,192 +1890,6 @@ def capsule_backup_dir() -> Path:
     return state_dir() / BACKUP_DIRECTORY
 
 
-def canonicalize_capsule(payload: dict[str, Any]) -> CanonicalCapsule:
-    if type(payload) is not dict:
-        raise ValueError("canonical payload must be an object")
-    missing = _CANONICAL_FIELDS - payload.keys()
-    extra = payload.keys() - _CANONICAL_FIELDS
-    if missing or extra:
-        raise ValueError(
-            f"canonical payload fields mismatch: missing={sorted(missing)}, extra={sorted(extra)}"
-        )
-
-    normalized = _normalize_json(payload, "$")
-    if normalized["capability_kind"] not in _CAPABILITY_KINDS:
-        raise ValueError("invalid capability_kind")
-    for key in (
-        "activation",
-        "input_contract",
-        "output_contract",
-        "error_contract",
-        "dom_scope",
-        "usage_scope",
-    ):
-        if type(normalized[key]) is not dict:
-            raise ValueError(f"{key} must be an object")
-    for key in ("html", "css"):
-        if type(normalized[key]) is not str:
-            raise ValueError(f"{key} must be a string")
-        normalized[key] = _normalize_source_text(normalized[key])
-
-    normalized["runtime_allowlist"] = _sorted_unique_strings(
-        normalized["runtime_allowlist"], "runtime_allowlist"
-    )
-    dom_scope = normalized["dom_scope"]
-    for key in ("selectors", "classes", "attributes", "events"):
-        dom_scope[key] = _sorted_unique_strings(dom_scope.get(key, []), f"dom_scope.{key}")
-
-    entry_module = normalized["activation"].get("entry_module")
-    if entry_module is not None:
-        _validate_logical_path(entry_module, "activation.entry_module")
-
-    normalized["input_contract"] = _normalize_contract(normalized["input_contract"])
-    normalized["output_contract"] = _normalize_contract(normalized["output_contract"])
-    normalized["error_contract"] = _normalize_contract(normalized["error_contract"])
-    normalized["javascript_modules"] = _normalize_modules(normalized["javascript_modules"])
-    normalized["assets"] = _normalize_assets(normalized["assets"])
-
-    try:
-        json_bytes = json.dumps(
-            normalized,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-    except (TypeError, UnicodeEncodeError, ValueError) as exc:
-        raise ValueError("canonical payload is not strict UTF-8 JSON") from exc
-    return CanonicalCapsule(
-        payload=normalized,
-        json_bytes=json_bytes,
-        sha256=hashlib.sha256(json_bytes).hexdigest(),
-    )
-
-
-def _normalize_json(value: Any, location: str) -> Any:
-    if value is None or type(value) is bool or type(value) is int:
-        return value
-    if type(value) is float:
-        raise ValueError(f"float is forbidden at {location}")
-    if type(value) is str:
-        return value
-    if type(value) is list:
-        return [_normalize_json(item, f"{location}[{index}]") for index, item in enumerate(value)]
-    if type(value) is dict:
-        out: dict[str, Any] = {}
-        for key, item in value.items():
-            if type(key) is not str:
-                raise ValueError(f"non-string key at {location}")
-            if _contains_forbidden_control(key):
-                raise ValueError(f"control character in key at {location}")
-            normalized_key = key.replace("\r\n", "\n").replace("\r", "\n")
-            if normalized_key in out:
-                raise ValueError(f"normalized key collision at {location}")
-            out[normalized_key] = _normalize_json(item, f"{location}.{normalized_key}")
-        return out
-    raise ValueError(f"non-JSON value at {location}: {type(value).__name__}")
-
-
-def _normalize_contract(value: Any) -> Any:
-    if type(value) is list:
-        return [_normalize_contract(item) for item in value]
-    if type(value) is not dict:
-        return value
-    out = {key: _normalize_contract(item) for key, item in value.items()}
-    if "required" in out:
-        out["required"] = _sorted_unique_strings(out["required"], "contract.required")
-    if "enum" in out:
-        if type(out["enum"]) is not list:
-            raise ValueError("contract.enum must be an array")
-        by_json: dict[str, Any] = {}
-        for item in out["enum"]:
-            encoded = json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-            by_json[encoded] = item
-        out["enum"] = [by_json[key] for key in sorted(by_json)]
-    return out
-
-
-def _sorted_unique_strings(value: Any, location: str) -> list[str]:
-    if type(value) is not list or any(type(item) is not str for item in value):
-        raise ValueError(f"{location} must be an array of strings")
-    if any(_contains_forbidden_control(item) for item in value):
-        raise ValueError(f"{location} contains a control character")
-    return sorted(set(value))
-
-
-def _contains_forbidden_control(value: str) -> bool:
-    return any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
-
-
-def _normalize_source_text(value: str) -> str:
-    return value.replace("\r\n", "\n").replace("\r", "\n")
-
-
-def _normalize_modules(value: Any) -> list[dict[str, str]]:
-    if type(value) is not list:
-        raise ValueError("javascript_modules must be an array")
-    modules: list[dict[str, str]] = []
-    paths: set[str] = set()
-    for item in value:
-        if type(item) is not dict or set(item) != {"path", "source"}:
-            raise ValueError("each JavaScript module must contain only path and source")
-        path = item["path"]
-        source = item["source"]
-        _validate_logical_path(path, "javascript_modules.path")
-        if type(source) is not str:
-            raise ValueError("javascript_modules.source must be a string")
-        if path in paths:
-            raise ValueError(f"duplicate JavaScript module path: {path}")
-        paths.add(path)
-        modules.append({"path": path, "source": _normalize_source_text(source)})
-    return sorted(modules, key=lambda item: item["path"])
-
-
-def _normalize_assets(value: Any) -> list[dict[str, str]]:
-    if type(value) is not list:
-        raise ValueError("assets must be an array")
-    assets: list[dict[str, str]] = []
-    paths: set[str] = set()
-    for item in value:
-        if type(item) is not dict or set(item) != {"logical_path", "media_type", "sha256"}:
-            raise ValueError("each asset must contain logical_path, media_type, and sha256")
-        logical_path = item["logical_path"]
-        media_type = item["media_type"]
-        digest = item["sha256"]
-        _validate_logical_path(logical_path, "assets.logical_path")
-        if media_type not in _MEDIA_TYPES:
-            raise ValueError(f"invalid asset media_type: {media_type}")
-        if (
-            type(digest) is not str
-            or len(digest) != 64
-            or any(char not in "0123456789abcdef" for char in digest)
-        ):
-            raise ValueError("asset sha256 must be 64 lowercase hexadecimal characters")
-        if logical_path in paths:
-            raise ValueError(f"duplicate asset path: {logical_path}")
-        paths.add(logical_path)
-        assets.append(
-            {"logical_path": logical_path, "media_type": media_type, "sha256": digest}
-        )
-    return sorted(
-        assets,
-        key=lambda item: (item["logical_path"], item["media_type"], item["sha256"]),
-    )
-
-
-def _validate_logical_path(value: Any, location: str) -> None:
-    if (
-        type(value) is not str
-        or not value
-        or _contains_forbidden_control(value)
-        or "\\" in value
-        or value.startswith("/")
-    ):
-        raise ValueError(f"invalid logical path at {location}")
-    if any(part in {"", ".", ".."} for part in value.split("/")):
-        raise ValueError(f"invalid logical path at {location}")
-
-
 def _database_operation_key(path: Path) -> str:
     return str(path.resolve())
 
@@ -2988,7 +2781,10 @@ def _assert_project_file_index_invariants(connection: sqlite3.Connection) -> Non
         for row in sorted(rows, key=lambda item: str(item["logical_path"]).encode("utf-8")):
             logical_path = row["logical_path"]
             try:
-                _validate_logical_path(logical_path, "project_file_index.logical_path")
+                validate_logical_path(
+                    logical_path,
+                    "project_file_index.logical_path",
+                )
             except ValueError as exc:
                 raise CapsuleStoreError(
                     "persistent data invariant failed: project_file_index_path"

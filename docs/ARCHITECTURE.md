@@ -91,6 +91,17 @@ versions and invokes the single `module_native` composer. The desktop bridge
 forwards narrow service actions; it does not reproduce path, authorization,
 composition, or Patch rules in the frontend.
 
+Canonical dependency direction is deliberately one-way. The pure
+`reweave_canonical` module owns strict canonical JSON bytes/digests and formal
+capsule-payload normalization. The Store, Page Capability contract, Composer,
+Plan Execution, and Product Planner depend on that lowest layer; the Page
+Capability contract and Composer do not import the Store. Store remains the
+only persistence/integrity owner, the Page Capability module remains the
+page-identity/compatibility owner, and `module_native` remains the only
+composition owner. Plan Execution and Product Planner retain their existing
+public error boundaries while using the shared byte/digest implementation, so
+existing v1/v2 canonical bytes and digests do not change.
+
 The same service owns the product-planning actions. A separate logical local
 planning-model role interprets goals, asks bounded blocking questions, plans
 the fixed frontend/backend/data/infrastructure sections, and suggests opaque

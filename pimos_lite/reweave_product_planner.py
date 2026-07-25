@@ -24,6 +24,10 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
 from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_opener
 
+from pimos_lite.reweave_canonical import (
+    canonical_json_bytes,
+    canonical_json_digest,
+)
 from pimos_lite.reweave_plan_execution import (
     CANDIDATE_ACCEPTANCE_CONFIRMATION_VERSION,
     MAX_CANDIDATE_ACCEPTANCE_CASES,
@@ -538,19 +542,16 @@ def _now() -> str:
 
 def _canonical_bytes(value: Any) -> bytes:
     try:
-        return json.dumps(
-            value,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
+        return canonical_json_bytes(value)
     except (TypeError, ValueError) as exc:
         raise ProductPlanningError("product_plan_json_invalid") from exc
 
 
 def _digest(value: Any) -> str:
-    return hashlib.sha256(_canonical_bytes(value)).hexdigest()
+    try:
+        return canonical_json_digest(value)
+    except (TypeError, ValueError) as exc:
+        raise ProductPlanningError("product_plan_json_invalid") from exc
 
 
 def _strict_json(raw: bytes) -> Any:

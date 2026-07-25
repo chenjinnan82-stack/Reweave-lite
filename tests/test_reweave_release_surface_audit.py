@@ -1,7 +1,12 @@
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
+from pimos_lite.reweave_canonical import (
+    canonical_json_bytes,
+    canonical_json_digest,
+)
 from pimos_lite.reweave_release_surface_audit import (
     _disposition,
     build_lumo_reweave_release_surface_summary,
@@ -11,6 +16,77 @@ from pimos_lite.reweave_release_surface_audit import (
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+
+def test_shared_canonical_json_digest_is_fixed() -> None:
+    value = {"b": 2, "a": 1}
+
+    assert canonical_json_bytes(value) == b'{"a":1,"b":2}'
+    assert (
+        canonical_json_digest(value)
+        == "43258cff783fe7036d8a43033f830adfc60ec037382473548ac742b888292777"
+    )
+
+
+def test_pimos_lite_internal_import_graph_is_acyclic() -> None:
+    modules: dict[str, Path] = {}
+    for path in (ROOT / "pimos_lite").rglob("*.py"):
+        parts = list(path.relative_to(ROOT).with_suffix("").parts)
+        if parts[-1] == "__init__":
+            parts.pop()
+        modules[".".join(parts)] = path
+    imports = {name: set() for name in modules}
+    for name, path in modules.items():
+        package = name if path.name == "__init__.py" else name.rpartition(".")[0]
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            targets: list[str] = []
+            if isinstance(node, ast.Import):
+                targets = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                if node.level:
+                    prefix = package.split(".")
+                    if node.level > 1:
+                        prefix = prefix[: -(node.level - 1)]
+                    base = ".".join(
+                        [*prefix, *((node.module or "").split("."))]
+                    ).strip(".")
+                else:
+                    base = node.module or ""
+                targets = [base] if base else []
+                targets.extend(
+                    f"{base}.{alias.name}".strip(".")
+                    for alias in node.names
+                    if alias.name != "*"
+                )
+            imports[name].update(target for target in targets if target in modules)
+
+    visited: set[str] = set()
+    active: list[str] = []
+
+    def visit(module: str) -> None:
+        if module in active:
+            cycle = " -> ".join([*active[active.index(module) :], module])
+            raise AssertionError(f"internal import cycle: {cycle}")
+        if module in visited:
+            return
+        active.append(module)
+        for dependency in sorted(imports[module]):
+            visit(dependency)
+        active.pop()
+        visited.add(module)
+
+    for module in sorted(modules):
+        visit(module)
+
+    canonical = "pimos_lite.reweave_canonical"
+    store = "pimos_lite.reweave_capsule_store"
+    assert canonical in imports["pimos_lite.reweave_capsule_store"]
+    assert canonical in imports["pimos_lite.reweave_page_capability_contract"]
+    assert canonical in imports["pimos_lite.composer.module_native"]
+    assert canonical in imports["pimos_lite.reweave_product_planner"]
+    assert canonical in imports["pimos_lite.reweave_plan_execution"]
+    assert store not in imports["pimos_lite.reweave_page_capability_contract"]
+    assert store not in imports["pimos_lite.composer.module_native"]
 
 
 def test_reweave_release_surface_audit_matches_stage5_mainline() -> None:
@@ -43,6 +119,7 @@ def test_stage5_formal_and_historical_surfaces_are_separate() -> None:
     assert {
         "pimos_lite/desktop_reweave_static.py",
         "pimos_lite/reweave_app_service.py",
+        "pimos_lite/reweave_canonical.py",
         "pimos_lite/reweave_plan_execution.py",
         "pimos_lite/reweave_product_planner.py",
         "pimos_lite/composer/module_native.py",

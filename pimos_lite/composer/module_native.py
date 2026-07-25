@@ -28,7 +28,10 @@ from pimos_lite.reweave_data_contract import (
     normalize_capsule_contracts,
     normalize_data_contract,
 )
-from pimos_lite.reweave_capsule_store import canonicalize_capsule
+from pimos_lite.reweave_canonical import (
+    canonical_json_digest,
+    canonicalize_capsule,
+)
 from pimos_lite import reweave_page_capability_contract as page_contract
 from pimos_lite.reweave_process_environment import restricted_subprocess_environment
 
@@ -591,15 +594,7 @@ def _parameter_contract(field: str, value: dict[str, Any]) -> dict[str, Any]:
 
 
 def _canonical_digest(value: Any) -> str:
-    return hashlib.sha256(
-        json.dumps(
-            value,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-    ).hexdigest()
+    return canonical_json_digest(value)
 
 
 def _normalize_parameter_binding(
