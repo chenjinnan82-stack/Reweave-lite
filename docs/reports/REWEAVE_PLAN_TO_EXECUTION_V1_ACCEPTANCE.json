@@ -2,7 +2,7 @@
   "schema_version": "reweave_plan_to_execution_v1_acceptance.v1",
   "completed_date": "2026-07-25",
   "verdict": "PASS",
-  "verdict_reason": "A durable real Qwen3 14B run formed a zero-gap confirmed product_plan.v1 from the fixed local quote goal, bound user-confirmed unit_price=10, compiled byte-identical plan_execution.v2 results, and generated one review_ready product_candidate.v2. Real QWebEngine runtime and the exact 1→10, 3→30, and 10→100 business cases passed. A separate durable audit then proved that an independent local JSONL Agent process can use only the user-confirmed acceptance credential to request the same bounded candidate, read its public files and validation result, hit the idempotent result, and recover it after process restart without exposing internal evidence files or changing protected state.",
+  "verdict_reason": "A durable real Qwen3 14B run formed a zero-gap confirmed product_plan.v1 from the fixed local quote goal, bound user-confirmed unit_price=10, compiled byte-identical plan_execution.v2 results, and generated one review_ready product_candidate.v2. Real QWebEngine runtime and the exact 1→10, 3→30, and 10→100 business cases passed. Durable independent-process audits then proved bounded local JSONL access and the stricter agent_handoff.v1 authorization boundary: a session must bind a user-issued local token, every action revalidates the confirmed plan, acceptance record, and capsule facts, restart recovery works without automatic expiry, and explicit revocation immediately blocks both bound and new sessions.",
   "scope": {
     "plan_execution_v1": "PASS",
     "plan_execution_v2": "PASS",
@@ -12,6 +12,7 @@
     "parameterized_execution_binding_v1": "PASS",
     "local_agent_capability_entry_v1": "PASS",
     "local_agent_jsonl_v1": "PASS",
+    "local_agent_handoff_v1": "PASS",
     "thin_review_only_viewer": "PASS",
     "real_strong_model_goal_to_operational_candidate": "HISTORICAL_PASS",
     "real_strong_model_goal_to_correct_candidate": "PASS"
@@ -573,10 +574,56 @@
     },
     "claim_boundary": "This proves bounded same-user local-process access to the existing deterministic candidate core. It does not authorize planning, model selection, acceptance-case authoring, formal capsule mutation, user-project writes, product promotion, or autonomous orchestration."
   },
+  "local_agent_handoff_v1": {
+    "status": "PASS",
+    "record_version": "agent_handoff.v1",
+    "protocol": "reweave_agent_jsonl.v2",
+    "scope": "single_user_local_agent",
+    "automatic_expiry": false,
+    "explicit_user_revocation": true,
+    "session_bind_required": true,
+    "authorization_binding": {
+      "confirmed_plan": true,
+      "plan_confirmation_receipt": true,
+      "user_confirmed_acceptance_cases": true,
+      "exact_capsule_facts": true,
+      "plan_acceptance_or_capsule_drift_invalidates": true
+    },
+    "storage_boundary": {
+      "token_plaintext_persisted": false,
+      "stored_token_digest_only": true,
+      "record_permissions": "0600",
+      "token_in_logs_or_public_projection": false
+    },
+    "agent_boundary": {
+      "can_create_or_revoke_handoff": false,
+      "can_create_or_modify_plan": false,
+      "can_submit_or_modify_acceptance_cases": false,
+      "can_select_model": false,
+      "can_mutate_formal_capsules": false,
+      "can_write_user_project_or_formal_product": false
+    },
+    "durable_evidence": {
+      "directory_name": "local-agent-handoff-v1-02",
+      "checksum_manifest_digest": "f8c9a82db425635296eec74e2ff8a1269b7dfc47723c5753d6ae5e11a289769d",
+      "checksum_entries": 22,
+      "independent_process_starts": 3,
+      "candidate_status": "review_ready",
+      "business_cases_passed": 3,
+      "idempotent": true,
+      "restart_recovered": true,
+      "bound_session_blocked_after_revoke": true,
+      "new_session_blocked_after_revoke": true,
+      "historical_failed_attempts_retained": [
+        "local-agent-handoff-v1-01:audit_runner_import_boundary"
+      ]
+    },
+    "claim_boundary": "This proves durable local same-user authorization over an existing confirmed plan and its user-confirmed acceptance record. Remote agents, multiple accounts, shared-machine isolation, automatic expiry, renewal, product promotion, and user-project writes remain out of scope."
+  },
   "tests": {
     "python_compile": {
       "status": "PASS",
-      "files": 5
+      "files": 6
     },
     "historical_strong_model_operational_vertical_gate": {
       "real_qwen3_planning_runs": 1,
@@ -603,6 +650,7 @@
     "real_qwebengine_acceptance_independent": {
       "matching_output_review_ready": 1,
       "wrong_output_acceptance_failed": 1,
+      "parameter_binding_exact_cases": 1,
       "failed": 0
     },
     "composer_formal_generation_app_service_release_surface": {
@@ -611,8 +659,10 @@
       "failed": 0
     },
     "full_repository_excluding_phase6_desktop": {
-      "passed": 870,
-      "subtests_passed": 204,
+      "passed": 893,
+      "deselected": 11,
+      "subtests_passed": 235,
+      "sandbox_outside_loopback_passed": 1,
       "failed": 0
     },
     "local_agent_entry_regression": {
@@ -636,6 +686,23 @@
       "business_cases_failed": 0,
       "restart_restore": "PASS",
       "public_file_reads": 10,
+      "json_parse": "PASS",
+      "checksum_verification": "PASS"
+    },
+    "durable_local_agent_handoff_gate": {
+      "trusted_handoff_create": 1,
+      "trusted_handoff_revoke": 1,
+      "independent_process_starts": 3,
+      "candidate_generation_requests": 1,
+      "idempotency_requests": 1,
+      "model_calls": 0,
+      "business_cases_passed": 3,
+      "business_cases_failed": 0,
+      "restart_restore": "PASS",
+      "revocation_existing_session": "PASS",
+      "revocation_new_session": "PASS",
+      "plaintext_token_persisted": false,
+      "record_permissions": "0600",
       "json_parse": "PASS",
       "checksum_verification": "PASS"
     },
@@ -666,7 +733,10 @@
     "second_composer_added": false,
     "second_app_service_added": false,
     "candidate_code_repairer_added": false,
-    "agent_internal_manifest_or_provenance_readable": false
+    "agent_internal_manifest_or_provenance_readable": false,
+    "agent_handoff_plaintext_persisted": false,
+    "agent_handoff_automatic_expiry_added": false,
+    "agent_account_or_permission_system_added": false
   },
   "deferred": [
     "multi_capability_composer",
