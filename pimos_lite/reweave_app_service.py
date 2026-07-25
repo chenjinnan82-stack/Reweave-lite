@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import base64
+import ctypes
 import difflib
+import errno
 import hashlib
 import json
 import os
@@ -15,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import threading
+import unicodedata
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -61,6 +64,7 @@ from pimos_lite.reweave_plan_execution import (
     PARAMETERIZED_PLAN_EXECUTION_VERSION,
     PLAN_EXECUTION_VERSION,
     CandidateAcceptanceError,
+    PlanExecutionError,
     build_candidate_acceptance,
     build_candidate_acceptance_confirmation,
     canonical_bytes as plan_execution_bytes,
@@ -121,6 +125,7 @@ PUBLIC_PRODUCT_ACTIONS = frozenset(
         "get_product_candidate_run",
         "get_product_candidate",
         "read_product_candidate_file",
+        "export_product_candidate",
         "analyze_static_web_target",
         "generate_static_web_patch",
         "get_latest_product_entry_path",
@@ -535,6 +540,466 @@ def _fsync_product_tree(root: Path) -> None:
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
+
+
+_WINDOWS_RESERVED_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{index}" for index in range(1, 10)}
+    | {f"LPT{index}" for index in range(1, 10)}
+)
+
+
+def _safe_export_directory_name(product_name: object, digest: object) -> str:
+    if (
+        type(product_name) is not str
+        or type(digest) is not str
+        or _MANIFEST_DIGEST.fullmatch(digest) is None
+    ):
+        raise ProductGenerationError("product_candidate_export_request_invalid")
+    normalized = unicodedata.normalize("NFC", product_name)
+    safe = "".join(
+        "-"
+        if ord(character) < 32
+        or ord(character) == 127
+        or character in '<>:"/\\|?*'
+        else character
+        for character in normalized
+    )
+    safe = re.sub(r"[\s-]+", "-", safe).strip(" .-")
+    if not safe:
+        safe = "reweave-product"
+    if safe.split(".", 1)[0].upper() in _WINDOWS_RESERVED_NAMES:
+        safe = f"reweave-{safe}"
+    suffix = f"-{digest[:12]}"
+    byte_limit = 240 - len(os.fsencode(suffix))
+    while safe and len(os.fsencode(safe)) > byte_limit:
+        safe = safe[:-1]
+    return f"{safe.rstrip(' .-') or 'reweave-product'}{suffix}"
+
+
+def _safe_export_parent(value: object) -> Path:
+    if (
+        type(value) is not str
+        or not value
+        or len(value) > 4096
+        or "\x00" in value
+        or not Path(value).is_absolute()
+    ):
+        raise ProductGenerationError(
+            "product_candidate_export_destination_invalid"
+        )
+    parent = Path(os.path.abspath(value))
+    if parent == Path(parent.anchor):
+        raise ProductGenerationError(
+            "product_candidate_export_destination_invalid"
+        )
+    return parent
+
+
+def _validated_export_paths(files: object) -> list[str]:
+    if type(files) is not list or not files:
+        raise ProductGenerationError("product_candidate_invalid")
+    paths: list[str] = []
+    components: dict[tuple[tuple[str, ...], str], str] = {}
+    for item in files:
+        if type(item) is not dict:
+            raise ProductGenerationError("product_candidate_invalid")
+        logical = _safe_product_relative(item.get("path"))
+        if unicodedata.normalize("NFC", logical) != logical:
+            raise ProductGenerationError("product_candidate_export_path_unsafe")
+        parts = PurePosixPath(logical).parts
+        for index, part in enumerate(parts):
+            if (
+                not part
+                or part.endswith((" ", "."))
+                or any(
+                    ord(character) < 32
+                    or ord(character) == 127
+                    or character in '<>:"\\|?*'
+                    for character in part
+                )
+                or part.split(".", 1)[0].upper() in _WINDOWS_RESERVED_NAMES
+            ):
+                raise ProductGenerationError(
+                    "product_candidate_export_path_unsafe"
+                )
+            parent = tuple(value.casefold() for value in parts[:index])
+            key = (parent, part.casefold())
+            previous = components.get(key)
+            if previous is not None and previous != part:
+                raise ProductGenerationError(
+                    "product_candidate_export_path_conflict"
+                )
+            components[key] = part
+        paths.append(logical)
+    if len(paths) != len(set(paths)):
+        raise ProductGenerationError("product_candidate_invalid")
+    return paths
+
+
+def _read_export_file(root: Path, metadata: dict[str, Any]) -> bytes:
+    logical = _safe_product_relative(metadata["path"])
+    path = root.joinpath(*PurePosixPath(logical).parts)
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise ProductGenerationError("product_candidate_invalid") from exc
+    try:
+        details = os.fstat(descriptor)
+        if not stat.S_ISREG(details.st_mode):
+            raise ProductGenerationError("product_candidate_invalid")
+        chunks: list[bytes] = []
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            chunks.append(chunk)
+        data = b"".join(chunks)
+    finally:
+        os.close(descriptor)
+    if (
+        len(data) != metadata["size_bytes"]
+        or hashlib.sha256(data).hexdigest() != metadata["sha256"]
+    ):
+        raise ProductGenerationError("product_candidate_invalid")
+    return data
+
+
+def _directory_open_flags() -> int:
+    return (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+
+
+def _open_no_follow_directory(
+    path: Path,
+) -> tuple[int, tuple[tuple[int, int], ...]]:
+    if not path.is_absolute() or path == Path(path.anchor):
+        raise ProductGenerationError(
+            "product_candidate_export_destination_invalid"
+        )
+    current = os.open(path.anchor, _directory_open_flags())
+    identities = [
+        (os.fstat(current).st_dev, os.fstat(current).st_ino)
+    ]
+    try:
+        for part in path.parts[1:]:
+            child = os.open(
+                part,
+                _directory_open_flags(),
+                dir_fd=current,
+            )
+            details = os.fstat(child)
+            if not stat.S_ISDIR(details.st_mode):
+                os.close(child)
+                raise OSError(errno.ENOTDIR, "not_directory")
+            os.close(current)
+            current = child
+            identities.append((details.st_dev, details.st_ino))
+    except OSError as exc:
+        os.close(current)
+        raise ProductGenerationError(
+            "product_candidate_export_destination_unsafe"
+        ) from exc
+    return current, tuple(identities)
+
+
+def _open_export_directory(path: Path, application_state: Path) -> int:
+    try:
+        state_path = Path(os.path.abspath(application_state)).resolve(
+            strict=True
+        )
+    except OSError as exc:
+        raise ProductGenerationError(
+            "product_candidate_export_destination_unsafe"
+        ) from exc
+    state_descriptor, _state_chain = _open_no_follow_directory(state_path)
+    try:
+        state_details = os.fstat(state_descriptor)
+        state_identity = (state_details.st_dev, state_details.st_ino)
+    finally:
+        os.close(state_descriptor)
+    descriptor, destination_chain = _open_no_follow_directory(path)
+    if state_identity in destination_chain:
+        os.close(descriptor)
+        raise ProductGenerationError(
+            "product_candidate_export_destination_unsafe"
+        )
+    return descriptor
+
+
+def _open_export_directory_at(parent: int, name: str) -> int:
+    try:
+        descriptor = os.open(
+            name,
+            _directory_open_flags(),
+            dir_fd=parent,
+        )
+    except OSError as exc:
+        raise ProductGenerationError(
+            "product_candidate_export_destination_unsafe"
+        ) from exc
+    if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        raise ProductGenerationError(
+            "product_candidate_export_destination_unsafe"
+        )
+    return descriptor
+
+
+def _write_export_file(root: int, logical: str, data: bytes) -> None:
+    current = os.dup(root)
+    try:
+        for part in PurePosixPath(logical).parts[:-1]:
+            try:
+                child = _open_export_directory_at(current, part)
+            except ProductGenerationError:
+                try:
+                    os.mkdir(part, 0o700, dir_fd=current)
+                except FileExistsError:
+                    pass
+                child = _open_export_directory_at(current, part)
+            os.fchmod(child, 0o700)
+            os.close(current)
+            current = child
+        flags = (
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        descriptor = os.open(
+            PurePosixPath(logical).name,
+            flags,
+            0o600,
+            dir_fd=current,
+        )
+        try:
+            view = memoryview(data)
+            while view:
+                written = os.write(descriptor, view)
+                if written <= 0:
+                    raise OSError("export_write_incomplete")
+                view = view[written:]
+            os.fchmod(descriptor, 0o600)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        os.fsync(current)
+    except OSError as exc:
+        raise ProductGenerationError(
+            "product_candidate_export_destination_unsafe"
+        ) from exc
+    finally:
+        os.close(current)
+
+
+def _read_export_file_at(
+    root: int,
+    metadata: dict[str, Any],
+) -> bytes:
+    current = os.dup(root)
+    try:
+        for part in PurePosixPath(metadata["path"]).parts[:-1]:
+            child = _open_export_directory_at(current, part)
+            os.close(current)
+            current = child
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        descriptor = os.open(
+            PurePosixPath(metadata["path"]).name,
+            flags,
+            dir_fd=current,
+        )
+        try:
+            details = os.fstat(descriptor)
+            if not stat.S_ISREG(details.st_mode):
+                raise ProductGenerationError("product_candidate_invalid")
+            chunks: list[bytes] = []
+            while True:
+                chunk = os.read(descriptor, 1024 * 1024)
+                if not chunk:
+                    break
+                chunks.append(chunk)
+            data = b"".join(chunks)
+        finally:
+            os.close(descriptor)
+    except OSError as exc:
+        raise ProductGenerationError("product_candidate_invalid") from exc
+    finally:
+        os.close(current)
+    if (
+        len(data) != metadata["size_bytes"]
+        or hashlib.sha256(data).hexdigest() != metadata["sha256"]
+    ):
+        raise ProductGenerationError("product_candidate_invalid")
+    return data
+
+
+def _verify_export_tree(
+    root: int,
+    files: list[dict[str, Any]],
+    *,
+    error_code: str,
+) -> None:
+    expected_files = {item["path"]: item for item in files}
+    expected_directories = {
+        PurePosixPath(*PurePosixPath(logical).parts[:index]).as_posix()
+        for logical in expected_files
+        for index in range(1, len(PurePosixPath(logical).parts))
+    }
+    actual_files: set[str] = set()
+    actual_directories: set[str] = set()
+
+    def visit(directory: int, prefix: PurePosixPath) -> None:
+        try:
+            entries = list(os.scandir(directory))
+        except OSError as exc:
+            raise ProductGenerationError(error_code) from exc
+        for entry in entries:
+            try:
+                details = entry.stat(follow_symlinks=False)
+            except OSError as exc:
+                raise ProductGenerationError(error_code) from exc
+            logical = (
+                prefix / entry.name
+                if prefix.parts
+                else PurePosixPath(entry.name)
+            ).as_posix()
+            if stat.S_ISLNK(details.st_mode):
+                raise ProductGenerationError(error_code)
+            if stat.S_ISDIR(details.st_mode):
+                if details.st_mode & 0o777 != 0o700:
+                    raise ProductGenerationError(error_code)
+                actual_directories.add(logical)
+                child = _open_export_directory_at(directory, entry.name)
+                try:
+                    visit(child, PurePosixPath(logical))
+                finally:
+                    os.close(child)
+                continue
+            metadata = expected_files.get(logical)
+            if (
+                not stat.S_ISREG(details.st_mode)
+                or metadata is None
+                or details.st_mode & 0o777 != 0o600
+            ):
+                raise ProductGenerationError(error_code)
+            try:
+                _read_export_file_at(root, metadata)
+            except ProductGenerationError as exc:
+                raise ProductGenerationError(error_code) from exc
+            actual_files.add(logical)
+
+    if os.fstat(root).st_mode & 0o777 != 0o700:
+        raise ProductGenerationError(error_code)
+    visit(root, PurePosixPath())
+    if (
+        actual_files != set(expected_files)
+        or actual_directories != expected_directories
+    ):
+        raise ProductGenerationError(error_code)
+
+
+def _remove_export_tree_at(
+    parent: int,
+    name: str,
+    expected_identity: tuple[int, int],
+) -> None:
+    try:
+        details = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        if (
+            not stat.S_ISDIR(details.st_mode)
+            or stat.S_ISLNK(details.st_mode)
+            or (details.st_dev, details.st_ino) != expected_identity
+        ):
+            return
+        root = _open_export_directory_at(parent, name)
+    except (OSError, ProductGenerationError):
+        return
+    actual = os.fstat(root)
+    if (actual.st_dev, actual.st_ino) != expected_identity:
+        os.close(root)
+        return
+
+    def clear(directory: int) -> None:
+        for entry in list(os.scandir(directory)):
+            details = entry.stat(follow_symlinks=False)
+            if stat.S_ISDIR(details.st_mode) and not stat.S_ISLNK(
+                details.st_mode
+            ):
+                child = _open_export_directory_at(directory, entry.name)
+                try:
+                    clear(child)
+                finally:
+                    os.close(child)
+                os.rmdir(entry.name, dir_fd=directory)
+            else:
+                os.unlink(entry.name, dir_fd=directory)
+
+    try:
+        clear(root)
+    finally:
+        os.close(root)
+    os.rmdir(name, dir_fd=parent)
+
+
+def _rename_export_no_replace(
+    parent: int,
+    source_name: str,
+    target_name: str,
+) -> None:
+    library = ctypes.CDLL(None, use_errno=True)
+    if sys.platform == "darwin":
+        function = library.renameatx_np
+        function.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        result = function(
+            parent,
+            os.fsencode(source_name),
+            parent,
+            os.fsencode(target_name),
+            0x00000004,
+        )
+    elif sys.platform.startswith("linux") and hasattr(library, "renameat2"):
+        function = library.renameat2
+        function.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        result = function(
+            parent,
+            os.fsencode(source_name),
+            parent,
+            os.fsencode(target_name),
+            0x00000001,
+        )
+    else:
+        raise ProductGenerationError(
+            "product_candidate_export_platform_unsupported"
+        )
+    if result == 0:
+        return
+    failure = ctypes.get_errno()
+    if failure in {errno.EEXIST, errno.ENOTEMPTY}:
+        raise ProductGenerationError("product_candidate_export_conflict")
+    raise ProductGenerationError("product_candidate_export_failed")
 
 
 def _candidate_content_digest(
@@ -4477,6 +4942,275 @@ class ReweaveAppService:
             return self._ok(self._candidate_projection(record))
         except (OSError, ProductGenerationError, ValueError) as exc:
             return self._exception_error(exc, "product_candidate_read_failed")
+
+    def _validated_export_candidate(
+        self,
+        plan_token: str,
+        candidate_token: str,
+    ) -> tuple[Path, dict[str, Any], dict[str, Any]]:
+        candidate_dir, record = self._read_candidate_record(candidate_token)
+        if (
+            record.get("schema_version") != "product_candidate.v2"
+            or record.get("status") != "review_ready"
+            or record.get("acceptance", {}).get("status") != "passed"
+            or record.get("acceptance", {}).get("runtime_operational")
+            != "passed"
+            or record.get("acceptance", {}).get("product_goal_conformance")
+            != "passed"
+        ):
+            raise ProductGenerationError(
+                "product_candidate_export_not_ready"
+            )
+        try:
+            workspace, capsules, _scope, page_contracts = (
+                self._confirmed_candidate_context(plan_token)
+            )
+            acceptance_confirmation = (
+                self._validated_candidate_acceptance_confirmation(
+                    plan_token,
+                    workspace,
+                    capsules,
+                )
+            )
+        except ProductGenerationError as exc:
+            raise ProductGenerationError(
+                "product_candidate_export_stale"
+            ) from exc
+        plan = workspace["plan"]
+        if record["plan"] != {
+            "plan_id": plan["plan_id"],
+            "plan_version": plan["plan_version"],
+            "plan_digest": plan["canonical_digest"],
+        }:
+            raise ProductGenerationError("product_candidate_export_stale")
+        try:
+            expected_execution = (
+                compile_parameterized_plan_execution(
+                    plan,
+                    workspace["confirmation"],
+                    capsules,
+                    verified_page_contracts=page_contracts,
+                )
+                if workspace["confirmation"]["schema_version"]
+                == "product_plan_confirmation.v2"
+                else compile_plan_execution(
+                    plan,
+                    workspace["confirmation"],
+                    capsules,
+                    verified_page_contracts=page_contracts,
+                )
+            )
+            stored_execution = _strict_json_bytes(
+                (candidate_dir / "execution_plan.json").read_bytes()
+            )
+        except PlanExecutionError as exc:
+            raise ProductGenerationError(
+                "product_candidate_export_stale"
+            ) from exc
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+            raise ProductGenerationError("product_candidate_invalid") from exc
+        if expected_execution != stored_execution:
+            raise ProductGenerationError("product_candidate_export_stale")
+        input_contract, output_contract = self._candidate_acceptance_contracts(
+            capsules
+        )
+        cases = [
+            {
+                key: case[key]
+                for key in ("requirement_ids", "input", "expected_output")
+            }
+            for case in acceptance_confirmation["cases"]
+        ]
+        try:
+            expected_contract = build_candidate_acceptance(
+                plan,
+                workspace["confirmation"],
+                cases,
+                input_contract,
+                output_contract,
+                record["candidate_content_digest"],
+            )
+            stored_contract = _strict_json_bytes(
+                (candidate_dir / "acceptance_contract.json").read_bytes()
+            )
+        except CandidateAcceptanceError as exc:
+            raise ProductGenerationError(
+                "product_candidate_export_stale"
+            ) from exc
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+            raise ProductGenerationError("product_candidate_invalid") from exc
+        if expected_contract != stored_contract:
+            raise ProductGenerationError("product_candidate_export_stale")
+        return candidate_dir, record, workspace
+
+    @_serialized_management
+    def export_product_candidate(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if (
+                set(request)
+                != {"plan_token", "candidate_token", "destination_parent"}
+                or type(request["plan_token"]) is not str
+                or not request["plan_token"]
+                or type(request["candidate_token"]) is not str
+                or type(request["destination_parent"]) is not str
+            ):
+                return self._error("product_candidate_export_request_invalid")
+            if os.name != "posix":
+                return self._error(
+                    "product_candidate_export_platform_unsupported"
+                )
+            candidate_dir, record, workspace = (
+                self._validated_export_candidate(
+                    request["plan_token"],
+                    request["candidate_token"],
+                )
+            )
+            parent = _safe_export_parent(request["destination_parent"])
+            _validated_export_paths(record["files"])
+            directory_name = _safe_export_directory_name(
+                workspace["plan"]["product_name"],
+                record["candidate_content_digest"],
+            )
+
+            def result(status: str) -> dict[str, Any]:
+                return self._ok(
+                    {
+                        "schema_version": "product_candidate_export.v1",
+                        "status": status,
+                        "directory_name": directory_name,
+                        "file_count": len(record["files"]),
+                    }
+                )
+
+            source = candidate_dir / "product"
+            self._assert_candidate_path_safe(source)
+            file_data = [
+                (item["path"], _read_export_file(source, item))
+                for item in record["files"]
+            ]
+
+            parent_descriptor = _open_export_directory(
+                parent,
+                self._capsule_store.path.parent,
+            )
+            temporary_name = f".reweave-export-{uuid.uuid4().hex}"
+            temporary_identity: tuple[int, int] | None = None
+            published = False
+
+            def existing_target_descriptor() -> int | None:
+                matches = [
+                    entry
+                    for entry in os.scandir(parent_descriptor)
+                    if unicodedata.normalize("NFC", entry.name).casefold()
+                    == directory_name.casefold()
+                ]
+                if not matches:
+                    return None
+                if len(matches) != 1 or matches[0].name != directory_name:
+                    raise ProductGenerationError(
+                        "product_candidate_export_conflict"
+                    )
+                details = matches[0].stat(follow_symlinks=False)
+                if stat.S_ISLNK(details.st_mode):
+                    raise ProductGenerationError(
+                        "product_candidate_export_destination_unsafe"
+                    )
+                if not stat.S_ISDIR(details.st_mode):
+                    raise ProductGenerationError(
+                        "product_candidate_export_conflict"
+                    )
+                return _open_export_directory_at(
+                    parent_descriptor,
+                    directory_name,
+                )
+
+            try:
+                existing_descriptor = existing_target_descriptor()
+                if existing_descriptor is not None:
+                    try:
+                        _verify_export_tree(
+                            existing_descriptor,
+                            record["files"],
+                            error_code="product_candidate_export_conflict",
+                        )
+                    finally:
+                        os.close(existing_descriptor)
+                    return result("already_saved")
+                os.mkdir(
+                    temporary_name,
+                    0o700,
+                    dir_fd=parent_descriptor,
+                )
+                temporary_details = os.stat(
+                    temporary_name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+                temporary_identity = (
+                    temporary_details.st_dev,
+                    temporary_details.st_ino,
+                )
+                temporary_descriptor = _open_export_directory_at(
+                    parent_descriptor,
+                    temporary_name,
+                )
+                if (
+                    os.fstat(temporary_descriptor).st_dev,
+                    os.fstat(temporary_descriptor).st_ino,
+                ) != temporary_identity:
+                    os.close(temporary_descriptor)
+                    raise ProductGenerationError(
+                        "product_candidate_export_destination_unsafe"
+                    )
+                try:
+                    os.fchmod(temporary_descriptor, 0o700)
+                    for logical, data in file_data:
+                        _write_export_file(
+                            temporary_descriptor,
+                            logical,
+                            data,
+                        )
+                    _verify_export_tree(
+                        temporary_descriptor,
+                        record["files"],
+                        error_code="product_candidate_export_failed",
+                    )
+                    _rename_export_no_replace(
+                        parent_descriptor,
+                        temporary_name,
+                        directory_name,
+                    )
+                    published = True
+                    os.fsync(parent_descriptor)
+                    _verify_export_tree(
+                        temporary_descriptor,
+                        record["files"],
+                        error_code="product_candidate_export_failed",
+                    )
+                finally:
+                    os.close(temporary_descriptor)
+                return result("saved")
+            finally:
+                if not published and temporary_identity is not None:
+                    _remove_export_tree_at(
+                        parent_descriptor,
+                        temporary_name,
+                        temporary_identity,
+                    )
+                os.close(parent_descriptor)
+        except (
+            CapsuleStoreError,
+            OSError,
+            ProductGenerationError,
+            ValueError,
+        ) as exc:
+            return self._exception_error(
+                exc,
+                "product_candidate_export_failed",
+            )
 
     def read_product_candidate_file(
         self, payload: dict[str, Any] | None = None

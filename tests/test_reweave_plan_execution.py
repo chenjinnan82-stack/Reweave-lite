@@ -9,9 +9,10 @@ import shutil
 import tempfile
 import time
 import unittest
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from unittest.mock import patch
 
+from pimos_lite import reweave_app_service as app_service
 from pimos_lite import reweave_page_capability_contract as page_contract
 from pimos_lite.composer.module_native import (
     compose_capsule_product,
@@ -575,6 +576,50 @@ class PlanExecutionV1Test(unittest.TestCase):
         self.service.close()
         self.environment.stop()
         self.temporary.cleanup()
+
+    def _confirmed_candidate(
+        self,
+        *,
+        expected_total: int = 6,
+        actual_total: int = 6,
+    ) -> tuple[_ConfirmedPlanner, dict, dict]:
+        planner = _ConfirmedPlanner(self.plan, self.confirmation)
+        self.service._product_planner = planner
+        confirmation = self.service.confirm_product_candidate_acceptance(
+            {
+                "plan_token": "plan_token_test",
+                "plan_digest": self.plan["canonical_digest"],
+                "acceptance_cases": _acceptance_cases(expected_total),
+            }
+        )
+        self.assertTrue(confirmation["ok"], confirmation)
+        with (
+            patch(
+                "pimos_lite.reweave_app_service._validate_product_static",
+                _quality_receipt,
+            ),
+            patch(
+                "pimos_lite.reweave_app_service._validate_product_runtime",
+                _runtime_receipt,
+            ),
+            patch(
+                "pimos_lite.reweave_app_service._validate_product_acceptance",
+                return_value=_acceptance_worker(actual_total),
+            ),
+        ):
+            started = self.service.start_confirmed_product_candidate(
+                {
+                    "plan_token": "plan_token_test",
+                    "plan_digest": self.plan["canonical_digest"],
+                    "acceptance_confirmation_digest": confirmation["data"][
+                        "canonical_digest"
+                    ],
+                }
+            )
+            self.assertTrue(started["ok"], started)
+            task = _poll(self.service, started["run_id"])
+        self.assertEqual(task["status"], "completed", task)
+        return planner, confirmation["data"], task["data"]["data"]
 
     def test_local_agent_capability_catalog_reuses_formal_loader(self) -> None:
         with self.store.transaction() as connection:
@@ -2558,6 +2603,377 @@ class PlanExecutionV1Test(unittest.TestCase):
                     if path.is_file()
                 )
             )
+
+    @unittest.skipUnless(
+        os.name == "posix",
+        "safe candidate export currently requires POSIX no-replace rename",
+    )
+    def test_review_ready_candidate_exports_exactly_and_idempotently(self) -> None:
+        planner, _acceptance, candidate = self._confirmed_candidate()
+        self.assertEqual(candidate["status"], "review_ready")
+        candidate_root = self.state / "product_candidates"
+        before_candidate = {
+            path.relative_to(candidate_root).as_posix(): path.read_bytes()
+            for path in candidate_root.rglob("*")
+            if path.is_file()
+        }
+        before_store = _store_snapshot(self.store)
+        first_parent = self.root / "first-export"
+        second_parent = self.root / "second-export"
+        first_parent.mkdir()
+        second_parent.mkdir()
+        payload = {
+            "plan_token": "plan_token_test",
+            "candidate_token": candidate["candidate_token"],
+            "destination_parent": str(first_parent.resolve()),
+        }
+
+        saved = self.service.export_product_candidate(payload)
+        self.assertTrue(saved["ok"], saved)
+        self.assertEqual(saved["data"]["status"], "saved")
+        self.assertEqual(
+            saved["data"]["directory_name"],
+            "本地报价产品-" + candidate["candidate_content_digest"][:12],
+        )
+        self.assertNotIn(str(first_parent), json.dumps(saved, ensure_ascii=False))
+        exported = first_parent / saved["data"]["directory_name"]
+        source = next(candidate_root.glob("candidate_*")) / "product"
+        self.assertEqual(
+            {
+                path.relative_to(exported).as_posix()
+                for path in exported.rglob("*")
+                if path.is_file()
+            },
+            {item["path"] for item in candidate["files"]},
+        )
+        for item in candidate["files"]:
+            logical = PurePosixPath(item["path"])
+            self.assertEqual(
+                exported.joinpath(*logical.parts).read_bytes(),
+                source.joinpath(*logical.parts).read_bytes(),
+            )
+        if os.name == "posix":
+            self.assertEqual(exported.stat().st_mode & 0o777, 0o700)
+            self.assertTrue(
+                all(
+                    path.stat().st_mode & 0o777 == 0o700
+                    for path in exported.rglob("*")
+                    if path.is_dir()
+                )
+            )
+            self.assertTrue(
+                all(
+                    path.stat().st_mode & 0o777 == 0o600
+                    for path in exported.rglob("*")
+                    if path.is_file()
+                )
+            )
+
+        repeated = self.service.export_product_candidate(payload)
+        self.assertTrue(repeated["ok"], repeated)
+        self.assertEqual(repeated["data"]["status"], "already_saved")
+
+        restarted = ReweaveAppService(
+            _NoLegacyEngine(),
+            capsule_store=self.store,
+        )
+        restarted._product_planner = planner
+        try:
+            restored = restarted.export_product_candidate(
+                {
+                    **payload,
+                    "destination_parent": str(second_parent.resolve()),
+                }
+            )
+        finally:
+            restarted.close()
+        self.assertTrue(restored["ok"], restored)
+        self.assertEqual(restored["data"]["status"], "saved")
+        second = second_parent / restored["data"]["directory_name"]
+        self.assertEqual(
+            {
+                path.relative_to(exported).as_posix(): path.read_bytes()
+                for path in exported.rglob("*")
+                if path.is_file()
+            },
+            {
+                path.relative_to(second).as_posix(): path.read_bytes()
+                for path in second.rglob("*")
+                if path.is_file()
+            },
+        )
+        self.assertEqual(_store_snapshot(self.store), before_store)
+        self.assertEqual(
+            {
+                path.relative_to(candidate_root).as_posix(): path.read_bytes()
+                for path in candidate_root.rglob("*")
+                if path.is_file()
+            },
+            before_candidate,
+        )
+        self.assertFalse((self.state / "products").exists())
+
+    @unittest.skipUnless(
+        os.name == "posix",
+        "safe candidate export currently requires POSIX no-replace rename",
+    )
+    def test_candidate_export_revalidates_confirmation_and_destination(
+        self,
+    ) -> None:
+        planner, original_confirmation, candidate = self._confirmed_candidate()
+        destination = self.root / "export"
+        destination.mkdir()
+        input_contract, output_contract = (
+            self.service._candidate_acceptance_contracts(self.capsules)
+        )
+        planner.acceptance_confirmation = (
+            build_candidate_acceptance_confirmation(
+                self.plan,
+                self.confirmation,
+                _acceptance_cases(7),
+                input_contract,
+                output_contract,
+                NOW,
+            )
+        )
+        stale = self.service.export_product_candidate(
+            {
+                "plan_token": "plan_token_test",
+                "candidate_token": candidate["candidate_token"],
+                "destination_parent": str(destination.resolve()),
+            }
+        )
+        self.assertEqual(
+            stale["error"]["code"],
+            "product_candidate_export_stale",
+        )
+        self.assertEqual(list(destination.iterdir()), [])
+        self.assertTrue(
+            self.service.get_product_candidate(
+                {"candidate_token": candidate["candidate_token"]}
+            )["ok"]
+        )
+        planner.acceptance_confirmation = original_confirmation
+
+        directory_name = (
+            "本地报价产品-" + candidate["candidate_content_digest"][:12]
+        )
+        conflict = destination / directory_name
+        conflict.mkdir()
+        blocked = self.service.export_product_candidate(
+            {
+                "plan_token": "plan_token_test",
+                "candidate_token": candidate["candidate_token"],
+                "destination_parent": str(destination.resolve()),
+            }
+        )
+        self.assertEqual(
+            blocked["error"]["code"],
+            "product_candidate_export_conflict",
+        )
+        self.assertEqual(list(conflict.iterdir()), [])
+        conflict.rmdir()
+
+        original_publish = app_service._rename_export_no_replace
+
+        def create_competing_directory(
+            parent: int,
+            source_name: str,
+            target_name: str,
+        ) -> None:
+            os.mkdir(target_name, 0o700, dir_fd=parent)
+            original_publish(parent, source_name, target_name)
+
+        if os.name == "posix":
+            with patch.object(
+                app_service,
+                "_rename_export_no_replace",
+                side_effect=create_competing_directory,
+            ):
+                raced = self.service.export_product_candidate(
+                    {
+                        "plan_token": "plan_token_test",
+                        "candidate_token": candidate["candidate_token"],
+                        "destination_parent": str(destination.resolve()),
+                    }
+                )
+            self.assertEqual(
+                raced["error"]["code"],
+                "product_candidate_export_conflict",
+            )
+            self.assertTrue(conflict.is_dir())
+            self.assertEqual(list(conflict.iterdir()), [])
+            self.assertEqual(
+                list(destination.glob(".reweave-export-*")),
+                [],
+            )
+            conflict.rmdir()
+
+            cleanup_parent = self.root / "cleanup-race"
+            cleanup_parent.mkdir()
+
+            def publish_then_recreate_temp(
+                parent: int,
+                source_name: str,
+                target_name: str,
+            ) -> None:
+                original_publish(parent, source_name, target_name)
+                os.mkdir(source_name, 0o700, dir_fd=parent)
+
+            with patch.object(
+                app_service,
+                "_rename_export_no_replace",
+                side_effect=publish_then_recreate_temp,
+            ):
+                cleanup_race = self.service.export_product_candidate(
+                    {
+                        "plan_token": "plan_token_test",
+                        "candidate_token": candidate["candidate_token"],
+                        "destination_parent": str(cleanup_parent.resolve()),
+                    }
+                )
+            self.assertTrue(cleanup_race["ok"], cleanup_race)
+            recreated = list(cleanup_parent.glob(".reweave-export-*"))
+            self.assertEqual(len(recreated), 1)
+            self.assertEqual(list(recreated[0].iterdir()), [])
+            shutil.rmtree(
+                cleanup_parent / cleanup_race["data"]["directory_name"]
+            )
+            recreated[0].rmdir()
+
+        with patch.object(
+            app_service,
+            "_write_export_file",
+            side_effect=ProductGenerationError(
+                "product_candidate_export_failed"
+            ),
+        ):
+            failed = self.service.export_product_candidate(
+                {
+                    "plan_token": "plan_token_test",
+                    "candidate_token": candidate["candidate_token"],
+                    "destination_parent": str(destination.resolve()),
+                }
+            )
+        self.assertEqual(
+            failed["error"]["code"],
+            "product_candidate_export_failed",
+        )
+        self.assertEqual(list(destination.iterdir()), [])
+        unsafe_state = self.service.export_product_candidate(
+            {
+                "plan_token": "plan_token_test",
+                "candidate_token": candidate["candidate_token"],
+                "destination_parent": str(self.state.resolve()),
+            }
+        )
+        self.assertEqual(
+            unsafe_state["error"]["code"],
+            "product_candidate_export_destination_unsafe",
+        )
+        if os.name == "posix":
+            real_parent = self.root / "real-parent"
+            linked_parent = self.root / "linked-parent"
+            real_parent.mkdir()
+            os.symlink(real_parent, linked_parent)
+            symlinked = self.service.export_product_candidate(
+                {
+                    "plan_token": "plan_token_test",
+                    "candidate_token": candidate["candidate_token"],
+                    "destination_parent": str(linked_parent),
+                }
+            )
+            self.assertEqual(
+                symlinked["error"]["code"],
+                "product_candidate_export_destination_unsafe",
+            )
+            self.assertEqual(list(real_parent.iterdir()), [])
+
+            race_root = self.root.resolve() / "ancestor-race"
+            ancestor = race_root / "selected"
+            destination_after_ancestor = ancestor / "destination"
+            escaped = race_root / "escaped"
+            moved = race_root / "selected-original"
+            destination_after_ancestor.mkdir(parents=True)
+            escaped.mkdir()
+            original_open = app_service._open_export_directory
+
+            def replace_ancestor_before_open(
+                path: Path,
+                application_state: Path,
+            ) -> int:
+                ancestor.rename(moved)
+                os.symlink(escaped, ancestor)
+                return original_open(path, application_state)
+
+            with patch.object(
+                app_service,
+                "_open_export_directory",
+                side_effect=replace_ancestor_before_open,
+            ):
+                ancestor_race = self.service.export_product_candidate(
+                    {
+                        "plan_token": "plan_token_test",
+                        "candidate_token": candidate["candidate_token"],
+                        "destination_parent": str(
+                            destination_after_ancestor
+                        ),
+                    }
+                )
+            self.assertEqual(
+                ancestor_race["error"]["code"],
+                "product_candidate_export_destination_unsafe",
+            )
+            self.assertEqual(list(escaped.iterdir()), [])
+            self.assertEqual(list((moved / "destination").iterdir()), [])
+            ancestor.unlink()
+            moved.rename(ancestor)
+
+        with self.assertRaisesRegex(
+            ProductGenerationError,
+            "product_candidate_export_path_conflict",
+        ):
+            app_service._validated_export_paths(
+                [{"path": "Assets/a.txt"}, {"path": "assets/b.txt"}]
+            )
+        with self.assertRaisesRegex(
+            ProductGenerationError,
+            "product_candidate_export_path_unsafe",
+        ):
+            app_service._validated_export_paths(
+                [{"path": "CON/result.txt"}]
+            )
+        wide_name = app_service._safe_export_directory_name(
+            "😀" * 120,
+            "a" * 64,
+        )
+        self.assertLessEqual(len(os.fsencode(wide_name)), 240)
+        self.assertTrue(wide_name.endswith("-" + "a" * 12))
+
+    @unittest.skipUnless(
+        os.name == "posix",
+        "safe candidate export currently requires POSIX no-replace rename",
+    )
+    def test_failed_candidate_cannot_be_exported(self) -> None:
+        _planner, _acceptance, candidate = self._confirmed_candidate(
+            expected_total=7,
+            actual_total=6,
+        )
+        self.assertEqual(candidate["status"], "acceptance_failed")
+        destination = self.root / "failed-export"
+        destination.mkdir()
+        response = self.service.export_product_candidate(
+            {
+                "plan_token": "plan_token_test",
+                "candidate_token": candidate["candidate_token"],
+                "destination_parent": str(destination.resolve()),
+            }
+        )
+        self.assertEqual(
+            response["error"]["code"],
+            "product_candidate_export_not_ready",
+        )
+        self.assertEqual(list(destination.iterdir()), [])
 
     def test_failed_acceptance_is_read_only_and_contract_is_immutable(self) -> None:
         self.service._product_planner = _ConfirmedPlanner(
