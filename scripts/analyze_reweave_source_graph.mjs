@@ -1985,7 +1985,9 @@ function installProof({ ts, checker, graphContext, Rejection, canonicalSha256 })
       dependencyBindings: new Set(),
     };
     const returnDomain = evaluateFunction(target.leafSymbol, argumentDomains, state, target.functionNode);
-    if (returnDomain.kind !== "integer") reject("interval_unproven", target.functionNode);
+    if (!["integer", "enum"].includes(returnDomain.kind)) {
+      reject("interval_unproven", target.functionNode);
+    }
     // Give selected mutable captures the specific failure before the complete
     // module-evaluation proof rejects unrelated top-level effects.
     proveTopLevel(moduleClosure.modules, state);
@@ -2003,7 +2005,9 @@ function installProof({ ts, checker, graphContext, Rejection, canonicalSha256 })
       top_level: topLevelEvidence(moduleClosure.modules),
     };
     const proof = {
-      schema: "source_graph_proof.v1",
+      schema: returnDomain.kind === "integer"
+        ? "source_graph_proof.v1"
+        : "source_graph_proof.v2",
       status: "proved",
       target: {
         module_relpath: moduleRelpath,
@@ -2112,6 +2116,9 @@ function createProof(request, snapshot, graph) {
     binding_ids: [...internal.dependency_closure.binding_ids],
   };
   return {
+    ...(internal.schema === "source_graph_proof.v2"
+      ? { schema: internal.schema }
+      : {}),
     target_binding_id: internal.target.binding_id,
     parameter_domains: internal.parameter_domains,
     result_domain: internal.return_domain,

@@ -6,6 +6,7 @@ import copy
 import json
 import os
 import shutil
+import subprocess
 import tempfile
 import time
 import unittest
@@ -15,6 +16,8 @@ from unittest.mock import patch
 from pimos_lite import reweave_app_service as app_service
 from pimos_lite import reweave_page_capability_contract as page_contract
 from pimos_lite.composer.module_native import (
+    ADAPTER_V3_FORMAL_PRODUCT_COMPOSER_VERSION,
+    MULTI_COMPUTATION_FORMAL_PRODUCT_COMPOSER_VERSION,
     compose_capsule_product,
     formal_page_contract_digest,
 )
@@ -22,6 +25,7 @@ from pimos_lite.reweave_app_service import (
     ProductGenerationError,
     ReweaveAppService,
     _validate_product_acceptance,
+    _validate_product_runtime,
 )
 from pimos_lite.reweave_agent_stdio import (
     AGENT_PROTOCOL_VERSION,
@@ -31,6 +35,7 @@ from pimos_lite.reweave_capsule_store import (
     CapsuleWarehouseStore,
     canonicalize_capsule,
 )
+from pimos_lite.reweave_capsule_stage3 import generate_computation_adapter_v3
 from pimos_lite.reweave_page_capability_contract import (
     build_formal_identity_binding_v2,
     build_page_capability_declaration_v2,
@@ -44,18 +49,24 @@ from pimos_lite.reweave_plan_execution import (
     build_parameterized_execution_offer,
     canonical_bytes,
     canonical_digest,
+    compile_multi_computation_plan_execution,
     compile_plan_execution,
     compile_parameterized_plan_execution,
     evaluate_candidate_acceptance,
     validate_candidate_acceptance_confirmation,
 )
 from pimos_lite.reweave_product_planner import (
+    LEGACY_PLAN_SCHEMA_VERSION,
+    LEGACY_PLANNING_PROMPT_VERSION,
+    LEGACY_PLANNING_RULES_VERSION,
     PLAN_SCHEMA_VERSION,
     PLANNING_PROMPT_VERSION,
     PLANNING_RULES_VERSION,
+    SECTION_PLANNING_RULES_VERSION,
 )
 from tests.test_reweave_phase5_generation import (
     _NoLegacyEngine,
+    _adapter_errors,
     _capsule_payload,
     _quality_receipt,
     _runtime_receipt,
@@ -392,7 +403,7 @@ def _confirmed_plan(
         )
         previous = work_id
     plan = {
-        "schema_version": PLAN_SCHEMA_VERSION,
+        "schema_version": LEGACY_PLAN_SCHEMA_VERSION,
         "plan_id": "plan_" + "1" * 32,
         "plan_version": 1,
         "parent_plan_digest": None,
@@ -409,8 +420,8 @@ def _confirmed_plan(
             "parameter_count": 1,
             "parameter_size": "1B",
         },
-        "planning_rules_version": PLANNING_RULES_VERSION,
-        "prompt_version": PLANNING_PROMPT_VERSION,
+        "planning_rules_version": SECTION_PLANNING_RULES_VERSION,
+        "prompt_version": LEGACY_PLANNING_PROMPT_VERSION,
         "structured_response_digests": ["3" * 64],
         "warehouse_revision": warehouse_revision,
         "candidate_generated": False,
@@ -549,6 +560,59 @@ def _parameterized_payload(kind: str) -> dict[str, object]:
     return payload
 
 
+def _serial_computation_payload(stage: int) -> dict[str, object]:
+    payload = copy.deepcopy(_capsule_payload("computation"))
+    if stage == 1:
+        payload["output_contract"] = {
+            "schema": "data_contract.v1",
+            "type": "object",
+            "properties": {
+                "subtotal": {
+                    "type": "integer",
+                    "minimum": 2,
+                    "maximum": 20,
+                }
+            },
+            "required": ["subtotal"],
+            "additional_properties": False,
+        }
+        payload["javascript_modules"] = [
+            {
+                "path": "computation.js",
+                "source": """export function compute(input) {
+  return {ok: true, value: {subtotal: input.quantity * 2}};
+}
+""",
+            }
+        ]
+    elif stage == 2:
+        payload["input_contract"] = {
+            "schema": "data_contract.v1",
+            "type": "object",
+            "properties": {
+                "subtotal": {
+                    "type": "integer",
+                    "minimum": 2,
+                    "maximum": 20,
+                }
+            },
+            "required": ["subtotal"],
+            "additional_properties": False,
+        }
+        payload["javascript_modules"] = [
+            {
+                "path": "computation.js",
+                "source": """export function compute(input) {
+  return {ok: true, value: {total: input.subtotal}};
+}
+""",
+            }
+        ]
+    else:
+        raise AssertionError(stage)
+    return payload
+
+
 @unittest.skipUnless(shutil.which("node"), "Node.js is required")
 class PlanExecutionV1Test(unittest.TestCase):
     def setUp(self) -> None:
@@ -572,10 +636,143 @@ class PlanExecutionV1Test(unittest.TestCase):
         revision = self.service._product_planning_catalog()["warehouse_revision"]
         self.plan, self.confirmation = _confirmed_plan(self.capsules, revision)
 
+    def _serial_fixture(
+        self,
+        *,
+        include_interaction: bool = True,
+        invalid_intermediate_output: bool = False,
+    ) -> tuple[list[dict], dict, dict]:
+        capability_key = (
+            "serial_quote_with_interaction"
+            if include_interaction
+            else "serial_quote_without_interaction"
+        )
+        capsule_ids: list[str] = []
+        for kind in ("presentation", "interaction"):
+            if kind == "interaction" and not include_interaction:
+                continue
+            capsule_id, _version_id = _seed_capsule(
+                self.store,
+                kind,
+                capability_key=capability_key,
+                suffix=f"{capability_key}_{kind}",
+            )
+            capsule_ids.append(capsule_id)
+        for stage in (1, 2):
+            payload = _serial_computation_payload(stage)
+            if stage == 1 and invalid_intermediate_output:
+                payload["javascript_modules"] = [
+                    {
+                        "path": "computation.js",
+                        "source": """export function compute(input) {
+  return {ok: true, value: {unexpected: input.quantity * 2}};
+}
+""",
+                    }
+                ]
+            capsule_id, _version_id = _seed_capsule(
+                self.store,
+                "computation",
+                capability_key=capability_key,
+                suffix=f"{capability_key}_stage_{stage}",
+                payload=payload,
+            )
+            capsule_ids.append(capsule_id)
+        capsules, _scope = self.service._load_generation_capsules(
+            capsule_ids,
+            read_only=True,
+        )
+        presentation = next(
+            row for row in capsules if row["capability_kind"] == "presentation"
+        )
+        interaction = next(
+            (
+                row
+                for row in capsules
+                if row["capability_kind"] == "interaction"
+            ),
+            None,
+        )
+        computations = sorted(
+            (
+                row
+                for row in capsules
+                if row["capability_kind"] == "computation"
+            ),
+            key=lambda row: row["role_key"],
+        )
+        revision = self.service._product_planning_catalog()[
+            "warehouse_revision"
+        ]
+        plan, confirmation = _confirmed_plan(self.capsules, revision)
+        ordered = (
+            [interaction, *computations, presentation]
+            if interaction is not None
+            else [presentation, *computations, presentation]
+        )
+        previous = None
+        for section, capsule in zip(plan["sections"], ordered, strict=True):
+            work = section["work_items"][0]
+            work["depends_on"] = [] if previous is None else [previous]
+            work["capsule_bindings"] = [_binding(capsule)]
+            previous = work["work_item_id"]
+        confirmation["capsule_revalidation"] = [
+            {
+                "capsule_id": binding["capsule_id"],
+                "version_id": binding["version_id"],
+                "eligibility_status": "active_current_eligible",
+                "review_status": "user_confirmed",
+            }
+            for section in plan["sections"]
+            for work in section["work_items"]
+            for binding in work["capsule_bindings"]
+        ]
+        _refresh(plan, confirmation)
+        return capsules, plan, confirmation
+
     def tearDown(self) -> None:
         self.service.close()
         self.environment.stop()
         self.temporary.cleanup()
+
+    def test_composed_runtime_requires_exactly_one_non_nested_main(self) -> None:
+        runtime_root = self.root / "document-landmarks"
+        runtime_root.mkdir()
+        (runtime_root / "app.js").write_text(
+            'globalThis.__reweave_result={'
+            'schema_version:"reweave_product_runtime_result.v1",'
+            'status:"passed",acceptance_scope:'
+            '"real_qwebengine_product_bootstrap",emission_count:0};\n',
+            encoding="utf-8",
+        )
+        shells = {
+            "zero": "<div>content</div>",
+            "two": "<main>one</main><main>two</main>",
+            "nested": "<main><main>nested</main></main>",
+        }
+        for name, shell in shells.items():
+            with self.subTest(name=name):
+                (runtime_root / "index.html").write_text(
+                    f"<!doctype html><html><body>{shell}"
+                    '<script src="./app.js"></script></body></html>\n',
+                    encoding="utf-8",
+                )
+                with self.assertRaisesRegex(
+                    ProductGenerationError,
+                    "product_main_landmark_invalid",
+                ):
+                    _validate_product_runtime(runtime_root)
+
+        (runtime_root / "index.html").write_text(
+            "<!doctype html><html><body><div><main>valid</main></div>"
+            '<script src="./app.js"></script></body></html>\n',
+            encoding="utf-8",
+        )
+        receipt = _validate_product_runtime(runtime_root)
+        self.assertEqual(
+            receipt["document_landmarks"],
+            {"main_count": 1, "nested_main": False},
+        )
 
     def _confirmed_candidate(
         self,
@@ -861,6 +1058,760 @@ class PlanExecutionV1Test(unittest.TestCase):
             "plan_execution_dom_capsule_required",
         ):
             compile_plan_execution(no_dom_plan, no_dom_confirmation, self.capsules)
+
+    def test_multi_computation_serial_execution_and_composer_are_deterministic(
+        self,
+    ) -> None:
+        capsules, plan, confirmation = self._serial_fixture()
+        first = compile_multi_computation_plan_execution(
+            plan,
+            confirmation,
+            capsules,
+        )
+        second = compile_multi_computation_plan_execution(
+            copy.deepcopy(plan),
+            copy.deepcopy(confirmation),
+            list(reversed(copy.deepcopy(capsules))),
+        )
+        self.assertEqual(first["schema_version"], "plan_execution.v3")
+        self.assertEqual(canonical_bytes(first), canonical_bytes(second))
+        self.assertEqual(
+            first["connection_digest"],
+            canonical_digest(first["connections"]),
+        )
+        self.assertEqual(len(first["connections"]), 3)
+        self.assertTrue(
+            all(
+                connection["connection_digest"]
+                == canonical_digest(
+                    {
+                        key: value
+                        for key, value in connection.items()
+                        if key != "connection_digest"
+                    }
+                )
+                for connection in first["connections"]
+            )
+        )
+        computation_edge = first["connections"][1]
+        self.assertIn("stage_1", computation_edge["source_capsule_id"])
+        self.assertIn("stage_2", computation_edge["target_capsule_id"])
+        self.assertEqual(
+            first["composer_request"]["connection_digest"],
+            first["connection_digest"],
+        )
+
+        arguments = {
+            "task": first["composer_request"]["task"],
+            "product_id": first["composer_request"]["product_id"],
+            "generated_at": first["composer_request"]["generated_at"],
+            "candidate_acceptance_port": True,
+            "verified_connections": first["connections"],
+            "connection_digest": first["connection_digest"],
+        }
+        composition = compose_capsule_product(
+            **arguments,
+            capsules=capsules,
+        )
+        replay = compose_capsule_product(
+            **arguments,
+            capsules=list(reversed(capsules)),
+        )
+        self.assertEqual(composition, replay)
+        self.assertEqual(
+            composition["composer_version"],
+            MULTI_COMPUTATION_FORMAL_PRODUCT_COMPOSER_VERSION,
+        )
+        self.assertEqual(
+            composition["composition_manifest"]["schema_version"],
+            "module_native_product_composition.v3",
+        )
+        self.assertEqual(
+            composition["provenance"]["connection_digest"],
+            first["connection_digest"],
+        )
+        self.assertIn(
+            "stage_2",
+            composition["provenance"]["terminal_output"]["capsule_id"],
+        )
+        self.assertIn(
+            "const computations = [",
+            composition["files"]["app.js"],
+        )
+        tampered_connections = copy.deepcopy(first["connections"])
+        tampered_connections[1]["target_canonical_hash"] = "f" * 64
+        with self.assertRaisesRegex(
+            ValueError,
+            "product_connection_contract_invalid",
+        ):
+            compose_capsule_product(
+                **{
+                    **arguments,
+                    "verified_connections": tampered_connections,
+                },
+                capsules=capsules,
+            )
+        no_interaction_capsules, no_interaction_plan, no_interaction_confirmation = (
+            self._serial_fixture(include_interaction=False)
+        )
+        no_interaction = compile_multi_computation_plan_execution(
+            no_interaction_plan,
+            no_interaction_confirmation,
+            no_interaction_capsules,
+        )
+        self.assertEqual(len(no_interaction["connections"]), 2)
+        self.assertTrue(
+            all(
+                connection["source_output"] == "value"
+                for connection in no_interaction["connections"]
+            )
+        )
+        no_interaction_composition = compose_capsule_product(
+            task=no_interaction["composer_request"]["task"],
+            product_id=no_interaction["composer_request"]["product_id"],
+            generated_at=no_interaction["composer_request"]["generated_at"],
+            capsules=no_interaction_capsules,
+            candidate_acceptance_port=True,
+            verified_connections=no_interaction["connections"],
+            connection_digest=no_interaction["connection_digest"],
+        )
+        self.assertEqual(
+            no_interaction_composition["composer_version"],
+            MULTI_COMPUTATION_FORMAL_PRODUCT_COMPOSER_VERSION,
+        )
+
+    def test_adapter_v3_passthrough_enters_existing_total_computation(self) -> None:
+        capsules, plan, confirmation = self._serial_fixture()
+        computations = sorted(
+            (
+                capsule
+                for capsule in capsules
+                if capsule["capability_kind"] == "computation"
+            ),
+            key=lambda capsule: capsule["role_key"],
+        )
+        discount, total = computations
+        discount_output = {
+            "schema": "data_contract.v1",
+            "type": "object",
+            "properties": {
+                "quantity": {"type": "integer", "minimum": 1, "maximum": 10},
+                "unit_price": {
+                    "type": "integer",
+                    "minimum": 55,
+                    "maximum": 100,
+                },
+            },
+            "required": ["quantity", "unit_price"],
+            "additional_properties": False,
+        }
+        discount.update(
+            candidate_origin="deterministic_computation_adapter",
+            adapter_contract_version="computation_adapter.v3",
+            activation={
+                "mode": "declared_input_compute",
+                "entry_module": "__reweave_adapter__/compute.js",
+                "entrypoint": "compute",
+            },
+            output_contract=discount_output,
+            error_contract=_adapter_errors(),
+            javascript_modules=[
+                {
+                    "path": "__reweave_adapter__/compute.js",
+                    "source": generate_computation_adapter_v3(
+                        ["quantity"],
+                        discount["input_contract"],
+                        discount_output,
+                        "unit_price",
+                        ["quantity"],
+                    ),
+                },
+                {
+                    "path": "__reweave_capture__/selected.js",
+                    "source": (
+                        "export function __selected(quantity) { "
+                        "return 105 - quantity * 5; }\n"
+                    ),
+                },
+            ],
+        )
+        total.update(
+            input_contract=copy.deepcopy(discount_output),
+            output_contract={
+                "schema": "data_contract.v1",
+                "type": "object",
+                "properties": {
+                    "total": {
+                        "type": "integer",
+                        "minimum": 55,
+                        "maximum": 1000,
+                    }
+                },
+                "required": ["total"],
+                "additional_properties": False,
+            },
+            javascript_modules=[
+                {
+                    "path": "computation.js",
+                    "source": """export function compute(input) {
+  return {ok: true, value: {total: input.quantity * input.unit_price}};
+}
+""",
+                }
+            ],
+        )
+        presentation = next(
+            capsule
+            for capsule in capsules
+            if capsule["capability_kind"] == "presentation"
+        )
+        presentation["input_contract"] = copy.deepcopy(total["output_contract"])
+        for capsule in (discount, total, presentation):
+            capsule["canonical_hash"] = canonicalize_capsule(
+                _formal_payload(capsule)
+            ).sha256
+        by_id = {capsule["capsule_id"]: capsule for capsule in capsules}
+        for section in plan["sections"]:
+            work = section["work_items"][0]
+            bound = by_id[work["capsule_bindings"][0]["capsule_id"]]
+            work["capsule_bindings"] = [_binding(bound)]
+        _refresh(plan, confirmation)
+
+        execution = compile_multi_computation_plan_execution(
+            plan,
+            confirmation,
+            capsules,
+        )
+        arguments = {
+            "task": execution["composer_request"]["task"],
+            "product_id": execution["composer_request"]["product_id"],
+            "generated_at": execution["composer_request"]["generated_at"],
+            "candidate_acceptance_port": True,
+            "verified_connections": execution["connections"],
+            "connection_digest": execution["connection_digest"],
+        }
+        composition = compose_capsule_product(**arguments, capsules=capsules)
+        replay = compose_capsule_product(
+            **arguments,
+            capsules=list(reversed(capsules)),
+        )
+        self.assertEqual(composition, replay)
+        self.assertEqual(
+            composition["composer_version"],
+            ADAPTER_V3_FORMAL_PRODUCT_COMPOSER_VERSION,
+        )
+        runtime = self.root / "adapter-v3-runtime.js"
+        runtime.write_text(
+            """const totalNode = {textContent: ""};
+const quantityNode = {value: "5"};
+const buttonNode = {addEventListener() {}, removeEventListener() {}};
+const root = {querySelector(selector) {
+  if (selector.includes("total")) return totalNode;
+  if (selector.includes("quantity")) return quantityNode;
+  return buttonNode;
+}};
+globalThis.document = {getElementById() { return root; }};
+"""
+            + composition["files"]["app.js"]
+            + """
+const result = globalThis.__reweave_acceptance_v1.run({quantity: 5});
+process.stdout.write(JSON.stringify({result, rendered: totalNode.textContent}));
+""",
+            encoding="utf-8",
+        )
+        completed = subprocess.run(
+            [str(shutil.which("node")), str(runtime)],
+            capture_output=True,
+            text=True,
+            timeout=10,
+            check=False,
+        )
+        self.assertEqual(completed.returncode, 0, completed.stderr)
+        self.assertEqual(
+            json.loads(completed.stdout),
+            {"result": {"total": 400}, "rendered": "400"},
+        )
+        self.service._product_planner = _ConfirmedPlanner(plan, confirmation)
+        with (
+            patch.object(
+                self.service,
+                "_load_composer_capsules",
+                return_value=(capsules, [], []),
+            ),
+            patch.object(
+                self.service,
+                "_assert_generation_capsules_current",
+            ),
+            patch(
+                "pimos_lite.reweave_app_service._validate_product_static",
+                _quality_receipt,
+            ),
+            patch(
+                "pimos_lite.reweave_app_service._validate_product_runtime",
+                _runtime_receipt,
+            ),
+            patch(
+                "pimos_lite.reweave_app_service._validate_product_acceptance",
+                return_value=_acceptance_worker(400),
+            ),
+        ):
+            candidate = self.service._build_product_candidate(
+                "plan_token_adapter_v3_candidate",
+                plan["canonical_digest"],
+                [
+                    {
+                        "requirement_ids": ["requirement_03"],
+                        "input": {"quantity": 5},
+                        "expected_output": {"total": 400},
+                    }
+                ],
+            )
+        self.assertEqual(
+            candidate["composer_version"],
+            ADAPTER_V3_FORMAL_PRODUCT_COMPOSER_VERSION,
+        )
+
+    def test_product_plan_v2_compiles_without_changing_execution_contract(
+        self,
+    ) -> None:
+        capsules, legacy_plan, _legacy_confirmation = self._serial_fixture()
+        ordered_items = [
+            copy.deepcopy(section["work_items"][0])
+            for section in legacy_plan["sections"]
+        ]
+        plan = copy.deepcopy(legacy_plan)
+        plan["schema_version"] = PLAN_SCHEMA_VERSION
+        plan["planning_rules_version"] = PLANNING_RULES_VERSION
+        plan["prompt_version"] = PLANNING_PROMPT_VERSION
+        plan["sections"] = [
+            {
+                "section_id": "frontend",
+                "applicability": "applicable",
+                "summary": "用户输入与最终结果。",
+                "work_items": [ordered_items[0], ordered_items[3]],
+                "gaps": [],
+            },
+            {
+                "section_id": "backend",
+                "applicability": "applicable",
+                "summary": "两个确定性计算步骤。",
+                "work_items": [ordered_items[1], ordered_items[2]],
+                "gaps": [],
+            },
+            {
+                "section_id": "data",
+                "applicability": "not_applicable",
+                "summary": "本产品不需要独立数据层。",
+                "work_items": [],
+                "gaps": [],
+            },
+            {
+                "section_id": "infrastructure",
+                "applicability": "not_applicable",
+                "summary": "本产品不需要独立基础设施层。",
+                "work_items": [],
+                "gaps": [],
+            },
+        ]
+        confirmation = {
+            "schema_version": "product_plan_confirmation.v1",
+            "plan_id": plan["plan_id"],
+            "plan_version": plan["plan_version"],
+            "plan_digest": "",
+            "confirmed_at": NOW,
+            "capsule_revalidation": [
+                {
+                    "capsule_id": binding["capsule_id"],
+                    "version_id": binding["version_id"],
+                    "eligibility_status": "active_current_eligible",
+                    "review_status": "user_confirmed",
+                }
+                for section in plan["sections"]
+                for work in section["work_items"]
+                for binding in work["capsule_bindings"]
+            ],
+            "warehouse_revision": plan["warehouse_revision"],
+            "product_generated": False,
+            "candidate_generated": False,
+            "product_usage_written": False,
+            "receipt_digest": "",
+        }
+        _refresh(plan, confirmation)
+
+        first = compile_multi_computation_plan_execution(
+            plan,
+            confirmation,
+            capsules,
+        )
+        second = compile_multi_computation_plan_execution(
+            copy.deepcopy(plan),
+            copy.deepcopy(confirmation),
+            list(reversed(copy.deepcopy(capsules))),
+        )
+        self.assertEqual(first["schema_version"], "plan_execution.v3")
+        self.assertEqual(first, second)
+        self.assertEqual(len(first["connections"]), 3)
+        self.assertNotIn("applicability", first)
+        self.assertEqual(
+            first["connection_digest"],
+            canonical_digest(first["connections"]),
+        )
+        acceptance_contract = {
+            "schema": "data_contract.v1",
+            "type": "object",
+            "properties": {
+                "value": {"type": "integer", "minimum": 0, "maximum": 10}
+            },
+            "required": ["value"],
+            "additional_properties": False,
+        }
+        acceptance = build_candidate_acceptance(
+            plan,
+            confirmation,
+            [
+                {
+                    "requirement_ids": [
+                        item["requirement_id"] for item in plan["requirements"]
+                    ],
+                    "input": {"value": 1},
+                    "expected_output": {"value": 1},
+                }
+            ],
+            acceptance_contract,
+            acceptance_contract,
+            "a" * 64,
+        )
+        self.assertEqual(
+            acceptance["schema_version"],
+            "candidate_acceptance.v1",
+        )
+
+        gap_plan = copy.deepcopy(plan)
+        gap_confirmation = copy.deepcopy(confirmation)
+        gap_plan["sections"][0]["gaps"] = [
+            {
+                "gap_id": "gap_missing",
+                "title": "真实能力缺口",
+                "reason": "目录中没有所需能力。",
+                "requirement_ids": ["requirement_01"],
+            }
+        ]
+        _refresh(gap_plan, gap_confirmation)
+        with self.assertRaisesRegex(
+            PlanExecutionError,
+            "plan_execution_gap_present",
+        ):
+            compile_multi_computation_plan_execution(
+                gap_plan,
+                gap_confirmation,
+                capsules,
+            )
+
+        invalid = copy.deepcopy(plan)
+        invalid_confirmation = copy.deepcopy(confirmation)
+        invalid["sections"][2]["work_items"] = [
+            copy.deepcopy(ordered_items[0])
+        ]
+        _refresh(invalid, invalid_confirmation)
+        with self.assertRaisesRegex(
+            PlanExecutionError,
+            "plan_execution_section_invalid",
+        ):
+            compile_multi_computation_plan_execution(
+                invalid,
+                invalid_confirmation,
+                capsules,
+            )
+
+    def test_multi_computation_serial_execution_fails_closed(self) -> None:
+        capsules, plan, confirmation = self._serial_fixture()
+        cyclic = copy.deepcopy(plan)
+        cyclic_confirmation = copy.deepcopy(confirmation)
+        cyclic["sections"][0]["work_items"][0]["depends_on"] = [
+            "work_item_04"
+        ]
+        _refresh(cyclic, cyclic_confirmation)
+        with self.assertRaisesRegex(
+            PlanExecutionError,
+            "plan_execution_dependency_cycle",
+        ):
+            compile_multi_computation_plan_execution(
+                cyclic,
+                cyclic_confirmation,
+                capsules,
+            )
+
+        unordered = copy.deepcopy(plan)
+        unordered_confirmation = copy.deepcopy(confirmation)
+        unordered["sections"][2]["work_items"][0]["depends_on"] = [
+            "work_item_01"
+        ]
+        _refresh(unordered, unordered_confirmation)
+        with self.assertRaisesRegex(
+            PlanExecutionError,
+            "plan_execution_connection_order_ambiguous",
+        ):
+            compile_multi_computation_plan_execution(
+                unordered,
+                unordered_confirmation,
+                capsules,
+            )
+
+        incompatible = copy.deepcopy(capsules)
+        second = next(
+            row
+            for row in incompatible
+            if row["capability_kind"] == "computation"
+            and "stage_2" in row["capsule_id"]
+        )
+        second["input_contract"] = copy.deepcopy(
+            next(
+                row
+                for row in incompatible
+                if row["capability_kind"] == "interaction"
+            )["output_contract"]["events"]["calculate_requested"]
+        )
+        with self.assertRaisesRegex(
+            PlanExecutionError,
+            "plan_execution_connection_contract_incompatible",
+        ):
+            compile_multi_computation_plan_execution(
+                plan,
+                confirmation,
+                incompatible,
+            )
+
+        duplicate = copy.deepcopy(plan)
+        duplicate_confirmation = copy.deepcopy(confirmation)
+        first_binding = copy.deepcopy(
+            duplicate["sections"][1]["work_items"][0][
+                "capsule_bindings"
+            ][0]
+        )
+        duplicate["sections"][0]["work_items"][0][
+            "capsule_bindings"
+        ].append(first_binding)
+        duplicate_confirmation["capsule_revalidation"].insert(
+            1,
+            {
+                "capsule_id": first_binding["capsule_id"],
+                "version_id": first_binding["version_id"],
+                "eligibility_status": "active_current_eligible",
+                "review_status": "user_confirmed",
+            },
+        )
+        _refresh(duplicate, duplicate_confirmation)
+        with self.assertRaisesRegex(
+            PlanExecutionError,
+            "plan_execution_connection_binding_ambiguous",
+        ):
+            compile_multi_computation_plan_execution(
+                duplicate,
+                duplicate_confirmation,
+                capsules,
+            )
+
+    def test_multi_computation_candidate_uses_terminal_output(self) -> None:
+        capsules, plan, confirmation = self._serial_fixture()
+        planner = _ConfirmedPlanner(plan, confirmation)
+        self.service._product_planner = planner
+        accepted = self.service.confirm_product_candidate_acceptance(
+            {
+                "plan_token": "plan_token_serial",
+                "plan_digest": plan["canonical_digest"],
+                "acceptance_cases": [
+                    {
+                        "requirement_ids": ["requirement_03"],
+                        "input": {"quantity": 3},
+                        "expected_output": {"total": 6},
+                    }
+                ],
+            }
+        )
+        self.assertTrue(accepted["ok"], accepted)
+        with (
+            patch(
+                "pimos_lite.reweave_app_service._validate_product_static",
+                _quality_receipt,
+            ),
+            patch(
+                "pimos_lite.reweave_app_service._validate_product_runtime",
+                _runtime_receipt,
+            ),
+            patch(
+                "pimos_lite.reweave_app_service._validate_product_acceptance",
+                return_value=_acceptance_worker(6),
+            ),
+        ):
+            started = self.service.start_confirmed_product_candidate(
+                {
+                    "plan_token": "plan_token_serial",
+                    "plan_digest": plan["canonical_digest"],
+                    "acceptance_confirmation_digest": accepted["data"][
+                        "canonical_digest"
+                    ],
+                }
+            )
+            self.assertTrue(started["ok"], started)
+            task = _poll(self.service, started["run_id"])
+        self.assertEqual(task["status"], "completed", task)
+        candidate = task["data"]["data"]
+        self.assertEqual(candidate["status"], "review_ready")
+        self.assertEqual(
+            candidate["composer_version"],
+            MULTI_COMPUTATION_FORMAL_PRODUCT_COMPOSER_VERSION,
+        )
+        self.assertEqual(
+            candidate["provenance"]["schema_version"],
+            "product_candidate_provenance.v3",
+        )
+        self.assertIn(
+            "stage_2",
+            candidate["provenance"]["terminal_output"]["capsule_id"],
+        )
+        self.assertEqual(
+            candidate["provenance"]["connection_digest"],
+            canonical_digest(candidate["provenance"]["connections"]),
+        )
+        restored = self.service.get_product_candidate(
+            {"candidate_token": candidate["candidate_token"]}
+        )
+        self.assertTrue(restored["ok"], restored)
+        self.assertEqual(restored["data"], candidate)
+        if os.name == "posix":
+            destination = self.root / "serial-export"
+            destination.mkdir()
+            exported = self.service.export_product_candidate(
+                {
+                    "plan_token": "plan_token_serial",
+                    "candidate_token": candidate["candidate_token"],
+                    "destination_parent": str(destination.resolve()),
+                }
+            )
+            self.assertTrue(exported["ok"], exported)
+            self.assertEqual(exported["data"]["status"], "saved")
+
+    def test_multi_computation_intermediate_failure_is_not_review_ready(
+        self,
+    ) -> None:
+        _capsules, plan, confirmation = self._serial_fixture()
+        self.service._product_planner = _ConfirmedPlanner(plan, confirmation)
+        failed_worker = {
+            "schema_version": "candidate_acceptance_worker.v1",
+            "status": "completed",
+            "cases": [
+                {
+                    "case_id": "case_01",
+                    "status": "failed",
+                    "actual_output": None,
+                    "error_code": "candidate_case_execution_failed",
+                }
+            ],
+        }
+        with (
+            patch(
+                "pimos_lite.reweave_app_service._validate_product_static",
+                _quality_receipt,
+            ),
+            patch(
+                "pimos_lite.reweave_app_service._validate_product_runtime",
+                _runtime_receipt,
+            ),
+            patch(
+                "pimos_lite.reweave_app_service._validate_product_acceptance",
+                return_value=failed_worker,
+            ),
+        ):
+            started = self.service.start_product_candidate(
+                {
+                    "plan_token": "plan_token_serial_failure",
+                    "plan_digest": plan["canonical_digest"],
+                    "acceptance_cases": [
+                        {
+                            "requirement_ids": ["requirement_03"],
+                            "input": {"quantity": 3},
+                            "expected_output": {"total": 6},
+                        }
+                    ],
+                }
+            )
+            self.assertTrue(started["ok"], started)
+            task = _poll(self.service, started["run_id"])
+        self.assertEqual(task["status"], "completed", task)
+        candidate = task["data"]["data"]
+        self.assertEqual(candidate["status"], "acceptance_failed")
+        self.assertEqual(
+            candidate["acceptance"]["product_goal_conformance"],
+            "failed",
+        )
+
+    @unittest.skipUnless(
+        Path(".venv-reweave/bin/python").is_file()
+        or Path(".venv-reweave/Scripts/python.exe").is_file(),
+        "PySide worker environment is required",
+    )
+    def test_real_qweb_multi_computation_serial_acceptance(self) -> None:
+        _capsules, plan, confirmation = self._serial_fixture()
+        self.service._product_planner = _ConfirmedPlanner(plan, confirmation)
+        started = self.service.start_product_candidate(
+            {
+                "plan_token": "plan_token_serial_qweb",
+                "plan_digest": plan["canonical_digest"],
+                "acceptance_cases": [
+                    {
+                        "requirement_ids": ["requirement_03"],
+                        "input": {"quantity": 3},
+                        "expected_output": {"total": 6},
+                    }
+                ],
+            }
+        )
+        self.assertTrue(started["ok"], started)
+        task = _poll(self.service, started["run_id"])
+        self.assertEqual(task["status"], "completed", task)
+        candidate = task["data"]["data"]
+        self.assertEqual(candidate["status"], "review_ready")
+        self.assertEqual(
+            candidate["acceptance"]["cases"][0]["actual_output"],
+            {"total": 6},
+        )
+        self.assertEqual(
+            candidate["provenance"]["schema_version"],
+            "product_candidate_provenance.v3",
+        )
+
+    @unittest.skipUnless(
+        Path(".venv-reweave/bin/python").is_file()
+        or Path(".venv-reweave/Scripts/python.exe").is_file(),
+        "PySide worker environment is required",
+    )
+    def test_real_qweb_multi_computation_rejects_bad_intermediate_output(
+        self,
+    ) -> None:
+        _capsules, plan, confirmation = self._serial_fixture(
+            invalid_intermediate_output=True
+        )
+        self.service._product_planner = _ConfirmedPlanner(plan, confirmation)
+        started = self.service.start_product_candidate(
+            {
+                "plan_token": "plan_token_serial_qweb_invalid",
+                "plan_digest": plan["canonical_digest"],
+                "acceptance_cases": [
+                    {
+                        "requirement_ids": ["requirement_03"],
+                        "input": {"quantity": 3},
+                        "expected_output": {"total": 6},
+                    }
+                ],
+            }
+        )
+        self.assertTrue(started["ok"], started)
+        task = _poll(self.service, started["run_id"])
+        self.assertEqual(task["status"], "failed", task)
+        self.assertNotEqual(
+            task.get("data", {}).get("data", {}).get("status"),
+            "review_ready",
+        )
 
     def test_formal_page_contract_is_shared_and_fails_before_execution(self) -> None:
         first_digest = formal_page_contract_digest(self.capsules)
@@ -1396,14 +2347,18 @@ class PlanExecutionV1Test(unittest.TestCase):
         )
 
     def test_parameterized_offer_binding_and_v1_bytes_are_strict(self) -> None:
+        legacy_plan = copy.deepcopy(self.plan)
+        legacy_confirmation = copy.deepcopy(self.confirmation)
+        legacy_plan["planning_rules_version"] = LEGACY_PLANNING_RULES_VERSION
+        _refresh(legacy_plan, legacy_confirmation)
         old_execution = compile_plan_execution(
-            self.plan,
-            self.confirmation,
+            legacy_plan,
+            legacy_confirmation,
             self.capsules,
         )
         self.assertEqual(
             canonical_digest(old_execution),
-            "803c4497227d74fa15c964038df6d5fb86f996103af69e2fc62bf5202d97ade3",
+            "1faf22143dbf731ede48cb72107aeb58553cfb800eac8ff3b9db319b4ced5b58",
         )
         old_composition = compose_capsule_product(
             task="隔离候选",
@@ -1421,7 +2376,7 @@ class PlanExecutionV1Test(unittest.TestCase):
         )
         self.assertEqual(
             canonical_digest(old_composition),
-            "5ac25055962d58afd40b346658480bf20f9f24202473d01ead6be3011962bc36",
+            "08ca6aba2320308b0a770eadf0ed5b3150c50b1c7e3122006668df72cf802f8f",
         )
         self.assertEqual(
             old_composition,
@@ -1490,7 +2445,7 @@ class PlanExecutionV1Test(unittest.TestCase):
         )
         self.assertEqual(
             composition["composer_version"],
-            "module_native_formal_product.v2",
+            "module_native_formal_product.v3",
         )
         self.assertEqual(
             composition["provenance"]["parameter_binding_digest"],

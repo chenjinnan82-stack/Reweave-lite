@@ -694,12 +694,36 @@ function numericLiteral(node) {
   return null;
 }
 
-function applyGuard(atom, base, constraints) {
+function applyGuard(atom, base, constraints, capabilityKind) {
   if (ts.isPrefixUnaryExpression(atom) && atom.operator === ts.SyntaxKind.ExclamationToken && ts.isCallExpression(atom.operand)) {
     const call = atom.operand;
     if (ts.isPropertyAccessExpression(call.expression) && ts.isIdentifier(call.expression.expression) && call.expression.expression.text === "Number" && call.expression.name.text === "isInteger") {
       const name = fieldName(call.arguments[0], base);
       if (name) constraints.set(name, { ...(constraints.get(name) || {}), type: "integer" });
+    }
+    if (capabilityKind === "presentation"
+        && ts.isPropertyAccessExpression(call.expression)
+        && call.expression.name.text === "includes"
+        && ts.isArrayLiteralExpression(call.expression.expression)
+        && call.arguments.length === 1) {
+      const name = fieldName(call.arguments[0], base);
+      if (!name) return;
+      const elements = call.expression.expression.elements;
+      if (!elements.length || elements.length > 100
+          || elements.some((item) => !ts.isStringLiteralLike(item))) {
+        throw new Rejection("ambiguous_data_contract_v1");
+      }
+      const values = elements.map((item) => item.text);
+      if (new Set(values).size !== values.length
+          || values.some((value) => value.length > 10000
+            || Buffer.from(value, "utf8").toString("utf8") !== value)) {
+        throw new Rejection("ambiguous_data_contract_v1");
+      }
+      constraints.set(name, {
+        ...(constraints.get(name) || {}),
+        type: "string",
+        enum: [...values].sort(),
+      });
     }
     return;
   }
@@ -848,7 +872,9 @@ function inputContract(fn, base, capabilityKind) {
     const error = errorResult(returned?.expression);
     if (!error) continue;
     const guarded = new Map();
-    for (const atom of flattenOr(statement.expression)) applyGuard(atom, base, guarded);
+    for (const atom of flattenOr(statement.expression)) {
+      applyGuard(atom, base, guarded, capabilityKind);
+    }
     const fields = [...guarded.keys()];
     const rootCount = fields.length ? null : rootObjectGuardCount(statement.expression, base);
     if ((!fields.length && rootCount === null)
@@ -891,6 +917,18 @@ function inputContract(fn, base, capabilityKind) {
     const item = constraints.get(name) || {};
     if (item.type === "integer" && Number.isSafeInteger(item.minimum) && Number.isSafeInteger(item.maximum) && item.minimum <= item.maximum) {
       properties[name] = { type: "integer", minimum: item.minimum, maximum: item.maximum };
+    } else if (item.type === "string"
+        && Array.isArray(item.enum)
+        && item.enum.length
+        && item.length !== true
+        && item.minimum === undefined
+        && item.maximum === undefined) {
+      properties[name] = {
+        type: "string",
+        min_length: Math.min(...item.enum.map((value) => value.length)),
+        max_length: Math.max(...item.enum.map((value) => value.length)),
+        enum: item.enum,
+      };
     } else if (item.type === "string" && item.length === true && Number.isSafeInteger(item.maximum) && (item.minimum || 0) <= item.maximum) {
       properties[name] = { type: "string", min_length: item.minimum || 0, max_length: item.maximum };
     } else if (item.type === "boolean") {

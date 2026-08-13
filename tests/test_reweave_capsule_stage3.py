@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import base64
+import copy
 import hashlib
 import json
 import os
 import shutil
+import sqlite3
 import subprocess
 import tempfile
 import threading
@@ -22,11 +24,17 @@ from pimos_lite.reweave_capsule_intake import (
     ReweaveCapsuleIntake,
 )
 from pimos_lite.reweave_capsule_stage3 import (
+    CAPTURE_MAPPING_V3,
+    CAPTURE_MAPPING_V4,
+    FROZEN_UI_REVIEW_ADMISSION_AUTHORIZATION_VERSION,
+    FROZEN_UI_REVIEW_ADMISSION_VERSION,
     PreparedReview,
     OllamaSupervisor,
     ReweaveCapsuleStage3,
     Stage3Error,
     capture_static_gate,
+    _normalize_capture_mapping_v3,
+    _normalize_capture_mapping_v4,
     inspect_ephemeral_computation_offers_v2,
     make_prepared_review,
     _clean_assets,
@@ -35,7 +43,13 @@ from pimos_lite.reweave_capsule_stage3 import (
     sanitize_css,
     sanitize_html,
 )
-from pimos_lite.reweave_capsule_store import CapsuleWarehouseStore
+from pimos_lite.reweave_page_capability_contract import (
+    build_page_capability_contract_v2,
+)
+from pimos_lite.reweave_capsule_store import (
+    CapsuleStoreError,
+    CapsuleWarehouseStore,
+)
 from pimos_lite.reweave_javascript_source import (
     JavascriptSourceService,
     _descriptor_relative_snapshot_supported,
@@ -715,6 +729,124 @@ class _ApprovingSupervisor:
 
 
 class OllamaBoundaryTest(unittest.TestCase):
+    def test_request_forwards_operation_timeout(self) -> None:
+        observed = []
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return False
+
+            @staticmethod
+            def read(_limit):
+                return b'{"models":[]}'
+
+        class Opener:
+            @staticmethod
+            def open(_request, timeout):
+                observed.append(timeout)
+                return Response()
+
+        with patch.object(stage3_module, "build_opener", return_value=Opener()):
+            OllamaSupervisor._request("http://127.0.0.1:11434", "/api/tags")
+            OllamaSupervisor._request(
+                "http://127.0.0.1:11434",
+                "/api/generate",
+                {"model": "local-model"},
+                timeout_seconds=stage3_module.OLLAMA_SUPERVISION_TIMEOUT_SECONDS,
+            )
+        self.assertEqual(
+            observed,
+            [
+                stage3_module.OLLAMA_METADATA_TIMEOUT_SECONDS,
+                stage3_module.OLLAMA_SUPERVISION_TIMEOUT_SECONDS,
+            ],
+        )
+
+    def test_supervision_timeout_remains_ollama_unavailable(self) -> None:
+        with patch.object(stage3_module, "build_opener") as build:
+            build.return_value.open.side_effect = TimeoutError("timed out")
+            with self.assertRaisesRegex(Stage3Error, "ollama_unavailable"):
+                OllamaSupervisor._request(
+                    "http://127.0.0.1:11434",
+                    "/api/generate",
+                    {"model": "local-model"},
+                    timeout_seconds=stage3_module.OLLAMA_SUPERVISION_TIMEOUT_SECONDS,
+                )
+        self.assertEqual(
+            build.return_value.open.call_args.kwargs,
+            {"timeout": stage3_module.OLLAMA_SUPERVISION_TIMEOUT_SECONDS},
+        )
+
+    def test_metadata_and_supervision_use_operation_timeouts(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            store = CapsuleWarehouseStore(Path(temporary) / "warehouse.sqlite3")
+            supervisor = OllamaSupervisor(store)
+            base = "http://127.0.0.1:11434"
+            with patch.object(
+                supervisor,
+                "_request",
+                return_value=({"models": []}, b'{"models":[]}'),
+            ) as request:
+                self.assertEqual(supervisor.list_models(base), [])
+            request.assert_called_once_with(
+                base,
+                "/api/tags",
+                timeout_seconds=stage3_module.OLLAMA_METADATA_TIMEOUT_SECONDS,
+            )
+
+            selected = {
+                "base_url": base,
+                "name": "local-model",
+                "digest": "d" * 64,
+                "selected_at": "2026-07-29T00:00:00.000Z",
+            }
+            response = {
+                "schema_version": "capsule_supervision.v1",
+                "verdict": "approve",
+                "capability_kind": "computation",
+                "semantic_summary": "Compute a bounded value.",
+                "keep_reason_codes": ["LOCAL"],
+                "remove_reason_codes": [],
+                "brand_signals": [],
+                "sensitive_data_status": "clear",
+                "hidden_dependency_codes": [],
+                "duplicate_suggestions": [],
+                "review_required": False,
+            }
+            with (
+                patch.object(supervisor, "selected_model", return_value=selected),
+                patch.object(
+                    supervisor,
+                    "list_models",
+                    return_value=[{"name": selected["name"], "digest": selected["digest"]}],
+                ),
+                patch.object(
+                    supervisor,
+                    "_request",
+                    return_value=(
+                        {"response": json.dumps(response)},
+                        b'{"response":"fixture"}',
+                    ),
+                ) as request,
+            ):
+                result, _response_hash, _selected = supervisor.supervise(
+                    {"schema_version": "capsule_supervision_input.v1"},
+                    "computation",
+                )
+            self.assertEqual(result["verdict"], "approve")
+            self.assertEqual(request.call_args.args[:2], (base, "/api/generate"))
+            self.assertEqual(
+                request.call_args.kwargs,
+                {
+                    "timeout_seconds": (
+                        stage3_module.OLLAMA_SUPERVISION_TIMEOUT_SECONDS
+                    )
+                },
+            )
+
     def test_explicit_loopback_selection_and_digest_recheck(self) -> None:
         state = {"digest": "d" * 64, "prompts": [], "malformed": False}
 
@@ -793,6 +925,485 @@ class OllamaBoundaryTest(unittest.TestCase):
             server.shutdown()
             thread.join(timeout=2)
             server.server_close()
+
+
+@unittest.skipUnless(shutil.which("node"), "Node is required for UI source intake")
+class FrozenUiReviewAdmissionTest(unittest.TestCase):
+    def setUp(self) -> None:
+        self._temporary = tempfile.TemporaryDirectory()
+        self.root = Path(self._temporary.name)
+        self.source = self.root / "source"
+        self.source.mkdir()
+        self.store = CapsuleWarehouseStore(
+            self.root / "source-state" / "capsule_warehouse.sqlite3"
+        )
+        self.store.initialize()
+        self.store.migrate_v1_to_v2()
+        self.intake = ReweaveCapsuleIntake(self.store)
+        self.stage3 = ReweaveCapsuleStage3(
+            self.store,
+            intake=self.intake,
+            supervisor=_ApprovingSupervisor(),
+        )
+
+    def tearDown(self) -> None:
+        self._temporary.cleanup()
+
+    @staticmethod
+    def _validation(prepared: PreparedReview) -> dict[str, object]:
+        kind = prepared.artifact.canonical_payload["capability_kind"]
+        result: dict[str, object] = {
+            "schema_version": "qweb_validation.v1",
+            "status": "passed",
+            "normal_cases": 1,
+            "boundary_cases": 1,
+            "invalid_cases": 1,
+            "repeated_render": kind == "presentation",
+            "dispose_idempotent": kind == "interaction",
+            "remount_checked": kind == "interaction",
+            "acceptance_scope": (
+                "real_qwebengine_interaction"
+                if kind == "interaction"
+                else "real_qwebengine_render"
+            ),
+        }
+        if kind == "interaction":
+            result.update(
+                {
+                    "emission_count": 1,
+                    "emission_names": ["area_requested"],
+                }
+            )
+        return result
+
+    def _review_pair(self) -> tuple[list[dict[str, object]], dict[str, object]]:
+        (self.source / "index.html").write_text(
+            """<!doctype html><html><body><main data-capsule-root>
+<input data-ref="width" type="number" min="1" max="1000" step="1">
+<input data-ref="height" type="number" min="1" max="1000" step="1">
+<p data-ref="error"></p><button data-action="calculate">Calculate</button>
+<span data-ref="area"></span></main>
+<script type="module" src="./presentation.js"></script>
+<script type="module" src="./interaction.js"></script></body></html>""",
+            encoding="utf-8",
+        )
+        (self.source / "interaction.js").write_text(
+            """export function mount(root, ports) {
+  const width = root.querySelector("[data-ref='width']");
+  const height = root.querySelector("[data-ref='height']");
+  const button = root.querySelector("[data-action='calculate']");
+  const onClick = (event) => {
+    event.preventDefault();
+    const widthValue = Number(width.value);
+    const heightValue = Number(height.value);
+    if (!Number.isInteger(widthValue) || widthValue < 1 || widthValue > 1000) return;
+    if (!Number.isInteger(heightValue) || heightValue < 1 || heightValue > 1000) return;
+    ports.emit("area_requested", {width: widthValue, height: heightValue});
+  };
+  button.addEventListener("click", onClick);
+  return () => { button.removeEventListener("click", onClick); };
+}
+""",
+            encoding="utf-8",
+        )
+        (self.source / "presentation.js").write_text(
+            """export function render(root, input) {
+  if (!input || typeof input !== "object" || Object.keys(input).length !== 1) {
+    return {ok: false, error: {code: "INVALID_INPUT", field: null, details: {}}};
+  }
+  if (!Number.isInteger(input.area) || input.area < 1 || input.area > 1000000) {
+    return {ok: false, error: {code: "INVALID_AREA", field: "area", details: {}}};
+  }
+  const area = root.querySelector("[data-ref='area']");
+  area.textContent = input.area;
+}
+""",
+            encoding="utf-8",
+        )
+        root = self.intake.bind_source_root(
+            self.source,
+            root_kind="single_project",
+        )
+        project = self.intake.discover_projects(root["root_id"])[0]
+        self.intake.confirm_project(project["project_id"])
+        run = self.intake.run_intake(project["project_id"])
+        with self.store.read_connection() as connection:
+            rows = [
+                dict(row)
+                for row in connection.execute(
+                    "SELECT * FROM review_items WHERE run_id = ? "
+                    "ORDER BY review_id",
+                    (run["run_id"],),
+                ).fetchall()
+            ]
+        self.assertEqual(len(rows), 2)
+        with patch.object(
+            ReweaveCapsuleStage3,
+            "_runtime_validation",
+            new=lambda _stage3, prepared: self._validation(prepared),
+        ):
+            for row in rows:
+                result = self.stage3.process_review(row["review_id"])
+                self.assertEqual(result["status"], "review_required")
+        snapshot = self.intake.snapshot_project(project["project_id"])
+        with self.store.read_connection() as connection:
+            reviewed = [
+                dict(
+                    connection.execute(
+                        "SELECT * FROM review_items WHERE review_id = ?",
+                        (row["review_id"],),
+                    ).fetchone()
+                )
+                for row in rows
+            ]
+        file_index = [
+            {
+                "path": item.path,
+                "file_type": item.file_type,
+                "size": item.size,
+                "sha256": item.sha256,
+            }
+            for item in snapshot.entries
+        ]
+        return reviewed, {
+            "project_id": project["project_id"],
+            "run_id": run["run_id"],
+            "file_index": file_index,
+        }
+
+    def _authorization(
+        self,
+        reviews: list[dict[str, object]],
+        lineage: dict[str, object],
+        target_revision: int,
+    ) -> dict[str, object]:
+        authorized_reviews = []
+        declarations: dict[str, dict[str, object]] = {}
+        for review in reviews:
+            summary = json.loads(str(review["sanitized_candidate_json"]))
+            kind = summary["capability_kind"]
+            declarations[kind] = summary["page_capability_declaration"]
+            source = next(
+                row
+                for row in lineage["file_index"]
+                if row["path"] == review["source_relpath"]
+            )
+            validation = summary["stage3_evidence"]["validation"]
+            authorized_reviews.append(
+                {
+                    "review_id": review["review_id"],
+                    "capability_kind": kind,
+                    "candidate_canonical_hash": review[
+                        "candidate_canonical_hash"
+                    ],
+                    "source_relpath": review["source_relpath"],
+                    "source_file_sha256": source["sha256"],
+                    "validation_sha256": hashlib.sha256(
+                        stage3_module._canonical_json_bytes(validation)
+                    ).hexdigest(),
+                    "page_capability_declaration_digest": (
+                        summary["page_capability_declaration"][
+                            "canonical_digest"
+                        ]
+                    ),
+                }
+            )
+        authorized_reviews.sort(
+            key=lambda item: ("interaction", "presentation").index(
+                item["capability_kind"]
+            )
+        )
+        page_contract = build_page_capability_contract_v2(
+            presentation_provides=declarations["presentation"]["provides"],
+            interaction_requires=declarations["interaction"]["requires"],
+        )
+        value: dict[str, object] = {
+            "schema": FROZEN_UI_REVIEW_ADMISSION_AUTHORIZATION_VERSION,
+            "scope": "isolated_rehearsal",
+            "source_database_sha256": hashlib.sha256(
+                self.store.path.read_bytes()
+            ).hexdigest(),
+            "source_project_id": lineage["project_id"],
+            "source_run_id": lineage["run_id"],
+            "source_file_index_digest": hashlib.sha256(
+                stage3_module._canonical_json_bytes(lineage["file_index"])
+            ).hexdigest(),
+            "capability_key": "rectangle_area_calculation",
+            "display_name": "Rectangle area",
+            "page_capability_contract_digest": page_contract[
+                "canonical_digest"
+            ],
+            "supervision_model_name": "test-model",
+            "supervision_model_digest": "b" * 64,
+            "target_warehouse_revision": target_revision,
+            "target_catalog_digest": "c" * 64,
+            "reviews": authorized_reviews,
+        }
+        value["authorization_digest"] = hashlib.sha256(
+            stage3_module._canonical_json_bytes(value)
+        ).hexdigest()
+        return value
+
+    @staticmethod
+    def _target(path: Path) -> CapsuleWarehouseStore:
+        store = CapsuleWarehouseStore(path)
+        store.initialize()
+        store.migrate_v1_to_v2()
+        selected = {
+            "base_url": "http://127.0.0.1:11434",
+            "name": "test-model",
+            "digest": "b" * 64,
+            "selected_at": "2026-08-11T00:00:00.000Z",
+        }
+        with store.transaction() as connection:
+            connection.execute(
+                "INSERT INTO app_settings(setting_key,value_json,updated_at) "
+                "VALUES ('capsule_supervision_model',?,?)",
+                (
+                    json.dumps(
+                        selected,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    selected["selected_at"],
+                ),
+            )
+        return store
+
+    def test_ui_pair_is_atomically_admitted_and_idempotent(self) -> None:
+        reviews, lineage = self._review_pair()
+        target = self._target(
+            self.root / "target" / "capsule_warehouse.sqlite3"
+        )
+        target_stage3 = ReweaveCapsuleStage3(target)
+        before = target.current_revision()
+        authorization = self._authorization(reviews, lineage, before)
+        with patch.object(
+            ReweaveCapsuleStage3,
+            "_runtime_validation",
+            new=lambda _stage3, prepared: self._validation(prepared),
+        ):
+            admitted = target_stage3.admit_frozen_ui_review_batch(
+                self.store.path,
+                self.source,
+                expected_source_sha256=authorization[
+                    "source_database_sha256"
+                ],
+                expected_warehouse_revision=before,
+                authorization_binding=authorization,
+            )
+            repeated = target_stage3.admit_frozen_ui_review_batch(
+                self.store.path,
+                self.source,
+                expected_source_sha256=authorization[
+                    "source_database_sha256"
+                ],
+                expected_warehouse_revision=before,
+                authorization_binding=authorization,
+            )
+        self.assertEqual(admitted["status"], "review_required")
+        self.assertEqual(admitted["warehouse_revision"], before + 2)
+        self.assertEqual(repeated["status"], "already_admitted")
+        self.assertEqual(target.current_revision(), before + 2)
+        with target.read_connection() as connection:
+            stored = connection.execute(
+                "SELECT sanitized_candidate_json FROM review_items "
+                "ORDER BY review_id"
+            ).fetchall()
+            self.assertEqual(
+                connection.execute(
+                    "SELECT count(*) FROM capsule_versions"
+                ).fetchone()[0],
+                0,
+            )
+        self.assertEqual(len(stored), 2)
+        receipts = [
+            json.loads(row["sanitized_candidate_json"])[
+                "frozen_ui_review_admission"
+            ]
+            for row in stored
+        ]
+        self.assertTrue(
+            all(
+                receipt["schema"]
+                == FROZEN_UI_REVIEW_ADMISSION_VERSION
+                and receipt["batch_authorization_digest"]
+                == authorization["authorization_digest"]
+                for receipt in receipts
+            )
+        )
+
+    def test_ui_pair_tampering_and_existing_group_fail_without_reviews(
+        self,
+    ) -> None:
+        reviews, lineage = self._review_pair()
+        for case in ("authorization", "page_contract", "existing_group"):
+            with self.subTest(case=case):
+                target = self._target(
+                    self.root / case / "capsule_warehouse.sqlite3"
+                )
+                before = target.current_revision()
+                authorization = self._authorization(
+                    reviews,
+                    lineage,
+                    before,
+                )
+                if case == "authorization":
+                    authorization["reviews"][1][
+                        "validation_sha256"
+                    ] = "f" * 64
+                elif case == "page_contract":
+                    authorization["page_capability_contract_digest"] = (
+                        "f" * 64
+                    )
+                else:
+                    with target.transaction() as connection:
+                        connection.execute(
+                            "INSERT INTO capability_groups VALUES (?,?,?,?)",
+                            (
+                                "rectangle_area_calculation",
+                                "Rectangle area",
+                                "2026-08-11T00:00:00.000Z",
+                                "2026-08-11T00:00:00.000Z",
+                            ),
+                        )
+                if case != "existing_group":
+                    authorization["authorization_digest"] = hashlib.sha256(
+                        stage3_module._canonical_json_bytes(
+                            {
+                                key: value
+                                for key, value in authorization.items()
+                                if key != "authorization_digest"
+                            }
+                        )
+                    ).hexdigest()
+                with patch.object(
+                    ReweaveCapsuleStage3,
+                    "_runtime_validation",
+                    new=lambda _stage3, prepared: self._validation(prepared),
+                ), self.assertRaises(Stage3Error):
+                    ReweaveCapsuleStage3(
+                        target
+                    ).admit_frozen_ui_review_batch(
+                        self.store.path,
+                        self.source,
+                        expected_source_sha256=authorization[
+                            "source_database_sha256"
+                        ],
+                        expected_warehouse_revision=before,
+                        authorization_binding=authorization,
+                    )
+                with target.read_connection() as connection:
+                    self.assertEqual(
+                        connection.execute(
+                            "SELECT count(*) FROM review_items"
+                        ).fetchone()[0],
+                        0,
+                    )
+
+    def test_ui_batch_membership_source_and_transaction_fail_closed(
+        self,
+    ) -> None:
+        reviews, lineage = self._review_pair()
+        target = self._target(
+            self.root / "fail-closed" / "capsule_warehouse.sqlite3"
+        )
+        before = target.current_revision()
+        authorization = self._authorization(reviews, lineage, before)
+
+        for mutate in ("missing", "duplicate"):
+            invalid = json.loads(json.dumps(authorization))
+            if mutate == "missing":
+                invalid["reviews"].pop()
+            else:
+                invalid["reviews"][1]["capability_kind"] = "interaction"
+            invalid["authorization_digest"] = hashlib.sha256(
+                stage3_module._canonical_json_bytes(
+                    {
+                        key: value
+                        for key, value in invalid.items()
+                        if key != "authorization_digest"
+                    }
+                )
+            ).hexdigest()
+            with self.subTest(mutate=mutate), self.assertRaisesRegex(
+                Stage3Error,
+                "frozen_ui_review_admission_invalid",
+            ):
+                ReweaveCapsuleStage3(target).admit_frozen_ui_review_batch(
+                    self.store.path,
+                    self.source,
+                    expected_source_sha256=invalid[
+                        "source_database_sha256"
+                    ],
+                    expected_warehouse_revision=before,
+                    authorization_binding=invalid,
+                )
+
+        original = target.bump_revision
+        calls = 0
+
+        def fail_second(connection):
+            nonlocal calls
+            calls += 1
+            value = original(connection)
+            if calls == 2:
+                raise Stage3Error("forced_second_admission_failure")
+            return value
+
+        with patch.object(
+            ReweaveCapsuleStage3,
+            "_runtime_validation",
+            new=lambda _stage3, prepared: self._validation(prepared),
+        ), patch.object(
+            target,
+            "bump_revision",
+            side_effect=fail_second,
+        ), self.assertRaisesRegex(
+            Stage3Error,
+            "forced_second_admission_failure",
+        ):
+            ReweaveCapsuleStage3(target).admit_frozen_ui_review_batch(
+                self.store.path,
+                self.source,
+                expected_source_sha256=authorization[
+                    "source_database_sha256"
+                ],
+                expected_warehouse_revision=before,
+                authorization_binding=authorization,
+            )
+        self.assertEqual(target.current_revision(), before)
+        with target.read_connection() as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT count(*) FROM review_items"
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT count(*) FROM source_roots"
+                ).fetchone()[0],
+                0,
+            )
+
+        (self.source / "presentation.js").write_text(
+            "export function render() { throw new Error('tampered'); }\n",
+            encoding="utf-8",
+        )
+        with self.assertRaisesRegex(
+            Stage3Error,
+            "frozen_ui_review_source_changed",
+        ):
+            ReweaveCapsuleStage3(target).admit_frozen_ui_review_batch(
+                self.store.path,
+                self.source,
+                expected_source_sha256=authorization[
+                    "source_database_sha256"
+                ],
+                expected_warehouse_revision=before,
+                authorization_binding=authorization,
+            )
 
 
 @unittest.skipUnless(shutil.which("node"), "Node is required for Stage 3 validation")
@@ -2389,6 +3000,487 @@ export function calculate(quantity, price) {
         self.assertIsInstance(prepared, PreparedReview)
         return prepared, snapshot, mapping
 
+    def _positive_capture_v3(
+        self,
+    ) -> tuple[PreparedReview, object, dict[str, object], dict[str, str]]:
+        source_path = self.source / "discount.js"
+        source_path.write_text(
+            "export function discount(quantity) { return 105 - quantity * 5; }\n",
+            encoding="utf-8",
+        )
+        snapshot = self.source_service.scan(self.project_id)
+        selection, parameters = _stage_e_selection(
+            snapshot, "discount.js", "discount"
+        )
+        mapping = {
+            "schema": CAPTURE_MAPPING_V3,
+            "arguments": [
+                {
+                    "parameter_binding_id": parameters[0]["binding_id"],
+                    "input_field": "quantity",
+                    "kind": "integer",
+                    "minimum": 1,
+                    "maximum": 10,
+                }
+            ],
+            "result_field": "unit_price",
+            "passthrough_fields": ["quantity"],
+            "examples": [
+                {
+                    "input": {"quantity": 5},
+                    "expected": {"quantity": 5, "unit_price": 80},
+                }
+            ],
+        }
+        prepared = self.stage3.prepare_ephemeral_computation_capture_v3(
+            snapshot,
+            selection,
+            mapping,
+        )
+        self.assertIsInstance(prepared, PreparedReview)
+        return prepared, snapshot, mapping, selection
+
+    def _positive_capture_v4(
+        self,
+    ) -> tuple[PreparedReview, object, dict[str, object], dict[str, str]]:
+        (self.source / "priority.js").write_text(
+            """export function classifyPriority(urgent, important) {
+  if (urgent && important) return "do_now";
+  if (!urgent && important) return "schedule";
+  if (urgent && !important) return "delegate";
+  return "drop";
+}
+""",
+            encoding="utf-8",
+        )
+        snapshot = self.source_service.scan(self.project_id)
+        selection, parameters = _stage_e_selection(
+            snapshot, "priority.js", "classifyPriority"
+        )
+        cases = [
+            (False, False, "drop"),
+            (False, True, "schedule"),
+            (True, False, "delegate"),
+            (True, True, "do_now"),
+        ]
+        mapping = {
+            "schema": CAPTURE_MAPPING_V4,
+            "arguments": [
+                {
+                    "parameter_binding_id": parameters[0]["binding_id"],
+                    "input_field": "urgent",
+                    "kind": "boolean",
+                },
+                {
+                    "parameter_binding_id": parameters[1]["binding_id"],
+                    "input_field": "important",
+                    "kind": "boolean",
+                },
+            ],
+            "result_field": "priority",
+            "result_enum": ["delegate", "do_now", "drop", "schedule"],
+            "proof_schema": "source_graph_proof.v2",
+            "examples": [
+                {
+                    "input": {"urgent": urgent, "important": important},
+                    "expected": {"priority": expected},
+                }
+                for urgent, important, expected in cases
+            ],
+        }
+        prepared = self.stage3.prepare_ephemeral_computation_capture_v4(
+            snapshot,
+            selection,
+            mapping,
+        )
+        self.assertIsInstance(prepared, PreparedReview)
+        return prepared, snapshot, mapping, selection
+
+    def test_capture_v2_adapter_and_digest_are_unchanged(self) -> None:
+        prepared, _snapshot, _mapping = self._positive_capture()
+        payload = json.loads(prepared.candidate_payload_json)
+        modules = {
+            item["path"]: item["source"]
+            for item in payload["canonical_candidate"]["javascript_modules"]
+        }
+        self.assertEqual(
+            hashlib.sha256(
+                modules["__reweave_adapter__/compute.js"].encode("utf-8")
+            ).hexdigest(),
+            "9d907e046b918ef09289f59af5a311c601f7543ab3245f360bac48415c4ed3a4",
+        )
+        self.assertEqual(
+            payload["mapping_sha256"],
+            "76e2256bd761e54239338fb7877cf505ee5359324ba830903f6f6c5cd9ee9046",
+        )
+        self.assertEqual(
+            payload["execution_bundle_sha256"],
+            "195aec2d5ee6577a2c275a5413150a228ab3689d97e4975cb43e227ace7d30ad",
+        )
+
+    def test_capture_v3_restarts_publishes_and_rejects_tampered_evidence(self) -> None:
+        prepared, snapshot, mapping, selection = self._positive_capture_v3()
+        repeated = self.stage3.prepare_ephemeral_computation_capture_v3(
+            snapshot,
+            selection,
+            mapping,
+        )
+        self.assertEqual(
+            prepared.candidate_payload_json,
+            repeated.candidate_payload_json,
+        )
+        payload = json.loads(prepared.candidate_payload_json)
+        self.assertEqual(
+            payload["canonical_candidate"]["output_contract"]["properties"],
+            {
+                "quantity": {"type": "integer", "minimum": 1, "maximum": 10},
+                "unit_price": {"type": "integer", "minimum": 55, "maximum": 100},
+            },
+        )
+        with patch.object(
+            self.stage3.supervisor,
+            "supervise",
+            return_value=self._approved_supervision(),
+        ):
+            result = self.stage3.process_ephemeral_capture(prepared)
+        self.assertEqual(result["status"], "review_required")
+        with self.store.read_connection() as connection:
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM capsules").fetchone()[0],
+                0,
+            )
+            candidate = json.loads(
+                connection.execute(
+                    "SELECT sanitized_candidate_json FROM review_items "
+                    "WHERE review_id = ?",
+                    (result["review_id"],),
+                ).fetchone()[0]
+            )
+        self.assertEqual(
+            candidate["adapter_contract_version"],
+            "computation_adapter.v3",
+        )
+        restarted = ReweaveCapsuleStage3(self.store)
+        published = restarted.publish_review(
+            result["review_id"],
+            decision="publish_general",
+            capability_key="discount",
+            role_key="policy",
+            display_name="Discount policy",
+        )
+        self.assertEqual(published["status"], "published")
+        with self.store.read_connection() as connection:
+            row = dict(
+                connection.execute(
+                    "SELECT cv.*, c.status, c.current_version_id, c.capability_kind "
+                    "FROM capsule_versions cv JOIN capsules c "
+                    "ON c.capsule_id = cv.capsule_id WHERE cv.version_id = ?",
+                    (published["version_id"],),
+                ).fetchone()
+            )
+        self.assertEqual(row["status"], "active")
+        self.assertEqual(row["current_version_id"], published["version_id"])
+        self.assertEqual(
+            json.loads(row["validation_result_json"])["status"], "passed"
+        )
+        self.assertTrue(restarted._eligible_exact(row))
+
+        stale_mapping = dict(row)
+        extraction = json.loads(stale_mapping["extraction_summary_json"])
+        extraction["ephemeral_capture_payload"]["mapping"]["passthrough_fields"] = []
+        stale_mapping["extraction_summary_json"] = json.dumps(
+            extraction, sort_keys=True, separators=(",", ":")
+        )
+        self.assertFalse(restarted._eligible_exact(stale_mapping))
+
+        stale_digest = dict(row)
+        extraction = json.loads(stale_digest["extraction_summary_json"])
+        extraction["ephemeral_capture_payload"]["mapping_sha256"] = "0" * 64
+        stale_digest["extraction_summary_json"] = json.dumps(
+            extraction, sort_keys=True, separators=(",", ":")
+        )
+        self.assertFalse(restarted._eligible_exact(stale_digest))
+
+        stale_source = dict(row)
+        modules = json.loads(stale_source["javascript_modules_json"])
+        modules[0]["source"] += "\n// forged"
+        stale_source["javascript_modules_json"] = json.dumps(
+            modules, sort_keys=True, separators=(",", ":")
+        )
+        self.assertFalse(restarted._eligible_exact(stale_source))
+
+        stale_identity = dict(row)
+        stale_identity["canonical_hash"] = "0" * 64
+        self.assertFalse(restarted._eligible_exact(stale_identity))
+
+        with self.assertRaisesRegex(sqlite3.IntegrityError, "capsule_version_immutable"):
+            with self.store.transaction() as connection:
+                connection.execute(
+                    "UPDATE capsule_versions SET extraction_summary_json = ? "
+                    "WHERE version_id = ?",
+                    ("{}", published["version_id"]),
+                )
+
+    def test_capture_v4_restarts_publishes_and_rejects_tampered_evidence(self) -> None:
+        prepared, snapshot, mapping, selection = self._positive_capture_v4()
+        repeated = self.stage3.prepare_ephemeral_computation_capture_v4(
+            snapshot, selection, mapping
+        )
+        unordered = json.loads(json.dumps(mapping))
+        unordered["result_enum"].reverse()
+        reordered = self.stage3.prepare_ephemeral_computation_capture_v4(
+            snapshot, selection, unordered
+        )
+        self.assertEqual(
+            prepared.candidate_payload_json,
+            repeated.candidate_payload_json,
+        )
+        self.assertEqual(
+            prepared.candidate_payload_json,
+            reordered.candidate_payload_json,
+        )
+        payload = json.loads(prepared.candidate_payload_json)
+        self.assertEqual(payload["source_graph_proof"]["schema"], "source_graph_proof.v2")
+        self.assertEqual(
+            payload["canonical_candidate"]["output_contract"]["properties"],
+            {
+                "priority": {
+                    "type": "string",
+                    "min_length": 4,
+                    "max_length": 8,
+                    "enum": ["delegate", "do_now", "drop", "schedule"],
+                }
+            },
+        )
+        with patch.object(
+            self.stage3.supervisor,
+            "supervise",
+            return_value=self._approved_supervision(),
+        ):
+            result = self.stage3.process_ephemeral_capture(prepared)
+        self.assertEqual(result["status"], "review_required")
+        restarted = ReweaveCapsuleStage3(self.store)
+        published = restarted.publish_review(
+            result["review_id"],
+            decision="publish_general",
+            capability_key="priority_classification",
+            role_key="classify_priority",
+            display_name="Priority classification",
+        )
+        self.assertEqual(published["status"], "published")
+        with self.store.read_connection() as connection:
+            row = dict(
+                connection.execute(
+                    "SELECT cv.*, c.status, c.current_version_id, c.capability_kind "
+                    "FROM capsule_versions cv JOIN capsules c "
+                    "ON c.capsule_id = cv.capsule_id WHERE cv.version_id = ?",
+                    (published["version_id"],),
+                ).fetchone()
+            )
+        self.assertTrue(restarted._eligible_exact(row))
+        for label, mutate in (
+            (
+                "proof",
+                lambda value: value["ephemeral_capture_payload"].update(
+                    source_graph_proof_sha256="0" * 64
+                ),
+            ),
+            (
+                "mapping",
+                lambda value: value["ephemeral_capture_payload"]["mapping"].update(
+                    result_enum=["do_now"]
+                ),
+            ),
+            (
+                "examples",
+                lambda value: value["ephemeral_capture_payload"]["mapping"][
+                    "examples"
+                ][0]["expected"].update(priority="critical"),
+            ),
+        ):
+            changed = dict(row)
+            extraction = json.loads(changed["extraction_summary_json"])
+            mutate(extraction)
+            changed["extraction_summary_json"] = json.dumps(
+                extraction, sort_keys=True, separators=(",", ":")
+            )
+            with self.subTest(label=label):
+                self.assertFalse(restarted._eligible_exact(changed))
+
+        changed = dict(row)
+        modules = json.loads(changed["javascript_modules_json"])
+        modules[0]["source"] += "\n// forged"
+        changed["javascript_modules_json"] = json.dumps(
+            modules, sort_keys=True, separators=(",", ":")
+        )
+        self.assertFalse(restarted._eligible_exact(changed))
+        changed = dict(row)
+        validation = json.loads(changed["validation_result_json"])
+        validation["status"] = "failed"
+        changed["validation_result_json"] = json.dumps(
+            validation, sort_keys=True, separators=(",", ":")
+        )
+        self.assertFalse(restarted._eligible_exact(changed))
+
+    def test_capture_v4_mapping_requires_closed_enum_examples(self) -> None:
+        _prepared, snapshot, mapping, selection = self._positive_capture_v4()
+        normalized = _normalize_capture_mapping_v4(mapping)
+        self.assertEqual(normalized[3], ["delegate", "do_now", "drop", "schedule"])
+        mixed = {
+            "schema": CAPTURE_MAPPING_V4,
+            "arguments": [
+                {
+                    "parameter_binding_id": "a" * 64,
+                    "input_field": "count",
+                    "kind": "integer",
+                    "minimum": 0,
+                    "maximum": 10,
+                },
+                {
+                    "parameter_binding_id": "b" * 64,
+                    "input_field": "enabled",
+                    "kind": "boolean",
+                },
+                {
+                    "parameter_binding_id": "c" * 64,
+                    "input_field": "mode",
+                    "kind": "enum",
+                    "values": ["manual", "auto"],
+                },
+            ],
+            "result_field": "state",
+            "result_enum": ["off", "on"],
+            "proof_schema": "source_graph_proof.v2",
+            "examples": [
+                {
+                    "input": {"count": 0, "enabled": False, "mode": "auto"},
+                    "expected": {"state": "off"},
+                },
+                {
+                    "input": {"count": 10, "enabled": True, "mode": "manual"},
+                    "expected": {"state": "on"},
+                },
+            ],
+        }
+        mixed_normalized = _normalize_capture_mapping_v4(mixed)
+        self.assertEqual(
+            [item["kind"] for item in mixed_normalized[0]],
+            ["integer", "boolean", "enum"],
+        )
+        for label, mutate in (
+            ("passthrough", lambda value: value.update(passthrough_fields=[])),
+            ("duplicate", lambda value: value.update(result_enum=["low", "low"])),
+            ("missing_case", lambda value: value["examples"].pop()),
+            (
+                "outside",
+                lambda value: value["examples"][0]["expected"].update(
+                    priority="urgent"
+                ),
+            ),
+        ):
+            changed = json.loads(json.dumps(mapping))
+            mutate(changed)
+            with self.subTest(label=label), self.assertRaisesRegex(
+                Stage3Error, "adapter_mapping_invalid"
+            ):
+                _normalize_capture_mapping_v4(changed)
+        mismatched = json.loads(json.dumps(mapping))
+        mismatched["examples"][0]["expected"]["priority"] = "schedule"
+        mismatched["examples"][1]["expected"]["priority"] = "drop"
+        with self.assertRaisesRegex(Stage3Error, "adapter_example_mismatch"):
+            self.stage3.prepare_ephemeral_computation_capture_v4(
+                snapshot, selection, mismatched
+            )
+
+    def test_capture_v3_mapping_rejects_invalid_passthrough(self) -> None:
+        binding = "a" * 64
+        valid = {
+            "schema": CAPTURE_MAPPING_V3,
+            "arguments": [
+                {
+                    "parameter_binding_id": binding,
+                    "input_field": "quantity",
+                    "kind": "integer",
+                    "minimum": 1,
+                    "maximum": 10,
+                }
+            ],
+            "result_field": "unit_price",
+            "passthrough_fields": ["quantity"],
+            "examples": [
+                {
+                    "input": {"quantity": 5},
+                    "expected": {"quantity": 5, "unit_price": 80},
+                }
+            ],
+        }
+        invalid_values = [
+            [],
+            ["quantity", "quantity"],
+            ["missing"],
+            ["unit_price"],
+        ]
+        for passthrough in invalid_values:
+            changed = json.loads(json.dumps(valid))
+            changed["passthrough_fields"] = passthrough
+            with self.subTest(passthrough=passthrough):
+                with self.assertRaisesRegex(Stage3Error, "adapter_mapping_invalid"):
+                    _normalize_capture_mapping_v3(changed)
+        changed = json.loads(json.dumps(valid))
+        changed["examples"][0]["expected"]["quantity"] = 6
+        with self.assertRaisesRegex(Stage3Error, "adapter_mapping_invalid"):
+            _normalize_capture_mapping_v3(changed)
+        changed = json.loads(json.dumps(valid))
+        changed["arguments"].append(
+            {
+                "parameter_binding_id": "b" * 64,
+                "input_field": "enabled",
+                "kind": "boolean",
+            }
+        )
+        changed["passthrough_fields"] = ["quantity", "enabled"]
+        changed["examples"][0]["input"]["enabled"] = True
+        changed["examples"][0]["expected"]["enabled"] = True
+        with self.assertRaisesRegex(Stage3Error, "adapter_mapping_invalid"):
+            _normalize_capture_mapping_v3(changed)
+
+    def test_capture_v3_object_return_remains_interval_unproven(self) -> None:
+        (self.source / "object.js").write_text(
+            "export function discount(quantity) { "
+            "return { quantity, unit_price: 105 - quantity * 5 }; }\n",
+            encoding="utf-8",
+        )
+        snapshot = self.source_service.scan(self.project_id)
+        selection, parameters = _stage_e_selection(
+            snapshot, "object.js", "discount"
+        )
+        mapping = {
+            "schema": CAPTURE_MAPPING_V3,
+            "arguments": [
+                {
+                    "parameter_binding_id": parameters[0]["binding_id"],
+                    "input_field": "quantity",
+                    "kind": "integer",
+                    "minimum": 1,
+                    "maximum": 10,
+                }
+            ],
+            "result_field": "unit_price",
+            "passthrough_fields": ["quantity"],
+            "examples": [
+                {
+                    "input": {"quantity": 5},
+                    "expected": {"quantity": 5, "unit_price": 80},
+                }
+            ],
+        }
+        with self.assertRaisesRegex(Stage3Error, "interval_unproven"):
+            self.stage3.prepare_ephemeral_computation_capture_v3(
+                snapshot,
+                selection,
+                mapping,
+            )
+
     def test_large_numeric_contract_bounds_are_not_sensitive_literals(self) -> None:
         (self.source / "large.js").write_text(
             "export function calculate(quantity, price) { return quantity * price; }\n",
@@ -2859,6 +3951,666 @@ export function calculate(quantity, price) {
             )
             self.assertFalse(
                 self.stage3._stored_version_evidence_eligible(stale), key
+            )
+
+    def _frozen_review_authorization_binding(
+        self,
+        prepared: PreparedReview,
+        warehouse_revision: int,
+    ) -> dict[str, object]:
+        payload = json.loads(prepared.candidate_payload_json)
+        candidate = payload["canonical_candidate"]
+        return {
+            "plan_digest": "1" * 64,
+            "gap_id": "gap-test",
+            "projection_digest": "2" * 64,
+            "authorize_decision_digest": "3" * 64,
+            "source_proposal_authorization_digest": "4" * 64,
+            "capability_key": "captured_total",
+            "adapter_contract_version": payload[
+                "adapter_contract_version"
+            ],
+            "input_contract": candidate["input_contract"],
+            "output_contract": candidate["output_contract"],
+            "error_contract": candidate["error_contract"],
+            "authorization_warehouse_revision": warehouse_revision,
+            "authorization_catalog_digest": "5" * 64,
+            "target_catalog_digest": "5" * 64,
+        }
+
+    @staticmethod
+    def _select_frozen_review_model(store: CapsuleWarehouseStore) -> None:
+        selected = {
+            "base_url": "http://127.0.0.1:11434",
+            "name": "stage-f-test-model",
+            "digest": "b" * 64,
+            "selected_at": "2026-08-08T00:00:00Z",
+        }
+        with store.transaction() as connection:
+            connection.execute(
+                "INSERT INTO app_settings(setting_key, value_json, updated_at) "
+                "VALUES ('capsule_supervision_model', ?, ?) "
+                "ON CONFLICT(setting_key) DO UPDATE SET "
+                "value_json = excluded.value_json, "
+                "updated_at = excluded.updated_at",
+                (
+                    json.dumps(
+                        selected,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    selected["selected_at"],
+                ),
+            )
+
+    def test_frozen_review_is_revalidated_and_admitted_without_publication(self) -> None:
+        prepared, _snapshot, _mapping = self._positive_capture()
+        with patch.object(
+            self.stage3.supervisor,
+            "supervise",
+            return_value=self._approved_supervision(),
+        ):
+            reviewed = self.stage3.process_ephemeral_capture(prepared)
+        source_sha256 = hashlib.sha256(self.store.path.read_bytes()).hexdigest()
+        target = CapsuleWarehouseStore(
+            self.root / "target" / "capsule_warehouse.sqlite3"
+        )
+        target.initialize()
+        target.migrate_v1_to_v2()
+        target_stage3 = ReweaveCapsuleStage3(target)
+        before_revision = target.current_revision()
+        self._select_frozen_review_model(target)
+        binding = self._frozen_review_authorization_binding(
+            prepared,
+            before_revision,
+        )
+
+        admitted = target_stage3.admit_frozen_review(
+            self.store.path,
+            self.source,
+            reviewed["review_id"],
+            expected_source_sha256=source_sha256,
+            expected_warehouse_revision=before_revision,
+            authorization_binding=binding,
+        )
+
+        self.assertEqual(admitted["status"], "review_required")
+        with target.read_connection() as connection:
+            row = connection.execute(
+                "SELECT candidate_status, decision, sanitized_candidate_json "
+                "FROM review_items WHERE review_id = ?",
+                (reviewed["review_id"],),
+            ).fetchone()
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM capsule_versions"
+                ).fetchone()[0],
+                0,
+            )
+        self.assertEqual((row["candidate_status"], row["decision"]), ("review_required", None))
+        receipt = json.loads(row["sanitized_candidate_json"])[
+            "frozen_review_admission"
+        ]
+        self.assertEqual(receipt["source_database_sha256"], source_sha256)
+        self.assertEqual(
+            receipt["schema"],
+            "frozen_stage3_review_admission.v2",
+        )
+        self.assertEqual(
+            receipt["source_proposal_authorization_digest"],
+            binding["source_proposal_authorization_digest"],
+        )
+        self.assertEqual(
+            receipt["target_warehouse_revision_before"],
+            before_revision,
+        )
+        self.assertEqual(
+            receipt["target_warehouse_revision_after"],
+            admitted["warehouse_revision"],
+        )
+        repeated = target_stage3.admit_frozen_review(
+            self.store.path,
+            self.source,
+            reviewed["review_id"],
+            expected_source_sha256=source_sha256,
+            expected_warehouse_revision=admitted["warehouse_revision"],
+            authorization_binding=binding,
+        )
+        self.assertEqual(repeated["status"], "already_admitted")
+        self.assertEqual(target.current_revision(), admitted["warehouse_revision"])
+
+        restarted = ReweaveCapsuleStage3(target)
+        self.assertEqual(
+            restarted._review(reviewed["review_id"])["candidate_status"],
+            "review_required",
+        )
+        with target.read_connection() as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM capsule_versions"
+                ).fetchone()[0],
+                0,
+            )
+
+    def test_frozen_review_admission_v2_accepts_v4_without_publication(self) -> None:
+        prepared, _snapshot, _mapping, _selection = self._positive_capture_v4()
+        with patch.object(
+            self.stage3.supervisor,
+            "supervise",
+            return_value=self._approved_supervision(),
+        ):
+            reviewed = self.stage3.process_ephemeral_capture(prepared)
+        source_sha256 = hashlib.sha256(self.store.path.read_bytes()).hexdigest()
+        target = CapsuleWarehouseStore(
+            self.root / "target-v4" / "capsule_warehouse.sqlite3"
+        )
+        target.initialize()
+        target.migrate_v1_to_v2()
+        self._select_frozen_review_model(target)
+        before_revision = target.current_revision()
+        binding = self._frozen_review_authorization_binding(
+            prepared,
+            before_revision,
+        )
+        stage3 = ReweaveCapsuleStage3(target)
+
+        admitted = stage3.admit_frozen_review(
+            self.store.path,
+            self.source,
+            reviewed["review_id"],
+            expected_source_sha256=source_sha256,
+            expected_warehouse_revision=before_revision,
+            authorization_binding=binding,
+        )
+
+        self.assertEqual(admitted["status"], "review_required")
+        with target.read_connection() as connection:
+            row = connection.execute(
+                "SELECT sanitized_candidate_json FROM review_items "
+                "WHERE review_id = ?",
+                (reviewed["review_id"],),
+            ).fetchone()
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM capsules").fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM capsule_versions"
+                ).fetchone()[0],
+                0,
+            )
+        receipt = json.loads(row["sanitized_candidate_json"])[
+            "frozen_review_admission"
+        ]
+        self.assertEqual(
+            (
+                receipt["schema"],
+                receipt["authorized_adapter_contract_version"],
+            ),
+            (
+                "frozen_stage3_review_admission.v2",
+                "computation_adapter.v4",
+            ),
+        )
+        repeated = stage3.admit_frozen_review(
+            self.store.path,
+            self.source,
+            reviewed["review_id"],
+            expected_source_sha256=source_sha256,
+            expected_warehouse_revision=admitted["warehouse_revision"],
+            authorization_binding=binding,
+        )
+        self.assertEqual(repeated["status"], "already_admitted")
+        self.assertEqual(
+            target.current_revision(),
+            before_revision + 1,
+        )
+        changed_binding = copy.deepcopy(binding)
+        changed_binding["target_catalog_digest"] = "6" * 64
+        with self.assertRaisesRegex(
+            Stage3Error,
+            "^frozen_review_identity_conflict$",
+        ):
+            stage3.admit_frozen_review(
+                self.store.path,
+                self.source,
+                reviewed["review_id"],
+                expected_source_sha256=source_sha256,
+                expected_warehouse_revision=admitted["warehouse_revision"],
+                authorization_binding=changed_binding,
+            )
+
+    def test_frozen_review_admission_v4_rejects_proof_and_mapping_tampering(
+        self,
+    ) -> None:
+        prepared, _snapshot, _mapping, _selection = self._positive_capture_v4()
+        with patch.object(
+            self.stage3.supervisor,
+            "supervise",
+            return_value=self._approved_supervision(),
+        ):
+            reviewed = self.stage3.process_ephemeral_capture(prepared)
+
+        def changed_database(name, mutate):
+            path = self.root / f"changed-v4-{name}.sqlite3"
+            shutil.copy2(self.store.path, path)
+            store = CapsuleWarehouseStore(path)
+            with store.transaction() as connection:
+                row = connection.execute(
+                    "SELECT sanitized_candidate_json FROM review_items "
+                    "WHERE review_id = ?",
+                    (reviewed["review_id"],),
+                ).fetchone()
+                summary = json.loads(row["sanitized_candidate_json"])
+                mutate(summary)
+                connection.execute(
+                    "UPDATE review_items SET sanitized_candidate_json = ? "
+                    "WHERE review_id = ?",
+                    (
+                        json.dumps(
+                            summary,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        ),
+                        reviewed["review_id"],
+                    ),
+                )
+            return path
+
+        cases = {
+            "proof": lambda summary: summary[
+                "ephemeral_capture_payload"
+            ]["source_graph_proof"]["result_domain"]["values"].pop(),
+            "result_enum": lambda summary: summary[
+                "ephemeral_capture_payload"
+            ]["mapping"]["result_enum"].pop(),
+            "witness": lambda summary: summary[
+                "ephemeral_capture_payload"
+            ]["mapping"]["examples"][0]["expected"].update(
+                priority="schedule"
+            ),
+        }
+        for name, mutate in cases.items():
+            with self.subTest(tamper=name):
+                changed = changed_database(name, mutate)
+                target = CapsuleWarehouseStore(
+                    self.root / f"target-v4-{name}" / "capsule_warehouse.sqlite3"
+                )
+                target.initialize()
+                target.migrate_v1_to_v2()
+                self._select_frozen_review_model(target)
+                revision = target.current_revision()
+                binding = self._frozen_review_authorization_binding(
+                    prepared,
+                    revision,
+                )
+                with self.assertRaises(Stage3Error):
+                    ReweaveCapsuleStage3(target).admit_frozen_review(
+                        changed,
+                        self.source,
+                        reviewed["review_id"],
+                        expected_source_sha256=hashlib.sha256(
+                            changed.read_bytes()
+                        ).hexdigest(),
+                        expected_warehouse_revision=revision,
+                        authorization_binding=binding,
+                    )
+                self.assertEqual(target.current_revision(), revision)
+                with target.read_connection() as connection:
+                    self.assertEqual(
+                        connection.execute(
+                            "SELECT COUNT(*) FROM review_items"
+                        ).fetchone()[0],
+                        0,
+                    )
+
+    def test_frozen_review_admission_rejects_changed_validation(self) -> None:
+        prepared, _snapshot, _mapping = self._positive_capture()
+        with patch.object(
+            self.stage3.supervisor,
+            "supervise",
+            return_value=self._approved_supervision(),
+        ):
+            reviewed = self.stage3.process_ephemeral_capture(prepared)
+        with self.store.transaction() as connection:
+            row = connection.execute(
+                "SELECT sanitized_candidate_json FROM review_items WHERE review_id = ?",
+                (reviewed["review_id"],),
+            ).fetchone()
+            summary = json.loads(row["sanitized_candidate_json"])
+            summary["stage3_evidence"]["validation"]["normal_cases"] += 1
+            connection.execute(
+                "UPDATE review_items SET sanitized_candidate_json = ? WHERE review_id = ?",
+                (
+                    json.dumps(summary, sort_keys=True, separators=(",", ":")),
+                    reviewed["review_id"],
+                ),
+            )
+        source_sha256 = hashlib.sha256(self.store.path.read_bytes()).hexdigest()
+        target = CapsuleWarehouseStore(
+            self.root / "target-invalid" / "capsule_warehouse.sqlite3"
+        )
+        target.initialize()
+        target.migrate_v1_to_v2()
+        self._select_frozen_review_model(target)
+        binding = self._frozen_review_authorization_binding(
+            prepared,
+            target.current_revision(),
+        )
+        initial_revision = target.current_revision()
+
+        with self.assertRaisesRegex(Stage3Error, "^stage3_validation_changed$"):
+            ReweaveCapsuleStage3(target).admit_frozen_review(
+                self.store.path,
+                self.source,
+                reviewed["review_id"],
+                expected_source_sha256=source_sha256,
+                expected_warehouse_revision=target.current_revision(),
+                authorization_binding=binding,
+            )
+        with target.read_connection() as connection:
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM review_items").fetchone()[0],
+                0,
+            )
+
+    def test_frozen_review_admission_rejects_digest_source_and_mapping_tampering(
+        self,
+    ) -> None:
+        prepared, _snapshot, _mapping = self._positive_capture()
+        with patch.object(
+            self.stage3.supervisor,
+            "supervise",
+            return_value=self._approved_supervision(),
+        ):
+            reviewed = self.stage3.process_ephemeral_capture(prepared)
+        source_sha256 = hashlib.sha256(self.store.path.read_bytes()).hexdigest()
+
+        target = CapsuleWarehouseStore(
+            self.root / "target-tamper" / "capsule_warehouse.sqlite3"
+        )
+        target.initialize()
+        target.migrate_v1_to_v2()
+        target_stage3 = ReweaveCapsuleStage3(target)
+        self._select_frozen_review_model(target)
+        binding = self._frozen_review_authorization_binding(
+            prepared,
+            target.current_revision(),
+        )
+        with self.assertRaisesRegex(Stage3Error, "^frozen_review_source_changed$"):
+            target_stage3.admit_frozen_review(
+                self.store.path,
+                self.source,
+                reviewed["review_id"],
+                expected_source_sha256="0" * 64,
+                expected_warehouse_revision=target.current_revision(),
+                authorization_binding=binding,
+            )
+
+        changed_source = self.root / "changed-source"
+        shutil.copytree(self.source, changed_source)
+        (changed_source / "calc.js").write_text(
+            "export function calculate() { return 0; }\n", encoding="utf-8"
+        )
+        with self.assertRaisesRegex(Stage3Error, "^frozen_review_source_changed$"):
+            target_stage3.admit_frozen_review(
+                self.store.path,
+                changed_source,
+                reviewed["review_id"],
+                expected_source_sha256=source_sha256,
+                expected_warehouse_revision=target.current_revision(),
+                authorization_binding=binding,
+            )
+
+        changed_database = self.root / "changed.sqlite3"
+        shutil.copy2(self.store.path, changed_database)
+        changed_store = CapsuleWarehouseStore(changed_database)
+        with changed_store.transaction() as connection:
+            row = connection.execute(
+                "SELECT sanitized_candidate_json FROM review_items WHERE review_id = ?",
+                (reviewed["review_id"],),
+            ).fetchone()
+            summary = json.loads(row["sanitized_candidate_json"])
+            summary["ephemeral_capture_payload"]["mapping"]["result_field"] = "changed"
+            connection.execute(
+                "UPDATE review_items SET sanitized_candidate_json = ? WHERE review_id = ?",
+                (
+                    json.dumps(summary, sort_keys=True, separators=(",", ":")),
+                    reviewed["review_id"],
+                ),
+            )
+        changed_sha256 = hashlib.sha256(changed_database.read_bytes()).hexdigest()
+        with self.assertRaises(Stage3Error):
+            target_stage3.admit_frozen_review(
+                changed_database,
+                self.source,
+                reviewed["review_id"],
+                expected_source_sha256=changed_sha256,
+                expected_warehouse_revision=target.current_revision(),
+                authorization_binding=binding,
+            )
+        with target.read_connection() as connection:
+            self.assertEqual(
+                connection.execute("SELECT COUNT(*) FROM review_items").fetchone()[0],
+                0,
+            )
+
+    def test_frozen_review_admission_rejects_authorization_model_and_lineage_drift(
+        self,
+    ) -> None:
+        prepared, _snapshot, _mapping = self._positive_capture()
+        with patch.object(
+            self.stage3.supervisor,
+            "supervise",
+            return_value=self._approved_supervision(),
+        ):
+            reviewed = self.stage3.process_ephemeral_capture(prepared)
+        source_sha256 = hashlib.sha256(self.store.path.read_bytes()).hexdigest()
+
+        target = CapsuleWarehouseStore(
+            self.root / "target-v2-drift" / "capsule_warehouse.sqlite3"
+        )
+        target.initialize()
+        target.migrate_v1_to_v2()
+        self._select_frozen_review_model(target)
+        stage3 = ReweaveCapsuleStage3(target)
+        initial_revision = target.current_revision()
+        binding = self._frozen_review_authorization_binding(
+            prepared,
+            target.current_revision(),
+        )
+        changed_contract = json.loads(json.dumps(binding))
+        changed_contract["input_contract"]["properties"]["quantity"][
+            "maximum"
+        ] = 9
+        with self.assertRaisesRegex(
+            Stage3Error,
+            "^frozen_review_authorization_mismatch$",
+        ):
+            stage3.admit_frozen_review(
+                self.store.path,
+                self.source,
+                reviewed["review_id"],
+                expected_source_sha256=source_sha256,
+                expected_warehouse_revision=target.current_revision(),
+                authorization_binding=changed_contract,
+            )
+        self.assertEqual(target.current_revision(), initial_revision)
+        with target.transaction() as connection:
+            selected = {
+                "base_url": "http://127.0.0.1:11434",
+                "name": "different-model",
+                "digest": "c" * 64,
+                "selected_at": "2026-08-08T00:00:00Z",
+            }
+            connection.execute(
+                "UPDATE app_settings SET value_json = ? "
+                "WHERE setting_key = 'capsule_supervision_model'",
+                (
+                    json.dumps(
+                        selected,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                ),
+            )
+        with self.assertRaisesRegex(
+            Stage3Error,
+            "^frozen_review_supervision_model_changed$",
+        ):
+            stage3.admit_frozen_review(
+                self.store.path,
+                self.source,
+                reviewed["review_id"],
+                expected_source_sha256=source_sha256,
+                expected_warehouse_revision=target.current_revision(),
+                authorization_binding=binding,
+            )
+        self.assertEqual(target.current_revision(), initial_revision)
+        self._select_frozen_review_model(target)
+        admitted = stage3.admit_frozen_review(
+            self.store.path,
+            self.source,
+            reviewed["review_id"],
+            expected_source_sha256=source_sha256,
+            expected_warehouse_revision=target.current_revision(),
+            authorization_binding=binding,
+        )
+        tamper_cases = (
+            (
+                "root",
+                "UPDATE source_roots SET current_path = ?",
+                (str(self.root / "wrong-source"),),
+                "UPDATE source_roots SET current_path = ?",
+                (str(self.source),),
+            ),
+            (
+                "project",
+                "UPDATE projects SET display_name = ?",
+                ("changed project",),
+                "UPDATE projects SET display_name = ?",
+                ("JavaScript computation source",),
+            ),
+            (
+                "file_index",
+                "UPDATE project_file_index SET size_bytes = size_bytes + 1",
+                (),
+                "UPDATE project_file_index SET size_bytes = size_bytes - 1",
+                (),
+            ),
+            (
+                "run",
+                "UPDATE intake_runs SET status = ?",
+                ("failed",),
+                "UPDATE intake_runs SET status = ?",
+                ("completed_with_pending",),
+            ),
+            (
+                "review",
+                "UPDATE review_items SET candidate_status = ? "
+                "WHERE review_id = ?",
+                ("waiting_user", reviewed["review_id"]),
+                "UPDATE review_items SET candidate_status = ? "
+                "WHERE review_id = ?",
+                ("review_required", reviewed["review_id"]),
+            ),
+        )
+        for name, change_sql, change_args, restore_sql, restore_args in tamper_cases:
+            with self.subTest(lineage=name):
+                with sqlite3.connect(target.path) as connection:
+                    connection.execute(change_sql, change_args)
+                try:
+                    error = (
+                        CapsuleStoreError
+                        if name == "file_index"
+                        else Stage3Error
+                    )
+                    with self.assertRaises(error) as raised:
+                        stage3.admit_frozen_review(
+                            self.store.path,
+                            self.source,
+                            reviewed["review_id"],
+                            expected_source_sha256=source_sha256,
+                            expected_warehouse_revision=admitted[
+                                "warehouse_revision"
+                            ],
+                            authorization_binding=binding,
+                        )
+                    if name != "file_index":
+                        self.assertEqual(
+                            str(raised.exception),
+                            "frozen_review_identity_conflict",
+                        )
+                finally:
+                    with sqlite3.connect(target.path) as connection:
+                        connection.execute(restore_sql, restore_args)
+                self.assertEqual(
+                    target.current_revision(),
+                    admitted["warehouse_revision"],
+                )
+
+    def test_frozen_review_admission_does_not_upgrade_v1_receipt(self) -> None:
+        prepared, _snapshot, _mapping = self._positive_capture()
+        with patch.object(
+            self.stage3.supervisor,
+            "supervise",
+            return_value=self._approved_supervision(),
+        ):
+            reviewed = self.stage3.process_ephemeral_capture(prepared)
+        source_sha256 = hashlib.sha256(self.store.path.read_bytes()).hexdigest()
+        target = CapsuleWarehouseStore(
+            self.root / "target-v1-receipt" / "capsule_warehouse.sqlite3"
+        )
+        target.initialize()
+        target.migrate_v1_to_v2()
+        self._select_frozen_review_model(target)
+        stage3 = ReweaveCapsuleStage3(target)
+        binding = self._frozen_review_authorization_binding(
+            prepared,
+            target.current_revision(),
+        )
+        admitted = stage3.admit_frozen_review(
+            self.store.path,
+            self.source,
+            reviewed["review_id"],
+            expected_source_sha256=source_sha256,
+            expected_warehouse_revision=target.current_revision(),
+            authorization_binding=binding,
+        )
+        with target.transaction() as connection:
+            row = connection.execute(
+                "SELECT sanitized_candidate_json FROM review_items "
+                "WHERE review_id = ?",
+                (reviewed["review_id"],),
+            ).fetchone()
+            summary = json.loads(row[0])
+            summary["frozen_review_admission"] = {
+                "schema": "frozen_stage3_review_admission.v1"
+            }
+            connection.execute(
+                "UPDATE review_items SET sanitized_candidate_json = ? "
+                "WHERE review_id = ?",
+                (
+                    json.dumps(
+                        summary,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    reviewed["review_id"],
+                ),
+            )
+        with self.assertRaisesRegex(
+            Stage3Error,
+            "^frozen_review_identity_conflict$",
+        ):
+            stage3.admit_frozen_review(
+                self.store.path,
+                self.source,
+                reviewed["review_id"],
+                expected_source_sha256=source_sha256,
+                expected_warehouse_revision=admitted["warehouse_revision"],
+                authorization_binding=binding,
             )
 
     def test_exact_duplicate_rechecks_selected_model_inside_transaction(self) -> None:

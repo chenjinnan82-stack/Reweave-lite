@@ -82,6 +82,7 @@ class Phase4ManagementTest(unittest.TestCase):
         *,
         extraction_version: str = EXTRACTION_CONTRACT_VERSION,
         extraction_summary: dict[str, object] | None = None,
+        formal_contracts: bool = False,
     ) -> tuple[str, str]:
         capsule_id = "capsule-brand"
         version_id = "version-brand"
@@ -99,9 +100,23 @@ class Phase4ManagementTest(unittest.TestCase):
             "canonicalization_version": 1,
             "canonical_hash": digest,
             "activation_json": "{}",
-            "input_contract_json": "{}",
-            "output_contract_json": "{}",
-            "error_contract_json": "{}",
+            "input_contract_json": (
+                '{"additional_properties":false,"properties":{},"required":[],'
+                '"schema":"data_contract.v1","type":"object"}'
+                if formal_contracts
+                else "{}"
+            ),
+            "output_contract_json": (
+                '{"additional_properties":false,"properties":{},"required":[],'
+                '"schema":"data_contract.v1","type":"object"}'
+                if formal_contracts
+                else "{}"
+            ),
+            "error_contract_json": (
+                '{"errors":{},"schema":"error_contract.v1"}'
+                if formal_contracts
+                else "{}"
+            ),
             "runtime_allowlist_json": "[]",
             "dom_scope_json": "{}",
             "usage_scope_json": '{"kind":"general"}',
@@ -297,7 +312,10 @@ class Phase4ManagementTest(unittest.TestCase):
 
     def test_product_planning_catalog_is_exact_eligible_and_code_free(self) -> None:
         project_id = self._ready_project()
-        capsule_id, version_id = self._seed_project_contribution(project_id)
+        capsule_id, version_id = self._seed_project_contribution(
+            project_id,
+            formal_contracts=True,
+        )
         before = self.store.current_revision()
 
         with patch.object(self.service._capsule_stage3, "_eligible_exact", return_value=True):
@@ -311,6 +329,12 @@ class Phase4ManagementTest(unittest.TestCase):
             (capsule_id, version_id),
         )
         self.assertEqual(capsule["identity_status"], "formal_exact_version")
+        self.assertEqual(capsule["input_contract"]["schema"], "data_contract.v1")
+        self.assertIn(
+            capsule["output_contract"]["schema"],
+            {"data_contract.v1", "event_outputs.v1", "no_output.v1"},
+        )
+        self.assertEqual(capsule["error_contract"]["schema"], "error_contract.v1")
         self.assertNotIn("html_text", capsule)
         self.assertNotIn("css_text", capsule)
         self.assertNotIn("javascript_modules_json", capsule)
@@ -800,6 +824,138 @@ class Phase4ManagementTest(unittest.TestCase):
         )
         self.assertFalse(forged["ok"])
         self.assertEqual(forged["error"]["code"], "capture_request_invalid")
+
+    def test_v3_create_requires_explicit_schema_and_routes_exact_mapping(self) -> None:
+        static_id = self._ready_project()
+        owner_id, offer = self._scan_v2_offer(static_id)
+        request = {
+            "schema": "computation_capture_mapping.v3",
+            "project_id": owner_id,
+            "offer_id": offer["offer_id"],
+            "review_id": None,
+            "arguments": [
+                {
+                    "parameter_binding_id": "c" * 64,
+                    "input_field": "quantity",
+                    "kind": "integer",
+                    "minimum": 1,
+                    "maximum": 10,
+                }
+            ],
+            "result_field": "unit_price",
+            "passthrough_fields": ["quantity"],
+            "examples": [
+                {
+                    "input": {"quantity": 5},
+                    "expected": {"quantity": 5, "unit_price": 80},
+                }
+            ],
+        }
+        waiting = {
+            "schema": "ephemeral_capture_outcome.v1",
+            "status": "waiting_user",
+            "review_id": "review-v3",
+            "resume_contract": "resubmit_ephemeral_capture.v2",
+        }
+        with patch.object(
+            self.service._capsule_stage3,
+            "prepare_ephemeral_computation_capture_v3",
+            return_value=waiting,
+        ) as prepare:
+            started = self.service.start_create_computation_adapter(request)
+            task = self._wait(started["run_id"])
+        self.assertEqual(task["data"], waiting)
+        self.assertEqual(
+            prepare.call_args.args[1],
+            {
+                "module_relpath": "calculate.js",
+                "export_name": "calculate",
+                "target_binding_id": "b" * 64,
+            },
+        )
+        self.assertEqual(
+            prepare.call_args.args[2],
+            {
+                "schema": "computation_capture_mapping.v3",
+                "arguments": request["arguments"],
+                "result_field": "unit_price",
+                "passthrough_fields": ["quantity"],
+                "examples": request["examples"],
+            },
+        )
+        invalid = self.service.start_create_computation_adapter(
+            {**request, "schema": "computation_capture_mapping.future"}
+        )
+        self.assertFalse(invalid["ok"])
+        self.assertEqual(invalid["error"]["code"], "capture_request_invalid")
+        self.assertEqual(
+            self.service._allowed_review_decisions(
+                {
+                    "candidate_status": "review_required",
+                    "candidate": {
+                        "candidate_origin": "deterministic_computation_adapter",
+                        "adapter_contract_version": "computation_adapter.v3",
+                        "usage_scope": {"kind": "general"},
+                    },
+                    "comparison": {},
+                }
+            ),
+            ["reject"],
+        )
+
+    def test_v4_create_requires_explicit_schema_and_routes_exact_mapping(self) -> None:
+        static_id = self._ready_project()
+        owner_id, offer = self._scan_v2_offer(static_id)
+        request = {
+            "schema": "computation_capture_mapping.v4",
+            "project_id": owner_id,
+            "offer_id": offer["offer_id"],
+            "review_id": None,
+            "arguments": [
+                {
+                    "parameter_binding_id": "c" * 64,
+                    "input_field": "enabled",
+                    "kind": "boolean",
+                }
+            ],
+            "result_field": "state",
+            "result_enum": ["disabled", "enabled"],
+            "proof_schema": "source_graph_proof.v2",
+            "examples": [
+                {"input": {"enabled": False}, "expected": {"state": "disabled"}},
+                {"input": {"enabled": True}, "expected": {"state": "enabled"}},
+            ],
+        }
+        waiting = {
+            "schema": "ephemeral_capture_outcome.v1",
+            "status": "waiting_user",
+            "review_id": "review-v4",
+            "resume_contract": "resubmit_ephemeral_capture.v3",
+        }
+        with patch.object(
+            self.service._capsule_stage3,
+            "prepare_ephemeral_computation_capture_v4",
+            return_value=waiting,
+        ) as prepare:
+            started = self.service.start_create_computation_adapter(request)
+            task = self._wait(started["run_id"])
+        self.assertEqual(task["data"], waiting)
+        self.assertEqual(
+            prepare.call_args.args[2],
+            {
+                "schema": "computation_capture_mapping.v4",
+                "arguments": request["arguments"],
+                "result_field": "state",
+                "result_enum": ["disabled", "enabled"],
+                "proof_schema": "source_graph_proof.v2",
+                "examples": request["examples"],
+            },
+        )
+        guessed = dict(request)
+        guessed.pop("schema")
+        invalid = self.service.start_create_computation_adapter(guessed)
+        self.assertFalse(invalid["ok"])
+        self.assertEqual(invalid["error"]["code"], "capture_request_invalid")
 
     def test_v2_real_record_resubmission_terminates_waiting_review(self) -> None:
         static_id = self._ready_project()
@@ -1810,6 +1966,41 @@ class Phase4ManagementTest(unittest.TestCase):
             ],
         )
 
+    def test_v3_current_adapter_remains_active_when_evidence_is_current(self) -> None:
+        project_id = self._ready_project()
+        capsule_id, version_id = self._seed_project_contribution(
+            project_id,
+            extraction_summary={
+                "candidate_origin": "deterministic_computation_adapter",
+                "adapter_contract_version": "computation_adapter.v3",
+            },
+        )
+        before = self.store.current_revision()
+
+        with patch.object(
+            self.service._capsule_stage3,
+            "_stored_version_evidence_eligible",
+            return_value=True,
+        ) as eligible:
+            self.service._ensure_capsule_management()
+
+        eligible.assert_called_once()
+        checked = eligible.call_args.args[0]
+        self.assertEqual(checked["capsule_id"], capsule_id)
+        self.assertEqual(checked["version_id"], version_id)
+        with self.store.read_connection() as connection:
+            capsule = connection.execute(
+                "SELECT status, current_version_id FROM capsules WHERE capsule_id = ?",
+                (capsule_id,),
+            ).fetchone()
+            event_count = connection.execute(
+                "SELECT COUNT(*) FROM capsule_status_events WHERE capsule_id = ?",
+                (capsule_id,),
+            ).fetchone()[0]
+        self.assertEqual(tuple(capsule), ("active", version_id))
+        self.assertEqual(event_count, 0)
+        self.assertEqual(self.store.current_revision(), before)
+
     def test_adapter_contract_rule_does_not_revalidate_ordinary_extraction(self) -> None:
         project_id = self._ready_project()
         capsule_id, version_id = self._seed_project_contribution(
@@ -1891,6 +2082,573 @@ class Phase4ManagementTest(unittest.TestCase):
                     "SELECT asset_decision FROM review_items WHERE review_id = 'brand-review'"
                 ).fetchone()[0]
             )
+
+    def test_frozen_review_admission_routes_only_explicit_binding(self) -> None:
+        request = {
+            "source_database_path": str(self.root / "frozen.sqlite3"),
+            "source_directory_path": str(self.root / "frozen-source"),
+            "source_database_sha256": "a" * 64,
+            "review_id": "review-frozen",
+            "expected_warehouse_revision": 7,
+            "plan_token": "plan-token",
+            "plan_digest": "1" * 64,
+            "projection_digest": "2" * 64,
+            "authorize_decision_digest": "3" * 64,
+            "source_proposal_authorization_digest": "4" * 64,
+        }
+        catalog = {"warehouse_revision": 7, "capsules": []}
+        catalog_digest = hashlib.sha256(
+            json.dumps(
+                catalog,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        target_catalog_digest = hashlib.sha256(
+            b'{"capsules":[]}'
+        ).hexdigest()
+        plan = {"canonical_digest": request["plan_digest"]}
+        workspace = {"status": "plan_review", "plan": plan}
+        projection = {
+            "projection_digest": request["projection_digest"],
+            "catalog_digest": catalog_digest,
+            "warehouse_revision": 7,
+        }
+        decision = {
+            "decision": "authorize",
+            "canonical_digest": request["authorize_decision_digest"],
+        }
+        authorization = {
+            "plan_digest": request["plan_digest"],
+            "gap_id": "gap-test",
+            "projection_digest": request["projection_digest"],
+            "authorize_decision_digest": request[
+                "authorize_decision_digest"
+            ],
+            "authorization_digest": request[
+                "source_proposal_authorization_digest"
+            ],
+            "capability_key": "year_month_conversion",
+            "adapter_contract_version": "computation_adapter.v2",
+            "input_contract": {"input": True},
+            "output_contract": {"output": True},
+            "error_contract": {"error": True},
+            "warehouse_revision": 7,
+            "catalog_digest": catalog_digest,
+        }
+        binding = {
+            "plan_digest": request["plan_digest"],
+            "gap_id": "gap-test",
+            "projection_digest": request["projection_digest"],
+            "authorize_decision_digest": request[
+                "authorize_decision_digest"
+            ],
+            "source_proposal_authorization_digest": request[
+                "source_proposal_authorization_digest"
+            ],
+            "capability_key": "year_month_conversion",
+            "adapter_contract_version": "computation_adapter.v2",
+            "input_contract": {"input": True},
+            "output_contract": {"output": True},
+            "error_contract": {"error": True},
+            "authorization_warehouse_revision": 7,
+            "authorization_catalog_digest": catalog_digest,
+            "target_catalog_digest": target_catalog_digest,
+        }
+        expected = {
+            "review_id": "review-frozen",
+            "status": "review_required",
+            "canonical_hash": "b" * 64,
+            "admission_digest": "c" * 64,
+            "warehouse_revision": 8,
+        }
+        with patch.object(
+            self.service,
+            "_product_planning_catalog",
+            return_value=catalog,
+        ), patch.object(
+            self.service._product_planner,
+            "_catalog",
+            return_value=catalog,
+        ), patch.object(
+            self.service._product_planner,
+            "_workspace_by_token",
+            return_value=workspace,
+        ), patch.object(
+            self.service._product_planner,
+            "_read_capability_gap_projection",
+            return_value=projection,
+        ), patch.object(
+            self.service._product_planner,
+            "_capability_gap_projection_for_workspace",
+            return_value=(projection, "available"),
+        ) as project_for_workspace, patch.object(
+            self.service._product_planner,
+            "_capability_gap_projection",
+            side_effect=AssertionError("legacy_projection_entry_called"),
+        ) as legacy_projection, patch.object(
+            self.service._product_planner,
+            "_capability_gap_decisions",
+            return_value=[decision],
+        ), patch.object(
+            self.service._product_planner,
+            "_read_capability_source_proposal_authorization",
+            return_value=authorization,
+        ) as read_authorization, patch.object(
+            self.service._capsule_stage3,
+            "admit_frozen_review",
+            return_value=expected,
+        ) as admit:
+            result = self.service.admit_frozen_review(request)
+            tampered_results = {
+                field: self.service.admit_frozen_review(
+                    {**request, field: "f" * 64}
+                )
+                for field in (
+                    "plan_digest",
+                    "projection_digest",
+                    "authorize_decision_digest",
+                    "source_proposal_authorization_digest",
+                )
+            }
+            read_authorization.return_value = {
+                **authorization,
+                "catalog_digest": "e" * 64,
+            }
+            catalog_tampered = self.service.admit_frozen_review(request)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["data"], expected)
+        project_for_workspace.assert_any_call(workspace, plan, catalog)
+        legacy_projection.assert_not_called()
+        admit.assert_called_once_with(
+            Path(request["source_database_path"]),
+            Path(request["source_directory_path"]),
+            "review-frozen",
+            expected_source_sha256="a" * 64,
+            expected_warehouse_revision=7,
+            authorization_binding=binding,
+        )
+        invalid = self.service.admit_frozen_review({**request, "extra": True})
+        self.assertEqual(
+            invalid["error"]["code"], "frozen_review_admission_invalid"
+        )
+        for field, result in tampered_results.items():
+            with self.subTest(field=field):
+                self.assertFalse(result["ok"])
+                self.assertIn(
+                    result["error"]["code"],
+                    {
+                        "frozen_review_admission_authorization_invalid",
+                        "frozen_review_admission_authorization_stale",
+                    },
+                )
+        self.assertEqual(
+            catalog_tampered["error"]["code"],
+            "frozen_review_admission_authorization_invalid",
+        )
+
+    def test_frozen_review_admission_honors_workspace_gap_selection(self) -> None:
+        request = {
+            "source_database_path": str(self.root / "frozen.sqlite3"),
+            "source_directory_path": str(self.root / "frozen-source"),
+            "source_database_sha256": "a" * 64,
+            "review_id": "review-frozen",
+            "expected_warehouse_revision": 71,
+            "plan_token": "plan-token",
+            "plan_digest": "1" * 64,
+            "projection_digest": "2" * 64,
+            "authorize_decision_digest": "3" * 64,
+            "source_proposal_authorization_digest": "4" * 64,
+        }
+        catalog = {"warehouse_revision": 71, "capsules": []}
+        catalog_digest = hashlib.sha256(
+            json.dumps(
+                catalog,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        candidate_digest = "5" * 64
+        selection_body = {
+            "schema_version": "product_capability_gap_target_selection.v1",
+            "question_set_digest": "6" * 64,
+            "option_id": "option_selected",
+            "candidate_digest": candidate_digest,
+            "warehouse_revision": 71,
+            "catalog_digest": catalog_digest,
+            "user_answer_digest": "7" * 64,
+        }
+        selection = {
+            **selection_body,
+            "canonical_digest": hashlib.sha256(
+                json.dumps(
+                    selection_body,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest(),
+        }
+        plan = {"canonical_digest": request["plan_digest"]}
+        workspace = {
+            "schema_version": "product_workspace.v8",
+            "status": "plan_review",
+            "plan": plan,
+            "capability_gap_target_selection": selection,
+        }
+        projection = {
+            "projection_digest": request["projection_digest"],
+            "catalog_digest": catalog_digest,
+            "warehouse_revision": 71,
+        }
+        decision = {
+            "decision": "authorize",
+            "canonical_digest": request["authorize_decision_digest"],
+        }
+        authorization = {
+            "plan_digest": request["plan_digest"],
+            "gap_id": "gap-test",
+            "projection_digest": request["projection_digest"],
+            "authorize_decision_digest": request[
+                "authorize_decision_digest"
+            ],
+            "authorization_digest": request[
+                "source_proposal_authorization_digest"
+            ],
+            "capability_key": "workflow_state_classification",
+            "adapter_contract_version": "computation_adapter.v4",
+            "input_contract": {"input": True},
+            "output_contract": {"output": True},
+            "error_contract": {"error": True},
+            "warehouse_revision": 71,
+            "catalog_digest": catalog_digest,
+        }
+        expected = {
+            "review_id": "review-frozen",
+            "status": "review_required",
+            "canonical_hash": "b" * 64,
+            "admission_digest": "c" * 64,
+            "warehouse_revision": 72,
+        }
+
+        def recalculate(_plan, current_catalog, selected_digest=None):
+            if (
+                current_catalog["capsules"] == []
+                and selected_digest in {None, candidate_digest}
+            ):
+                return projection, "available"
+            return None, "capability_gap_boundary_ambiguous"
+
+        with patch.object(
+            self.service,
+            "_product_planning_catalog",
+            return_value=catalog,
+        ), patch.object(
+            self.service._product_planner,
+            "_catalog",
+            side_effect=lambda value: value,
+        ), patch.object(
+            self.service._product_planner,
+            "_workspace_by_token",
+            return_value=workspace,
+        ), patch.object(
+            self.service._product_planner,
+            "_read_capability_gap_projection",
+            return_value=projection,
+        ), patch.object(
+            self.service._product_planner,
+            "_capability_gap_projection",
+            side_effect=recalculate,
+        ) as recalculate_projection, patch.object(
+            self.service._product_planner,
+            "_capability_gap_decisions",
+            return_value=[decision],
+        ), patch.object(
+            self.service._product_planner,
+            "_read_capability_source_proposal_authorization",
+            return_value=authorization,
+        ), patch.object(
+            self.service._capsule_stage3,
+            "admit_frozen_review",
+            return_value=expected,
+        ) as admit:
+            selected = self.service.admit_frozen_review(request)
+            self.assertTrue(selected["ok"])
+            recalculate_projection.assert_called_with(
+                plan,
+                catalog,
+                candidate_digest,
+            )
+            admit.assert_called_once()
+
+            admit.reset_mock()
+            wrong_body = {**selection_body, "candidate_digest": "8" * 64}
+            workspace["capability_gap_target_selection"] = {
+                **wrong_body,
+                "canonical_digest": hashlib.sha256(
+                    json.dumps(
+                        wrong_body,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode()
+                ).hexdigest(),
+            }
+            wrong = self.service.admit_frozen_review(request)
+            self.assertEqual(
+                wrong["error"]["code"],
+                "frozen_review_admission_authorization_stale",
+            )
+            admit.assert_not_called()
+
+            workspace["capability_gap_target_selection"] = {
+                **selection,
+                "canonical_digest": "9" * 64,
+            }
+            tampered = self.service.admit_frozen_review(request)
+            self.assertFalse(tampered["ok"])
+            admit.assert_not_called()
+
+            workspace["capability_gap_target_selection"] = selection
+            drifted_catalog = {
+                "warehouse_revision": 71,
+                "capsules": [{"drift": True}],
+            }
+            self.service._product_planning_catalog.return_value = (
+                drifted_catalog
+            )
+            drifted = self.service.admit_frozen_review(request)
+            self.assertEqual(
+                drifted["error"]["code"],
+                "frozen_review_admission_authorization_stale",
+            )
+            admit.assert_not_called()
+
+            self.service._product_planning_catalog.return_value = catalog
+            for schema_version in (
+                "product_workspace.v8",
+                "product_workspace.v7",
+                "product_workspace.v6",
+                "product_workspace.v5",
+            ):
+                workspace["schema_version"] = schema_version
+                workspace["capability_gap_target_selection"] = None
+                compatible = self.service.admit_frozen_review(request)
+                self.assertTrue(compatible["ok"], schema_version)
+
+            workspace["schema_version"] = "product_workspace.v8"
+            workspace["capability_gap_target_selection"] = selection
+            self.service._product_planning_catalog.return_value = {
+                "warehouse_revision": 72,
+                "capsules": [],
+            }
+            repeated = self.service.admit_frozen_review(
+                {**request, "expected_warehouse_revision": 72}
+            )
+            self.assertTrue(repeated["ok"])
+
+    def test_frozen_ui_review_batch_routes_and_locks_publication_identity(
+        self,
+    ) -> None:
+        catalog = {"warehouse_revision": 7, "capsules": []}
+        catalog_digest = hashlib.sha256(
+            json.dumps(
+                {"capsules": []},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        authorization = {
+            "schema": "frozen_stage3_ui_review_admission_authorization.v1",
+            "scope": "isolated_rehearsal",
+            "source_database_sha256": "a" * 64,
+            "source_project_id": "project-ui",
+            "source_run_id": "run-ui",
+            "source_file_index_digest": "b" * 64,
+            "capability_key": "rectangle_area_calculation",
+            "display_name": "Rectangle area",
+            "page_capability_contract_digest": "c" * 64,
+            "supervision_model_name": "test-model",
+            "supervision_model_digest": "d" * 64,
+            "target_warehouse_revision": 7,
+            "target_catalog_digest": catalog_digest,
+            "reviews": [
+                {
+                    "review_id": "review-interaction",
+                    "capability_kind": "interaction",
+                    "candidate_canonical_hash": "e" * 64,
+                    "source_relpath": "interaction.js",
+                    "source_file_sha256": "f" * 64,
+                    "validation_sha256": "1" * 64,
+                    "page_capability_declaration_digest": "2" * 64,
+                },
+                {
+                    "review_id": "review-presentation",
+                    "capability_kind": "presentation",
+                    "candidate_canonical_hash": "3" * 64,
+                    "source_relpath": "presentation.js",
+                    "source_file_sha256": "4" * 64,
+                    "validation_sha256": "5" * 64,
+                    "page_capability_declaration_digest": "6" * 64,
+                },
+            ],
+            "authorization_digest": "7" * 64,
+        }
+        request = {
+            "source_database_path": str(self.root / "source.sqlite3"),
+            "source_directory_path": str(self.root / "source"),
+            "source_database_sha256": "a" * 64,
+            "expected_warehouse_revision": 7,
+            "authorization": authorization,
+        }
+        expected = {
+            "status": "review_required",
+            "review_ids": [
+                "review-interaction",
+                "review-presentation",
+            ],
+            "admission_digests": ["8" * 64, "9" * 64],
+            "warehouse_revision": 9,
+        }
+        with patch.object(
+            self.service,
+            "_product_planning_catalog",
+            return_value=catalog,
+        ), patch.object(
+            self.service._product_planner,
+            "_catalog",
+            return_value=catalog,
+        ), patch.object(
+            self.service._capsule_stage3,
+            "admit_frozen_ui_review_batch",
+            return_value=expected,
+        ) as admit:
+            admitted = self.service.admit_frozen_ui_review_batch(request)
+        self.assertTrue(admitted["ok"])
+        self.assertEqual(admitted["data"], expected)
+        admit.assert_called_once_with(
+            Path(request["source_database_path"]),
+            Path(request["source_directory_path"]),
+            expected_source_sha256="a" * 64,
+            expected_warehouse_revision=7,
+            authorization_binding=authorization,
+        )
+        self.assertEqual(
+            self.service.admit_frozen_ui_review_batch(
+                {**request, "extra": True}
+            )["error"]["code"],
+            "frozen_ui_review_admission_invalid",
+        )
+
+        receipt = {
+            "schema": "frozen_stage3_ui_review_admission.v1",
+            "authorized_capability_key": "rectangle_area_calculation",
+            "authorized_display_name": "Rectangle area",
+        }
+        item = {
+            "review_id": "review-interaction",
+            "candidate_status": "review_required",
+            "candidate": {"frozen_ui_review_admission": receipt},
+            "comparison": {},
+            "allowed_decisions": ["publish_general", "reject"],
+        }
+        self.assertEqual(
+            self.service._allowed_review_decisions(item),
+            ["publish_general", "reject"],
+        )
+        published = {
+            "status": "published",
+            "capsule_id": "capsule-ui",
+            "version_id": "version-ui",
+        }
+        with patch.object(
+            self.service,
+            "list_review_items",
+            return_value={"ok": True, "data": {"items": [item]}},
+        ), patch.object(
+            self.service._capsule_stage3,
+            "publish_review",
+            return_value=published,
+        ) as publish:
+            result = self.service.decide_review_item(
+                {
+                    "review_id": "review-interaction",
+                    "decision": "publish_general",
+                    "capability_key": "rectangle_area_calculation",
+                    "display_name": "Rectangle area",
+                    "role_key": "rectangle_dimensions_input",
+                    "variant_key": "default",
+                }
+            )
+            wrong_name = self.service.decide_review_item(
+                {
+                    "review_id": "review-interaction",
+                    "decision": "publish_general",
+                    "capability_key": "rectangle_area_calculation",
+                    "display_name": "Wrong",
+                    "role_key": "rectangle_dimensions_input",
+                    "variant_key": "default",
+                }
+            )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["data"], published)
+        publish.assert_called_once()
+        self.assertEqual(
+            wrong_name["error"]["code"],
+            "frozen_review_publication_identity_invalid",
+        )
+        with self.store.transaction() as connection:
+            connection.execute(
+                "INSERT INTO capability_groups VALUES (?,?,?,?)",
+                (
+                    "rectangle_area_calculation",
+                    "Rectangle area",
+                    "2026-08-11T00:00:00.000Z",
+                    "2026-08-11T00:00:00.000Z",
+                ),
+            )
+        presentation = {
+            **item,
+            "review_id": "review-presentation",
+        }
+        with patch.object(
+            self.service,
+            "list_review_items",
+            return_value={
+                "ok": True,
+                "data": {"items": [presentation]},
+            },
+        ), patch.object(
+            self.service._capsule_stage3,
+            "publish_review",
+            return_value=published,
+        ) as publish_second:
+            second = self.service.decide_review_item(
+                {
+                    "review_id": "review-presentation",
+                    "decision": "publish_general",
+                    "capability_key": "rectangle_area_calculation",
+                    "display_name": "Rectangle area",
+                    "role_key": "rectangle_area_result",
+                    "variant_key": "default",
+                }
+            )
+            wrong_key = self.service.decide_review_item(
+                {
+                    "review_id": "review-presentation",
+                    "decision": "publish_general",
+                    "capability_key": "other_area",
+                    "display_name": "Rectangle area",
+                    "role_key": "rectangle_area_result",
+                    "variant_key": "default",
+                }
+            )
+        self.assertTrue(second["ok"])
+        publish_second.assert_called_once()
+        self.assertEqual(
+            wrong_key["error"]["code"],
+            "frozen_review_publication_identity_invalid",
+        )
 
     def test_default_review_queue_excludes_history_but_explicit_status_keeps_it(self) -> None:
         project_id = self._ready_project()

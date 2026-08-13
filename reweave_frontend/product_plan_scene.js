@@ -20,7 +20,7 @@
       runKind: "",
       parameterOffer: null,
       parameterValues: [],
-      acceptanceRows: [{ input: "", expected: "" }],
+      acceptanceRows: [{ input: {}, expected: {} }],
       acceptanceShape: null,
       candidate: null,
       candidateToken: "",
@@ -30,6 +30,21 @@
       fileError: "",
       actionResult: "",
       error: "",
+      sectionIndex: -1,
+      reviewScroll: 0,
+      sectionFocusId: "",
+      modelPickerOpen: false,
+      modelLoading: false,
+      models: [],
+      modelIndex: -1,
+      modelMessage: "",
+      modelError: "",
+      selectedModel: null,
+      warehouseReturnPending: false,
+      warehouseReturnFocusId: "",
+      warehouseReturnScroll: 0,
+      gapDrafts: {},
+      acceptanceSuggestionDigest: "",
     };
     var bound = false;
     var els = {};
@@ -45,20 +60,50 @@
     function copy() {
       return isZh()
         ? {
-            entry: "产品",
-            back: "返回",
+            entry: "返回产品构建",
+            back: "兼容工具",
             kicker: "本地产品流程",
             title: "创建产品",
+            productNav: "构建产品",
+            targetNav: "目标接入",
+            warehouseNav: "胶囊库",
+            ingestionNav: "来源入库",
+            language: "切换语言",
             statusCompose: "描述目标",
             statusWorking: "正在准备",
             statusQuestions: "等待选择",
             statusReview: "审阅计划",
             statusCandidate: "候选可审阅",
             statusFailed: "已停止",
+            evidenceLabel: "交付进度",
+            evidenceGoal: "目标",
+            evidencePlan: "计划",
+            evidenceVerify: "验证",
+            evidenceSave: "保存",
             composeTitle: "你想构建什么产品？",
+            composeCopy: "先说明产品为谁解决什么问题，以及最重要的结果。",
             goalLabel: "产品目标",
             goalPlaceholder: "描述产品、用户和最重要的结果",
-            createPlan: "生成计划",
+            createPlan: "形成产品计划",
+            plannerLabel: "本地规划模型",
+            plannerConfigured: "已验证",
+            plannerMissing: "需要选择规划模型",
+            plannerUnavailable: "产品规划当前不可用",
+            plannerConfigure: "更改",
+            plannerChoose: "选择模型",
+            plannerSelectLabel: "规划模型",
+            plannerRefresh: "刷新模型",
+            plannerUse: "验证并使用",
+            plannerLoading: "正在读取本机模型…",
+            plannerVerifying: "正在验证模型身份与输出契约…",
+            plannerReady: "规划模型已就绪。",
+            plannerNoModels: "未找到符合本地规划规则的模型。",
+            plannerOllamaUnavailable: "未检测到本地模型服务。启动后再刷新。",
+            plannerDigestChanged: "模型 digest 已变化，请刷新后重新选择。",
+            plannerTooLarge: "该模型不符合本地规划参数上限。",
+            plannerMoeUnsupported: "当前规划角色不接受混合专家模型。",
+            plannerProbeFailed: "模型契约探针未通过，请选择其他模型。",
+            plannerFailed: "无法验证该模型；产品目标尚未提交。",
             planningTitle: "正在整理产品计划",
             planningCopy: "Reweave 正在梳理需求、可复用能力和真实缺口。",
             cancel: "取消",
@@ -84,6 +129,10 @@
             changes: "变化",
             details: "实现详情",
             validation: "运行正常 · 关键结果通过",
+            runtimeCheck: "运行状态",
+            runtimePassed: "隔离运行已通过",
+            goalCheck: "关键结果",
+            goalPassed: "用户确认的验收例已通过",
             failedTitle: "这一步未能完成",
             failedCopy: "系统已安全停止，没有写入正式产品或用户项目。",
             retry: "重新开始",
@@ -92,30 +141,115 @@
             acceptance: "验收意图",
             wave: "交付阶段",
             requirement: "需求",
+            sectionOpen: "查看章节",
+            sectionBack: "返回计划总览",
+            sectionWork: "项工作",
+            sectionCapabilities: "个复用能力",
+            sectionGaps: "个能力缺口",
+            sectionNoGaps: "无已识别的工作项缺口",
+            sectionNotApplicable: "本产品不需要这一独立层",
+            viewInWarehouse: "在胶囊库查看",
+            gapProven: "系统已证明的能力边界",
+            gapInput: "正式输入",
+            gapOutput: "正式输出",
+            gapPosition: "串联位置",
+            gapAdapter: "预计捕获协议",
+            gapBehavior: "确认能力行为",
+            gapBehaviorPlaceholder: "说明该 computation 如何把正式输入转换为正式输出",
+            gapCases: "能力验收例",
+            gapAddCase: "添加验收例",
+            gapReason: "暂缓说明／拒绝原因",
+            gapAuthorize: "授权创建能力",
+            gapDefer: "暂缓",
+            gapReject: "拒绝",
+            gapDecisionCurrent: "当前决定",
+            gapDecisionHistory: "历史回执",
+            gapSupersedes: "取代",
+            gapDecisionAuthorize: "已授权",
+            gapDecisionDefer: "已暂缓",
+            gapDecisionReject: "已拒绝",
+            gapDecisionSaved: "决定已保存。",
+            gapDecisionInvalid: "请填写行为，并完整提供 1–3 个契约合法验收例。",
+            gapPrepareSourceProposal: "授权并生成能力提案",
+            gapSourceProposalDisclosure:
+              "将分别调用一次本地源码提案模型和当前胶囊监督模型；失败后不会自动重试。",
+            gapSourceProposalRunning: "正在处理能力提案",
+            gapSourceProposalCancel: "取消本次运行",
+            gapSourceProposalReview: "审阅待发布能力",
+            gapSourceProposalLocked: "授权已锁定，等待源码提案模型调用授权",
+            gapSourceProposalZeroWrite: "本次不会写入正式仓库。",
+            gapSourceProposalNoSource: "尚未生成源码。",
+            gapSourceProposalNoReview: "尚未进入安全检查或发布。",
+            gapSourceProposalError: "源码提案授权未能安全锁定。",
+            gapBlockGenerate: "计划仍有正式能力缺口，不能确认并生成。",
+            gapUnavailable: "当前缺口不能由确定性边界安全投影。",
+            gapStale: "正式能力目录已经变化，请重新审阅计划。",
+            gapAmbiguous: "存在多个合法缺口位置，系统已失败关闭。",
+            replanReady: "新增正式能力已可用",
+            replanAction: "使用新增能力重新规划（运行一次规划事务）",
+            replanOpen: "打开重新规划结果",
+            replanStarted: "已创建唯一的后续计划工作区。",
+            replanStale: "正式目录或规划模型已变化，不能再次创建后续工作区。",
+            replanAmbiguous: "无法唯一确定新增能力对应的完整组合。",
+            replanConflict: "后续计划回执不完整或不一致，系统已失败关闭。",
+            slotOnly: "唯一 computation 节点",
+            slotBefore: "现有 computation 之前",
+            slotAfter: "现有 computation 之后",
             reviewError: "请完整填写关键结果后再继续。",
             unsupported: "当前计划无法用这一版简化验收表单生成候选。",
             chooseAnswer: "请回答所有阻塞问题。",
             cancelled: "已取消",
             noPreview: "候选尚未达到可预览状态。",
             noPlanner: "产品规划尚未就绪",
+            goalRequired: "请先描述产品目标",
             fileUnavailable: "这个文件暂时无法显示，但产品仍可预览或保存。",
             implementationSummary: "隔离生成；正式产品、使用记录和用户项目均未写入。",
           }
         : {
-            entry: "Product",
-            back: "Back",
+            entry: "Return to product builder",
+            back: "Compatibility tools",
             kicker: "LOCAL PRODUCT WORKFLOW",
             title: "Create a product",
+            productNav: "Build product",
+            targetNav: "Target integration",
+            warehouseNav: "Capsule library",
+            ingestionNav: "Source intake",
+            language: "Switch language",
             statusCompose: "Describe goal",
             statusWorking: "Preparing",
             statusQuestions: "Decision needed",
             statusReview: "Review plan",
             statusCandidate: "Candidate ready",
             statusFailed: "Stopped",
+            evidenceLabel: "Delivery progress",
+            evidenceGoal: "Goal",
+            evidencePlan: "Plan",
+            evidenceVerify: "Verify",
+            evidenceSave: "Save",
             composeTitle: "What do you want to build?",
+            composeCopy: "Start with who the product is for, the problem it solves, and the outcome that matters.",
             goalLabel: "Product goal",
             goalPlaceholder: "Describe the product, its users, and the key outcome",
-            createPlan: "Create plan",
+            createPlan: "Form product plan",
+            plannerLabel: "Local planning model",
+            plannerConfigured: "Verified",
+            plannerMissing: "Choose a planning model",
+            plannerUnavailable: "Product planning is unavailable",
+            plannerConfigure: "Change",
+            plannerChoose: "Choose model",
+            plannerSelectLabel: "Planning model",
+            plannerRefresh: "Refresh models",
+            plannerUse: "Verify and use",
+            plannerLoading: "Reading local models…",
+            plannerVerifying: "Verifying model identity and output contract…",
+            plannerReady: "The planning model is ready.",
+            plannerNoModels: "No model meets the local planning rules.",
+            plannerOllamaUnavailable: "The local model service is unavailable. Start it, then refresh.",
+            plannerDigestChanged: "The model digest changed. Refresh and select it again.",
+            plannerTooLarge: "This model exceeds the local planning parameter limit.",
+            plannerMoeUnsupported: "Mixture-of-experts models are not accepted for this role.",
+            plannerProbeFailed: "The model contract probe failed. Choose another model.",
+            plannerFailed: "The model could not be verified. The product goal was not submitted.",
             planningTitle: "Preparing your product plan",
             planningCopy: "Reweave is organizing requirements, reusable capabilities, and real gaps.",
             cancel: "Cancel",
@@ -141,6 +275,10 @@
             changes: "Changes",
             details: "Implementation details",
             validation: "Runtime passed · Key outcomes passed",
+            runtimeCheck: "Runtime",
+            runtimePassed: "Isolated runtime passed",
+            goalCheck: "Key outcomes",
+            goalPassed: "User-confirmed cases passed",
             failedTitle: "This step could not be completed",
             failedCopy: "Reweave stopped safely. No formal product or user project was written.",
             retry: "Start again",
@@ -149,12 +287,67 @@
             acceptance: "Acceptance",
             wave: "Delivery stage",
             requirement: "Requirement",
+            sectionOpen: "Review section",
+            sectionBack: "Back to plan overview",
+            sectionWork: "work items",
+            sectionCapabilities: "reusable capabilities",
+            sectionGaps: "capability gaps",
+            sectionNoGaps: "no identified work-item gaps",
+            sectionNotApplicable: "This product does not need this independent layer",
+            viewInWarehouse: "View in capsule library",
+            gapProven: "System-proven capability boundary",
+            gapInput: "Formal input",
+            gapOutput: "Formal output",
+            gapPosition: "Serial position",
+            gapAdapter: "Expected capture protocol",
+            gapBehavior: "Confirm capability behavior",
+            gapBehaviorPlaceholder: "Describe how this computation transforms the formal input into the formal output",
+            gapCases: "Capability acceptance cases",
+            gapAddCase: "Add acceptance case",
+            gapReason: "Deferral note / rejection reason",
+            gapAuthorize: "Authorize capability creation",
+            gapDefer: "Defer",
+            gapReject: "Reject",
+            gapDecisionCurrent: "Current decision",
+            gapDecisionHistory: "Receipt history",
+            gapSupersedes: "supersedes",
+            gapDecisionAuthorize: "Authorized",
+            gapDecisionDefer: "Deferred",
+            gapDecisionReject: "Rejected",
+            gapDecisionSaved: "Decision saved.",
+            gapDecisionInvalid: "Provide the behavior and 1–3 complete contract-valid acceptance cases.",
+            gapPrepareSourceProposal: "Authorize and generate capability",
+            gapSourceProposalDisclosure:
+              "This calls the local source-proposal model and current capsule supervisor once each. Failures are not retried.",
+            gapSourceProposalRunning: "Processing capability proposal",
+            gapSourceProposalCancel: "Cancel this run",
+            gapSourceProposalReview: "Review capability for publication",
+            gapSourceProposalLocked: "Authorization locked; waiting for source-proposal model approval",
+            gapSourceProposalZeroWrite: "The formal warehouse will not be written.",
+            gapSourceProposalNoSource: "No source has been generated.",
+            gapSourceProposalNoReview: "Safety review and publication have not started.",
+            gapSourceProposalError: "The source-proposal authorization could not be locked safely.",
+            gapBlockGenerate: "The plan still has a formal capability gap and cannot be confirmed.",
+            gapUnavailable: "This gap has no safe deterministic boundary.",
+            gapStale: "The formal capability catalog changed. Review the plan again.",
+            gapAmbiguous: "More than one legal gap boundary exists. Reweave failed closed.",
+            replanReady: "The new formal capability is available",
+            replanAction: "Replan with the new capability (one planning transaction)",
+            replanOpen: "Open replanned workspace",
+            replanStarted: "The unique successor planning workspace was created.",
+            replanStale: "The formal catalog or planning model changed. No second workspace can be created.",
+            replanAmbiguous: "The complete composition for this new capability is not unique.",
+            replanConflict: "The replan receipt is missing or inconsistent. Reweave failed closed.",
+            slotOnly: "Only computation node",
+            slotBefore: "Before the existing computation",
+            slotAfter: "After the existing computation",
             reviewError: "Complete every key outcome before continuing.",
             unsupported: "This plan cannot use the simplified acceptance form in this release.",
             chooseAnswer: "Answer every blocking question.",
             cancelled: "Cancelled",
             noPreview: "The candidate is not ready for preview.",
             noPlanner: "Product planning is not ready",
+            goalRequired: "Describe the product goal first",
             fileUnavailable: "This file cannot be shown, but the product can still be previewed or saved.",
             implementationSummary: "Generated in isolation; formal products, usage records, and user projects were not written.",
           };
@@ -250,6 +443,37 @@
       return item ? item[isZh() ? "zh" : "en"] : String(sectionId || "");
     }
 
+    function planningAvailable() {
+      if (host.canOpenProduct) return host.canOpenProduct() === true;
+      var planning = host.getPlanningState ? host.getPlanningState() : null;
+      return !!(planning && planning.available === true);
+    }
+
+    function selectedPlanningModel() {
+      if (state.selectedModel) return state.selectedModel;
+      var planning = host.getPlanningState ? host.getPlanningState() : null;
+      return planning && planning.selected_model
+        ? planning.selected_model
+        : null;
+    }
+
+    function shortDigest(value) {
+      var digest = String(value || "");
+      return digest ? digest.slice(0, 8) : "";
+    }
+
+    function modelErrorText(code) {
+      var c = copy();
+      return {
+        ollama_unavailable: c.plannerOllamaUnavailable,
+        product_planning_model_not_available: c.plannerDigestChanged,
+        product_planning_model_digest_changed: c.plannerDigestChanged,
+        product_planning_model_too_large: c.plannerTooLarge,
+        product_planning_model_moe_not_allowed: c.plannerMoeUnsupported,
+        product_planning_model_probe_failed: c.plannerProbeFailed,
+      }[String(code || "")] || c.plannerFailed;
+    }
+
     function clear(element) {
       if (element) element.textContent = "";
     }
@@ -264,6 +488,161 @@
     function showView(id, active) {
       var node = $(id);
       if (node) node.classList.toggle("hidden", !active);
+    }
+
+    function renderModelSetup() {
+      var c = copy();
+      var available = planningAvailable();
+      var selected = selectedPlanningModel();
+      var status = available
+        ? selected
+          ? c.plannerConfigured
+          : c.plannerMissing
+        : c.plannerUnavailable;
+      setText("product-planner-label", c.plannerLabel);
+      setText("product-planner-status", status);
+      setText(
+        "product-planner-detail",
+        selected
+          ? [
+              String(selected.name || ""),
+              String(selected.parameter_size || ""),
+              shortDigest(selected.digest),
+            ]
+              .filter(Boolean)
+              .join(" · ")
+          : ""
+      );
+      setText(
+        "btn-product-planner-configure",
+        selected ? c.plannerConfigure : c.plannerChoose
+      );
+      setText("product-planner-select-label", c.plannerSelectLabel);
+      setText("btn-product-planner-refresh", c.plannerRefresh);
+      setText("btn-product-planner-use", c.plannerUse);
+      els.modelConfigure.disabled = !available || state.modelLoading;
+      els.modelConfigure.setAttribute(
+        "aria-expanded",
+        state.modelPickerOpen ? "true" : "false"
+      );
+      els.modelPicker.classList.toggle("hidden", !state.modelPickerOpen);
+      clear(els.modelSelect);
+      var placeholder = document.createElement("option");
+      placeholder.value = "";
+      placeholder.textContent = c.plannerChoose;
+      els.modelSelect.appendChild(placeholder);
+      state.models.forEach(function (model, index) {
+        var option = document.createElement("option");
+        option.value = String(index);
+        option.disabled = model.eligible_small_model !== true;
+        option.textContent = [
+          String(model.name || ""),
+          String(model.parameter_size || ""),
+          model.eligible_small_model === true
+            ? ""
+            : String(model.eligibility_reason || ""),
+        ]
+          .filter(Boolean)
+          .join(" · ");
+        els.modelSelect.appendChild(option);
+      });
+      els.modelSelect.value =
+        state.modelIndex >= 0 ? String(state.modelIndex) : "";
+      els.modelSelect.disabled = state.modelLoading || !state.models.length;
+      els.modelRefresh.disabled = state.modelLoading;
+      var chosen =
+        state.modelIndex >= 0 ? state.models[state.modelIndex] : null;
+      els.modelUse.disabled =
+        state.modelLoading || !chosen || chosen.eligible_small_model !== true;
+      els.modelMessage.classList.toggle("is-error", !!state.modelError);
+      els.modelMessage.textContent = state.modelLoading
+        ? state.modelMessage || c.plannerLoading
+        : state.modelError
+        ? modelErrorText(state.modelError)
+        : state.modelMessage;
+    }
+
+    function loadPlanningModels() {
+      if (state.modelLoading || !planningAvailable()) return;
+      state.modelPickerOpen = true;
+      state.modelLoading = true;
+      state.modelIndex = -1;
+      state.modelMessage = copy().plannerLoading;
+      state.modelError = "";
+      renderModelSetup();
+      call("list_product_planning_models", {})
+        .then(function (started) {
+          if (!started || started.ok !== true || !started.run_id) {
+            throw errorCode(started, "product_plan_list_models_failed");
+          }
+          return pollRun("get_product_plan_run", started.run_id);
+        })
+        .then(function (result) {
+          state.models =
+            result && Array.isArray(result.models) ? result.models : [];
+          state.modelMessage = state.models.some(function (model) {
+            return model.eligible_small_model === true;
+          })
+            ? ""
+            : copy().plannerNoModels;
+        })
+        .catch(function (code) {
+          state.models = [];
+          state.modelError = String(code || "product_plan_list_models_failed");
+        })
+        .finally(function () {
+          state.modelLoading = false;
+          render();
+        });
+    }
+
+    function selectPlanningModel() {
+      var model =
+        state.modelIndex >= 0 ? state.models[state.modelIndex] : null;
+      if (
+        state.modelLoading ||
+        !model ||
+        model.eligible_small_model !== true
+      ) {
+        return;
+      }
+      state.modelLoading = true;
+      state.modelMessage = copy().plannerVerifying;
+      state.modelError = "";
+      renderModelSetup();
+      call("select_product_planning_model", {
+        name: model.name,
+        digest: model.digest,
+      })
+        .then(function (started) {
+          if (!started || started.ok !== true || !started.run_id) {
+            throw errorCode(started, "product_planning_model_required");
+          }
+          return pollRun("get_product_plan_run", started.run_id);
+        })
+        .then(function (result) {
+          if (!result || !result.model) {
+            throw "product_planning_model_probe_failed";
+          }
+          state.selectedModel = result.model;
+          if (host.setSelectedPlanningModel) {
+            host.setSelectedPlanningModel(result.model);
+          }
+          state.modelPickerOpen = false;
+          state.modelMessage = copy().plannerReady;
+          state.models = [];
+          state.modelIndex = -1;
+        })
+        .catch(function (code) {
+          state.modelError = String(
+            code || "product_planning_model_probe_failed"
+          );
+        })
+        .finally(function () {
+          state.modelLoading = false;
+          render();
+          if (selectedPlanningModel()) els.goal.focus();
+        });
     }
 
     function renderQuestions() {
@@ -310,6 +689,1012 @@
         }
         els.questionForm.appendChild(fieldset);
       });
+      updateQuestionAction();
+    }
+
+    function updateGoalAction() {
+      if (!els.submitGoal) return;
+      var canPlan = planningAvailable() && !!selectedPlanningModel();
+      var hasGoal = !!String((els.goal && els.goal.value) || "").trim();
+      els.submitGoal.disabled = !canPlan || !hasGoal;
+      els.submitGoal.title = !canPlan
+        ? copy().noPlanner
+        : hasGoal
+        ? ""
+        : copy().goalRequired;
+    }
+
+    function updateQuestionAction() {
+      var button = $("btn-submit-product-answers");
+      if (!button) return;
+      button.disabled = !collectAnswers();
+      button.title = button.disabled ? copy().chooseAnswer : "";
+    }
+
+    function planGaps() {
+      var plan = currentPlan();
+      if (!plan || !Array.isArray(plan.sections)) return [];
+      return plan.sections.reduce(function (result, section) {
+        return result.concat(Array.isArray(section.gaps) ? section.gaps : []);
+      }, []);
+    }
+
+    function gapView(gapId) {
+      var gaps =
+        state.workspace && Array.isArray(state.workspace.capability_gaps)
+          ? state.workspace.capability_gaps
+          : [];
+      return gaps.find(function (item) {
+        return item.gap_id === gapId;
+      }) || null;
+    }
+
+    function gapDraft(view) {
+      var digest =
+        view && view.projection ? view.projection.projection_digest : "";
+      var existing = state.gapDrafts[view.gap_id];
+      if (existing && existing.projectionDigest === digest) return existing;
+      var draft = {
+        projectionDigest: digest,
+        behavior: "",
+        reason: "",
+        cases: [{ input: {}, expected_output: {} }],
+        error: "",
+        errorCode: "",
+        message: "",
+        runStage: "",
+        runStatus: "",
+        submitting: false,
+      };
+      state.gapDrafts[view.gap_id] = draft;
+      return draft;
+    }
+
+    function contractFields(contract) {
+      var properties =
+        contract && contract.properties && typeof contract.properties === "object"
+          ? contract.properties
+          : {};
+      return Object.keys(properties)
+        .sort()
+        .map(function (name) {
+          return { name: name, contract: properties[name] };
+        });
+    }
+
+    function contractFieldText(field) {
+      var contract = field.contract || {};
+      var range =
+        Number.isInteger(contract.minimum) && Number.isInteger(contract.maximum)
+          ? " · " + contract.minimum + "…" + contract.maximum
+          : "";
+      var values =
+        Array.isArray(contract.enum) && contract.enum.length
+          ? " · " + contract.enum.join(" / ")
+          : "";
+      return (
+        field.name + " · " + String(contract.type || "") + range + values
+      );
+    }
+
+    function parseGapInteger(value, contract) {
+      var text = String(value === undefined ? "" : value).trim();
+      if (!/^-?\d+$/.test(text)) throw new Error("integer");
+      var number = Number(text);
+      if (
+        !Number.isSafeInteger(number) ||
+        (Number.isInteger(contract.minimum) && number < contract.minimum) ||
+        (Number.isInteger(contract.maximum) && number > contract.maximum)
+      ) {
+        throw new Error("range");
+      }
+      return number;
+    }
+
+    function parseGapValue(value, contract) {
+      if (contract && contract.type === "integer") {
+        return parseGapInteger(value, contract);
+      }
+      if (contract && contract.type === "boolean") {
+        if (value === true || value === "true") return true;
+        if (value === false || value === "false") return false;
+        throw new Error("boolean");
+      }
+      if (
+        contract &&
+        contract.type === "string" &&
+        Array.isArray(contract.enum)
+      ) {
+        var text = String(value === undefined ? "" : value);
+        if (contract.enum.indexOf(text) === -1) throw new Error("enum");
+        return text;
+      }
+      throw new Error("unsupported");
+    }
+
+    function gapAcceptanceCases(view, draft) {
+      var projection = view.projection;
+      var inputFields = contractFields(projection.input_contract);
+      var outputFields = contractFields(projection.output_contract);
+      if (!draft.behavior.trim() || !draft.cases.length) return null;
+      try {
+        return draft.cases.map(function (row) {
+          var input = {};
+          var expected = {};
+          inputFields.forEach(function (field) {
+            input[field.name] = parseGapValue(
+              row.input[field.name],
+              field.contract
+            );
+          });
+          outputFields.forEach(function (field) {
+            expected[field.name] = parseGapValue(
+              row.expected_output[field.name],
+              field.contract
+            );
+          });
+          return { input: input, expected_output: expected };
+        });
+      } catch (_error) {
+        return null;
+      }
+    }
+
+    function gapStatusText(status) {
+      var c = copy();
+      if (status === "capability_gap_projection_stale") return c.gapStale;
+      if (
+        status === "capability_gap_boundary_ambiguous" ||
+        status === "capability_gap_plan_count_unsupported"
+      ) {
+        return c.gapAmbiguous;
+      }
+      return c.gapUnavailable;
+    }
+
+    function decisionText(decision) {
+      var c = copy();
+      return {
+        authorize: c.gapDecisionAuthorize,
+        defer: c.gapDecisionDefer,
+        reject: c.gapDecisionReject,
+      }[decision] || String(decision || "");
+    }
+
+    function submitGapDecision(view, draft, decision) {
+      var cases = decision === "authorize"
+        ? gapAcceptanceCases(view, draft)
+        : [];
+      if (
+        (decision === "authorize" && !cases) ||
+        (decision === "reject" && !draft.reason.trim())
+      ) {
+        draft.error = copy().gapDecisionInvalid;
+        renderSectionDetail();
+        return;
+      }
+      var plan = currentPlan();
+      var current = view.current_decision;
+      draft.error = "";
+      draft.message = "";
+      draft.submitting = true;
+      renderSectionDetail();
+      call("record_product_capability_gap_decision", {
+        plan_token: state.planToken,
+        plan_digest: plan.canonical_digest,
+        projection_digest: view.projection.projection_digest,
+        expected_previous_decision_digest: current
+          ? current.canonical_digest
+          : null,
+        decision: decision,
+        behavior_intent:
+          decision === "authorize" ? draft.behavior.trim() : null,
+        reason:
+          decision === "reject"
+            ? draft.reason.trim()
+            : decision === "defer" && draft.reason.trim()
+            ? draft.reason.trim()
+            : null,
+        acceptance_cases: cases,
+      })
+        .then(function (result) {
+          if (!result || result.ok !== true) {
+            throw errorCode(result, "capability_gap_decision_failed");
+          }
+          state.workspace = result.data;
+          draft.submitting = false;
+          draft.message = copy().gapDecisionSaved;
+          renderSectionDetail();
+        })
+        .catch(function (code) {
+          draft.submitting = false;
+          draft.error =
+            String(code || "") === "capability_gap_projection_stale"
+              ? copy().gapStale
+              : copy().gapDecisionInvalid;
+          renderSectionDetail();
+        });
+    }
+
+    function refreshCurrentWorkspace(options) {
+      var sectionIndex = state.sectionIndex;
+      var scroll = els.stage ? els.stage.scrollTop : 0;
+      var focusId = options && options.focusId;
+      return call("get_product_plan_workspace", {
+        plan_token: state.planToken,
+      }).then(function (result) {
+        if (!result || result.ok !== true) {
+          throw errorCode(result, "product_plan_workspace_failed");
+        }
+        updateWorkspace(result.data);
+        if (
+          sectionIndex >= 0 &&
+          state.view === "review" &&
+          currentPlan() &&
+          currentPlan().sections[sectionIndex]
+        ) {
+          state.sectionIndex = sectionIndex;
+          state.view = "section";
+          render();
+          if (els.stage) els.stage.scrollTop = scroll;
+        }
+        window.setTimeout(function () {
+          var target = focusId ? $(focusId) : null;
+          if (target) target.focus();
+        }, 0);
+        return result.data;
+      });
+    }
+
+    function pollSourceProposalRun(runId, view, draft) {
+      return new Promise(function (resolve, reject) {
+        function poll() {
+          call("get_intake_run", { run_id: runId }).then(function (result) {
+            var run = taskData(result);
+            if (!run) {
+              reject(errorCode(result, "capability_source_proposal_run_failed"));
+              return;
+            }
+            draft.message =
+              copy().gapSourceProposalRunning + " · " + String(run.stage || "");
+            draft.runStage = String(run.stage || "");
+            draft.runStatus = String(run.status || "");
+            draft.errorCode = String(run.error_code || "");
+            draft.submitting = run.status === "pending" || run.status === "running";
+            renderSectionDetail();
+            if (draft.submitting) {
+              window.setTimeout(poll, 180);
+              return;
+            }
+            if (run.status === "review_required") {
+              resolve(run);
+              return;
+            }
+            reject(run.error_code || "capability_source_proposal_run_failed");
+          });
+        }
+        poll();
+      });
+    }
+
+    function openSourceProposalReview(view, run, focusId) {
+      if (!host.openIngestion || !run || !run.review_id) return;
+      state.active = false;
+      host.openIngestion({
+        station: "review",
+        review_id: run.review_id,
+        plan_token: state.planToken,
+        projection_digest: view.projection.projection_digest,
+        return_focus_id: focusId || "",
+      });
+    }
+
+    function authorizeAndRunSourceProposal(view, draft) {
+      var plan = currentPlan();
+      var alreadyAuthorized =
+        view.current_decision &&
+        view.current_decision.decision === "authorize";
+      var cases = alreadyAuthorized ? [] : gapAcceptanceCases(view, draft);
+      if (!plan || (!alreadyAuthorized && !cases)) {
+        draft.error = copy().gapDecisionInvalid;
+        renderSectionDetail();
+        return;
+      }
+      draft.error = "";
+      draft.errorCode = "";
+      draft.message = "";
+      draft.runStage = "";
+      draft.runStatus = "";
+      draft.submitting = true;
+      renderSectionDetail();
+      var chain = Promise.resolve(state.workspace);
+      if (!alreadyAuthorized) {
+        chain = call("record_product_capability_gap_decision", {
+          plan_token: state.planToken,
+          plan_digest: plan.canonical_digest,
+          projection_digest: view.projection.projection_digest,
+          expected_previous_decision_digest: view.current_decision
+            ? view.current_decision.canonical_digest
+            : null,
+          decision: "authorize",
+          behavior_intent: draft.behavior.trim(),
+          reason: null,
+          acceptance_cases: cases,
+        }).then(function (result) {
+          if (!result || result.ok !== true) {
+            throw errorCode(result, "capability_gap_decision_failed");
+          }
+          state.workspace = result.data;
+          return result.data;
+        });
+      }
+      chain
+        .then(function () {
+          view = gapView(view.gap_id);
+          if (!view) throw "capability_gap_projection_stale";
+          if (view.source_proposal_authorization) return state.workspace;
+          return call("prepare_product_capability_source_proposal", {
+            plan_token: state.planToken,
+            plan_digest: plan.canonical_digest,
+            projection_digest: view.projection.projection_digest,
+            authorize_decision_digest:
+              view.current_decision.canonical_digest,
+          }).then(function (result) {
+            if (!result || result.ok !== true) {
+              throw errorCode(
+                result,
+                "capability_source_proposal_authorization_failed"
+              );
+            }
+            state.workspace = result.data;
+            return result.data;
+          });
+        })
+        .then(function () {
+          view = gapView(view.gap_id);
+          var authorization = view.source_proposal_authorization;
+          return call("start_product_capability_source_proposal", {
+            plan_token: state.planToken,
+            plan_digest: plan.canonical_digest,
+            projection_digest: view.projection.projection_digest,
+            authorization_digest: authorization.authorization_digest,
+          });
+        })
+        .then(function (started) {
+          if (!started || started.ok !== true || !started.run_id) {
+            throw errorCode(
+              started,
+              "capability_source_proposal_run_failed"
+            );
+          }
+          draft.runStage = "source_proposal";
+          draft.runStatus =
+            started.status === "queued"
+              ? "pending"
+              : String(started.status || "pending");
+          renderSectionDetail();
+          state.runId = started.run_id;
+          state.runKind = "source_proposal";
+          return pollSourceProposalRun(started.run_id, view, draft);
+        })
+        .then(function (run) {
+          draft.submitting = false;
+          state.runId = "";
+          state.runKind = "";
+          return refreshCurrentWorkspace({
+            focusId: "btn-review-source-proposal-" + view.gap_id,
+          }).then(function () {
+            view = gapView(view.gap_id) || view;
+            openSourceProposalReview(
+              view,
+              run,
+              "btn-review-source-proposal-" + view.gap_id
+            );
+          });
+        })
+        .catch(function (code) {
+          state.runId = "";
+          state.runKind = "";
+          draft.submitting = false;
+          draft.runStatus = "failed";
+          draft.runStage = "";
+          draft.errorCode = String(
+            code || "capability_source_proposal_run_failed"
+          );
+          draft.error =
+            String(code || "") === "capability_gap_projection_stale"
+              ? copy().gapStale
+              : copy().gapSourceProposalError;
+          renderSectionDetail();
+        });
+    }
+
+    function replanStatusText(status) {
+      var c = copy();
+      if (status === "capability_replan_handoff_stale") return c.replanStale;
+      if (status === "capability_replan_ambiguous") return c.replanAmbiguous;
+      if (status === "capability_replan_handoff_conflict") return c.replanConflict;
+      return c.gapUnavailable;
+    }
+
+    function openReplanWorkspace(planToken) {
+      call("get_product_plan_workspace", { plan_token: planToken })
+        .then(function (result) {
+          if (!result || result.ok !== true) {
+            throw errorCode(result, "capability_replan_handoff_conflict");
+          }
+          updateWorkspace(result.data);
+        })
+        .catch(function (code) {
+          fail(code);
+        });
+    }
+
+    function startCapabilityReplan(replan) {
+      var plan = currentPlan();
+      if (!plan || !replan || replan.status !== "available") return;
+      startRun(
+        "start_product_capability_replan",
+        "get_product_plan_run",
+        {
+          plan_token: state.planToken,
+          plan_digest: plan.canonical_digest,
+          projection_digest: replan.projection_digest,
+        },
+        "replan"
+      )
+        .then(updateWorkspace)
+        .catch(function (code) {
+          replan.status = String(code || "capability_replan_handoff_conflict");
+          state.view = "section";
+          render();
+        });
+    }
+
+    function renderCapabilityReplan(gap) {
+      var replan = state.workspace && state.workspace.capability_replan;
+      if (!replan || replan.source_gap_id !== gap.gap_id) return null;
+      var c = copy();
+      var panel = element("div", "product-gap-status");
+      panel.dataset.capabilityReplanStatus = String(replan.status || "");
+      panel.setAttribute("aria-live", "polite");
+      if (replan.status === "available") {
+        panel.appendChild(element("strong", "", c.replanReady));
+      } else if (replan.status === "started") {
+        panel.appendChild(element("strong", "", c.replanStarted));
+      } else {
+        panel.classList.add("is-error");
+        panel.appendChild(
+          element("strong", "", replanStatusText(replan.status))
+        );
+      }
+      if (Array.isArray(replan.role_order) && replan.role_order.length) {
+        panel.appendChild(document.createElement("br"));
+        panel.appendChild(
+          element("span", "product-gap-mono", replan.role_order.join(" → "))
+        );
+      }
+      if (replan.status === "available") {
+        var start = element("button", "btn-primary", c.replanAction);
+        start.type = "button";
+        start.dataset.action = "start-capability-replan";
+        start.addEventListener("click", function () {
+          startCapabilityReplan(replan);
+        });
+        panel.appendChild(document.createElement("br"));
+        panel.appendChild(start);
+      } else if (
+        replan.status === "started" &&
+        replan.successor_plan_token
+      ) {
+        var open = element("button", "btn-secondary", c.replanOpen);
+        open.type = "button";
+        open.dataset.action = "open-capability-replan";
+        open.addEventListener("click", function () {
+          openReplanWorkspace(replan.successor_plan_token);
+        });
+        panel.appendChild(document.createElement("br"));
+        panel.appendChild(open);
+      }
+      return panel;
+    }
+
+    function updateReviewAction() {
+      var button = $("btn-confirm-and-generate");
+      if (!button) return;
+      var hasGaps = planGaps().length > 0;
+      var cases = acceptanceCases();
+      var parameterReady =
+        !state.parameterOffer || !!parameterConfirmation();
+      button.disabled = hasGaps || !cases || !parameterReady;
+      button.title = button.disabled
+        ? hasGaps
+          ? copy().gapBlockGenerate
+          : state.acceptanceShape
+          ? copy().reviewError
+          : copy().unsupported
+        : "";
+      if (els.acceptance) {
+        els.acceptance.classList.toggle("hidden", hasGaps);
+      }
+    }
+
+    function renderWorkItem(item, itemIndex) {
+      var article = element("article", "product-plan-work-item");
+      article.appendChild(element("h3", "", item.title));
+      article.appendChild(element("p", "", item.description));
+      var meta = element("dl", "product-plan-work-item-meta");
+      if (item.acceptance_intent) {
+        meta.appendChild(element("dt", "", copy().acceptance));
+        meta.appendChild(element("dd", "", item.acceptance_intent));
+      }
+      if (item.delivery_wave) {
+        meta.appendChild(element("dt", "", copy().wave));
+        meta.appendChild(element("dd", "", item.delivery_wave));
+      }
+      article.appendChild(meta);
+      (item.capsule_bindings || []).forEach(function (binding, bindingIndex) {
+        var row = element("div", "product-plan-capability product-plan-capability-link");
+        row.appendChild(
+          element("span", "", copy().capability + " · " + binding.display_name)
+        );
+        var button = element("button", "product-plan-text-action", copy().viewInWarehouse);
+        button.type = "button";
+        button.id = [
+          "product-plan-capsule-source",
+          state.sectionIndex,
+          itemIndex,
+          bindingIndex,
+        ].join("-");
+        button.addEventListener("click", function () {
+          enterWarehouse(binding, button);
+        });
+        row.appendChild(button);
+        article.appendChild(row);
+      });
+      if (item.gap_reason) {
+        article.appendChild(
+          element(
+            "p",
+            "product-plan-gap",
+            copy().gap + " · " + item.gap_reason
+          )
+        );
+      }
+      return article;
+    }
+
+    function renderGapContract(title, contract) {
+      var group = element("div", "product-gap-contract");
+      group.appendChild(element("strong", "", title));
+      var list = element("ul", "");
+      contractFields(contract).forEach(function (field) {
+        list.appendChild(element("li", "", contractFieldText(field)));
+      });
+      group.appendChild(list);
+      return group;
+    }
+
+    function gapAcceptanceControl(contract, value) {
+      if (contract.type === "boolean" || Array.isArray(contract.enum)) {
+        var select = document.createElement("select");
+        var values =
+          contract.type === "boolean"
+            ? ["true", "false"]
+            : contract.enum.slice();
+        select.appendChild(new Option("", ""));
+        values.forEach(function (item) {
+          select.appendChild(new Option(String(item), String(item)));
+        });
+        select.value = value === undefined ? "" : String(value);
+        return select;
+      }
+      var input = document.createElement("input");
+      input.type = "number";
+      input.step = "1";
+      if (Number.isInteger(contract.minimum)) {
+        input.min = String(contract.minimum);
+      }
+      if (Number.isInteger(contract.maximum)) {
+        input.max = String(contract.maximum);
+      }
+      input.value = value === undefined ? "" : String(value);
+      return input;
+    }
+
+    function renderGapAcceptance(view, draft) {
+      var c = copy();
+      var projection = view.projection;
+      var wrap = element("div", "product-gap-cases");
+      wrap.appendChild(element("h4", "", c.gapCases));
+      draft.cases.forEach(function (row, rowIndex) {
+        var current = element("div", "product-gap-case");
+        current.appendChild(
+          element("span", "product-gap-case-index", String(rowIndex + 1))
+        );
+        contractFields(projection.input_contract).forEach(function (field) {
+          var label = element("label", "");
+          label.appendChild(element("span", "", c.input + " · " + field.name));
+          var input = gapAcceptanceControl(
+            field.contract,
+            row.input[field.name]
+          );
+          input.addEventListener("input", function () {
+            row.input[field.name] = input.value;
+            if (projection.passthrough_fields.indexOf(field.name) !== -1) {
+              row.expected_output[field.name] = input.value;
+              current
+                .querySelectorAll("[data-gap-output-field]")
+                .forEach(function (node) {
+                  if (node.dataset.gapOutputField === field.name) {
+                    node.value = input.value;
+                  }
+                });
+            }
+          });
+          label.appendChild(input);
+          current.appendChild(label);
+        });
+        contractFields(projection.output_contract).forEach(function (field) {
+          var label = element("label", "");
+          label.appendChild(
+            element("span", "", c.expected + " · " + field.name)
+          );
+          var output = gapAcceptanceControl(
+            field.contract,
+            row.expected_output[field.name]
+          );
+          output.readOnly =
+            projection.passthrough_fields.indexOf(field.name) !== -1;
+          output.dataset.gapOutputField = field.name;
+          output.addEventListener("input", function () {
+            row.expected_output[field.name] = output.value;
+          });
+          label.appendChild(output);
+          current.appendChild(label);
+        });
+        if (draft.cases.length > 1) {
+          var remove = element("button", "product-plan-text-action", "×");
+          remove.type = "button";
+          remove.setAttribute(
+            "aria-label",
+            isZh() ? "删除这一验收例" : "Remove acceptance case"
+          );
+          remove.addEventListener("click", function () {
+            draft.cases.splice(rowIndex, 1);
+            renderSectionDetail();
+          });
+          current.appendChild(remove);
+        }
+        wrap.appendChild(current);
+      });
+      var add = element("button", "product-plan-text-action", c.gapAddCase);
+      add.type = "button";
+      add.disabled = draft.cases.length >= 3;
+      add.addEventListener("click", function () {
+        if (draft.cases.length >= 3) return;
+        draft.cases.push({ input: {}, expected_output: {} });
+        renderSectionDetail();
+      });
+      wrap.appendChild(add);
+      return wrap;
+    }
+
+    function renderCapabilityGap(gap) {
+      var c = copy();
+      var view = gapView(gap.gap_id);
+      var panel = element("article", "product-capability-gap");
+      panel.dataset.gapId = gap.gap_id;
+      panel.appendChild(element("p", "product-gap-kicker", c.gap));
+      panel.appendChild(element("h3", "", gap.title));
+      panel.appendChild(element("p", "product-gap-reason", gap.reason));
+      var replan = renderCapabilityReplan(gap);
+      if (replan) {
+        panel.appendChild(replan);
+        return panel;
+      }
+      if (!view || view.status !== "available" || !view.projection) {
+        var unavailable = element(
+          "p",
+          "product-gap-status is-error",
+          gapStatusText(view && view.status)
+        );
+        unavailable.setAttribute("role", "status");
+        panel.appendChild(unavailable);
+        return panel;
+      }
+
+      var projection = view.projection;
+      var draft = gapDraft(view);
+      var evidence = element("div", "product-gap-evidence");
+      evidence.appendChild(element("strong", "", c.gapProven));
+      evidence.appendChild(
+        element(
+          "span",
+          "",
+          projection.capability_group_display_name +
+            " · " +
+            projection.capability_key
+        )
+      );
+      evidence.appendChild(
+        element(
+          "span",
+          "",
+          c.gapPosition +
+            " · " +
+            {
+              only_computation: c.slotOnly,
+              before_existing_computation: c.slotBefore,
+              after_existing_computation: c.slotAfter,
+            }[projection.slot]
+        )
+      );
+      evidence.appendChild(
+        element(
+          "span",
+          "product-gap-mono",
+          c.gapAdapter + " · " + projection.adapter_contract_version
+        )
+      );
+      var contracts = element("div", "product-gap-contracts");
+      contracts.appendChild(
+        renderGapContract(c.gapInput, projection.input_contract)
+      );
+      contracts.appendChild(
+        renderGapContract(c.gapOutput, projection.output_contract)
+      );
+      var proof = element("div", "product-gap-proof");
+      proof.appendChild(evidence);
+      proof.appendChild(contracts);
+      panel.appendChild(proof);
+
+      if (view.current_decision) {
+        var current = element("p", "product-gap-current");
+        current.appendChild(
+          element(
+            "strong",
+            "",
+            c.gapDecisionCurrent +
+              " · " +
+              decisionText(view.current_decision.decision)
+          )
+        );
+        current.appendChild(
+          element(
+            "span",
+            "product-gap-mono",
+            c.gapDecisionHistory +
+              " · " +
+              String(view.decision_history.length) +
+              " · " +
+              shortDigest(view.current_decision.canonical_digest)
+          )
+        );
+        panel.appendChild(current);
+        var history = element("details", "product-gap-history");
+        history.appendChild(
+          element(
+            "summary",
+            "",
+            c.gapDecisionHistory + " · " + String(view.decision_history.length)
+          )
+        );
+        var historyList = element("ol", "");
+        view.decision_history.forEach(function (row) {
+          historyList.appendChild(
+            element(
+              "li",
+              "",
+              [
+                "#" + String(row.sequence),
+                decisionText(row.decision),
+                shortDigest(row.canonical_digest),
+                row.previous_decision_digest
+                  ? c.gapSupersedes +
+                    " " +
+                    shortDigest(row.previous_decision_digest)
+                  : "",
+              ]
+                .filter(Boolean)
+                .join(" · ")
+            )
+          );
+        });
+        history.appendChild(historyList);
+        panel.appendChild(history);
+      }
+
+      if (view.source_proposal_authorization) {
+        var run = view.source_proposal_run;
+        var runStatus = run ? run.status : draft.runStatus;
+        var runStage = run ? run.stage : draft.runStage;
+        var locked = element("div", "product-gap-status");
+        locked.dataset.sourceProposalStatus = runStatus || "locked";
+        locked.setAttribute("aria-live", "polite");
+        locked.appendChild(
+          element(
+            "strong",
+            "",
+            runStatus === "pending" || runStatus === "running"
+              ? c.gapSourceProposalRunning + " · " + String(runStage || "")
+              : c.gapSourceProposalLocked
+          )
+        );
+        locked.appendChild(document.createTextNode(" · "));
+        locked.appendChild(
+          element(
+            "span",
+            "product-gap-mono",
+            shortDigest(
+              view.source_proposal_authorization.authorization_digest
+            )
+          )
+        );
+        locked.appendChild(document.createElement("br"));
+        locked.appendChild(element("span", "", c.gapSourceProposalZeroWrite));
+        locked.appendChild(document.createElement("br"));
+        locked.appendChild(
+          element("span", "", c.gapSourceProposalDisclosure)
+        );
+        panel.appendChild(locked);
+        if (!run) {
+          var start = element(
+            "button",
+            "btn-primary",
+            c.gapPrepareSourceProposal
+          );
+          start.type = "button";
+          start.dataset.action = "start-capability-source-proposal";
+          start.disabled = draft.submitting;
+          start.addEventListener("click", function () {
+            authorizeAndRunSourceProposal(view, draft);
+          });
+          panel.appendChild(start);
+        } else if (run.status === "pending" || run.status === "running") {
+          var cancel = element(
+            "button",
+            "btn-secondary",
+            c.gapSourceProposalCancel
+          );
+          cancel.type = "button";
+          cancel.addEventListener("click", function () {
+            call("cancel_intake_run", { run_id: run.run_id });
+          });
+          panel.appendChild(cancel);
+        } else if (run.status === "review_required") {
+          var outcome = run.review_outcome;
+          if (outcome && outcome.status === "rejected") {
+            panel.appendChild(
+              element(
+                "p",
+                "product-gap-status is-error",
+                c.gapDecisionReject
+              )
+            );
+          } else {
+            var review = element(
+              "button",
+              "btn-primary",
+              c.gapSourceProposalReview
+            );
+            review.type = "button";
+            review.id = "btn-review-source-proposal-" + view.gap_id;
+            review.addEventListener("click", function () {
+              openSourceProposalReview(view, run, review.id);
+            });
+            panel.appendChild(review);
+          }
+        } else {
+          panel.appendChild(
+            element(
+              "p",
+              "product-gap-status is-error",
+              run.error_code || c.gapSourceProposalError
+            )
+          );
+        }
+        if (draft.error || draft.message) {
+          var runMessage = element(
+            "p",
+            "product-gap-status" + (draft.error ? " is-error" : ""),
+            [
+              draft.error || draft.message,
+              draft.errorCode || "",
+            ].filter(Boolean).join(" · ")
+          );
+          if (draft.errorCode) {
+            runMessage.dataset.sourceProposalErrorCode = draft.errorCode;
+          }
+          runMessage.setAttribute("aria-live", "polite");
+          panel.appendChild(runMessage);
+        }
+        return panel;
+      }
+
+      var behaviorLabel = element("label", "product-gap-field");
+      behaviorLabel.appendChild(element("span", "", c.gapBehavior));
+      var behavior = document.createElement("textarea");
+      behavior.rows = 2;
+      behavior.maxLength = 1000;
+      behavior.placeholder = c.gapBehaviorPlaceholder;
+      behavior.value = draft.behavior;
+      behavior.addEventListener("input", function () {
+        draft.behavior = behavior.value;
+      });
+      behaviorLabel.appendChild(behavior);
+      panel.appendChild(behaviorLabel);
+      panel.appendChild(renderGapAcceptance(view, draft));
+
+      var reject;
+      var reasonLabel = element("label", "product-gap-field");
+      reasonLabel.appendChild(element("span", "", c.gapReason));
+      var reason = document.createElement("input");
+      reason.type = "text";
+      reason.maxLength = 500;
+      reason.value = draft.reason;
+      reason.addEventListener("input", function () {
+        draft.reason = reason.value;
+        if (reject) reject.disabled = draft.submitting || !draft.reason.trim();
+      });
+      reasonLabel.appendChild(reason);
+      panel.appendChild(reasonLabel);
+
+      var actions = element("div", "product-gap-actions");
+      var authorize = element(
+        "button",
+        "btn-primary",
+        c.gapPrepareSourceProposal
+      );
+      authorize.type = "button";
+      authorize.disabled = draft.submitting;
+      authorize.addEventListener("click", function () {
+        authorizeAndRunSourceProposal(view, draft);
+      });
+      var defer = element("button", "btn-secondary", c.gapDefer);
+      defer.type = "button";
+      defer.disabled = draft.submitting;
+      defer.addEventListener("click", function () {
+        submitGapDecision(view, draft, "defer");
+      });
+      reject = element("button", "product-plan-text-action", c.gapReject);
+      reject.type = "button";
+      reject.disabled = draft.submitting || !draft.reason.trim();
+      reject.addEventListener("click", function () {
+        submitGapDecision(view, draft, "reject");
+      });
+      actions.appendChild(authorize);
+      actions.appendChild(defer);
+      actions.appendChild(reject);
+      panel.appendChild(actions);
+      var status = element(
+        "p",
+        "product-gap-status" + (draft.error ? " is-error" : ""),
+        draft.error || draft.message
+      );
+      status.setAttribute("aria-live", "polite");
+      panel.appendChild(status);
+      return panel;
+    }
+
+    function sectionCounts(section) {
+      var workItems = Array.isArray(section.work_items)
+        ? section.work_items
+        : [];
+      var capabilities = 0;
+      var gaps = 0;
+      workItems.forEach(function (item) {
+        capabilities += Array.isArray(item.capsule_bindings)
+          ? item.capsule_bindings.length
+          : 0;
+        if (item.gap_reason) gaps += 1;
+      });
+      if (Array.isArray(section.gaps)) gaps = section.gaps.length;
+      return {
+        work: workItems.length,
+        capabilities: capabilities,
+        gaps: gaps,
+      };
     }
 
     function renderPlan() {
@@ -318,74 +1703,157 @@
       if (!plan) return;
       setText("product-review-goal", state.goal || plan.goal);
       setText("product-review-title", plan.product_name);
-      (plan.sections || []).forEach(function (section) {
+      (plan.sections || []).forEach(function (section, index) {
+        var notApplicable = section.applicability === "not_applicable";
+        var counts = sectionCounts(section);
         var group = element("section", "product-plan-section");
+        var button = element(
+          notApplicable ? "div" : "button",
+          "product-plan-section-button"
+        );
+        if (!notApplicable) {
+          button.type = "button";
+          button.dataset.sectionIndex = String(index);
+          button.id = "product-plan-section-" + String(index);
+          button.setAttribute(
+            "aria-label",
+            copy().sectionOpen + " · " + sectionTitle(section.section_id)
+          );
+        }
         var heading = element("h2", "", sectionTitle(section.section_id));
-        group.appendChild(heading);
-        (section.work_items || []).forEach(function (item) {
-          var article = element("article", "product-plan-work-item");
-          article.appendChild(element("h3", "", item.title));
-          article.appendChild(element("p", "", item.description));
-          var meta = element("dl", "product-plan-work-item-meta");
-          if (item.acceptance_intent) {
-            meta.appendChild(element("dt", "", copy().acceptance));
-            meta.appendChild(element("dd", "", item.acceptance_intent));
-          }
-          if (item.delivery_wave) {
-            meta.appendChild(element("dt", "", copy().wave));
-            meta.appendChild(element("dd", "", item.delivery_wave));
-          }
-          article.appendChild(meta);
-          (item.capsule_bindings || []).forEach(function (binding) {
-            article.appendChild(
-              element(
-                "p",
-                "product-plan-capability",
-                copy().capability + " · " + binding.display_name
-              )
-            );
-          });
-          if (item.gap_reason) {
-            article.appendChild(
-              element(
-                "p",
-                "product-plan-gap",
-                copy().gap + " · " + item.gap_reason
-              )
-            );
-          }
-          group.appendChild(article);
-        });
+        var summary = element(
+          "span",
+          "product-plan-section-summary",
+          notApplicable
+            ? section.summary || copy().sectionNotApplicable
+            : [
+                String(counts.work) + " " + copy().sectionWork,
+                String(counts.capabilities) + " " + copy().sectionCapabilities,
+                counts.gaps
+                  ? String(counts.gaps) + " " + copy().sectionGaps
+                  : copy().sectionNoGaps,
+              ].join(" · ")
+        );
+        var arrow = element(
+          "span",
+          "product-plan-section-arrow",
+          notApplicable ? "—" : "→"
+        );
+        arrow.setAttribute("aria-hidden", "true");
+        button.appendChild(heading);
+        button.appendChild(summary);
+        button.appendChild(arrow);
+        group.appendChild(button);
         els.sections.appendChild(group);
       });
       renderAcceptanceRows();
       renderParameterOffer();
     }
 
+    function renderSectionDetail() {
+      var plan = currentPlan();
+      var sections = plan && Array.isArray(plan.sections) ? plan.sections : [];
+      var section = sections[state.sectionIndex];
+      clear(els.sectionBody);
+      setText("btn-product-plan-section-back", copy().sectionBack);
+      if (!plan || !section) {
+        state.view = "review";
+        state.sectionIndex = -1;
+        render();
+        return;
+      }
+      setText("product-plan-section-path", plan.product_name);
+      setText(
+        "product-plan-section-title",
+        sectionTitle(section.section_id)
+      );
+      (section.work_items || []).forEach(function (item, itemIndex) {
+        els.sectionBody.appendChild(renderWorkItem(item, itemIndex));
+      });
+      (section.gaps || []).forEach(function (gap) {
+        els.sectionBody.appendChild(renderCapabilityGap(gap));
+      });
+    }
+
+    function openSection(index, trigger) {
+      var plan = currentPlan();
+      var sections = plan && Array.isArray(plan.sections) ? plan.sections : [];
+      if (!sections[index] || sections[index].applicability === "not_applicable") {
+        return;
+      }
+      state.reviewScroll = els.stage.scrollTop;
+      state.sectionFocusId = trigger && trigger.id ? trigger.id : "";
+      state.sectionIndex = index;
+      state.view = "section";
+      render();
+      els.stage.scrollTop = 0;
+      window.setTimeout(function () {
+        els.sectionTitle.focus();
+      }, 0);
+    }
+
+    function closeSection() {
+      state.view = "review";
+      var focusId = state.sectionFocusId;
+      var scroll = state.reviewScroll;
+      state.sectionIndex = -1;
+      render();
+      window.setTimeout(function () {
+        els.stage.scrollTop = scroll;
+        var target = focusId ? $(focusId) : els.reviewTitle;
+        if (target) target.focus();
+      }, 0);
+    }
+
     function renderAcceptanceRows() {
       clear(els.acceptanceCases);
       state.acceptanceRows.forEach(function (row, index) {
         var current = element("div", "product-acceptance-row");
-        var inputLabel = element("label", "");
-        inputLabel.appendChild(element("span", "", copy().input));
-        var input = document.createElement("input");
-        input.type = "text";
-        input.inputMode = "decimal";
-        input.value = row.input;
-        input.dataset.acceptanceIndex = String(index);
-        input.dataset.acceptanceField = "input";
-        inputLabel.appendChild(input);
-        var expectedLabel = element("label", "");
-        expectedLabel.appendChild(element("span", "", copy().expected));
-        var expected = document.createElement("input");
-        expected.type = "text";
-        expected.inputMode = "decimal";
-        expected.value = row.expected;
-        expected.dataset.acceptanceIndex = String(index);
-        expected.dataset.acceptanceField = "expected";
-        expectedLabel.appendChild(expected);
-        current.appendChild(inputLabel);
-        current.appendChild(expectedLabel);
+        var shape = state.acceptanceShape;
+        var inputFields =
+          shape && shape.inputFields.length
+            ? shape.inputFields
+            : [{ key: "", contract: null }];
+        var outputFields =
+          shape && shape.outputFields.length
+            ? shape.outputFields
+            : [{ key: "", contract: null }];
+        [
+          {
+            name: "input",
+            title: copy().input,
+            fields: inputFields,
+          },
+          {
+            name: "expected",
+            title: copy().expected,
+            fields: outputFields,
+          },
+        ].forEach(function (group) {
+          var container = element("div", "");
+          group.fields.forEach(function (field) {
+            var label = element("label", "");
+            var title =
+              group.fields.length > 1 && field.key
+                ? group.title + " · " + field.key.replace(/_/g, " ")
+                : group.title;
+            label.appendChild(element("span", "", title));
+            var input = document.createElement("input");
+            input.type = "text";
+            input.inputMode = "decimal";
+            var values = row[group.name] || {};
+            input.value =
+              values[field.key] === undefined
+                ? ""
+                : String(values[field.key]);
+            input.dataset.acceptanceIndex = String(index);
+            input.dataset.acceptanceField = group.name;
+            input.dataset.acceptanceKey = field.key;
+            label.appendChild(input);
+            container.appendChild(label);
+          });
+          current.appendChild(container);
+        });
         if (state.acceptanceRows.length > 1) {
           var remove = element("button", "product-plan-text-action", "×");
           remove.type = "button";
@@ -396,6 +1864,7 @@
         els.acceptanceCases.appendChild(current);
       });
       els.addAcceptance.disabled = state.acceptanceRows.length >= 3;
+      updateReviewAction();
     }
 
     function renderParameterOffer() {
@@ -430,6 +1899,7 @@
         label.appendChild(input);
         els.parameterConfirmation.appendChild(label);
       });
+      updateReviewAction();
     }
 
     function renderCandidate() {
@@ -443,9 +1913,29 @@
       );
       setText("product-candidate-summary", copy().candidateReady);
       clear(els.candidateValidation);
-      els.candidateValidation.appendChild(
-        element("p", "product-candidate-validation-line", "✓ " + copy().validation)
-      );
+      var acceptance = candidate.acceptance || {};
+      [
+        {
+          label: copy().runtimeCheck,
+          detail:
+            acceptance.runtime_operational === "passed"
+              ? copy().runtimePassed
+              : copy().validation,
+        },
+        {
+          label: copy().goalCheck,
+          detail:
+            acceptance.product_goal_conformance === "passed"
+              ? copy().goalPassed
+              : copy().validation,
+        },
+      ].forEach(function (item) {
+        var line = element("p", "product-candidate-validation-line");
+        line.appendChild(element("span", "product-candidate-validation-mark", "✓"));
+        line.appendChild(element("strong", "", item.label));
+        line.appendChild(element("span", "", item.detail));
+        els.candidateValidation.appendChild(line);
+      });
       setText("product-candidate-action-result", state.actionResult);
       setText(
         "product-candidate-files-summary",
@@ -484,6 +1974,41 @@
       renderFilePayload();
     }
 
+    function renderEvidenceThread() {
+      var c = copy();
+      var steps = [
+        { id: "product-evidence-goal", label: "product-evidence-goal-label", text: c.evidenceGoal },
+        { id: "product-evidence-plan", label: "product-evidence-plan-label", text: c.evidencePlan },
+        { id: "product-evidence-verify", label: "product-evidence-verify-label", text: c.evidenceVerify },
+        { id: "product-evidence-save", label: "product-evidence-save-label", text: c.evidenceSave },
+      ];
+      var current = 0;
+      if (state.view === "progress") current = state.runKind === "candidate" ? 2 : 1;
+      if (
+        state.view === "questions" ||
+        state.view === "review" ||
+        state.view === "section"
+      ) {
+        current = 1;
+      }
+      if (state.view === "candidate") current = 3;
+      var saved =
+        state.view === "candidate" &&
+        (state.actionResult === c.saved || state.actionResult === c.alreadySaved);
+      var thread = $("product-evidence-thread");
+      if (thread) thread.setAttribute("aria-label", c.evidenceLabel);
+      steps.forEach(function (step, index) {
+        var item = $(step.id);
+        setText(step.label, step.text);
+        if (!item) return;
+        var complete = index < current || (index === 3 && saved);
+        item.classList.toggle("is-complete", complete);
+        item.classList.toggle("is-current", index === current && !saved);
+        if (index === current && !saved) item.setAttribute("aria-current", "step");
+        else item.removeAttribute("aria-current");
+      });
+    }
+
     function renderFilePayload() {
       els.fileContent.setAttribute(
         "aria-selected",
@@ -514,9 +2039,20 @@
       var c = copy();
       setText("btn-open-product-plan", c.entry);
       setText("btn-product-plan-back", c.back);
+      setText("btn-product-nav", c.productNav);
+      setText("btn-open-target", c.targetNav);
+      setText("btn-product-open-warehouse", c.warehouseNav);
+      setText("btn-product-open-ingestion", c.ingestionNav);
+      setText("btn-product-lang", isZh() ? "中 / EN" : "EN / 中");
+      var productLanguage = $("btn-product-lang");
+      if (productLanguage) {
+        productLanguage.setAttribute("aria-label", c.language);
+        productLanguage.title = c.language;
+      }
       setText("product-plan-kicker", c.kicker);
       setText("product-plan-title", c.title);
       setText("product-plan-compose-title", c.composeTitle);
+      setText("product-plan-compose-copy", c.composeCopy);
       setText("product-plan-goal-label", c.goalLabel);
       setText("btn-submit-product-goal", c.createPlan);
       setText("product-plan-progress-title", c.planningTitle);
@@ -534,19 +2070,18 @@
       setText("product-plan-failed-title", c.failedTitle);
       setText("product-plan-failed-copy", c.failedCopy);
       setText("btn-retry-product-flow", c.retry);
+      setText("btn-product-plan-section-back", c.sectionBack);
       if (els.goal) {
         els.goal.placeholder = c.goalPlaceholder;
         if (document.activeElement !== els.goal) els.goal.value = state.goal;
       }
-      var canPlan = !host.canPlanProduct || host.canPlanProduct();
+      var canOpen = planningAvailable();
       if (els.entry) {
-        els.entry.disabled = !canPlan;
-        els.entry.title = canPlan ? "" : c.noPlanner;
+        els.entry.disabled = !canOpen;
+        els.entry.title = canOpen ? "" : c.noPlanner;
       }
-      if (els.submitGoal) {
-        els.submitGoal.disabled = !canPlan;
-        els.submitGoal.title = canPlan ? "" : c.noPlanner;
-      }
+      updateGoalAction();
+      renderModelSetup();
       if (els.cancelRun) {
         els.cancelRun.classList.toggle(
           "hidden",
@@ -558,6 +2093,7 @@
       showView("product-plan-progress", state.view === "progress");
       showView("product-plan-questions", state.view === "questions");
       showView("product-plan-review", state.view === "review");
+      showView("product-plan-section-review", state.view === "section");
       showView("product-candidate-review", state.view === "candidate");
       showView("product-plan-failed", state.view === "failed");
 
@@ -566,13 +2102,55 @@
         progress: c.statusWorking,
         questions: c.statusQuestions,
         review: c.statusReview,
+        section: c.statusReview,
         candidate: c.statusCandidate,
         failed: c.statusFailed,
       }[state.view];
       setText("product-plan-status", status);
+      renderEvidenceThread();
       if (state.view === "questions") renderQuestions();
       if (state.view === "review") renderPlan();
+      if (state.view === "section") renderSectionDetail();
       if (state.view === "candidate") renderCandidate();
+    }
+
+    function applyReplanAcceptanceSuggestions(workspace) {
+      var replan = workspace.capability_replan;
+      var suggestions =
+        replan && Array.isArray(replan.acceptance_suggestions)
+          ? replan.acceptance_suggestions
+          : [];
+      if (
+        !replan ||
+        replan.status !== "started" ||
+        replan.successor_plan_token !== workspace.plan_token ||
+        !replan.handoff_digest ||
+        state.acceptanceSuggestionDigest === replan.handoff_digest ||
+        !suggestions.length
+      ) {
+        return;
+      }
+      var rows = suggestions.map(function (item) {
+        var inputKeys = Object.keys(item.input || {});
+        var outputKeys = Object.keys(item.expected_output || {});
+        if (!inputKeys.length || !outputKeys.length) return null;
+        var input = {};
+        var expected = {};
+        inputKeys.forEach(function (key) {
+          input[key] = String(item.input[key]);
+        });
+        outputKeys.forEach(function (key) {
+          expected[key] = String(item.expected_output[key]);
+        });
+        return {
+          input: input,
+          expected: expected,
+        };
+      });
+      if (rows.every(Boolean)) {
+        state.acceptanceRows = rows;
+        state.acceptanceSuggestionDigest = replan.handoff_digest;
+      }
     }
 
     function updateWorkspace(workspace) {
@@ -583,10 +2161,13 @@
       state.workspace = workspace;
       state.planToken = String(workspace.plan_token || state.planToken || "");
       state.goal = String(workspace.goal || state.goal || "");
+      state.sectionIndex = -1;
+      state.sectionFocusId = "";
       if (workspace.status === "needs_clarification") {
         state.view = "questions";
       } else if (workspace.status === "plan_review") {
         state.view = "review";
+        applyReplanAcceptanceSuggestions(workspace);
         prepareAcceptanceShape();
       } else if (workspace.status === "confirmed") {
         restoreConfirmedCandidate();
@@ -602,6 +2183,12 @@
     }
 
     function submitGoal() {
+      if (!planningAvailable() || !selectedPlanningModel()) {
+        state.modelPickerOpen = true;
+        render();
+        els.modelConfigure.focus();
+        return;
+      }
       var goal = String(els.goal.value || "").trim();
       if (!goal) {
         els.goal.focus();
@@ -612,10 +2199,14 @@
       state.planToken = "";
       state.parameterOffer = null;
       state.parameterValues = [];
-      state.acceptanceRows = [{ input: "", expected: "" }];
+      state.acceptanceRows = [{ input: {}, expected: {} }];
       state.acceptanceShape = null;
       state.candidate = null;
       state.candidateToken = "";
+      state.sectionIndex = -1;
+      state.sectionFocusId = "";
+      state.gapDrafts = {};
+      state.acceptanceSuggestionDigest = "";
       startRun(
         "start_product_plan",
         "get_product_plan_run",
@@ -694,14 +2285,14 @@
     function prepareAcceptanceShape() {
       var plan = currentPlan();
       if (!plan) return;
-      var computation = null;
+      var computations = [];
       var interaction = null;
       var requirementIds = [];
       (plan.sections || []).forEach(function (section) {
         (section.work_items || []).forEach(function (item) {
           (item.capsule_bindings || []).forEach(function (binding) {
             if (binding.capability_kind === "computation") {
-              computation = computation || binding;
+              computations.push({ binding: binding, item: item });
               (item.requirement_ids || []).forEach(function (id) {
                 if (requirementIds.indexOf(id) === -1) requirementIds.push(id);
               });
@@ -712,32 +2303,63 @@
           });
         });
       });
-      if (!computation) {
+      var computationIds = computations.map(function (entry) {
+        return entry.item.work_item_id;
+      });
+      var rootComputations = computations.filter(function (entry) {
+        return !(entry.item.depends_on || []).some(function (dependencyId) {
+          return computationIds.indexOf(dependencyId) !== -1;
+        });
+      });
+      var terminalComputations = computations.filter(function (entry) {
+        return !computations.some(function (other) {
+          return (other.item.depends_on || []).indexOf(entry.item.work_item_id) !== -1;
+        });
+      });
+      if (
+        rootComputations.length !== 1 ||
+        terminalComputations.length !== 1
+      ) {
         state.acceptanceShape = null;
         render();
         return;
       }
+      var rootComputation = rootComputations[0].binding;
+      var terminalComputation = terminalComputations[0].binding;
       var requests = [
-        call("get_capsule_detail", { capsule_id: computation.capsule_id }),
+        call("get_capsule_detail", {
+          capsule_id: terminalComputation.capsule_id,
+        }),
       ];
       if (interaction) {
         requests.push(
           call("get_capsule_detail", { capsule_id: interaction.capsule_id })
         );
+      } else if (rootComputation.capsule_id !== terminalComputation.capsule_id) {
+        requests.push(
+          call("get_capsule_detail", { capsule_id: rootComputation.capsule_id })
+        );
       }
       Promise.all(requests).then(function (details) {
-        var computationVersion = exactVersion(details[0], computation.version_id);
+        var terminalVersion = exactVersion(
+          details[0],
+          terminalComputation.version_id
+        );
         var interactionVersion = interaction
           ? exactVersion(details[1], interaction.version_id)
           : null;
-        var computationInput =
-          computationVersion &&
-          (computationVersion.input_contract_json ||
-            computationVersion.input_contract);
+        var rootVersion = interaction
+          ? null
+          : rootComputation.capsule_id === terminalComputation.capsule_id
+            ? terminalVersion
+            : exactVersion(details[1], rootComputation.version_id);
+        var rootInput =
+          rootVersion &&
+          (rootVersion.input_contract_json || rootVersion.input_contract);
         var computationOutput =
-          computationVersion &&
-          (computationVersion.output_contract_json ||
-            computationVersion.output_contract);
+          terminalVersion &&
+          (terminalVersion.output_contract_json ||
+            terminalVersion.output_contract);
         var interactionOutput =
           interactionVersion &&
           (interactionVersion.output_contract_json ||
@@ -751,33 +2373,47 @@
           ? eventNames && eventNames.length === 1
             ? events[eventNames[0]]
             : null
-          : computationInput;
+          : rootInput;
         var inputKeys =
           runtimeInput &&
           runtimeInput.type === "object" &&
           Array.isArray(runtimeInput.required)
-            ? runtimeInput.required.slice()
+            ? runtimeInput.required.slice().sort()
             : [];
         var outputKeys =
           computationOutput &&
           computationOutput.type === "object" &&
           Array.isArray(computationOutput.required)
-            ? computationOutput.required.slice()
+            ? computationOutput.required.slice().sort()
             : [];
         if (
-          !computationInput ||
-          inputKeys.length !== 1 ||
-          outputKeys.length !== 1 ||
+          !runtimeInput ||
+          !inputKeys.length ||
+          !outputKeys.length ||
           !runtimeInput.properties ||
-          !computationOutput.properties
+          !computationOutput.properties ||
+          inputKeys.some(function (key) {
+            return !runtimeInput.properties[key];
+          }) ||
+          outputKeys.some(function (key) {
+            return !computationOutput.properties[key];
+          })
         ) {
           state.acceptanceShape = null;
         } else {
           state.acceptanceShape = {
-            inputKey: inputKeys[0],
-            inputContract: runtimeInput.properties[inputKeys[0]],
-            outputKey: outputKeys[0],
-            outputContract: computationOutput.properties[outputKeys[0]],
+            inputFields: inputKeys.map(function (key) {
+              return {
+                key: key,
+                contract: runtimeInput.properties[key],
+              };
+            }),
+            outputFields: outputKeys.map(function (key) {
+              return {
+                key: key,
+                contract: computationOutput.properties[key],
+              };
+            }),
             requirementIds: requirementIds.slice().sort(),
           };
         }
@@ -790,11 +2426,25 @@
       if (!value) throw new Error("empty");
       if (contract && contract.type === "integer") {
         if (!/^-?\d+$/.test(value)) throw new Error("integer");
-        return Number(value);
+        var integer = Number(value);
+        if (
+          !Number.isSafeInteger(integer) ||
+          (Number.isInteger(contract.minimum) && integer < contract.minimum) ||
+          (Number.isInteger(contract.maximum) && integer > contract.maximum)
+        ) {
+          throw new Error("range");
+        }
+        return integer;
       }
       if (contract && contract.type === "number") {
         var number = Number(value);
-        if (!Number.isFinite(number)) throw new Error("number");
+        if (
+          !Number.isFinite(number) ||
+          (typeof contract.minimum === "number" && number < contract.minimum) ||
+          (typeof contract.maximum === "number" && number > contract.maximum)
+        ) {
+          throw new Error("number");
+        }
         return number;
       }
       if (contract && contract.type === "boolean") {
@@ -813,11 +2463,18 @@
         return state.acceptanceRows.map(function (row) {
           var input = {};
           var output = {};
-          input[shape.inputKey] = parseValue(row.input, shape.inputContract);
-          output[shape.outputKey] = parseValue(
-            row.expected,
-            shape.outputContract
-          );
+          shape.inputFields.forEach(function (field) {
+            input[field.key] = parseValue(
+              (row.input || {})[field.key],
+              field.contract
+            );
+          });
+          shape.outputFields.forEach(function (field) {
+            output[field.key] = parseValue(
+              (row.expected || {})[field.key],
+              field.contract
+            );
+          });
           return {
             requirement_ids: shape.requirementIds.slice(),
             input: input,
@@ -877,6 +2534,11 @@
     }
 
     function confirmAndGenerate() {
+      if (planGaps().length) {
+        els.reviewError.classList.remove("hidden");
+        setText("product-plan-review-error", copy().gapBlockGenerate);
+        return;
+      }
       var cases = acceptanceCases();
       if (!cases) {
         els.reviewError.classList.remove("hidden");
@@ -969,9 +2631,15 @@
           state.acceptanceRows = data.candidate_acceptance.cases.map(function (
             item
           ) {
-            var input = Object.values(item.input || {})[0];
-            var expected = Object.values(item.expected_output || {})[0];
-            return { input: String(input), expected: String(expected) };
+            var input = {};
+            var expected = {};
+            Object.keys(item.input || {}).forEach(function (key) {
+              input[key] = String(item.input[key]);
+            });
+            Object.keys(item.expected_output || {}).forEach(function (key) {
+              expected[key] = String(item.expected_output[key]);
+            });
+            return { input: input, expected: expected };
           });
           return startCandidate(
             data.candidate_acceptance.confirmation_digest
@@ -1061,6 +2729,7 @@
 
     function enterScene() {
       state.active = true;
+      state.warehouseReturnPending = false;
       host.showScreen("screen-product-plan");
       render();
       if (!state.loaded) {
@@ -1081,22 +2750,61 @@
 
     function leaveScene() {
       state.active = false;
+      state.warehouseReturnPending = false;
       host.showScreen("screen-main");
       window.setTimeout(function () {
         if (els.entry) els.entry.focus();
       }, 0);
     }
 
+    function enterWarehouse(binding, trigger) {
+      if (!host.openWarehouse) return;
+      state.warehouseReturnPending = true;
+      state.warehouseReturnFocusId = trigger && trigger.id ? trigger.id : "";
+      state.warehouseReturnScroll = els.stage ? els.stage.scrollTop : 0;
+      state.active = false;
+      host.openWarehouse(binding ? {
+        capsule_id: String(binding.capsule_id || ""),
+        version_id: String(binding.version_id || ""),
+        canonical_hash: String(binding.canonical_hash || ""),
+      } : null);
+    }
+
+    function consumeWarehouseReturn() {
+      if (!state.warehouseReturnPending) return false;
+      state.warehouseReturnPending = false;
+      state.active = true;
+      render();
+      window.setTimeout(function () {
+        if (els.stage) els.stage.scrollTop = state.warehouseReturnScroll;
+        var target = state.warehouseReturnFocusId ? $(state.warehouseReturnFocusId) : els.sectionTitle;
+        if (target) target.focus();
+      }, 0);
+      return true;
+    }
+
+    function resumeScene() {
+      state.active = true;
+      host.showScreen("screen-product-plan");
+      render();
+    }
+
     function cacheElements() {
       els.entry = $("btn-open-product-plan");
       els.screen = $("screen-product-plan");
       els.stage = $("product-plan-stage");
+      els.reviewTitle = $("product-review-title");
+      els.sectionTitle = $("product-plan-section-title");
+      els.sectionBody = $("product-plan-section-body");
       els.goal = $("product-plan-goal");
       els.submitGoal = $("btn-submit-product-goal");
       els.cancelRun = $("btn-cancel-product-plan");
       els.questionForm = $("product-plan-question-form");
       els.sections = $("product-plan-sections");
       els.acceptanceCases = $("product-acceptance-cases");
+      els.acceptance = els.acceptanceCases
+        ? els.acceptanceCases.closest(".product-acceptance")
+        : null;
       els.addAcceptance = $("btn-add-product-acceptance-case");
       els.parameterConfirmation = $("product-parameter-confirmation");
       els.reviewError = $("product-plan-review-error");
@@ -1108,6 +2816,12 @@
       els.fileContent = $("btn-product-file-content");
       els.fileDiff = $("btn-product-file-diff");
       els.candidateDetails = $("product-candidate-details-body");
+      els.modelConfigure = $("btn-product-planner-configure");
+      els.modelPicker = $("product-planner-picker");
+      els.modelSelect = $("product-planner-select");
+      els.modelRefresh = $("btn-product-planner-refresh");
+      els.modelUse = $("btn-product-planner-use");
+      els.modelMessage = $("product-planner-message");
     }
 
     function bind() {
@@ -1117,11 +2831,46 @@
       bound = true;
       els.entry.addEventListener("click", enterScene);
       $("btn-product-plan-back").addEventListener("click", leaveScene);
+      $("btn-open-target").addEventListener("click", function () {
+        state.active = false;
+      });
+      $("btn-product-open-warehouse").addEventListener(
+        "click",
+        function () { enterWarehouse(null, this); }
+      );
+      $("btn-product-open-ingestion").addEventListener("click", function () {
+        if (host.openIngestion) host.openIngestion();
+      });
+      $("btn-product-lang").addEventListener("click", function () {
+        if (host.toggleLocale) host.toggleLocale();
+      });
       $("btn-submit-product-goal").addEventListener("click", submitGoal);
+      els.modelConfigure.addEventListener("click", function () {
+        state.modelPickerOpen = !state.modelPickerOpen;
+        state.modelError = "";
+        state.modelMessage = "";
+        render();
+        if (state.modelPickerOpen && !state.models.length) {
+          loadPlanningModels();
+        }
+      });
+      els.modelRefresh.addEventListener("click", loadPlanningModels);
+      els.modelSelect.addEventListener("change", function () {
+        var value = String(els.modelSelect.value || "");
+        state.modelIndex = value === "" ? -1 : Number(value);
+        state.modelError = "";
+        state.modelMessage = "";
+        renderModelSetup();
+      });
+      els.modelUse.addEventListener("click", selectPlanningModel);
       els.goal.addEventListener("keydown", function (event) {
         if ((event.metaKey || event.ctrlKey) && event.key === "Enter") {
           submitGoal();
         }
+      });
+      els.goal.addEventListener("input", function () {
+        state.goal = els.goal.value;
+        updateGoalAction();
       });
       $("btn-cancel-product-plan").addEventListener("click", function () {
         if (state.runId && state.runKind !== "candidate") {
@@ -1132,15 +2881,29 @@
         render();
       });
       $("btn-submit-product-answers").addEventListener("click", submitAnswers);
+      els.questionForm.addEventListener("input", updateQuestionAction);
+      els.questionForm.addEventListener("change", updateQuestionAction);
+      els.sections.addEventListener("click", function (event) {
+        var button = event.target.closest("[data-section-index]");
+        if (!button) return;
+        openSection(Number(button.dataset.sectionIndex), button);
+      });
+      $("btn-product-plan-section-back").addEventListener(
+        "click",
+        closeSection
+      );
       els.acceptanceCases.addEventListener("input", function (event) {
         var index = Number(event.target.dataset.acceptanceIndex);
         var field = event.target.dataset.acceptanceField;
+        var key = event.target.dataset.acceptanceKey;
         if (
           Number.isInteger(index) &&
           state.acceptanceRows[index] &&
-          (field === "input" || field === "expected")
+          (field === "input" || field === "expected") &&
+          typeof key === "string"
         ) {
-          state.acceptanceRows[index][field] = event.target.value;
+          state.acceptanceRows[index][field][key] = event.target.value;
+          updateReviewAction();
         }
       });
       els.acceptanceCases.addEventListener("click", function (event) {
@@ -1151,7 +2914,7 @@
       });
       els.addAcceptance.addEventListener("click", function () {
         if (state.acceptanceRows.length >= 3) return;
-        state.acceptanceRows.push({ input: "", expected: "" });
+        state.acceptanceRows.push({ input: {}, expected: {} });
         renderAcceptanceRows();
       });
       els.parameterConfirmation.addEventListener("input", function (event) {
@@ -1161,6 +2924,7 @@
           state.parameterValues[index] = /^-?\d+$/.test(raw)
             ? Number(raw)
             : undefined;
+          updateReviewAction();
         }
       });
       $("btn-confirm-and-generate").addEventListener(
@@ -1197,6 +2961,11 @@
       document.addEventListener("keydown", function (event) {
         if (!state.active || event.key !== "Escape") return;
         if (state.view === "progress") return;
+        if (document.querySelector(".popover:not(.hidden)")) return;
+        if (state.view === "section") {
+          closeSection();
+          return;
+        }
         leaveScene();
       });
       render();
@@ -1220,6 +2989,9 @@
             : 0,
         acceptance_case_count: state.acceptanceRows.length,
         acceptance_supported: !!state.acceptanceShape,
+        capability_gap_count: planGaps().length,
+        planning_model_selected: !!selectedPlanningModel(),
+        section_open: state.view === "section",
         candidate_status: state.candidate ? state.candidate.status : null,
         candidate_file_count:
           state.candidate && Array.isArray(state.candidate.files)
@@ -1231,8 +3003,11 @@
     return {
       bind: bind,
       sync: sync,
+      open: enterScene,
       getState: getState,
-      consumeWarehouseReturn: function () { return false; },
+      consumeWarehouseReturn: consumeWarehouseReturn,
+      resume: resumeScene,
+      refreshCurrentWorkspace: refreshCurrentWorkspace,
     };
   }
 

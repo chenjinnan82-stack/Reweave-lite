@@ -130,6 +130,7 @@ def _qweb(request: dict[str, Any]) -> dict[str, Any]:
     entry = _inside_workdir(request.get("entry"))
     allowed = {_inside_workdir(item) for item in request.get("allow_files", [])}
     acceptance_mode = request.get("mode") == "qweb_acceptance"
+    require_main_landmark = request.get("require_main_landmark") is True
     acceptance_cases = request.get("cases")
     if acceptance_mode and (
         type(acceptance_cases) is not list
@@ -273,7 +274,32 @@ def _qweb(request: dict[str, Any]) -> dict[str, Any]:
             )
         else:
             page.runJavaScript(
-                "JSON.stringify(globalThis.__reweave_result === undefined ? null : globalThis.__reweave_result)",
+                (
+                    """(() => {
+                  const mains = document.querySelectorAll("main");
+                  const nested = document.querySelector("main main") !== null;
+                  if (mains.length !== 1 || nested) {
+                    return JSON.stringify({
+                      schema_version:"qweb_validation.v1",
+                      status:"failed",
+                      error_code:"product_main_landmark_invalid",
+                      main_count:mains.length,
+                      nested_main:nested
+                    });
+                  }
+                  const value = globalThis.__reweave_result;
+                  if (value === undefined) return JSON.stringify(null);
+                  return JSON.stringify({
+                    ...value,
+                    document_landmarks:{main_count:1,nested_main:false}
+                  });
+                })()"""
+                    if require_main_landmark
+                    else (
+                        "JSON.stringify(globalThis.__reweave_result === "
+                        "undefined ? null : globalThis.__reweave_result)"
+                    )
+                ),
                 finish,
             )
 

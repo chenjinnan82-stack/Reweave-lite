@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+import copy
 import ctypes
 import difflib
 import errno
@@ -27,7 +28,14 @@ from importlib import import_module
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
-from pimos_lite.composer.module_native import compose_capsule_product
+from pimos_lite.composer.module_native import (
+    ADAPTER_V3_FORMAL_PRODUCT_COMPOSER_VERSION,
+    ADAPTER_V4_FORMAL_PRODUCT_COMPOSER_VERSION,
+    FORMAL_PRODUCT_COMPOSER_VERSION,
+    MULTI_COMPUTATION_FORMAL_PRODUCT_COMPOSER_VERSION,
+    PARAMETERIZED_FORMAL_PRODUCT_COMPOSER_VERSION,
+    compose_capsule_product,
+)
 from pimos_lite.reweave_capsule_intake import (
     COMPUTATION_ADAPTER_CONTRACT_VERSION,
     EXTRACTION_CONTRACT_VERSION,
@@ -35,8 +43,19 @@ from pimos_lite.reweave_capsule_intake import (
     IntakeError,
     ReweaveCapsuleIntake,
 )
+from pimos_lite.reweave_canonical import canonical_json_digest
 from pimos_lite.reweave_capsule_stage3 import (
+    CAPTURE_MAPPING_V3,
+    CAPTURE_MAPPING_V4,
+    CAPTURE_RESUME_V1,
+    CAPTURE_RESUME_V2,
+    CAPTURE_RESUME_V3,
     COMPUTATION_ADAPTER_V2,
+    COMPUTATION_ADAPTER_V3,
+    COMPUTATION_ADAPTER_V4,
+    FROZEN_REVIEW_ADMISSION_VERSION,
+    FROZEN_UI_REVIEW_ADMISSION_AUTHORIZATION_VERSION,
+    FROZEN_UI_REVIEW_ADMISSION_VERSION,
     OllamaSupervisor,
     ReweaveCapsuleStage3,
     SECURITY_RULES_VERSION,
@@ -52,15 +71,24 @@ from pimos_lite.reweave_capsule_store import (
     CapsuleWarehouseStore,
     canonicalize_capsule,
 )
+from pimos_lite.reweave_data_contract import (
+    DataContractError,
+    data_contract_accepts,
+    normalize_capsule_contracts,
+)
 from pimos_lite.reweave_process_environment import restricted_subprocess_environment
 from pimos_lite.reweave_product_planner import (
+    CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_V2,
+    CAPABILITY_SOURCE_PROPOSAL_OUTPUT_V2,
     PRODUCT_PLANNING_PHASES,
     ProductPlanner,
+    ProductPlanningError,
 )
 from pimos_lite.reweave_plan_execution import (
     CANDIDATE_ACCEPTANCE_RECEIPT_VERSION,
     CANDIDATE_ACCEPTANCE_VERSION,
     MAX_CANDIDATE_ACCEPTANCE_CASES,
+    MULTI_COMPUTATION_PLAN_EXECUTION_VERSION,
     PARAMETERIZED_PLAN_EXECUTION_VERSION,
     PLAN_EXECUTION_VERSION,
     CandidateAcceptanceError,
@@ -69,6 +97,7 @@ from pimos_lite.reweave_plan_execution import (
     build_candidate_acceptance_confirmation,
     canonical_bytes as plan_execution_bytes,
     canonical_digest as plan_execution_digest,
+    compile_multi_computation_plan_execution,
     compile_parameterized_plan_execution,
     compile_plan_execution,
     evaluate_candidate_acceptance,
@@ -116,6 +145,10 @@ PUBLIC_PRODUCT_ACTIONS = frozenset(
         "get_product_plan_run",
         "cancel_product_plan_run",
         "get_product_plan_workspace",
+        "record_product_capability_gap_decision",
+        "prepare_product_capability_source_proposal",
+        "start_product_capability_source_proposal",
+        "start_product_capability_replan",
         "confirm_product_plan",
         "confirm_product_candidate_acceptance",
         "create_local_agent_handoff",
@@ -183,6 +216,76 @@ CAPSULE_MANAGEMENT_ACTIONS = frozenset(
 _OLLAMA_LOOPBACK = "http://127.0.0.1:11434"
 _LEGACY_ID = re.compile(r"cap_[0-9a-f]{12}")
 _TERMINAL_TASK_STATES = frozenset({"completed", "failed", "cancelled"})
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        details = os.fstat(descriptor)
+        if not stat.S_ISREG(details.st_mode):
+            raise OSError("not_regular_file")
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    finally:
+        os.close(descriptor)
+    return digest.hexdigest()
+
+
+def _copy_private_file(source: Path, target: Path) -> None:
+    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if target.exists() or target.is_symlink():
+        raise OSError("target_exists")
+    source_descriptor = os.open(
+        source,
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+    )
+    target_descriptor = -1
+    try:
+        if not stat.S_ISREG(os.fstat(source_descriptor).st_mode):
+            raise OSError("source_not_regular")
+        target_descriptor = os.open(
+            target,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        while True:
+            chunk = os.read(source_descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            view = memoryview(chunk)
+            while view:
+                written = os.write(target_descriptor, view)
+                if written <= 0:
+                    raise OSError("copy_incomplete")
+                view = view[written:]
+        os.fchmod(target_descriptor, 0o600)
+        os.fsync(target_descriptor)
+    finally:
+        os.close(source_descriptor)
+        if target_descriptor >= 0:
+            os.close(target_descriptor)
+    directory_descriptor = os.open(
+        target.parent,
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+    )
+    try:
+        os.fsync(directory_descriptor)
+    finally:
+        os.close(directory_descriptor)
 
 
 def _retired_v1_adapter_candidate(candidate: Any) -> bool:
@@ -1138,7 +1241,12 @@ def _validate_product_runtime(root: Path) -> dict[str, Any]:
         completed = subprocess.run(
             [_desktop_worker_python(), str(worker)],
             input=json.dumps(
-                {"mode": "qweb", "entry": "index.html", "allow_files": allowed},
+                {
+                    "mode": "qweb",
+                    "entry": "index.html",
+                    "allow_files": allowed,
+                    "require_main_landmark": True,
+                },
                 separators=(",", ":"),
             ),
             capture_output=True,
@@ -1503,11 +1611,24 @@ class ReweaveAppService:
                 ).fetchall()
         except (CapsuleStoreError, OSError, RuntimeError, sqlite3.Error) as exc:
             raise ProductGenerationError("product_planning_catalog_unavailable") from exc
-        capsules: list[dict[str, str]] = []
+        capsules: list[dict[str, Any]] = []
         for raw in rows:
             row = dict(raw)
             if not self._capsule_stage3._eligible_exact(row):
                 continue
+            try:
+                input_contract, output_contract, error_contract = (
+                    normalize_capsule_contracts(
+                        str(row["capability_kind"]),
+                        json.loads(str(row["input_contract_json"])),
+                        json.loads(str(row["output_contract_json"])),
+                        json.loads(str(row["error_contract_json"])),
+                    )
+                )
+            except (DataContractError, json.JSONDecodeError, TypeError) as exc:
+                raise ProductGenerationError(
+                    "product_planning_catalog_unavailable"
+                ) from exc
             capsules.append(
                 {
                     "capsule_id": str(row["capsule_id"]),
@@ -1519,11 +1640,541 @@ class ReweaveAppService:
                     "capability_kind": str(row["capability_kind"]),
                     "canonical_hash": str(row["canonical_hash"]),
                     "identity_status": "formal_exact_version",
+                    "input_contract": input_contract,
+                    "output_contract": output_contract,
+                    "error_contract": error_contract,
                 }
             )
         return {
             "warehouse_revision": int(revision_row[0]) if revision_row else 0,
             "capsules": capsules,
+        }
+
+    @staticmethod
+    def _capability_source_proposal_capture_request(
+        authorization: dict[str, Any],
+        offer: dict[str, Any],
+        proposal: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, str], dict[str, Any]]:
+        if (
+            type(authorization) is not dict
+            or type(offer) is not dict
+            or offer.get("module_relpath") != "capability.js"
+            or offer.get("export_name") != "compute"
+            or type(offer.get("target_binding_id")) is not str
+            or re.fullmatch(
+                r"[0-9a-f]{64}",
+                str(offer["target_binding_id"]),
+            )
+            is None
+            or type(offer.get("parameters")) is not list
+        ):
+            raise ProductPlanningError(
+                "capability_source_proposal_capture_invalid"
+            )
+        input_contract, output_contract, _error_contract = (
+            normalize_capsule_contracts(
+                "computation",
+                authorization.get("input_contract"),
+                authorization.get("output_contract"),
+                authorization.get("error_contract"),
+            )
+        )
+        input_properties = input_contract["properties"]
+        output_properties = output_contract["properties"]
+        input_fields = sorted(
+            input_properties,
+            key=lambda field: field.encode("utf-8"),
+        )
+        parameters = offer["parameters"]
+        if (
+            len(parameters) != len(input_fields)
+            or any(
+                type(parameter) is not dict
+                or set(parameter)
+                != {"parameter_binding_id", "name"}
+                or parameter.get("name") != f"arg{index}"
+                or re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    str(parameter.get("parameter_binding_id") or ""),
+                )
+                is None
+                for index, parameter in enumerate(parameters)
+            )
+        ):
+            raise ProductPlanningError(
+                "capability_source_proposal_capture_invalid"
+            )
+        arguments = []
+        for field, parameter in zip(input_fields, parameters):
+            contract = input_properties[field]
+            if (
+                set(contract) != {"type", "minimum", "maximum"}
+                or contract["type"] != "integer"
+                or type(contract["minimum"]) is not int
+                or type(contract["maximum"]) is not int
+            ):
+                if contract == {"type": "boolean"}:
+                    arguments.append(
+                        {
+                            "parameter_binding_id": parameter[
+                                "parameter_binding_id"
+                            ],
+                            "input_field": field,
+                            "kind": "boolean",
+                        }
+                    )
+                    continue
+                raise ProductPlanningError(
+                    "capability_source_proposal_capture_invalid"
+                )
+            arguments.append(
+                {
+                    "parameter_binding_id": parameter[
+                        "parameter_binding_id"
+                    ],
+                    "input_field": field,
+                    "kind": "integer",
+                    "minimum": contract["minimum"],
+                    "maximum": contract["maximum"],
+                }
+            )
+        result_field = authorization.get("result_field")
+        passthrough_fields = authorization.get("passthrough_fields")
+        adapter_version = authorization.get("adapter_contract_version")
+        if (
+            type(result_field) is not str
+            or result_field not in output_properties
+            or type(passthrough_fields) is not list
+            or adapter_version
+            not in {
+                COMPUTATION_ADAPTER_V2,
+                COMPUTATION_ADAPTER_V3,
+                COMPUTATION_ADAPTER_V4,
+            }
+        ):
+            raise ProductPlanningError(
+                "capability_source_proposal_capture_invalid"
+            )
+        examples: list[dict[str, Any]] = []
+        seen_inputs: dict[str, str] = {}
+
+        def add_example(input_value: Any, expected_value: Any) -> None:
+            if (
+                not data_contract_accepts(input_contract, input_value)
+                or not data_contract_accepts(output_contract, expected_value)
+            ):
+                raise ProductPlanningError(
+                    "capability_source_proposal_capture_invalid"
+                )
+            input_digest = canonical_json_digest(input_value)
+            expected_digest = canonical_json_digest(expected_value)
+            previous = seen_inputs.get(input_digest)
+            if previous is not None:
+                if previous != expected_digest:
+                    raise ProductPlanningError(
+                        "capability_source_proposal_capture_invalid"
+                    )
+                return
+            seen_inputs[input_digest] = expected_digest
+            examples.append(
+                {
+                    "input": copy.deepcopy(input_value),
+                    "expected": copy.deepcopy(expected_value),
+                }
+            )
+
+        if adapter_version == COMPUTATION_ADAPTER_V4:
+            witnesses = (
+                proposal.get("witnesses")
+                if type(proposal) is dict
+                else None
+            )
+            result_enum = authorization.get("result_enum")
+            if (
+                authorization.get("schema_version")
+                != CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_V2
+                or authorization.get("capture_mapping_schema")
+                != CAPTURE_MAPPING_V4
+                or authorization.get("proof_schema")
+                != "source_graph_proof.v2"
+                or passthrough_fields
+                or type(result_enum) is not list
+                or not result_enum
+                or type(proposal) is not dict
+                or proposal.get("schema")
+                != CAPABILITY_SOURCE_PROPOSAL_OUTPUT_V2
+                or type(witnesses) is not list
+                or len(witnesses) != len(result_enum)
+            ):
+                raise ProductPlanningError(
+                    "capability_source_proposal_capture_invalid"
+                )
+            actual_results: list[str] = []
+            for witness in witnesses:
+                if (
+                    type(witness) is not dict
+                    or set(witness)
+                    != {"input", "expected_scalar_result"}
+                ):
+                    raise ProductPlanningError(
+                        "capability_source_proposal_capture_invalid"
+                    )
+                scalar = witness["expected_scalar_result"]
+                actual_results.append(scalar)
+                add_example(
+                    witness["input"],
+                    {result_field: scalar},
+                )
+            if actual_results != result_enum:
+                raise ProductPlanningError(
+                    "capability_source_proposal_capture_invalid"
+                )
+        for case in authorization.get("acceptance_cases") or []:
+            if (
+                type(case) is not dict
+                or set(case) != {"input", "expected_output"}
+            ):
+                raise ProductPlanningError(
+                    "capability_source_proposal_capture_invalid"
+                )
+            expected = (
+                case["expected_output"][result_field]
+                if adapter_version == COMPUTATION_ADAPTER_V2
+                else case["expected_output"]
+            )
+            if adapter_version == COMPUTATION_ADAPTER_V2:
+                examples.append(
+                    {
+                        "input": copy.deepcopy(case["input"]),
+                        "expected": copy.deepcopy(expected),
+                    }
+                )
+            else:
+                add_example(case["input"], expected)
+        if len(examples) > 35:
+            raise ProductPlanningError(
+                "capability_source_proposal_capture_invalid"
+            )
+        mapping: dict[str, Any] = {
+            "arguments": arguments,
+            "result_field": result_field,
+            "examples": examples,
+        }
+        if adapter_version == COMPUTATION_ADAPTER_V3:
+            mapping = {
+                "schema": CAPTURE_MAPPING_V3,
+                **mapping,
+                "passthrough_fields": passthrough_fields,
+            }
+        elif adapter_version == COMPUTATION_ADAPTER_V4:
+            mapping = {
+                "schema": CAPTURE_MAPPING_V4,
+                **mapping,
+                "result_enum": copy.deepcopy(result_enum),
+                "proof_schema": "source_graph_proof.v2",
+            }
+        return (
+            {
+                "module_relpath": "capability.js",
+                "export_name": "compute",
+                "target_binding_id": offer["target_binding_id"],
+            },
+            mapping,
+        )
+
+    def _capability_source_proposal_review_outcome(
+        self,
+        review_id: str | None,
+    ) -> dict[str, Any] | None:
+        if not review_id or not self._capsule_store.path.is_file():
+            return None
+        with self._capsule_store.read_connection() as connection:
+            row = connection.execute(
+                "SELECT review_id, candidate_status, decision, "
+                "retained_version_id, updated_at FROM review_items "
+                "WHERE review_id = ?",
+                (review_id,),
+            ).fetchone()
+        if row is None:
+            return {
+                "status": "missing",
+                "review_id": review_id,
+            }
+        return {
+            "status": (
+                "published"
+                if row["candidate_status"] == "published"
+                else (
+                    "rejected"
+                    if row["candidate_status"] == "rejected"
+                    else "review_required"
+                )
+            ),
+            "review_id": str(row["review_id"]),
+            "decision": row["decision"],
+            "version_id": row["retained_version_id"],
+            "updated_at": row["updated_at"],
+        }
+
+    def _resolve_product_capability_replan(
+        self,
+        plan_token: str,
+        plan_digest: str,
+        projection_digest: str,
+        catalog: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+        workspace = self._product_planner._workspace_by_token(plan_token)
+        plan = workspace.get("plan")
+        projection = (
+            self._product_planner._read_capability_gap_projection(workspace)
+            if type(plan) is dict
+            else None
+        )
+        if (
+            workspace.get("status") != "plan_review"
+            or type(plan) is not dict
+            or plan.get("canonical_digest") != plan_digest
+            or projection is None
+            or projection.get("projection_digest") != projection_digest
+        ):
+            raise ProductPlanningError("capability_replan_unavailable")
+        decisions = self._product_planner._capability_gap_decisions(
+            workspace,
+            projection,
+        )
+        decision = decisions[-1] if decisions else None
+        authorization = (
+            self._product_planner
+            ._read_capability_source_proposal_authorization(
+                workspace,
+                projection,
+                decision,
+            )
+            if type(decision) is dict
+            and decision.get("decision") == "authorize"
+            else None
+        )
+        if authorization is None:
+            raise ProductPlanningError("capability_replan_unavailable")
+        try:
+            selected = self._product_planner._model_identity(
+                self._product_planner._selected_model(
+                    check_current=False
+                )
+            )
+        except ProductPlanningError as exc:
+            raise ProductPlanningError(
+                "capability_replan_handoff_stale"
+            ) from exc
+        if selected != workspace["model"]:
+            raise ProductPlanningError(
+                "capability_replan_handoff_stale"
+            )
+
+        linked: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        with self._capsule_store.read_connection() as connection:
+            rows = connection.execute(
+                "SELECT review_id, candidate_status, decision, "
+                "candidate_canonical_hash, sanitized_candidate_json "
+                "FROM review_items WHERE candidate_status = 'published' "
+                "AND decision = 'publish_general' ORDER BY review_id"
+            ).fetchall()
+        for raw in rows:
+            row = dict(raw)
+            try:
+                summary = json.loads(row["sanitized_candidate_json"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            receipt = (
+                summary.get("frozen_review_admission")
+                if type(summary) is dict
+                else None
+            )
+            if (
+                type(receipt) is dict
+                and receipt.get("plan_digest") == plan_digest
+                and receipt.get("gap_id") == projection["gap_id"]
+                and receipt.get("projection_digest") == projection_digest
+                and receipt.get("authorize_decision_digest")
+                == decision["canonical_digest"]
+                and receipt.get("source_proposal_authorization_digest")
+                == authorization["authorization_digest"]
+            ):
+                linked.append((row, receipt))
+        if not linked:
+            raise ProductPlanningError("capability_replan_unavailable")
+        if len(linked) != 1:
+            raise ProductPlanningError("capability_replan_ambiguous")
+        review, receipt = linked[0]
+        receipt_body = {
+            key: value for key, value in receipt.items() if key != "digest"
+        }
+        if (
+            receipt.get("schema") != FROZEN_REVIEW_ADMISSION_VERSION
+            or receipt.get("source_review_id") != review["review_id"]
+            or receipt.get("candidate_canonical_hash")
+            != review["candidate_canonical_hash"]
+            or receipt.get("authorized_capability_key")
+            != projection["capability_key"]
+            or receipt.get("authorized_adapter_contract_version")
+            != projection["adapter_contract_version"]
+            or receipt.get("authorized_input_contract")
+            != authorization["input_contract"]
+            or receipt.get("authorized_output_contract")
+            != authorization["output_contract"]
+            or receipt.get("authorized_error_contract")
+            != authorization["error_contract"]
+            or receipt.get("authorization_warehouse_revision")
+            != projection["warehouse_revision"]
+            or receipt.get("authorization_catalog_digest")
+            != authorization["catalog_digest"]
+            or type(receipt.get("target_warehouse_revision_before"))
+            is not int
+            or type(receipt.get("target_warehouse_revision_after"))
+            is not int
+            or receipt["target_warehouse_revision_before"]
+            != projection["warehouse_revision"]
+            or receipt["target_warehouse_revision_after"]
+            != receipt["target_warehouse_revision_before"] + 1
+            or receipt.get("target_catalog_digest_before")
+            != receipt.get("target_catalog_digest_after")
+            or receipt.get("digest")
+            != canonical_json_digest(receipt_body)
+        ):
+            raise ProductPlanningError(
+                "capability_replan_handoff_conflict"
+            )
+
+        normalized_catalog = self._product_planner._catalog(catalog)
+        published_matches = [
+            capsule
+            for capsule in normalized_catalog["capsules"]
+            if capsule["capability_key"] == projection["capability_key"]
+            and capsule["capability_kind"] == "computation"
+            and capsule["canonical_hash"]
+            == receipt["candidate_canonical_hash"]
+        ]
+        if not published_matches:
+            raise ProductPlanningError("capability_replan_unavailable")
+        if len(published_matches) != 1:
+            raise ProductPlanningError("capability_replan_ambiguous")
+        published = published_matches[0]
+        with self._capsule_store.read_connection() as connection:
+            evidence = connection.execute(
+                "SELECT cv.supervision_model_name, "
+                "cv.supervision_model_digest FROM capsule_versions cv "
+                "JOIN capsules c ON c.capsule_id = cv.capsule_id "
+                "WHERE cv.version_id = ? AND c.current_version_id = "
+                "cv.version_id AND c.status = 'active'",
+                (published["version_id"],),
+            ).fetchone()
+        if (
+            evidence is None
+            or evidence["supervision_model_name"]
+            != receipt.get("supervision_model_name")
+            or evidence["supervision_model_digest"]
+            != receipt.get("supervision_model_digest")
+            or published["input_contract"]
+            != authorization["input_contract"]
+            or published["output_contract"]
+            != authorization["output_contract"]
+            or published["error_contract"]
+            != authorization["error_contract"]
+        ):
+            raise ProductPlanningError(
+                "capability_replan_handoff_conflict"
+            )
+        if (
+            normalized_catalog["warehouse_revision"]
+            != receipt["target_warehouse_revision_after"] + 1
+        ):
+            raise ProductPlanningError(
+                "capability_replan_handoff_stale"
+            )
+        published_identity = (
+            self._product_planner._gap_capsule_identity(published)
+        )
+        offer = self._product_planner._capability_replan_offer(
+            normalized_catalog,
+            projection,
+            published_identity,
+            authorization["error_contract"],
+        )
+        if offer is None:
+            raise ProductPlanningError("capability_replan_unavailable")
+        binding = {
+            "admission_review_id": str(review["review_id"]),
+            "admission_digest": str(receipt["digest"]),
+            "publication_review_id": str(review["review_id"]),
+            "published_capsule": published_identity,
+            "authorization_revision": projection["warehouse_revision"],
+            "admission_revision_before": receipt[
+                "target_warehouse_revision_before"
+            ],
+            "admission_revision_after": receipt[
+                "target_warehouse_revision_after"
+            ],
+            "publication_revision": normalized_catalog[
+                "warehouse_revision"
+            ],
+        }
+        return binding, offer, projection
+
+    def _product_capability_replan_view(
+        self,
+        workspace: dict[str, Any],
+        catalog: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        plan = workspace.get("plan")
+        if type(plan) is not dict:
+            return None
+        projection = self._product_planner._read_capability_gap_projection(
+            workspace
+        )
+        if projection is None:
+            return None
+        decisions = self._product_planner._capability_gap_decisions(
+            workspace,
+            projection,
+        )
+        if not decisions or decisions[-1].get("decision") != "authorize":
+            return None
+        authorization = (
+            self._product_planner
+            ._read_capability_source_proposal_authorization(
+                workspace,
+                projection,
+                decisions[-1],
+            )
+        )
+        if authorization is None:
+            return None
+        try:
+            _binding, offer, _projection = (
+                self._resolve_product_capability_replan(
+                    workspace["plan_token"],
+                    plan["canonical_digest"],
+                    projection["projection_digest"],
+                    catalog,
+                )
+            )
+            status = "available"
+            role_order = [
+                member["role_key"] for member in offer["members"]
+            ]
+        except ProductPlanningError as exc:
+            status = exc.code
+            role_order = []
+        return {
+            "schema_version": "capability_replan_handoff.v1",
+            "status": status,
+            "source_gap_id": projection["gap_id"],
+            "projection_digest": projection["projection_digest"],
+            "role_order": role_order,
+            "successor_plan_token": None,
+            "handoff_digest": None,
+            "acceptance_suggestions": [],
         }
 
     def close(self) -> None:
@@ -1716,8 +2367,23 @@ class ReweaveAppService:
         )
         ephemeral_capture = (
             requires_reextract
-            and candidate.get("adapter_contract_version") == COMPUTATION_ADAPTER_V2
-            and candidate.get("resume_contract") == "resubmit_ephemeral_capture.v1"
+            and (
+                (
+                    candidate.get("adapter_contract_version")
+                    == COMPUTATION_ADAPTER_V2
+                    and candidate.get("resume_contract") == CAPTURE_RESUME_V1
+                )
+                or (
+                    candidate.get("adapter_contract_version")
+                    == COMPUTATION_ADAPTER_V3
+                    and candidate.get("resume_contract") == CAPTURE_RESUME_V2
+                )
+                or (
+                    candidate.get("adapter_contract_version")
+                    == COMPUTATION_ADAPTER_V4
+                    and candidate.get("resume_contract") == CAPTURE_RESUME_V3
+                )
+            )
         )
         if not requires_reextract and current_status in {
             "extracted",
@@ -1761,7 +2427,26 @@ class ReweaveAppService:
                 failure_code == "asset_content_confirmation_required_stage3"
             ):
                 allowed.append("confirm_assets_contain_no_real_records")
-        if current_status == "review_required":
+        frozen_product_review = (
+            type(candidate.get("frozen_review_admission")) is dict
+            and candidate["frozen_review_admission"].get("schema")
+            == FROZEN_REVIEW_ADMISSION_VERSION
+        )
+        frozen_ui_review = (
+            type(candidate.get("frozen_ui_review_admission")) is dict
+            and candidate["frozen_ui_review_admission"].get("schema")
+            == FROZEN_UI_REVIEW_ADMISSION_VERSION
+        )
+        if current_status == "review_required" and (
+            frozen_product_review or frozen_ui_review
+        ):
+            allowed.extend(["publish_general", "reject"])
+        elif (
+            current_status == "review_required"
+            and candidate.get("adapter_contract_version") == COMPUTATION_ADAPTER_V3
+        ):
+            allowed.append("reject")
+        elif current_status == "review_required":
             usage_kind = (candidate.get("usage_scope") or {}).get("kind")
             if usage_kind == "general":
                 allowed.append("publish_general")
@@ -1933,13 +2618,22 @@ class ReweaveAppService:
                         str(row["current_version_id"]),
                         "adapter_contract_version_changed",
                     )
-                elif adapter_version != COMPUTATION_ADAPTER_V2:
+                elif adapter_version not in {
+                    COMPUTATION_ADAPTER_V2,
+                    COMPUTATION_ADAPTER_V3,
+                    COMPUTATION_ADAPTER_V4,
+                }:
                     stale[str(row["capsule_id"])] = (
                         str(row["current_version_id"]),
                         "adapter_contract_version_changed",
                     )
                 elif (
-                    adapter_version == COMPUTATION_ADAPTER_V2
+                    adapter_version
+                    in {
+                        COMPUTATION_ADAPTER_V2,
+                        COMPUTATION_ADAPTER_V3,
+                        COMPUTATION_ADAPTER_V4,
+                    }
                     and not self._capsule_stage3._stored_version_evidence_eligible(
                         dict(row)
                     )
@@ -1986,6 +2680,7 @@ class ReweaveAppService:
         kind: str,
         action: Any,
         *,
+        run_id: str | None = None,
         restore: bool = False,
         cancellable: bool = False,
         read_only_planning: bool = False,
@@ -2016,7 +2711,19 @@ class ReweaveAppService:
                         and current["cancellable"]
                     ):
                         current["cancel_event"].set()
-            task_id = f"run_{uuid.uuid4().hex}"
+            task_id = run_id or f"run_{uuid.uuid4().hex}"
+            if run_id is not None:
+                if re.fullmatch(r"run_[0-9a-f]{32}", run_id) is None:
+                    raise ValueError("management_run_id_invalid")
+                existing_task = self._management_tasks.get(run_id)
+                if existing_task is not None:
+                    if existing_task["kind"] != kind:
+                        raise ValueError("management_run_id_conflict")
+                    return {
+                        "ok": True,
+                        "run_id": run_id,
+                        "status": existing_task["status"],
+                    }
             cancel_event = threading.Event()
             task: dict[str, Any] = {
                 "run_id": task_id,
@@ -2543,17 +3250,41 @@ class ReweaveAppService:
             raise Stage3Error("offer_stale")
         if cancel.is_set():
             raise Stage3Error("scan_cancelled")
-        mapping = {
-            "arguments": request.get("arguments"),
-            "result_field": request.get("result_field"),
-            "examples": request.get("examples"),
-        }
+        mapping_schema = request.get("schema")
+        if mapping_schema is None:
+            mapping = {
+                "arguments": request.get("arguments"),
+                "result_field": request.get("result_field"),
+                "examples": request.get("examples"),
+            }
+            prepare = self._capsule_stage3.prepare_ephemeral_computation_capture_v2
+        elif mapping_schema == CAPTURE_MAPPING_V3:
+            mapping = {
+                "schema": CAPTURE_MAPPING_V3,
+                "arguments": request.get("arguments"),
+                "result_field": request.get("result_field"),
+                "passthrough_fields": request.get("passthrough_fields"),
+                "examples": request.get("examples"),
+            }
+            prepare = self._capsule_stage3.prepare_ephemeral_computation_capture_v3
+        elif mapping_schema == CAPTURE_MAPPING_V4:
+            mapping = {
+                "schema": CAPTURE_MAPPING_V4,
+                "arguments": request.get("arguments"),
+                "result_field": request.get("result_field"),
+                "result_enum": request.get("result_enum"),
+                "proof_schema": request.get("proof_schema"),
+                "examples": request.get("examples"),
+            }
+            prepare = self._capsule_stage3.prepare_ephemeral_computation_capture_v4
+        else:
+            raise Stage3Error("capture_request_invalid")
         selection = {
             "module_relpath": offer.get("module_relpath"),
             "export_name": offer.get("export_name"),
             "target_binding_id": offer.get("target_binding_id"),
         }
-        prepared = self._capsule_stage3.prepare_ephemeral_computation_capture_v2(
+        prepared = prepare(
             snapshot,
             selection,
             mapping,
@@ -2605,14 +3336,41 @@ class ReweaveAppService:
             with self._management_lock:
                 is_ephemeral_v2 = project_id in self._javascript_capture_sessions
             if is_ephemeral_v2:
-                allowed_keys = {
-                    "project_id",
-                    "offer_id",
-                    "review_id",
-                    "arguments",
-                    "result_field",
-                    "examples",
-                }
+                mapping_schema = request.get("schema")
+                if mapping_schema is None:
+                    allowed_keys = {
+                        "project_id",
+                        "offer_id",
+                        "review_id",
+                        "arguments",
+                        "result_field",
+                        "examples",
+                    }
+                elif mapping_schema == CAPTURE_MAPPING_V3:
+                    allowed_keys = {
+                        "schema",
+                        "project_id",
+                        "offer_id",
+                        "review_id",
+                        "arguments",
+                        "result_field",
+                        "passthrough_fields",
+                        "examples",
+                    }
+                elif mapping_schema == CAPTURE_MAPPING_V4:
+                    allowed_keys = {
+                        "schema",
+                        "project_id",
+                        "offer_id",
+                        "review_id",
+                        "arguments",
+                        "result_field",
+                        "result_enum",
+                        "proof_schema",
+                        "examples",
+                    }
+                else:
+                    return self._error("capture_request_invalid")
                 if set(request) - allowed_keys:
                     return self._error("capture_request_invalid")
                 return self._submit_management_task(
@@ -2663,6 +3421,33 @@ class ReweaveAppService:
             run_id = str(request.get("run_id") or "").strip()
             if not run_id:
                 return self._error("run_id_required")
+            try:
+                product_run = (
+                    self._product_planner
+                    .get_capability_source_proposal_run(run_id)
+                )
+            except ProductPlanningError as exc:
+                if exc.code not in {
+                    "capability_source_proposal_run_not_found",
+                }:
+                    raise
+            else:
+                with self._management_lock:
+                    live = self._management_tasks.get(run_id)
+                if (
+                    live is None
+                    and product_run["status"] in {"pending", "running"}
+                ):
+                    product_run = (
+                        self._product_planner
+                        .append_capability_source_proposal_run_event(
+                            run_id,
+                            status="failed",
+                            stage=product_run["stage"],
+                            error_code="manual_recovery_required",
+                        )
+                    )
+                return self._ok(product_run)
             with self._management_lock:
                 task = self._management_tasks.get(run_id)
                 if task is not None:
@@ -2687,7 +3472,12 @@ class ReweaveAppService:
                         )
                     }
             return self._ok(result)
-        except (CapsuleStoreError, OSError, ValueError) as exc:
+        except (
+            CapsuleStoreError,
+            OSError,
+            ProductPlanningError,
+            ValueError,
+        ) as exc:
             return self._exception_error(exc, "get_intake_run_failed")
 
     def cancel_intake_run(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -2696,6 +3486,37 @@ class ReweaveAppService:
             run_id = str(request.get("run_id") or "").strip()
             if not run_id:
                 return self._error("run_id_required")
+            try:
+                product_run = (
+                    self._product_planner
+                    .get_capability_source_proposal_run(run_id)
+                )
+            except ProductPlanningError as exc:
+                if exc.code not in {
+                    "capability_source_proposal_run_not_found",
+                }:
+                    raise
+            else:
+                if product_run["status"] in {
+                    "review_required",
+                    "failed",
+                    "cancelled",
+                }:
+                    return self._error("intake_run_already_terminal")
+                with self._management_lock:
+                    task = self._management_tasks.get(run_id)
+                    if task is None:
+                        self._product_planner.append_capability_source_proposal_run_event(
+                            run_id,
+                            status="failed",
+                            stage=product_run["stage"],
+                            error_code="manual_recovery_required",
+                        )
+                        return self._error("intake_run_not_cancellable")
+                    task["cancel_event"].set()
+                return self._ok(
+                    {"run_id": run_id, "cancel_requested": True}
+                )
             with self._management_lock:
                 task = self._management_tasks.get(run_id)
                 if task is None:
@@ -2708,7 +3529,7 @@ class ReweaveAppService:
                     return self._error("intake_run_already_terminal")
                 task["cancel_event"].set()
             return self._ok({"run_id": run_id, "cancel_requested": True})
-        except ValueError as exc:
+        except (ProductPlanningError, ValueError) as exc:
             return self._exception_error(exc, "cancel_intake_run_failed")
 
     def list_supervision_models(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -2886,6 +3707,73 @@ class ReweaveAppService:
             )
         except ValueError as exc:
             return self._exception_error(exc, "product_plan_goal_invalid")
+
+    def start_product_capability_replan(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if (
+                set(request)
+                != {"plan_token", "plan_digest", "projection_digest"}
+                or any(
+                    type(request[key]) is not str or not request[key]
+                    for key in request
+                )
+            ):
+                return self._error("capability_replan_unavailable")
+
+            def action(
+                cancel: threading.Event,
+                phase: Callable[[str], None],
+            ) -> dict[str, Any]:
+                catalog = self._product_planning_catalog()
+                source = self._product_planner._workspace_by_token(
+                    request["plan_token"]
+                )
+                existing = (
+                    self._product_planner
+                    ._read_capability_replan_handoff(source)
+                )
+                binding = None
+                if existing is None:
+                    binding, _offer, _projection = (
+                        self._resolve_product_capability_replan(
+                            request["plan_token"],
+                            request["plan_digest"],
+                            request["projection_digest"],
+                            catalog,
+                        )
+                    )
+                return self._product_planner.start_capability_replan(
+                    request["plan_token"],
+                    request["plan_digest"],
+                    request["projection_digest"],
+                    binding,
+                    catalog,
+                    cancel.is_set,
+                    phase_callback=phase,
+                )
+
+            return self._submit_management_task(
+                "product_plan_capability_replan",
+                action,
+                cancellable=True,
+                read_only_planning=True,
+                planning_progress=True,
+            )
+        except (
+            CapsuleStoreError,
+            OSError,
+            ProductGenerationError,
+            ProductPlanningError,
+            ValueError,
+            sqlite3.Error,
+        ) as exc:
+            return self._exception_error(
+                exc,
+                "capability_replan_unavailable",
+            )
 
     def submit_product_plan_answers(
         self, payload: dict[str, Any] | None = None
@@ -3148,6 +4036,55 @@ class ReweaveAppService:
                     catalog,
                 )
                 data = restored.get("data") if type(restored) is dict else None
+                published_source_review = False
+                if restored.get("ok") is True and type(data) is dict:
+                    for gap in data.get("capability_gaps") or []:
+                        run = (
+                            gap.get("source_proposal_run")
+                            if type(gap) is dict
+                            else None
+                        )
+                        if (
+                            type(run) is dict
+                            and run.get("status") == "review_required"
+                        ):
+                            outcome = (
+                                self._capability_source_proposal_review_outcome(
+                                    run.get("review_id")
+                                )
+                            )
+                            run["review_outcome"] = outcome
+                            published_source_review = (
+                                published_source_review
+                                or (
+                                    type(outcome) is dict
+                                    and outcome.get("status") == "published"
+                                )
+                            )
+                if (
+                    restored.get("ok") is True
+                    and type(data) is dict
+                    and data.get("plan_token") == request["plan_token"]
+                    and data.get("capability_replan") is None
+                    and published_source_review
+                    and hasattr(
+                        self._product_planner,
+                        "_workspace_by_token",
+                    )
+                    and hasattr(
+                        self._product_planner,
+                        "_read_capability_gap_projection",
+                    )
+                ):
+                    workspace = self._product_planner._workspace_by_token(
+                        request["plan_token"]
+                    )
+                    data["capability_replan"] = (
+                        self._product_capability_replan_view(
+                            workspace,
+                            catalog,
+                        )
+                    )
                 confirmation = (
                     data.get("confirmation") if type(data) is dict else None
                 )
@@ -3272,6 +4209,505 @@ class ReweaveAppService:
                 )
         except (CapsuleStoreError, OSError, ProductGenerationError, ValueError) as exc:
             return self._exception_error(exc, "product_plan_confirmation_failed")
+
+    def record_product_capability_gap_decision(
+        self,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if set(request) != {
+                "plan_token",
+                "plan_digest",
+                "projection_digest",
+                "expected_previous_decision_digest",
+                "decision",
+                "behavior_intent",
+                "reason",
+                "acceptance_cases",
+            }:
+                return self._error("capability_gap_decision_invalid")
+            with self._capsule_operation_lock:
+                return self._product_planner.record_capability_gap_decision(
+                    request["plan_token"],
+                    request["plan_digest"],
+                    request["projection_digest"],
+                    request["expected_previous_decision_digest"],
+                    request["decision"],
+                    request["behavior_intent"],
+                    request["reason"],
+                    request["acceptance_cases"],
+                    self._product_planning_catalog(),
+                )
+        except (
+            CapsuleStoreError,
+            OSError,
+            ProductGenerationError,
+            ValueError,
+        ) as exc:
+            return self._exception_error(
+                exc,
+                "capability_gap_decision_failed",
+            )
+
+    def prepare_product_capability_source_proposal(
+        self,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if set(request) != {
+                "plan_token",
+                "plan_digest",
+                "projection_digest",
+                "authorize_decision_digest",
+            }:
+                return self._error(
+                    "capability_source_proposal_authorization_invalid"
+                )
+            with self._capsule_operation_lock:
+                return (
+                    self._product_planner.prepare_capability_source_proposal(
+                        request["plan_token"],
+                        request["plan_digest"],
+                        request["projection_digest"],
+                        request["authorize_decision_digest"],
+                        self._product_planning_catalog(),
+                    )
+                )
+        except (
+            CapsuleStoreError,
+            OSError,
+            ProductGenerationError,
+            ValueError,
+        ) as exc:
+            return self._exception_error(
+                exc,
+                "capability_source_proposal_authorization_failed",
+            )
+
+    @staticmethod
+    def _source_proposal_error_code(exc: BaseException) -> str:
+        code = getattr(exc, "code", None)
+        return (
+            code
+            if type(code) is str
+            and re.fullmatch(r"[a-z][a-z0-9_]{1,95}", code)
+            else "capability_source_proposal_run_failed"
+        )
+
+    @staticmethod
+    def _prepared_review_runtime_digests(prepared: Any) -> dict[str, str]:
+        return {
+            "capture_digest": hashlib.sha256(
+                prepared.candidate_payload_json
+            ).hexdigest(),
+            "runtime_digest": hashlib.sha256(
+                prepared.preflight_receipt_json
+            ).hexdigest(),
+        }
+
+    def _run_product_capability_source_proposal(
+        self,
+        run_id: str,
+        cancel: threading.Event,
+    ) -> dict[str, Any]:
+        stage = "source_proposal"
+
+        def cancelled() -> None:
+            if cancel.is_set():
+                raise ProductPlanningError("cancelled_by_user")
+
+        def running(
+            next_stage: str,
+            evidence: dict[str, Any] | None = None,
+        ) -> None:
+            nonlocal stage
+            stage = next_stage
+            self._product_planner.append_capability_source_proposal_run_event(
+                run_id,
+                status="running",
+                stage=stage,
+                evidence=evidence or {},
+            )
+
+        try:
+            running("source_proposal")
+            generated = (
+                self._product_planner.run_capability_source_proposal_model(
+                    run_id,
+                    cancel.is_set,
+                )
+            )
+            cancelled()
+            proposal = generated["proposal"]
+            content = proposal["files"][0]["content"]
+            source = self._product_planner.write_capability_source_proposal(
+                run_id,
+                content,
+            )
+            running(
+                "intake",
+                {
+                    "source_sha256": source["source_sha256"],
+                    "source_relpath": source["source_relpath"],
+                    "model_response_digest": generated["evidence"][
+                        "response_digest"
+                    ],
+                },
+            )
+            cancelled()
+
+            context = (
+                self._product_planner.capability_source_proposal_run_context(
+                    run_id
+                )
+            )
+            authorization = context["authorization"]
+            identity = context["identity"]
+            paths = self._product_planner.capability_source_proposal_run_paths(
+                run_id
+            )
+            validation_database = paths["validation_database"]
+            if validation_database.exists() or validation_database.is_symlink():
+                raise ProductPlanningError(
+                    "capability_source_proposal_run_conflict"
+                )
+            _copy_private_file(
+                self._capsule_store.path,
+                validation_database,
+            )
+            isolated_store = CapsuleWarehouseStore(validation_database)
+            isolated_intake = ReweaveCapsuleIntake(isolated_store)
+            isolated_source = JavascriptSourceService(isolated_store)
+            isolated_supervisor = OllamaSupervisor(isolated_store)
+            isolated_stage3 = ReweaveCapsuleStage3(
+                isolated_store,
+                intake=isolated_intake,
+                supervisor=isolated_supervisor,
+            )
+            selected_supervisor = isolated_supervisor.selected_model()
+            if {
+                "name": selected_supervisor["name"],
+                "digest": selected_supervisor["digest"],
+            } != identity["supervision_model"]:
+                raise ProductPlanningError(
+                    "capability_source_proposal_supervision_model_changed"
+                )
+            with self._capsule_store.read_connection() as connection:
+                target_selected = connection.execute(
+                    "SELECT value_json FROM app_settings WHERE setting_key = "
+                    "'capsule_supervision_model'"
+                ).fetchone()
+            try:
+                target_model = json.loads(target_selected[0])
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise ProductPlanningError(
+                    "capability_source_proposal_supervision_model_changed"
+                ) from exc
+            if {
+                "name": target_model.get("name"),
+                "digest": target_model.get("digest"),
+            } != identity["supervision_model"]:
+                raise ProductPlanningError(
+                    "capability_source_proposal_supervision_model_changed"
+                )
+
+            with isolated_store.read_connection() as connection:
+                existing_root = connection.execute(
+                    "SELECT root_id FROM source_roots WHERE current_path = ?",
+                    (str(paths["source_dir"].resolve()),),
+                ).fetchone()
+            if existing_root is None:
+                root = isolated_intake.bind_source_root(
+                    paths["source_dir"],
+                    root_kind="single_project",
+                )
+                root_id = str(root["root_id"])
+            else:
+                root_id = str(existing_root["root_id"])
+            owner = isolated_source.ensure_owner(root_id)
+            snapshot = isolated_source.scan(
+                str(owner["project_id"]),
+                cancel_event=cancel,
+            )
+            offers = inspect_ephemeral_computation_offers_v2(snapshot)
+            if len(offers["offers"]) != 1:
+                raise ProductPlanningError(
+                    "capability_source_proposal_capture_invalid"
+                )
+            offer = offers["offers"][0]
+            selection, mapping = (
+                self._capability_source_proposal_capture_request(
+                    authorization,
+                    offer,
+                    proposal,
+                )
+            )
+            running(
+                "security",
+                {
+                    "source_identity_sha256": (
+                        snapshot.source_identity_sha256
+                    ),
+                    "security_digest": canonical_json_digest(
+                        {
+                            "selection": selection,
+                            "rejection_summary": offers[
+                                "rejection_summary"
+                            ],
+                        }
+                    ),
+                },
+            )
+            cancelled()
+            prepare = {
+                COMPUTATION_ADAPTER_V2: (
+                    isolated_stage3.prepare_ephemeral_computation_capture_v2
+                ),
+                COMPUTATION_ADAPTER_V3: (
+                    isolated_stage3.prepare_ephemeral_computation_capture_v3
+                ),
+                COMPUTATION_ADAPTER_V4: (
+                    isolated_stage3.prepare_ephemeral_computation_capture_v4
+                ),
+            }.get(authorization["adapter_contract_version"])
+            if prepare is None:
+                raise ProductPlanningError(
+                    "capability_source_proposal_capture_invalid"
+                )
+            prepared = prepare(
+                snapshot,
+                selection,
+                mapping,
+            )
+            if type(prepared) is dict:
+                raise ProductPlanningError(
+                    "capability_source_proposal_review_not_ready"
+                )
+            running(
+                "runtime",
+                self._prepared_review_runtime_digests(prepared),
+            )
+            cancelled()
+            running("supervision")
+            result = isolated_stage3.process_ephemeral_capture(prepared)
+            cancelled()
+            review_id = str(result.get("review_id") or "")
+            if result.get("status") != "review_required" or not review_id:
+                raise ProductPlanningError(
+                    "capability_source_proposal_review_not_ready"
+                )
+            with isolated_store.read_connection() as connection:
+                review = connection.execute(
+                    "SELECT supervision_result_json FROM review_items "
+                    "WHERE review_id = ?",
+                    (review_id,),
+                ).fetchone()
+            if review is None or not review["supervision_result_json"]:
+                raise ProductPlanningError(
+                    "capability_source_proposal_review_not_ready"
+                )
+            running(
+                "admission",
+                {
+                    "supervision_digest": hashlib.sha256(
+                        str(review["supervision_result_json"]).encode(
+                            "utf-8"
+                        )
+                    ).hexdigest(),
+                    "validation_database_sha256": _sha256_file(
+                        validation_database
+                    ),
+                },
+            )
+            cancelled()
+            current_catalog = self._product_planning_catalog()
+            if (
+                current_catalog["warehouse_revision"]
+                != identity["warehouse_revision"]
+                or canonical_json_digest(current_catalog)
+                != identity["catalog_digest"]
+            ):
+                raise ProductPlanningError(
+                    "capability_source_proposal_run_stale"
+                )
+            admission = self.admit_frozen_review(
+                {
+                    "source_database_path": str(validation_database),
+                    "source_directory_path": str(paths["source_dir"]),
+                    "source_database_sha256": _sha256_file(
+                        validation_database
+                    ),
+                    "review_id": review_id,
+                    "expected_warehouse_revision": identity[
+                        "warehouse_revision"
+                    ],
+                    "plan_token": identity["plan_token"],
+                    "plan_digest": identity["plan_digest"],
+                    "projection_digest": identity[
+                        "projection_digest"
+                    ],
+                    "authorize_decision_digest": identity[
+                        "authorize_decision_digest"
+                    ],
+                    "source_proposal_authorization_digest": identity[
+                        "authorization_digest"
+                    ],
+                }
+            )
+            if admission.get("ok") is not True:
+                error = admission.get("error") or {}
+                raise ProductPlanningError(
+                    str(
+                        error.get("code")
+                        or "frozen_review_admission_failed"
+                    )
+                )
+            receipt = admission["data"]
+            return (
+                self._product_planner
+                .append_capability_source_proposal_run_event(
+                    run_id,
+                    status="review_required",
+                    stage="admission",
+                    evidence={
+                        "review_id": review_id,
+                        "admission_digest": receipt[
+                            "admission_digest"
+                        ],
+                        "canonical_hash": result["canonical_hash"],
+                        "warehouse_revision": receipt[
+                            "warehouse_revision"
+                        ],
+                    },
+                )
+            )
+        except BaseException as exc:
+            code = self._source_proposal_error_code(exc)
+            status = (
+                "cancelled"
+                if cancel.is_set() or code == "cancelled_by_user"
+                else "failed"
+            )
+            try:
+                return (
+                    self._product_planner
+                    .append_capability_source_proposal_run_event(
+                        run_id,
+                        status=status,
+                        stage=stage,
+                        error_code=(
+                            "cancelled_by_user"
+                            if status == "cancelled"
+                            else code
+                        ),
+                    )
+                )
+            except ProductPlanningError:
+                raise exc
+
+    def start_product_capability_source_proposal(
+        self,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if set(request) != {
+                "plan_token",
+                "plan_digest",
+                "projection_digest",
+                "authorization_digest",
+            } or any(
+                type(request.get(key)) is not str or not request[key]
+                for key in request
+            ):
+                return self._error(
+                    "capability_source_proposal_run_invalid"
+                )
+            with self._capsule_operation_lock:
+                self._ensure_capsule_management()
+                selected = self._capsule_supervisor.selected_model()
+                prepared = (
+                    self._product_planner
+                    .prepare_capability_source_proposal_run(
+                        request["plan_token"],
+                        request["plan_digest"],
+                        request["projection_digest"],
+                        request["authorization_digest"],
+                        {
+                            "name": selected["name"],
+                            "digest": selected["digest"],
+                        },
+                        self._product_planning_catalog(),
+                    )
+                )
+            run_id = prepared["run_id"]
+            if not prepared["created"]:
+                with self._management_lock:
+                    live = self._management_tasks.get(run_id)
+                if live is not None:
+                    return {
+                        "ok": True,
+                        "run_id": run_id,
+                        "status": prepared["status"],
+                    }
+                if prepared["status"] in {"pending", "running"}:
+                    recovered = (
+                        self._product_planner
+                        .append_capability_source_proposal_run_event(
+                            run_id,
+                            status="failed",
+                            stage=prepared["stage"],
+                            error_code="manual_recovery_required",
+                        )
+                    )
+                    return {
+                        "ok": True,
+                        "run_id": run_id,
+                        "status": recovered["status"],
+                    }
+                return {
+                    "ok": True,
+                    "run_id": run_id,
+                    "status": prepared["status"],
+                }
+            submitted = self._submit_management_task(
+                "capability_source_proposal",
+                lambda cancel: self._run_product_capability_source_proposal(
+                    run_id,
+                    cancel,
+                ),
+                run_id=run_id,
+                cancellable=True,
+            )
+            if submitted.get("ok") is not True:
+                self._product_planner.append_capability_source_proposal_run_event(
+                    run_id,
+                    status="failed",
+                    stage=prepared["stage"],
+                    error_code=str(
+                        (submitted.get("error") or {}).get("code")
+                        or "capability_source_proposal_start_failed"
+                    ),
+                )
+            return submitted
+        except (
+            CapsuleStoreError,
+            IntakeError,
+            JavascriptSourceError,
+            ProductGenerationError,
+            ProductPlanningError,
+            Stage3Error,
+            OSError,
+            RuntimeError,
+            ValueError,
+            sqlite3.Error,
+        ) as exc:
+            return self._exception_error(
+                exc,
+                "capability_source_proposal_run_failed",
+            )
 
     def _confirmed_candidate_context(
         self,
@@ -3410,6 +4846,7 @@ class ReweaveAppService:
         plan_token: str,
         workspace: dict[str, Any],
         capsules: list[dict[str, Any]],
+        page_contracts: list[dict[str, Any]],
     ) -> dict[str, Any]:
         restored = self._product_planner.get_candidate_acceptance_confirmation(
             plan_token
@@ -3423,8 +4860,14 @@ class ReweaveAppService:
                 else "candidate_acceptance_confirmation_required"
             )
         try:
+            execution = self._compile_candidate_execution(
+                workspace["plan"],
+                workspace["confirmation"],
+                capsules,
+                page_contracts,
+            )
             input_contract, output_contract = (
-                self._candidate_acceptance_contracts(capsules)
+                self._candidate_acceptance_contracts(capsules, execution)
             )
             return validate_candidate_acceptance_confirmation(
                 workspace["plan"],
@@ -3456,6 +4899,7 @@ class ReweaveAppService:
                         request["plan_token"],
                         workspace,
                         capsules,
+                        page_contracts,
                     )
                 )
                 result = self._product_planner.create_agent_handoff(
@@ -3522,6 +4966,7 @@ class ReweaveAppService:
                         binding["plan_token"],
                         workspace,
                         capsules,
+                        page_contracts,
                     )
                 )
             except ProductGenerationError as exc:
@@ -3566,7 +5011,7 @@ class ReweaveAppService:
                     "candidate_acceptance_confirmation_request_invalid"
                 )
             with self._capsule_operation_lock:
-                workspace, capsules, _scope, _contracts = (
+                workspace, capsules, _scope, page_contracts = (
                     self._confirmed_candidate_context(request["plan_token"])
                 )
                 plan = workspace["plan"]
@@ -3575,8 +5020,14 @@ class ReweaveAppService:
                     return self._error(
                         "candidate_acceptance_confirmation_stale"
                     )
+                execution = self._compile_candidate_execution(
+                    plan,
+                    confirmation,
+                    capsules,
+                    page_contracts,
+                )
                 input_contract, output_contract = (
-                    self._candidate_acceptance_contracts(capsules)
+                    self._candidate_acceptance_contracts(capsules, execution)
                 )
                 record = build_candidate_acceptance_confirmation(
                     plan,
@@ -3616,7 +5067,7 @@ class ReweaveAppService:
             ):
                 return self._error("product_plan_token_invalid")
             with self._capsule_operation_lock:
-                workspace, capsules, _scope, _contracts = (
+                workspace, capsules, _scope, page_contracts = (
                     self._confirmed_candidate_context(request["plan_token"])
                 )
                 acceptance = (
@@ -3638,8 +5089,14 @@ class ReweaveAppService:
             ):
                 return acceptance
             if type(acceptance_data) is dict:
+                execution = self._compile_candidate_execution(
+                    plan,
+                    confirmation,
+                    capsules,
+                    page_contracts,
+                )
                 input_contract, output_contract = (
-                    self._candidate_acceptance_contracts(capsules)
+                    self._candidate_acceptance_contracts(capsules, execution)
                 )
                 try:
                     acceptance_data = (
@@ -3754,8 +5211,48 @@ class ReweaveAppService:
         return self._capsule_store.path.parent / PRODUCT_CANDIDATES_DIRNAME
 
     @staticmethod
+    def _compile_candidate_execution(
+        plan: dict[str, Any],
+        confirmation: dict[str, Any],
+        capsules: list[dict[str, Any]],
+        page_contracts: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        computation_count = sum(
+            capsule.get("capability_kind") == "computation"
+            for capsule in capsules
+        )
+        if computation_count == 2:
+            if confirmation.get("schema_version") != "product_plan_confirmation.v1":
+                raise ProductGenerationError(
+                    "multi_computation_parameter_binding_unsupported"
+                )
+            return compile_multi_computation_plan_execution(
+                plan,
+                confirmation,
+                capsules,
+                verified_page_contracts=page_contracts,
+            )
+        return (
+            compile_parameterized_plan_execution(
+                plan,
+                confirmation,
+                capsules,
+                verified_page_contracts=page_contracts,
+            )
+            if confirmation.get("schema_version")
+            == "product_plan_confirmation.v2"
+            else compile_plan_execution(
+                plan,
+                confirmation,
+                capsules,
+                verified_page_contracts=page_contracts,
+            )
+        )
+
+    @staticmethod
     def _candidate_acceptance_contracts(
         capsules: list[dict[str, Any]],
+        execution: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         computations = [
             item for item in capsules if item.get("capability_kind") == "computation"
@@ -3763,10 +5260,37 @@ class ReweaveAppService:
         interactions = [
             item for item in capsules if item.get("capability_kind") == "interaction"
         ]
-        if len(computations) != 1 or len(interactions) > 1:
+        if len(computations) not in {1, 2} or len(interactions) > 1:
             raise ProductGenerationError("candidate_acceptance_computation_required")
-        computation = computations[0]
-        input_contract = computation.get("input_contract")
+        first = terminal = computations[0]
+        if len(computations) == 2:
+            if (
+                type(execution) is not dict
+                or execution.get("schema_version")
+                != MULTI_COMPUTATION_PLAN_EXECUTION_VERSION
+                or type(execution.get("connections")) is not list
+            ):
+                raise ProductGenerationError(
+                    "candidate_acceptance_connection_required"
+                )
+            by_version = {
+                computation["version_id"]: computation
+                for computation in computations
+            }
+            computation_edges = [
+                connection
+                for connection in execution["connections"]
+                if connection.get("source_version_id") in by_version
+                and connection.get("target_version_id") in by_version
+            ]
+            if len(computation_edges) != 1:
+                raise ProductGenerationError(
+                    "candidate_acceptance_terminal_ambiguous"
+                )
+            edge = computation_edges[0]
+            first = by_version[edge["source_version_id"]]
+            terminal = by_version[edge["target_version_id"]]
+        input_contract = first.get("input_contract")
         if interactions:
             event_contract = interactions[0].get("output_contract")
             events = (
@@ -3778,7 +5302,7 @@ class ReweaveAppService:
             if type(events) is not dict or len(events) != 1:
                 raise ProductGenerationError("candidate_acceptance_contract_invalid")
             input_contract = next(iter(events.values()))
-        output_contract = computation.get("output_contract")
+        output_contract = terminal.get("output_contract")
         if type(input_contract) is not dict or type(output_contract) is not dict:
             raise ProductGenerationError("candidate_acceptance_contract_invalid")
         return input_contract, output_contract
@@ -3913,7 +5437,11 @@ class ReweaveAppService:
         if (
             type(execution) is not dict
             or execution.get("schema_version")
-            not in {PLAN_EXECUTION_VERSION, PARAMETERIZED_PLAN_EXECUTION_VERSION}
+            not in {
+                PLAN_EXECUTION_VERSION,
+                PARAMETERIZED_PLAN_EXECUTION_VERSION,
+                MULTI_COMPUTATION_PLAN_EXECUTION_VERSION,
+            }
             or execution.get("execution_digest") != record["execution_digest"]
             or plan_execution_digest(
                 {
@@ -4015,10 +5543,18 @@ class ReweaveAppService:
         parameterized_execution = (
             execution["schema_version"] == PARAMETERIZED_PLAN_EXECUTION_VERSION
         )
+        multi_computation_execution = (
+            execution["schema_version"]
+            == MULTI_COMPUTATION_PLAN_EXECUTION_VERSION
+        )
         expected_provenance_version = (
-            "product_candidate_provenance.v2"
-            if parameterized_execution
-            else "product_candidate_provenance.v1"
+            "product_candidate_provenance.v3"
+            if multi_computation_execution
+            else (
+                "product_candidate_provenance.v2"
+                if parameterized_execution
+                else "product_candidate_provenance.v1"
+            )
         )
         provenance_keys = {
             "schema_version",
@@ -4034,6 +5570,10 @@ class ReweaveAppService:
         }
         if parameterized_execution:
             provenance_keys.update({"confirmation_digest", "parameter_binding"})
+        if multi_computation_execution:
+            provenance_keys.update(
+                {"connections", "connection_digest", "terminal_output"}
+            )
         if (
             set(record["provenance"]) != provenance_keys
             or
@@ -4054,6 +5594,44 @@ class ReweaveAppService:
             != execution.get("parameter_binding")
         ):
             raise ProductGenerationError("product_candidate_invalid")
+        if multi_computation_execution:
+            by_version = {
+                capsule["version_id"]: capsule
+                for capsule in execution["capsules"]
+            }
+            terminal_edges = [
+                connection
+                for connection in execution["connections"]
+                if by_version[connection["source_version_id"]][
+                    "capability_kind"
+                ]
+                == "computation"
+                and by_version[connection["target_version_id"]][
+                    "capability_kind"
+                ]
+                == "presentation"
+            ]
+            expected_terminal = (
+                {
+                    "capsule_id": terminal_edges[0]["source_capsule_id"],
+                    "version_id": terminal_edges[0]["source_version_id"],
+                    "canonical_hash": terminal_edges[0][
+                        "source_canonical_hash"
+                    ],
+                    "output": terminal_edges[0]["source_output"],
+                }
+                if len(terminal_edges) == 1
+                else None
+            )
+            if (
+                record["provenance"].get("connections")
+                != execution.get("connections")
+                or record["provenance"].get("connection_digest")
+                != execution.get("connection_digest")
+                or record["provenance"].get("terminal_output")
+                != expected_terminal
+            ):
+                raise ProductGenerationError("product_candidate_invalid")
         for receipt in receipts:
             if (
                 type(receipt) is not dict
@@ -4324,21 +5902,11 @@ class ReweaveAppService:
                     read_only=True,
                 )
             )
-        execution = (
-            compile_parameterized_plan_execution(
-                plan,
-                confirmation,
-                capsules,
-                verified_page_contracts=page_contracts,
-            )
-            if confirmation.get("schema_version")
-            == "product_plan_confirmation.v2"
-            else compile_plan_execution(
-                plan,
-                confirmation,
-                capsules,
-                verified_page_contracts=page_contracts,
-            )
+        execution = self._compile_candidate_execution(
+            plan,
+            confirmation,
+            capsules,
+            page_contracts,
         )
         selected_by_id = {capsule["capsule_id"]: capsule for capsule in capsules}
         selected = [
@@ -4346,7 +5914,8 @@ class ReweaveAppService:
             for capsule_id in execution["composer_request"]["capsule_ids"]
         ]
         input_contract, output_contract = self._candidate_acceptance_contracts(
-            selected
+            selected,
+            execution,
         )
         if acceptance_confirmation is not None:
             try:
@@ -4376,7 +5945,34 @@ class ReweaveAppService:
             raise ProductGenerationError(
                 "candidate_acceptance_confirmation_required"
             )
-        candidate_id = "candidate_" + execution["execution_digest"][:32]
+        expected_composer_version = (
+            ADAPTER_V4_FORMAL_PRODUCT_COMPOSER_VERSION
+            if any(
+                capsule.get("adapter_contract_version")
+                == COMPUTATION_ADAPTER_V4
+                for capsule in selected
+            )
+            else ADAPTER_V3_FORMAL_PRODUCT_COMPOSER_VERSION
+            if any(
+                capsule.get("adapter_contract_version")
+                == COMPUTATION_ADAPTER_V3
+                for capsule in selected
+            )
+            else {
+                MULTI_COMPUTATION_PLAN_EXECUTION_VERSION: (
+                    MULTI_COMPUTATION_FORMAL_PRODUCT_COMPOSER_VERSION
+                ),
+                PARAMETERIZED_PLAN_EXECUTION_VERSION: (
+                    PARAMETERIZED_FORMAL_PRODUCT_COMPOSER_VERSION
+                ),
+            }.get(execution["schema_version"], FORMAL_PRODUCT_COMPOSER_VERSION)
+        )
+        candidate_id = "candidate_" + plan_execution_digest(
+            {
+                "execution_digest": execution["execution_digest"],
+                "composer_version": expected_composer_version,
+            }
+        )[:32]
         root = self._product_candidate_root()
         self._assert_candidate_path_safe(root)
         root.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -4432,6 +6028,8 @@ class ReweaveAppService:
                 candidate_acceptance_port=True,
                 parameter_binding=execution.get("parameter_binding"),
                 verified_page_contracts=page_contracts,
+                verified_connections=execution.get("connections"),
+                connection_digest=execution.get("connection_digest"),
             )
         except ValueError as exc:
             code = str(exc)
@@ -4443,6 +6041,7 @@ class ReweaveAppService:
         if (
             type(composition) is not dict
             or composition.get("status") != "composed"
+            or composition.get("composer_version") != expected_composer_version
             or type(composition.get("files")) is not dict
             or type(composition.get("assets")) is not dict
             or type(composition.get("provenance")) is not dict
@@ -4524,12 +6123,20 @@ class ReweaveAppService:
 
             all_unit_ids = sorted(units)
             all_versions = set(version_units)
+            multi_computation_execution = (
+                execution["schema_version"]
+                == MULTI_COMPUTATION_PLAN_EXECUTION_VERSION
+            )
             provenance = {
                 "schema_version": (
-                    "product_candidate_provenance.v2"
-                    if execution["schema_version"]
-                    == PARAMETERIZED_PLAN_EXECUTION_VERSION
-                    else "product_candidate_provenance.v1"
+                    "product_candidate_provenance.v3"
+                    if multi_computation_execution
+                    else (
+                        "product_candidate_provenance.v2"
+                        if execution["schema_version"]
+                        == PARAMETERIZED_PLAN_EXECUTION_VERSION
+                        else "product_candidate_provenance.v1"
+                    )
                 ),
                 "plan_id": execution["plan_id"],
                 "plan_version": execution["plan_version"],
@@ -4565,6 +6172,14 @@ class ReweaveAppService:
                     "confirmation_digest"
                 ]
                 provenance["parameter_binding"] = execution["parameter_binding"]
+            if multi_computation_execution:
+                provenance["connections"] = execution["connections"]
+                provenance["connection_digest"] = execution[
+                    "connection_digest"
+                ]
+                provenance["terminal_output"] = composer_provenance[
+                    "terminal_output"
+                ]
             _write_product_file(
                 product_root,
                 "provenance.json",
@@ -4671,6 +6286,11 @@ class ReweaveAppService:
                     "product_usage_write": False,
                 },
             }
+            if multi_computation_execution:
+                manifest["connection_digest"] = execution[
+                    "connection_digest"
+                ]
+                manifest["terminal_output"] = provenance["terminal_output"]
             _write_product_file(
                 product_root,
                 "manifest.json",
@@ -4970,6 +6590,7 @@ class ReweaveAppService:
                     plan_token,
                     workspace,
                     capsules,
+                    page_contracts,
                 )
             )
         except ProductGenerationError as exc:
@@ -4984,21 +6605,11 @@ class ReweaveAppService:
         }:
             raise ProductGenerationError("product_candidate_export_stale")
         try:
-            expected_execution = (
-                compile_parameterized_plan_execution(
-                    plan,
-                    workspace["confirmation"],
-                    capsules,
-                    verified_page_contracts=page_contracts,
-                )
-                if workspace["confirmation"]["schema_version"]
-                == "product_plan_confirmation.v2"
-                else compile_plan_execution(
-                    plan,
-                    workspace["confirmation"],
-                    capsules,
-                    verified_page_contracts=page_contracts,
-                )
+            expected_execution = self._compile_candidate_execution(
+                plan,
+                workspace["confirmation"],
+                capsules,
+                page_contracts,
             )
             stored_execution = _strict_json_bytes(
                 (candidate_dir / "execution_plan.json").read_bytes()
@@ -5012,7 +6623,8 @@ class ReweaveAppService:
         if expected_execution != stored_execution:
             raise ProductGenerationError("product_candidate_export_stale")
         input_contract, output_contract = self._candidate_acceptance_contracts(
-            capsules
+            capsules,
+            expected_execution,
         )
         cases = [
             {
@@ -5331,7 +6943,11 @@ class ReweaveAppService:
                     _retired_v1_adapter_candidate(candidate)
                 )
                 item["resume_contract"] = candidate.get("resume_contract")
-                if item["resume_contract"] == "resubmit_ephemeral_capture.v1":
+                if item["resume_contract"] in {
+                    CAPTURE_RESUME_V1,
+                    CAPTURE_RESUME_V2,
+                    CAPTURE_RESUME_V3,
+                }:
                     redaction = item.get("redaction") or {}
                     item["capture_summary"] = {
                         key: redaction.get(key)
@@ -5347,7 +6963,11 @@ class ReweaveAppService:
                     and not item["allowed_decisions"]
                     and not (
                         item.get("resume_contract")
-                        == "resubmit_ephemeral_capture.v1"
+                        in {
+                            CAPTURE_RESUME_V1,
+                            CAPTURE_RESUME_V2,
+                            CAPTURE_RESUME_V3,
+                        }
                         and item.get("candidate_status") == "waiting_user"
                     )
                     and not item["adapter_contract_version_expired"]
@@ -5357,6 +6977,261 @@ class ReweaveAppService:
             return self._ok({"items": items})
         except (CapsuleStoreError, OSError, ValueError, sqlite3.Error) as exc:
             return self._exception_error(exc, "list_review_items_failed")
+
+    @_serialized_management
+    def admit_frozen_review(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Controlled internal entry for a previously frozen Stage 3 review."""
+
+        try:
+            self._ensure_capsule_management()
+            request = self._payload(payload)
+            if set(request) != {
+                "source_database_path",
+                "source_directory_path",
+                "source_database_sha256",
+                "review_id",
+                "expected_warehouse_revision",
+                "plan_token",
+                "plan_digest",
+                "projection_digest",
+                "authorize_decision_digest",
+                "source_proposal_authorization_digest",
+            } or any(
+                type(request.get(key)) is not str or not request[key]
+                for key in (
+                    "source_database_path",
+                    "source_directory_path",
+                    "source_database_sha256",
+                    "review_id",
+                    "plan_token",
+                    "plan_digest",
+                    "projection_digest",
+                    "authorize_decision_digest",
+                    "source_proposal_authorization_digest",
+                )
+            ) or type(request["expected_warehouse_revision"]) is not int:
+                return self._error("frozen_review_admission_invalid")
+            catalog = self._product_planner._catalog(
+                self._product_planning_catalog()
+            )
+            workspace = self._product_planner._workspace_by_token(
+                request["plan_token"]
+            )
+            plan = workspace.get("plan")
+            projection = (
+                self._product_planner._read_capability_gap_projection(
+                    workspace
+                )
+                if type(plan) is dict
+                else None
+            )
+            expected_projection, projection_status = (
+                self._product_planner._capability_gap_projection_for_workspace(
+                    workspace,
+                    plan,
+                    catalog,
+                )
+                if type(plan) is dict
+                else (None, "capability_gap_projection_missing")
+            )
+            authorized_catalog_digest = canonical_json_digest(
+                {
+                    "warehouse_revision": projection.get(
+                        "warehouse_revision"
+                    )
+                    if projection is not None
+                    else -1,
+                    "capsules": catalog["capsules"],
+                }
+            )
+            # Admission bumps warehouse revision but cannot change formal capability facts.
+            target_catalog_digest = canonical_json_digest(
+                {"capsules": catalog["capsules"]}
+            )
+            initial_target = bool(
+                projection is not None
+                and catalog["warehouse_revision"]
+                == projection.get("warehouse_revision")
+            )
+            repeated_target = bool(
+                projection is not None
+                and catalog["warehouse_revision"]
+                == projection.get("warehouse_revision", -2) + 1
+            )
+            if (
+                workspace.get("status") != "plan_review"
+                or type(plan) is not dict
+                or plan.get("canonical_digest") != request["plan_digest"]
+                or projection is None
+                or not (initial_target or repeated_target)
+                or (
+                    initial_target
+                    and (
+                        projection_status != "available"
+                        or expected_projection != projection
+                    )
+                )
+                or projection.get("projection_digest")
+                != request["projection_digest"]
+                or projection.get("catalog_digest")
+                != authorized_catalog_digest
+            ):
+                raise ProductPlanningError(
+                    "frozen_review_admission_authorization_stale"
+                )
+            decisions = self._product_planner._capability_gap_decisions(
+                workspace,
+                projection,
+            )
+            decision = decisions[-1] if decisions else None
+            if (
+                decision is None
+                or decision.get("decision") != "authorize"
+                or decision.get("canonical_digest")
+                != request["authorize_decision_digest"]
+            ):
+                raise ProductPlanningError(
+                    "frozen_review_admission_authorization_invalid"
+                )
+            authorization = (
+                self._product_planner
+                ._read_capability_source_proposal_authorization(
+                    workspace,
+                    projection,
+                    decision,
+                )
+            )
+            if (
+                authorization is None
+                or authorization.get("authorization_digest")
+                != request["source_proposal_authorization_digest"]
+                or authorization.get("plan_digest")
+                != request["plan_digest"]
+                or authorization.get("projection_digest")
+                != request["projection_digest"]
+                or authorization.get("authorize_decision_digest")
+                != request["authorize_decision_digest"]
+                or authorization.get("catalog_digest")
+                != authorized_catalog_digest
+            ):
+                raise ProductPlanningError(
+                    "frozen_review_admission_authorization_invalid"
+                )
+            authorization_binding = {
+                "plan_digest": authorization["plan_digest"],
+                "gap_id": authorization["gap_id"],
+                "projection_digest": authorization["projection_digest"],
+                "authorize_decision_digest": authorization[
+                    "authorize_decision_digest"
+                ],
+                "source_proposal_authorization_digest": authorization[
+                    "authorization_digest"
+                ],
+                "capability_key": authorization["capability_key"],
+                "adapter_contract_version": authorization[
+                    "adapter_contract_version"
+                ],
+                "input_contract": authorization["input_contract"],
+                "output_contract": authorization["output_contract"],
+                "error_contract": authorization["error_contract"],
+                "authorization_warehouse_revision": authorization[
+                    "warehouse_revision"
+                ],
+                "authorization_catalog_digest": authorization[
+                    "catalog_digest"
+                ],
+                "target_catalog_digest": target_catalog_digest,
+            }
+            result = self._capsule_stage3.admit_frozen_review(
+                Path(str(request["source_database_path"])),
+                Path(str(request["source_directory_path"])),
+                str(request["review_id"]),
+                expected_source_sha256=str(request["source_database_sha256"]),
+                expected_warehouse_revision=request["expected_warehouse_revision"],
+                authorization_binding=authorization_binding,
+            )
+            return self._ok(result)
+        except (
+            CapsuleStoreError,
+            ProductPlanningError,
+            Stage3Error,
+            OSError,
+            ValueError,
+            sqlite3.Error,
+        ) as exc:
+            return self._exception_error(exc, "frozen_review_admission_failed")
+
+    def admit_frozen_ui_review_batch(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Controlled internal entry for one frozen compatible UI pair."""
+
+        try:
+            self._ensure_capsule_management()
+            request = self._payload(payload)
+            if (
+                set(request)
+                != {
+                    "source_database_path",
+                    "source_directory_path",
+                    "source_database_sha256",
+                    "expected_warehouse_revision",
+                    "authorization",
+                }
+                or any(
+                    type(request.get(key)) is not str or not request[key]
+                    for key in (
+                        "source_database_path",
+                        "source_directory_path",
+                        "source_database_sha256",
+                    )
+                )
+                or type(request["expected_warehouse_revision"]) is not int
+                or type(request["authorization"]) is not dict
+                or request["authorization"].get("schema")
+                != FROZEN_UI_REVIEW_ADMISSION_AUTHORIZATION_VERSION
+            ):
+                return self._error("frozen_ui_review_admission_invalid")
+            catalog = self._product_planner._catalog(
+                self._product_planning_catalog()
+            )
+            target_catalog_digest = canonical_json_digest(
+                {"capsules": catalog["capsules"]}
+            )
+            authorization = request["authorization"]
+            if (
+                authorization.get("target_warehouse_revision")
+                != request["expected_warehouse_revision"]
+                or authorization.get("target_catalog_digest")
+                != target_catalog_digest
+            ):
+                return self._error("frozen_ui_review_admission_target_stale")
+            result = self._capsule_stage3.admit_frozen_ui_review_batch(
+                Path(str(request["source_database_path"])),
+                Path(str(request["source_directory_path"])),
+                expected_source_sha256=str(
+                    request["source_database_sha256"]
+                ),
+                expected_warehouse_revision=request[
+                    "expected_warehouse_revision"
+                ],
+                authorization_binding=authorization,
+            )
+            return self._ok(result)
+        except (
+            CapsuleStoreError,
+            ProductPlanningError,
+            Stage3Error,
+            OSError,
+            ValueError,
+            sqlite3.Error,
+        ) as exc:
+            return self._exception_error(
+                exc,
+                "frozen_ui_review_admission_failed",
+            )
 
     @_serialized_management
     def decide_review_item(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -5385,13 +7260,100 @@ class ReweaveAppService:
             if decision not in item["allowed_decisions"]:
                 return self._error("review_decision_not_allowed")
             candidate = item.get("candidate") or {}
+            frozen_admission = candidate.get("frozen_review_admission")
+            product_source_review = (
+                type(frozen_admission) is dict
+                and frozen_admission.get("schema")
+                == FROZEN_REVIEW_ADMISSION_VERSION
+            )
+            frozen_ui_admission = candidate.get(
+                "frozen_ui_review_admission"
+            )
+            ui_source_review = (
+                type(frozen_ui_admission) is dict
+                and frozen_ui_admission.get("schema")
+                == FROZEN_UI_REVIEW_ADMISSION_VERSION
+            )
+            if product_source_review or ui_source_review:
+                if decision not in {"publish_general", "reject"}:
+                    return self._error("review_decision_not_allowed")
+                if decision == "publish_general":
+                    capability_key = str(
+                        request.get("capability_key") or ""
+                    ).strip()
+                    role_key = str(request.get("role_key") or "").strip()
+                    variant_key = str(
+                        request.get("variant_key") or "default"
+                    ).strip()
+                    display_name = str(
+                        request.get("display_name") or ""
+                    ).strip()
+                    with self._capsule_store.read_connection() as connection:
+                        group = connection.execute(
+                            "SELECT display_name FROM capability_groups "
+                            "WHERE capability_key = ?",
+                            (capability_key,),
+                        ).fetchone()
+                    authorized_capability_key = (
+                        frozen_ui_admission.get(
+                            "authorized_capability_key"
+                        )
+                        if ui_source_review
+                        else frozen_admission.get(
+                            "authorized_capability_key"
+                        )
+                    )
+                    authorized_display_name = (
+                        frozen_ui_admission.get("authorized_display_name")
+                        if ui_source_review
+                        else (
+                            str(group["display_name"])
+                            if group is not None
+                            else None
+                        )
+                    )
+                    if (
+                        capability_key != authorized_capability_key
+                        or display_name != authorized_display_name
+                        or (
+                            group is not None
+                            and display_name != str(group["display_name"])
+                        )
+                        or (group is None and not ui_source_review)
+                        or re.fullmatch(
+                            r"[a-z][a-z0-9_]{0,63}",
+                            role_key,
+                        )
+                        is None
+                        or re.fullmatch(
+                            r"[a-z][a-z0-9_]{0,63}",
+                            variant_key,
+                        )
+                        is None
+                    ):
+                        return self._error(
+                            "frozen_review_publication_identity_invalid"
+                        )
             ephemeral_capture = (
                 candidate.get("candidate_origin")
                 == "deterministic_computation_adapter"
-                and candidate.get("adapter_contract_version")
-                == COMPUTATION_ADAPTER_V2
-                and item.get("resume_contract")
-                == "resubmit_ephemeral_capture.v1"
+                and (
+                    (
+                        candidate.get("adapter_contract_version")
+                        == COMPUTATION_ADAPTER_V2
+                        and item.get("resume_contract") == CAPTURE_RESUME_V1
+                    )
+                    or (
+                        candidate.get("adapter_contract_version")
+                        == COMPUTATION_ADAPTER_V3
+                        and item.get("resume_contract") == CAPTURE_RESUME_V2
+                    )
+                    or (
+                        candidate.get("adapter_contract_version")
+                        == COMPUTATION_ADAPTER_V4
+                        and item.get("resume_contract") == CAPTURE_RESUME_V3
+                    )
+                )
             )
             if ephemeral_capture and decision in {
                 "confirm_fictional_fixture",
@@ -5426,7 +7388,7 @@ class ReweaveAppService:
                     {
                         **recorded,
                         "capture_resubmission_required": True,
-                        "resume_contract": "resubmit_ephemeral_capture.v1",
+                        "resume_contract": item.get("resume_contract"),
                     }
                 )
             if decision in {
@@ -6955,8 +8917,7 @@ class ReweaveAppService:
                             ],
                         }
                     )
-                loaded.append(
-                    {
+                loaded_capsule = {
                         "capsule_id": capsule_id,
                         "version_id": str(row["version_id"]),
                         "canonical_hash": str(row["canonical_hash"]),
@@ -6978,7 +8939,14 @@ class ReweaveAppService:
                         "javascript_modules": values["javascript_modules"],
                         "assets": assets,
                     }
-                )
+                if adapter_contract_version == COMPUTATION_ADAPTER_V4:
+                    evidence = extraction_summary.get("ephemeral_capture_payload")
+                    if type(evidence) is not dict:
+                        raise ProductGenerationError(
+                            "formal_capsule_contract_invalid"
+                        )
+                    loaded_capsule["adapter_evidence"] = evidence
+                loaded.append(loaded_capsule)
         if len(limited_scopes) > 1 or any(not all(item) for item in limited_scopes):
             raise ProductGenerationError("product_brand_scope_conflict")
         product_scope = (

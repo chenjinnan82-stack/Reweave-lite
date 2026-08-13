@@ -620,10 +620,398 @@
     },
     "claim_boundary": "This proves durable local same-user authorization over an existing confirmed plan and its user-confirmed acceptance record. Remote agents, multiple accounts, shared-machine isolation, automatic expiry, renewal, product promotion, and user-project writes remain out of scope."
   },
+  "reweave_frontend_visual_v1": {
+    "status": "PASS",
+    "confirmed_date": "2026-07-28",
+    "gate_1_product_flow": "PASS",
+    "gate_2_capsule_warehouse_code_and_source_intake": "PASS",
+    "gate_3_target_integration_and_global_surfaces": "PASS",
+    "evidence": [
+      {
+        "directory_name": "reweave-frontend-visual-redesign-v1-01-product-flow",
+        "checksum_manifest_digest": "d527436f9d3043dc95bf30ef0da57c185a5fd3144e364ce424a732a6ebc33187"
+      },
+      {
+        "directory_name": "reweave-frontend-visual-redesign-v1-02-03-continuity-revision-03",
+        "checksum_manifest_digest": "ce2fa2abdac35eaf604cbcece2ccd3ba1deb9eeadc0784228feb0fe4cbe11a86"
+      }
+    ],
+    "claim_boundary": "PASS covers the Reweave desktop product flow, capsule warehouse, verified code, source intake, target integration, compatibility tools, welcome, and controlled initialization surfaces. It does not confirm the visual result of a newly generated standalone exported product."
+  },
   "standalone_product_delivery_v1": {
     "functional_status": "PASS",
     "exported_product_runtime": "PASS",
-    "visual_status": "PENDING_USER_CONFIRMATION"
+    "visual_status": "PASS",
+    "visual_confirmed_date": "2026-07-28",
+    "composer_version": "module_native_formal_product.v3",
+    "document_shell_ownership": {
+      "composer_host": "neutral_div",
+      "presentation_owns_main": true,
+      "final_main_count": 1,
+      "nested_main": false,
+      "validation_scope": "final_composed_real_qwebengine"
+    },
+    "candidate": {
+      "candidate_id": "candidate_c7ccc7c87049273d8f2541a7d5b1b67c",
+      "candidate_digest": "aa2ab8dbbb24bdc257457da14afaff661fe2cdc66e72a33a126b22c3b5493f3e",
+      "candidate_content_digest": "c2d025f321f5309b5e79961d9b25e7586a24f64feac04d8f25003161f6c5ea63",
+      "status": "review_ready",
+      "business_cases": [
+        "1→10",
+        "3→30",
+        "10→100"
+      ],
+      "idempotent": true
+    },
+    "offline_delivery": {
+      "independent_qwebengine_processes": 2,
+      "exports_byte_equal": true,
+      "same_parent_repeat": "already_saved",
+      "content_conflict_without_overwrite": true,
+      "network_attempts": 0,
+      "outside_file_attempts": 0
+    },
+    "evidence": {
+      "directory_name": "unique-composer-document-shell-ownership-v1-01",
+      "checksum_entries": 62,
+      "checksum_manifest_digest": "0f317af9c9f1ba2d9507954237a8cffbfc95ed6058cae33bbf59a7bf6c702ec0",
+      "visual_viewports": [
+        "1100×720",
+        "960×720"
+      ]
+    },
+    "year_month_conversion_level_three_minimum_real_loop_v1": {
+      "level_three_minimum_real_loop_status": "PASS",
+      "level_three_overall_status": "PARTIAL",
+      "functional_status": "PASS",
+      "runtime_operational": "PASS",
+      "product_goal_conformance": "PASS",
+      "export_safety_status": "PASS",
+      "standalone_runtime_status": "PASS",
+      "visual_status": "PASS",
+      "visual_confirmed_date": "2026-08-09",
+      "formal_warehouse": {
+        "warehouse_revision": 57,
+        "sqlite_sha256": "6a87268955e32dfbb4b48fcc3051c008d2ca2eb85b6fd7bd3ceb4116f8b67e9b",
+        "complete_offers": [
+          "quote_calculation",
+          "time_unit_conversion",
+          "year_month_conversion"
+        ]
+      },
+      "frozen_review_admission": {
+        "schema_version": "frozen_stage3_review_admission.v2",
+        "review_id": "review_c0ab58442258415ba3c5b1a936167a65",
+        "status": "review_required",
+        "capsule_versions_created": 0,
+        "warehouse_revision_before": 55,
+        "warehouse_revision_after": 56
+      },
+      "publication": {
+        "decision": "publish_general",
+        "capability_key": "year_month_conversion",
+        "role_key": "years_to_months",
+        "variant_key": "default",
+        "capsule_id": "cap_5a08231d69ae4dc186f85ee152c48b66",
+        "version_id": "ver_639cd4ba108b403da0666ea5088b33f6",
+        "canonical_hash": "f0722968059be0fa8dabfbd6295c4e90380a7ea46fb2f93acdbd77773ffe38a5"
+      },
+      "replan_handoff": {
+        "schema_version": "capability_replan_handoff.v1",
+        "target_offer_digest": "0abd27a8b9edafae410d66584079fcfd5dd318eb1e14db4ada46123d37c207d9",
+        "request_digest": "6166a6d9496587c586b210dd9ea343e0cce44bd8cb9d4475f2b873edb9508acd",
+        "handoff_digest": "0f47ebdab613e9521539153eddf4faaea9cafef31b809111bf39c81993081c62"
+      },
+      "planning": {
+        "plan_schema_version": "product_plan.v2",
+        "workspace_schema_version": "product_workspace.v7",
+        "planning_rules_version": "reweave_product_planning_rules.v7",
+        "planning_prompt_version": "reweave_product_planning_prompt.v11",
+        "plan_digest": "fb4169fd3c42773bcd44be6121e8bac5c1c72dba9bcd211deb99494e01b522ca",
+        "model_generate_calls": 3,
+        "retries": 0,
+        "gap_count": 0,
+        "role_order": [
+          "years_input",
+          "years_to_months",
+          "months_result"
+        ],
+        "dependencies": [
+          [
+            "years_input",
+            "years_to_months"
+          ],
+          [
+            "years_to_months",
+            "months_result"
+          ]
+        ]
+      },
+      "candidate": {
+        "candidate_id": "candidate_1c9aa41012c1da4a13c5c79ad2d2885d",
+        "candidate_digest": "97d6be32d157ca8e281f2c9817c78cabea542f60d466f011f9e15900947b1fc1",
+        "status": "review_ready",
+        "execution_version": "plan_execution.v1",
+        "composer_version": "module_native_formal_product.v3",
+        "provenance_version": "product_candidate_provenance.v1",
+        "business_cases": [
+          "1→12",
+          "2→24",
+          "100→1200"
+        ],
+        "final_main_count": 1,
+        "nested_main": false
+      },
+      "offline_delivery": {
+        "export_file_count": 7,
+        "export_manifest_digest": "c65139838adb7ec3018e12862c7fa33d6fbc00dc8498a792de8a02f18f02ead0",
+        "exports_byte_size_mode_equal": true,
+        "same_parent_repeat": "already_saved",
+        "content_conflict_without_overwrite": true,
+        "unicode_case_collision_rejected": true,
+        "path_escape_rejected": true,
+        "no_follow_destination_rejected": true,
+        "independent_qwebengine_processes": 2,
+        "fresh_restart_passed": true,
+        "network_attempts": 0,
+        "bridge_accesses": 0,
+        "sqlite_accesses": 0,
+        "formal_warehouse_accesses": 0,
+        "outside_file_attempts": 0,
+        "javascript_runtime_errors": 0
+      },
+      "evidence": {
+        "frozen_review_admission_manifest_digest": "84f92faeb57973886a5a55192930ff90c1260ebb854b8a940d570594d174b198",
+        "publication_manifest_digest": "0a49134cb9b3c0d3894922f788a73dcccf4f3c9c58916965e562a0782ae9a5d0",
+        "replan_handoff_manifest_digest": "8c6d67c2ba9f9d407d10d6a2e29decbd26d8ce7999b75b7355b9bf13370129b4",
+        "real_replan_manifest_digest": "ef48bc4023becb45f4ad4a18b70eeae1d55a94586060d1549ef92a02995600b1",
+        "candidate_acceptance_manifest_digest": "3e8971422c4b2dd1ba9ba14ed5f41c2a0b1f7f184cb523c3191edd2fedd37587",
+        "standalone_runtime_checksum_entries": 66,
+        "standalone_runtime_manifest_digest": "0d2357fcf530ab94e9b3d77a65ff32ed1505a6988e7f6c250d119ed7ab9a250c",
+        "visual_viewports": [
+          "1100×720",
+          "960×720"
+        ]
+      },
+      "claim_boundary": "PASS closes the year-to-month standalone delivery and one bounded real Level-3 minimum loop from deterministic gap through user-authorized source proposal, formal review admission, publication, deterministic replan handoff, confirmed plan, Candidate acceptance, safe export, independent offline runtime, and user visual confirmation. Level 3 overall remains PARTIAL and this does not prove an integrated ordinary-user Level-3 experience, formal products promotion, immutable product-version history, fan-out/fan-in, Data capsules, cross-capability composition, or general multi-capability composition."
+    },
+    "rectangle_area_standalone_delivery_v1": {
+      "rectangle_area_standalone_delivery_status": "PASS",
+      "level_three_minimum_real_loop_status": "PASS",
+      "level_three_overall_status": "PARTIAL",
+      "functional_status": "PASS",
+      "runtime_operational": "PASS",
+      "product_goal_conformance": "PASS",
+      "export_safety_status": "PASS",
+      "standalone_runtime_status": "PASS",
+      "visual_status": "PASS",
+      "visual_confirmed_date": "2026-08-11",
+      "formal_warehouse": {
+        "warehouse_revision": 63,
+        "sqlite_sha256": "355b51346a43ef14012f6900e4a1a6200a1740261986e5139f6998471739bcb0",
+        "capability_key": "rectangle_area_calculation",
+        "active_roles": [
+          {
+            "capability_kind": "interaction",
+            "role_key": "rectangle_dimensions_input",
+            "capsule_id": "cap_94a779551c8f46c2b8605e6731c59f27",
+            "version_id": "ver_f7758cb0bd154f0e944d911eb7868b18",
+            "canonical_hash": "27c9724a4ada6dae0db3bca7e498ed362921e2fa68cf5f9310ec100d7a2940e1"
+          },
+          {
+            "capability_kind": "computation",
+            "role_key": "rectangle_area",
+            "capsule_id": "cap_444bc0a1c2664113817549045fab0242",
+            "version_id": "ver_d0b21c95ab5a437bb7ed1816e38d18aa",
+            "canonical_hash": "d32eae0cf1c0ebf16a9dae6078017c172b9b67cb95114aa66220c67e01efcf88"
+          },
+          {
+            "capability_kind": "presentation",
+            "role_key": "rectangle_area_result",
+            "capsule_id": "cap_b15f460119994ee4a42be1bc50bf75a8",
+            "version_id": "ver_f2834212cd524f048bf1b4af5561b278",
+            "canonical_hash": "0d4ea74070c1a2c5180b4496be27f2c6c2b124f06e6bb037f38bfaa8d94a88bd"
+          }
+        ]
+      },
+      "planning": {
+        "plan_digest": "3a75beb77ee404d35fa47667ef798d08ecb00873d7f8115d9c258cd9a8009c61",
+        "confirmation_digest": "3c6f93622141cfe86ea1acf1956224406555eaeb13aa29982b762c2d9ee9270d",
+        "role_order": [
+          "rectangle_dimensions_input",
+          "rectangle_area",
+          "rectangle_area_result"
+        ]
+      },
+      "candidate": {
+        "candidate_id": "candidate_26630ba655cc01b69090a194ac3fbdae",
+        "candidate_digest": "99e4c3ff052ee3c8f0f2ce957ab9cbe41a151efd492a8dc82a8b206c1b387218",
+        "status": "review_ready",
+        "execution_version": "plan_execution.v1",
+        "execution_digest": "8e3b2afd92e5568bea32013b507e079a6b940f3c9f70615d282133b3e4c143ce",
+        "composer_version": "module_native_formal_product.v3",
+        "provenance_version": "product_candidate_provenance.v1",
+        "business_cases": [
+          "1×1→1",
+          "12×8→96",
+          "1000×1000→1000000"
+        ],
+        "final_main_count": 1,
+        "nested_main": false,
+        "generic_multi_field_acceptance_ui_seam_regression": "PASS"
+      },
+      "offline_delivery": {
+        "export_file_count": 7,
+        "export_manifest_digest": "1dd069858d6ce7d878d6df611bf06b526b1349d729b3582a87fdb363006872be",
+        "exports_byte_size_mode_equal": true,
+        "same_parent_repeat": "already_saved",
+        "content_conflict_without_overwrite": true,
+        "unicode_case_collision_rejected": true,
+        "path_escape_rejected": true,
+        "no_follow_destination_rejected": true,
+        "independent_qwebengine_processes": 2,
+        "fresh_restart_passed": true,
+        "network_attempts": 0,
+        "bridge_accesses": 0,
+        "sqlite_accesses": 0,
+        "outside_file_attempts": 0,
+        "javascript_runtime_errors": 0
+      },
+      "evidence": {
+        "candidate_acceptance_checksum_entries": 25,
+        "candidate_acceptance_manifest_digest": "d58972dd2c49a5fba094210b88ed3d41d2218a53250743440ab907663d98c098",
+        "standalone_runtime_checksum_entries": 59,
+        "standalone_runtime_manifest_digest": "c068320243bcc29e412da9eaab7bfc659a2d2a07b3a71996b839ad3b5091e2a7",
+        "visual_confirmation_checksum_entries": 3,
+        "visual_confirmation_manifest_digest": "4a2ca81ad44bd53f8a6a7221e6bf2ce77a9312401ebb5333be81e789d6e7c366"
+      },
+      "claim_boundary": "PASS closes the rectangle-area standalone delivery and repeats the bounded Level-3 minimum real loop for one interaction, one pure computation, and one presentation in a single capability_key with a unique serial connection. The Candidate remains review_ready. This does not prove formal products promotion, immutable product-version history, automatic general presentation/interaction source creation, fan-out/fan-in, Data capsules, cross-capability composition, or Level 3 overall."
+    },
+    "workflow_state_classification_standalone_delivery_v1": {
+      "finite_string_enum_standalone_delivery_status": "PASS",
+      "level_three_minimum_real_loop_status": "PASS",
+      "level_three_overall_status": "PARTIAL",
+      "functional_status": "PASS",
+      "runtime_operational": "PASS",
+      "product_goal_conformance": "PASS",
+      "export_safety_status": "PASS",
+      "standalone_runtime_status": "PASS",
+      "visual_status": "PASS",
+      "visual_confirmed_date": "2026-08-13",
+      "visual_evidence_role": "auxiliary user review boundary; not the primary capability proof",
+      "formal_warehouse": {
+        "warehouse_revision": 73,
+        "sqlite_sha256": "0d1acbdf3c4fdc98290de31d38676dc395b7c99dcd84919f2000a3838c6c275b",
+        "catalog_digest": "fc793ac707e24e1c41d1378e50ef0711b1fa8efd6fc492a88d40613348f085ad",
+        "capability_key": "workflow_state_classification",
+        "active_roles": [
+          {
+            "capability_kind": "interaction",
+            "role_key": "criteria_input",
+            "capsule_id": "cap_159f23cb96ec416484554478ef010fde",
+            "version_id": "ver_7e4cdf961fed4b83a862db0c8411c27a",
+            "canonical_hash": "27d69414393770ea17ae0fc7524431b90bd85cd02695bd6e89dde13e300bc4a0"
+          },
+          {
+            "capability_kind": "computation",
+            "role_key": "priority_classifier",
+            "capsule_id": "cap_fd597553f4f74632b786ec9d9c55833a",
+            "version_id": "ver_fadec45140ee409991b0b06c0c12b565",
+            "canonical_hash": "0bb82add5581ea6cc7335a5a26d0c4f3e9cafae2054d9f89b4ed4388ffea8649",
+            "capture_mapping_version": "computation_capture_mapping.v4",
+            "adapter_version": "computation_adapter.v4",
+            "source_graph_proof_version": "source_graph_proof.v2"
+          },
+          {
+            "capability_kind": "presentation",
+            "role_key": "classification_result",
+            "capsule_id": "cap_e61da0cfd38b4073873c73b2bc119321",
+            "version_id": "ver_2f02787bb6894a2b8d0b7468a39dfbd0",
+            "canonical_hash": "7f4fed310b5e17bf219a44a7917851466c3993c3df8369d70fc9854441c8b6fa"
+          }
+        ]
+      },
+      "planning": {
+        "plan_schema_version": "product_plan.v2",
+        "workspace_schema_version": "product_workspace.v9",
+        "planning_rules_version": "reweave_product_planning_rules.v9",
+        "planning_prompt_version": "reweave_product_planning_prompt.v12",
+        "plan_digest": "fdfa499f549530ed2fbe85c3385a0e20ee89e42ea23988f6ba121cbdf94882e6",
+        "model_generate_calls": 3,
+        "retries": 0,
+        "gap_count": 0,
+        "role_order": [
+          "criteria_input",
+          "priority_classifier",
+          "classification_result"
+        ],
+        "dependencies": [
+          [
+            "criteria_input",
+            "priority_classifier"
+          ],
+          [
+            "priority_classifier",
+            "classification_result"
+          ]
+        ]
+      },
+      "candidate": {
+        "candidate_id": "candidate_ce6dcf3536cfa87f34dda1acf7c3170b",
+        "candidate_digest": "bec0c3776f0ef8a97785c246ebf4f011cb9b56300ee21cfc86d4300e74ef09ef",
+        "candidate_content_digest": "c0119bbd0fdb98bb690657e552faa9d9ed7ed496a8179948a00becdabadc3c35",
+        "status": "review_ready",
+        "execution_version": "plan_execution.v1",
+        "execution_digest": "be295a0948448b6698b157d93ea3c961bd8616ed82f7803525f9e96fdd21ad18",
+        "composer_version": "module_native_formal_product.v6",
+        "provenance_version": "product_candidate_provenance.v1",
+        "candidate_acceptance_cases": [
+          "true,true→do_now",
+          "true,false→schedule",
+          "false,true→delegate"
+        ],
+        "offline_full_cases": [
+          "true,true→do_now",
+          "true,false→schedule",
+          "false,true→delegate",
+          "false,false→drop"
+        ],
+        "final_main_count": 1,
+        "nested_main": false
+      },
+      "offline_delivery": {
+        "export_file_count": 7,
+        "export_manifest_digest": "42613abd9f26e2c4d8a42f5bba38ce40b6daaca9f89e19e5f93421f5bb7d21b1",
+        "exports_byte_size_mode_equal": true,
+        "same_parent_repeat": "already_saved",
+        "content_conflict_without_overwrite": true,
+        "unicode_case_collision_rejected": true,
+        "path_escape_rejected": true,
+        "no_follow_destination_rejected": true,
+        "independent_qwebengine_processes": 2,
+        "fresh_restart_passed": true,
+        "network_attempts": 0,
+        "bridge_accesses": 0,
+        "sqlite_accesses": 0,
+        "formal_warehouse_accesses": 0,
+        "outside_file_attempts": 0,
+        "javascript_runtime_errors": 0
+      },
+      "evidence": {
+        "gap_plan_manifest_digest": "f8442ed9c24d3fee4ef7ad05acf0c6f8e02fbd470171dc733748c58879644063",
+        "source_proposal_review_manifest_digest": "2a3325b8ac8dcc1ebab3326402a871b8e9dd4f5086bf5e9c99777fb89f3d7027",
+        "publication_manifest_digest": "3cdbaff0a4781fb9f1e55ef7a2f0333796a263f36bc524902fa2868126372e30",
+        "real_replan_manifest_digest": "238595eb553eaa1027d5972bbffc29e9888719ff672cdd375a2cc6fe895946f4",
+        "candidate_acceptance_checksum_entries": 43,
+        "candidate_acceptance_manifest_digest": "ad3c671c565cb169dd78baed500a112c70c2ab4bc78660677cd204682b887c21",
+        "standalone_runtime_checksum_entries": 71,
+        "standalone_runtime_manifest_digest": "f15aa8099c19f41de05f8428b3d99b24a10a7eedb4531b4f5f64c6d456c1548a",
+        "visual_confirmation_checksum_entries": 2,
+        "visual_confirmation_manifest_digest": "a49d15d38de38b452931bd1e72af9ca6ec50e2547e3bc99fd27ac77614c08c9c"
+      },
+      "claim_boundary": "PASS proves the first bounded non-numeric boolean-to-finite-string-enum capability through deterministic multi-gap user selection, source proposal, capture/adapter v4, formal publication, fixed-model replan, Composer v6 Candidate acceptance, safe export, and independent offline runtime. Visual confirmation closes only the user-review boundary. This does not prove arbitrary strings or objects, a general type system, formal products promotion, immutable product-version history, fan-out/fan-in, Data capsules, cross-capability composition, or Level 3 overall."
+    },
+    "claim_boundary": "PASS records bounded standalone-product deliveries through their exact Composer identities, review-ready Candidates, confirmed business conformance, independent offline runtime, reproducible safe export, and user visual confirmation. It does not prove formal products promotion, immutable product-version history, or general multi-capability composition."
   },
   "tests": {
     "python_compile": {

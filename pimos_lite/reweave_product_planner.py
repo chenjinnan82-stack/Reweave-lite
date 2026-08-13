@@ -28,6 +28,12 @@ from pimos_lite.reweave_canonical import (
     canonical_json_bytes,
     canonical_json_digest,
 )
+from pimos_lite.reweave_data_contract import (
+    DataContractError,
+    contracts_compatible,
+    data_contract_accepts,
+    normalize_capsule_contracts,
+)
 from pimos_lite.reweave_plan_execution import (
     CANDIDATE_ACCEPTANCE_CONFIRMATION_VERSION,
     MAX_CANDIDATE_ACCEPTANCE_CASES,
@@ -38,13 +44,72 @@ from pimos_lite.reweave_plan_execution import (
 )
 
 
-PLAN_SCHEMA_VERSION = "product_plan.v1"
-WORKSPACE_SCHEMA_VERSION = "product_workspace.v3"
+LEGACY_PLAN_SCHEMA_VERSION = "product_plan.v1"
+PLAN_SCHEMA_VERSION = "product_plan.v2"
+LEGACY_WORKSPACE_SCHEMA_VERSION = "product_workspace.v3"
+DIRECT_BLUEPRINT_WORKSPACE_SCHEMA_VERSION = "product_workspace.v4"
+LEGACY_LOCKED_BLUEPRINT_WORKSPACE_SCHEMA_VERSION = "product_workspace.v5"
+PREVIOUS_LOCKED_BLUEPRINT_WORKSPACE_SCHEMA_VERSION = "product_workspace.v6"
+PREVIOUS_GAP_WORKSPACE_SCHEMA_VERSION = "product_workspace.v7"
+PREVIOUS_TARGET_SELECTION_WORKSPACE_SCHEMA_VERSION = "product_workspace.v8"
+WORKSPACE_SCHEMA_VERSION = "product_workspace.v9"
+LOCKED_BLUEPRINT_WORKSPACE_SCHEMA_VERSIONS = frozenset(
+    {
+        LEGACY_LOCKED_BLUEPRINT_WORKSPACE_SCHEMA_VERSION,
+        PREVIOUS_LOCKED_BLUEPRINT_WORKSPACE_SCHEMA_VERSION,
+        PREVIOUS_GAP_WORKSPACE_SCHEMA_VERSION,
+        PREVIOUS_TARGET_SELECTION_WORKSPACE_SCHEMA_VERSION,
+        WORKSPACE_SCHEMA_VERSION,
+    }
+)
+GAP_WORKSPACE_SCHEMA_VERSIONS = frozenset(
+    {
+        PREVIOUS_GAP_WORKSPACE_SCHEMA_VERSION,
+        PREVIOUS_TARGET_SELECTION_WORKSPACE_SCHEMA_VERSION,
+        WORKSPACE_SCHEMA_VERSION,
+    }
+)
+TARGET_SELECTION_WORKSPACE_SCHEMA_VERSIONS = frozenset(
+    {
+        PREVIOUS_TARGET_SELECTION_WORKSPACE_SCHEMA_VERSION,
+        WORKSPACE_SCHEMA_VERSION,
+    }
+)
 MODEL_SELECTION_SCHEMA_VERSION = "product_planning_model_selection.v1"
 SECTION_DRAFT_SCHEMA_VERSION = "product_plan_section_draft.v2"
 SECTION_CHECKPOINT_SCHEMA_VERSION = "product_plan_section_checkpoint.v2"
-PLANNING_RULES_VERSION = "reweave_product_planning_rules.v2"
-PLANNING_PROMPT_VERSION = "reweave_product_planning_prompt.v5"
+LEGACY_PLANNING_RULES_VERSION = "reweave_product_planning_rules.v2"
+SECTION_PLANNING_RULES_VERSION = "reweave_product_planning_rules.v3"
+LEGACY_BLUEPRINT_PLANNING_RULES_VERSION = "reweave_product_planning_rules.v4"
+DIRECT_BLUEPRINT_PLANNING_RULES_VERSION = "reweave_product_planning_rules.v5"
+PREVIOUS_LOCKED_BLUEPRINT_PLANNING_RULES_VERSION = (
+    "reweave_product_planning_rules.v6"
+)
+PREVIOUS_GAP_PLANNING_RULES_VERSION = "reweave_product_planning_rules.v7"
+PREVIOUS_TARGET_SELECTION_PLANNING_RULES_VERSION = (
+    "reweave_product_planning_rules.v8"
+)
+PLANNING_RULES_VERSION = "reweave_product_planning_rules.v9"
+SUPPORTED_PLANNING_RULES_VERSIONS = frozenset(
+    {
+        LEGACY_PLANNING_RULES_VERSION,
+        SECTION_PLANNING_RULES_VERSION,
+        LEGACY_BLUEPRINT_PLANNING_RULES_VERSION,
+        DIRECT_BLUEPRINT_PLANNING_RULES_VERSION,
+        PREVIOUS_LOCKED_BLUEPRINT_PLANNING_RULES_VERSION,
+        PREVIOUS_GAP_PLANNING_RULES_VERSION,
+        PREVIOUS_TARGET_SELECTION_PLANNING_RULES_VERSION,
+        PLANNING_RULES_VERSION,
+    }
+)
+HISTORICAL_PLANNING_PROMPT_VERSION = "reweave_product_planning_prompt.v5"
+LEGACY_PLANNING_PROMPT_VERSION = "reweave_product_planning_prompt.v6"
+LEGACY_BLUEPRINT_PROMPT_VERSION = "reweave_product_planning_prompt.v7"
+DIRECT_BLUEPRINT_PROMPT_VERSION = "reweave_product_planning_prompt.v8"
+LEGACY_LOCKED_BLUEPRINT_PROMPT_VERSION = "reweave_product_planning_prompt.v9"
+PREVIOUS_LOCKED_BLUEPRINT_PROMPT_VERSION = "reweave_product_planning_prompt.v10"
+PREVIOUS_GAP_PLANNING_PROMPT_VERSION = "reweave_product_planning_prompt.v11"
+PLANNING_PROMPT_VERSION = "reweave_product_planning_prompt.v12"
 ACTION_SUGGESTION_PROMPT_VERSION = "product_plan_action_suggestion_prompt.v1"
 ACTION_SUGGESTION_SCHEMA_VERSION = "product_plan_action_suggestion.v1"
 REVISION_PROMPT_VERSIONS = {
@@ -74,6 +139,8 @@ PRODUCT_PLANNING_PHASES = frozenset(
     {
         "model_probe",
         "requirements_outline",
+        "composition_selection",
+        "product_blueprint",
         *SECTION_IDS,
         "catalog_match",
         "validation",
@@ -89,17 +156,98 @@ MAX_FEEDBACK_CHARS = 2_000
 CATALOG_BATCH_SIZE = 16
 HTTP_TIMEOUT_SECONDS = 45
 FORMAL_MODEL_TIMEOUT_SECONDS = 180
+CAPABILITY_GAP_PROJECTION_VERSION = "capability_gap_projection.v1"
+CAPABILITY_GAP_PROJECTION_V2 = "capability_gap_projection.v2"
+CAPABILITY_GAP_DECISION_VERSION = "capability_gap_decision.v1"
+CAPABILITY_GAP_TARGET_SELECTION_VERSION = (
+    "product_capability_gap_target_selection.v1"
+)
+CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_VERSION = (
+    "capability_source_proposal_authorization.v1"
+)
+CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_V2 = (
+    "capability_source_proposal_authorization.v2"
+)
+CAPABILITY_SOURCE_PROPOSAL_REQUEST_VERSION = (
+    "capability_source_proposal_request.v1"
+)
+CAPABILITY_SOURCE_PROPOSAL_PROMPT_VERSION = (
+    "capability_source_proposal_prompt.v1"
+)
+CAPABILITY_SOURCE_PROPOSAL_REQUEST_V2 = (
+    "capability_source_proposal_request.v2"
+)
+CAPABILITY_SOURCE_PROPOSAL_PROMPT_V2 = (
+    "capability_source_proposal_prompt.v2"
+)
+CAPABILITY_SOURCE_PROPOSAL_REQUEST_V3 = (
+    "capability_source_proposal_request.v3"
+)
+CAPABILITY_SOURCE_PROPOSAL_PROMPT_V3 = (
+    "capability_source_proposal_prompt.v3"
+)
+CAPABILITY_SOURCE_PROPOSAL_REQUEST_V4 = (
+    "capability_source_proposal_request.v4"
+)
+CAPABILITY_SOURCE_PROPOSAL_PROMPT_V4 = (
+    "capability_source_proposal_prompt.v4"
+)
+CAPABILITY_SOURCE_FUNCTION_ABI_VERSION = (
+    "capability_source_function_abi.v1"
+)
+CAPABILITY_SOURCE_FUNCTION_ABI_V2 = "capability_source_function_abi.v2"
+CAPABILITY_SOURCE_PROPOSAL_OUTPUT_VERSION = "capability_source_proposal.v1"
+CAPABILITY_SOURCE_PROPOSAL_OUTPUT_V2 = "capability_source_proposal.v2"
+CAPABILITY_SOURCE_PROPOSAL_MAX_BYTES = 4_096
+CAPABILITY_SOURCE_PROPOSAL_RUN_VERSION = (
+    "capability_source_proposal_run.v1"
+)
+CAPABILITY_SOURCE_PROPOSAL_RUN_EVENT_VERSION = (
+    "capability_source_proposal_run_event.v1"
+)
+CAPABILITY_SOURCE_PROPOSAL_RUN_STATUSES = frozenset(
+    {"pending", "running", "review_required", "failed", "cancelled"}
+)
+CAPABILITY_SOURCE_PROPOSAL_RUN_STAGES = (
+    "source_proposal",
+    "intake",
+    "security",
+    "runtime",
+    "supervision",
+    "admission",
+)
+MAX_CAPABILITY_GAP_DECISIONS = 128
+CAPABILITY_REPLAN_HANDOFF_VERSION = "capability_replan_handoff.v1"
+CAPABILITY_REPLAN_OFFER_VERSION = "product_capability_replan_offer.v1"
 
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _WORKSPACE_ID = re.compile(r"workspace_[0-9a-f]{32}\Z")
 _PLAN_TOKEN = re.compile(r"plan_token_[0-9a-f]{48}\Z")
 _HANDOFF_TOKEN = re.compile(r"handoff_token_[0-9a-f]{48}\Z")
+_GAP_ID = re.compile(r"gap_[0-9a-f]{20}\Z")
+_GAP_DECISION_FILENAME = re.compile(
+    r"decision_([0-9]{6})_([0-9a-f]{64})\.json\Z"
+)
+_SOURCE_PROPOSAL_RUN_ID = re.compile(r"run_[0-9a-f]{32}\Z")
+_SOURCE_PROPOSAL_RUN_EVENT_FILENAME = re.compile(
+    r"event_([0-9]{6})_([0-9a-f]{64})\.json\Z"
+)
+_CAPABILITY_REPLAN_HANDOFF_FILENAME = re.compile(
+    r"handoff_([0-9a-f]{64})\.json\Z"
+)
 _SUGGESTION_RECEIPT = re.compile(r"suggestion_receipt_[0-9a-f]{48}\Z")
 _SAFE_REF = re.compile(r"[A-Za-z][A-Za-z0-9_.:-]{0,95}\Z")
 _RUNNING_STATES = frozenset({"model_probe", "planning"})
 _SENSITIVE_QUESTION = re.compile(
     r"password|passcode|token|api[ _-]?key|secret|private key|absolute path|"
     r"密码|口令|令牌|密钥|绝对路径",
+    re.IGNORECASE,
+)
+_ABSENCE_CONSTRAINT = re.compile(
+    r"(?:不使用|不需要|无需|不得|禁止|不依赖|"
+    r"无(?:网络|登录|数据库|部署)|"
+    r"\boffline\b|\blocal[- ]only\b|\bwithout\b|"
+    r"\bno (?:network|login|database|deployment)\b)",
     re.IGNORECASE,
 )
 
@@ -141,7 +289,10 @@ def _question_schema() -> dict[str, Any]:
 def _structured_output_schema(
     call_type: str,
     request_value: dict[str, Any],
+    *,
+    prompt_version: str | None = None,
 ) -> dict[str, Any]:
+    prompt_version = prompt_version or PLANNING_PROMPT_VERSION
     if call_type == "schema_probe":
         return _schema_object(
             {
@@ -183,6 +334,260 @@ def _structured_output_schema(
                     "type": "array",
                     "items": _question_schema(),
                     "maxItems": 3,
+                },
+            }
+        )
+    if call_type == "composition_selection":
+        composition_offers = request_value.get("composition_offers")
+        selection_locked = request_value.get("selection_locked") is True
+        if type(composition_offers) is not list:
+            raise ProductPlanningError("product_plan_call_type_invalid")
+        capability_keys = [
+            offer.get("capability_key")
+            for offer in composition_offers
+            if type(offer) is dict
+        ]
+        if (
+            len(capability_keys) != len(composition_offers)
+            or any(type(key) is not str or not key for key in capability_keys)
+            or (
+                selection_locked
+                and len(set(capability_keys)) != 1
+            )
+        ):
+            raise ProductPlanningError("product_plan_call_type_invalid")
+        return _schema_object(
+            {
+                "schema_version": {
+                    "type": "string",
+                    "enum": ["product_composition_selection.v1"],
+                },
+                "capability_key": {
+                    "type": "string",
+                    "enum": (
+                        sorted(set(capability_keys))
+                        if selection_locked
+                        else [*sorted(set(capability_keys)), ""]
+                    ),
+                },
+            }
+        )
+    if call_type == "product_blueprint":
+        requirements = request_value.get("requirements")
+        composition_offers = request_value.get("composition_offers")
+        selection_locked = request_value.get("selection_locked") is True
+        capability_gap_lock = request_value.get("capability_gap_lock")
+        gap_locked = capability_gap_lock is not None
+        if type(requirements) is not list or type(composition_offers) is not list:
+            raise ProductPlanningError("product_plan_call_type_invalid")
+        if gap_locked and (
+            type(capability_gap_lock) is not dict
+            or set(capability_gap_lock)
+            != {
+                "schema_version",
+                "capability_key",
+                "capability_group_display_name",
+                "capability_kind",
+                "slot",
+                "adapter_contract_version",
+                "input_fields",
+                "output_fields",
+                "existing_members",
+            }
+            or capability_gap_lock.get("schema_version")
+            not in {
+                "product_capability_gap_blueprint_lock.v1",
+                "product_capability_gap_blueprint_lock.v2",
+            }
+            or (
+                capability_gap_lock.get("schema_version")
+                == "product_capability_gap_blueprint_lock.v1"
+                and capability_gap_lock.get("adapter_contract_version")
+                not in {"computation_adapter.v2", "computation_adapter.v3"}
+            )
+            or (
+                capability_gap_lock.get("schema_version")
+                == "product_capability_gap_blueprint_lock.v2"
+                and capability_gap_lock.get("adapter_contract_version")
+                != "computation_adapter.v4"
+            )
+            or capability_gap_lock.get("capability_kind") != "computation"
+            or not selection_locked
+            or composition_offers
+        ):
+            raise ProductPlanningError("product_plan_call_type_invalid")
+        requirement_refs = [
+            item.get("ref")
+            for item in requirements
+            if type(item) is dict and type(item.get("ref")) is str
+        ]
+        offer_refs: list[str] = []
+        offer_members: list[list[str]] = []
+        for offer in sorted(
+            composition_offers,
+            key=lambda item: (
+                str(item.get("offer_ref")) if type(item) is dict else ""
+            ),
+        ):
+            if (
+                type(offer) is not dict
+                or type(offer.get("offer_ref")) is not str
+                or type(offer.get("members")) is not list
+            ):
+                raise ProductPlanningError("product_plan_call_type_invalid")
+            members = [
+                item.get("candidate_ref")
+                for item in offer["members"]
+                if type(item) is dict
+                and type(item.get("candidate_ref")) is str
+            ]
+            if (
+                len(members) != len(offer["members"])
+                or not members
+                or len(set(members)) != len(members)
+            ):
+                raise ProductPlanningError("product_plan_call_type_invalid")
+            offer_refs.append(offer["offer_ref"])
+            offer_members.append(members)
+        if (
+            not requirement_refs
+            or len(requirement_refs) != len(requirements)
+            or len(set(requirement_refs)) != len(requirement_refs)
+            or len(set(offer_refs)) != len(offer_refs)
+            or "" in offer_refs
+        ):
+            raise ProductPlanningError("product_plan_call_type_invalid")
+        sections = {
+            section_id: _schema_object(
+                {
+                    "applicability": {
+                        "type": "string",
+                        "enum": (
+                            [
+                                "applicable"
+                                if section_id == "backend"
+                                else "not_applicable"
+                            ]
+                            if gap_locked
+                            else ["applicable", "not_applicable"]
+                        ),
+                    },
+                    "summary": {
+                        "type": "string",
+                        "minLength": 1,
+                        "maxLength": 500,
+                    },
+                }
+            )
+            for section_id in SECTION_IDS
+        }
+        assignment = _schema_object(
+            {
+                "section_id": {"type": "string", "enum": list(SECTION_IDS)},
+                "requirement_refs": {
+                    "type": "array",
+                    "items": {"type": "string", "enum": requirement_refs},
+                    "minItems": 1,
+                    "uniqueItems": True,
+                },
+                "title": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 180,
+                },
+                "summary": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 800,
+                },
+                "acceptance_intent": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                },
+            }
+        )
+        gap = _schema_object(
+            {
+                **(
+                    {}
+                    if gap_locked
+                    else {
+                        "section_id": {
+                            "type": "string",
+                            "enum": list(SECTION_IDS),
+                        },
+                        "requirement_refs": {
+                            "type": "array",
+                            "items": {
+                                "type": "string",
+                                "enum": requirement_refs,
+                            },
+                            "minItems": 1,
+                            "uniqueItems": True,
+                        },
+                    }
+                ),
+                "title": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 180,
+                },
+                "reason": {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 500,
+                },
+            }
+        )
+        selection_options = [
+            _schema_object(
+                {
+                    "offer_ref": {"type": "string", "enum": [offer_ref]},
+                    "assignments": _schema_object(
+                        {candidate_ref: assignment for candidate_ref in members}
+                    ),
+                }
+            )
+            for offer_ref, members in zip(
+                offer_refs,
+                offer_members,
+                strict=True,
+            )
+        ]
+        if not selection_locked or not selection_options:
+            selection_options.append(
+                _schema_object(
+                    {
+                        "offer_ref": {"type": "string", "enum": [""]},
+                        "assignments": _schema_object({}),
+                    }
+                )
+            )
+        return _schema_object(
+            {
+                "schema_version": {
+                    "type": "string",
+                    "enum": ["product_plan_blueprint.v2"],
+                },
+                "sections": _schema_object(sections),
+                "selection": {"oneOf": selection_options},
+                "gaps": {
+                    "type": "array",
+                    "items": gap,
+                    **(
+                        {"minItems": 1, "maxItems": 1}
+                        if gap_locked
+                        else (
+                            {"maxItems": 0}
+                            if (
+                                selection_locked
+                                and selection_options
+                                and prompt_version == PLANNING_PROMPT_VERSION
+                            )
+                            else {"maxItems": 64}
+                        )
+                    ),
                 },
             }
         )
@@ -839,6 +1244,188 @@ class ProductPlanner:
             return self._planning_error(workspace, exc)
 
     @_public_call
+    def start_capability_replan(
+        self,
+        plan_token: str,
+        plan_digest: str,
+        projection_digest: str,
+        binding: dict[str, Any] | None,
+        catalog: dict[str, Any],
+        cancel_check: Callable[[], bool] | None = None,
+        *,
+        phase_callback: Callable[[str], None] | None = None,
+    ) -> dict[str, Any]:
+        if (
+            type(plan_token) is not str
+            or _PLAN_TOKEN.fullmatch(plan_token) is None
+            or type(plan_digest) is not str
+            or _DIGEST.fullmatch(plan_digest) is None
+            or type(projection_digest) is not str
+            or _DIGEST.fullmatch(projection_digest) is None
+        ):
+            raise ProductPlanningError("capability_replan_unavailable")
+        normalized_catalog = self._catalog(catalog)
+        source = self._workspace_by_token(plan_token)
+        request = {
+            "plan_token": plan_token,
+            "plan_digest": plan_digest,
+            "projection_digest": projection_digest,
+        }
+        request_digest = _digest(request)
+        existing = self._read_capability_replan_handoff(source)
+        if existing is not None:
+            if existing["request_digest"] != request_digest:
+                raise ProductPlanningError(
+                    "capability_replan_handoff_conflict"
+                )
+            self._validate_capability_replan_current(
+                existing,
+                normalized_catalog,
+            )
+            successor = self._successor_workspace_from_handoff(existing)
+            return _ok(
+                self._workspace_projection(successor, normalized_catalog)
+            )
+        if binding is None:
+            raise ProductPlanningError("capability_replan_unavailable")
+
+        plan = source.get("plan")
+        projection = self._read_capability_gap_projection(source)
+        if (
+            source.get("status") != "plan_review"
+            or type(plan) is not dict
+            or plan.get("canonical_digest") != plan_digest
+            or projection is None
+            or projection["projection_digest"] != projection_digest
+        ):
+            raise ProductPlanningError("capability_replan_unavailable")
+        decisions = self._capability_gap_decisions(source, projection)
+        decision = decisions[-1] if decisions else None
+        authorization = (
+            self._read_capability_source_proposal_authorization(
+                source,
+                projection,
+                decision,
+            )
+            if type(decision) is dict
+            and decision.get("decision") == "authorize"
+            else None
+        )
+        if authorization is None:
+            raise ProductPlanningError("capability_replan_unavailable")
+        binding = self._validate_capability_replan_binding(
+            binding,
+            projection,
+            decision,
+            authorization,
+        )
+        selected_model = self._model_identity(
+            self._selected_model(check_current=False)
+        )
+        if selected_model != source["model"]:
+            raise ProductPlanningError(
+                "capability_replan_handoff_stale"
+            )
+        target_offer = self._capability_replan_offer(
+            normalized_catalog,
+            projection,
+            binding["published_capsule"],
+            authorization["error_contract"],
+        )
+        if target_offer is None:
+            raise ProductPlanningError("capability_replan_unavailable")
+        suggestions = self._capability_replan_acceptance_suggestions(
+            normalized_catalog,
+            projection,
+            decision,
+        )
+        successor = self._new_workspace(source["goal"], selected_model)
+        successor["answers"] = self._planning_answers(source)
+        now = _now()
+        offer_digest = _digest(target_offer)
+        handoff_body = {
+            "schema_version": CAPABILITY_REPLAN_HANDOFF_VERSION,
+            "source_workspace_id": source["workspace_id"],
+            "source_plan_token": plan_token,
+            "source_plan_digest": plan_digest,
+            "source_gap_id": projection["gap_id"],
+            "projection_digest": projection_digest,
+            "authorize_decision_digest": decision["canonical_digest"],
+            "source_proposal_authorization_digest": authorization[
+                "authorization_digest"
+            ],
+            "admission_review_id": binding["admission_review_id"],
+            "admission_digest": binding["admission_digest"],
+            "publication_review_id": binding["publication_review_id"],
+            "published_capsule": copy.deepcopy(
+                binding["published_capsule"]
+            ),
+            "target_offer": target_offer,
+            "target_offer_digest": offer_digest,
+            "planning_model": selected_model,
+            "successor_workspace_id": successor["workspace_id"],
+            "successor_plan_token": successor["plan_token"],
+            "authorization_revision": binding["authorization_revision"],
+            "admission_revision_before": binding[
+                "admission_revision_before"
+            ],
+            "admission_revision_after": binding[
+                "admission_revision_after"
+            ],
+            "publication_revision": binding["publication_revision"],
+            "handoff_catalog_revision": normalized_catalog[
+                "warehouse_revision"
+            ],
+            "catalog_digest": _digest(normalized_catalog),
+            "request_digest": request_digest,
+            "acceptance_suggestions": suggestions,
+            "created_at": now,
+        }
+        handoff = {
+            **handoff_body,
+            "handoff_digest": _digest(handoff_body),
+        }
+        self._validate_capability_replan_handoff(handoff)
+        with self._lock:
+            repeated = self._read_capability_replan_handoff(source)
+            if repeated is not None:
+                if repeated != handoff:
+                    raise ProductPlanningError(
+                        "capability_replan_handoff_conflict"
+                    )
+                successor = self._successor_workspace_from_handoff(
+                    repeated
+                )
+            else:
+                self._write_immutable(
+                    self._capability_replan_handoff_path(plan_digest),
+                    handoff,
+                )
+                self._save_workspace(successor)
+        try:
+            self._report_phase("model_probe", phase_callback)
+            current = self._selected_model(
+                check_current=True,
+                cancel_check=cancel_check,
+            )
+            if self._model_identity(current) != selected_model:
+                raise ProductPlanningError(
+                    "capability_replan_handoff_stale"
+                )
+            self._validate_capability_replan_current(
+                handoff,
+                normalized_catalog,
+            )
+            return self._continue_initial_planning(
+                successor,
+                normalized_catalog,
+                cancel_check,
+                phase_callback,
+            )
+        except ProductPlanningError as exc:
+            return self._planning_error(successor, exc)
+
+    @_public_call
     def answer(
         self,
         plan_token: str,
@@ -868,6 +1455,23 @@ class ProductPlanner:
         try:
             structured = self._answers(question_set, answers)
             normalized_catalog = self._catalog(catalog)
+            gap_target_selection = None
+            if question_set["purpose"] == "capability_gap_target":
+                gap_target_selection = (
+                    self._capability_gap_target_selection(
+                        question_set,
+                        structured,
+                        normalized_catalog,
+                    )
+                )
+            handoff = self._capability_replan_for_successor(workspace)
+            if handoff is not None:
+                self._validate_capability_replan_current(
+                    handoff,
+                    normalized_catalog,
+                    check_model=True,
+                    cancel_check=cancel_check,
+                )
         except ProductPlanningError as exc:
             return _error(exc.code, self._workspace_projection(workspace))
         workspace["answers"].append(
@@ -880,13 +1484,34 @@ class ProductPlanner:
             }
         )
         workspace["current_question_set"] = None
+        if gap_target_selection is not None:
+            workspace["capability_gap_target_selection"] = (
+                gap_target_selection
+            )
         workspace["status"] = "planning"
         workspace["failure_code"] = None
         if question_set["purpose"] == "initial":
+            if (
+                workspace["schema_version"]
+                in TARGET_SELECTION_WORKSPACE_SCHEMA_VERSIONS
+            ):
+                workspace["capability_gap_target_selection"] = None
             workspace["outline"] = None
             workspace["outline_input_digest"] = None
             workspace["outline_response_digest"] = None
-            workspace["section_checkpoints"] = []
+            if workspace["schema_version"] == LEGACY_WORKSPACE_SCHEMA_VERSION:
+                workspace["section_checkpoints"] = []
+            else:
+                if (
+                    workspace["schema_version"]
+                    in LOCKED_BLUEPRINT_WORKSPACE_SCHEMA_VERSIONS
+                ):
+                    workspace["composition_selection"] = None
+                    workspace["composition_selection_input_digest"] = None
+                    workspace["composition_selection_response_digest"] = None
+                workspace["blueprint"] = None
+                workspace["blueprint_input_digest"] = None
+                workspace["blueprint_response_digest"] = None
             workspace["delivery_waves"] = {}
         workspace["updated_at"] = _now()
         with self._lock:
@@ -1284,6 +1909,797 @@ class ProductPlanner:
             return self._planning_error(workspace, exc)
 
     @_public_call
+    def record_capability_gap_decision(
+        self,
+        plan_token: str,
+        plan_digest: str,
+        projection_digest: str,
+        expected_previous_decision_digest: str | None,
+        decision: str,
+        behavior_intent: str | None,
+        reason: str | None,
+        acceptance_cases: list[dict[str, Any]],
+        catalog: dict[str, Any],
+    ) -> dict[str, Any]:
+        workspace = self._workspace_by_token(plan_token)
+        plan = workspace.get("plan")
+        if (
+            workspace.get("status") != "plan_review"
+            or type(plan) is not dict
+            or plan.get("canonical_digest") != plan_digest
+            or _DIGEST.fullmatch(str(projection_digest)) is None
+            or (
+                expected_previous_decision_digest is not None
+                and _DIGEST.fullmatch(
+                    str(expected_previous_decision_digest)
+                )
+                is None
+            )
+            or decision not in {"authorize", "defer", "reject"}
+            or type(acceptance_cases) is not list
+        ):
+            raise ProductPlanningError("capability_gap_decision_invalid")
+        current_catalog = self._catalog(catalog)
+        stored_projection = self._read_capability_gap_projection(workspace)
+        if stored_projection is not None and (
+            stored_projection["warehouse_revision"]
+            != current_catalog["warehouse_revision"]
+            or stored_projection["catalog_digest"] != _digest(current_catalog)
+        ):
+            raise ProductPlanningError("capability_gap_projection_stale")
+        projection, status = self._capability_gap_projection_for_workspace(
+            workspace,
+            plan,
+            current_catalog,
+        )
+        if projection is None or status != "available":
+            raise ProductPlanningError(status)
+        if projection["projection_digest"] != projection_digest:
+            raise ProductPlanningError("capability_gap_projection_stale")
+
+        def optional_text(
+            value: Any,
+            *,
+            required: bool,
+            maximum: int,
+        ) -> str | None:
+            if value is None and not required:
+                return None
+            if (
+                type(value) is not str
+                or value != value.strip()
+                or not value
+                or len(value) > maximum
+                or any(
+                    ord(character) < 32 and character not in "\n\t"
+                    for character in value
+                )
+            ):
+                raise ProductPlanningError(
+                    "capability_gap_decision_invalid"
+                )
+            return value
+
+        normalized_behavior = (
+            optional_text(behavior_intent, required=True, maximum=1_000)
+            if decision == "authorize"
+            else None
+        )
+        normalized_reason = (
+            optional_text(reason, required=True, maximum=500)
+            if decision == "reject"
+            else (
+                optional_text(reason, required=False, maximum=500)
+                if decision == "defer"
+                else None
+            )
+        )
+        normalized_cases = (
+            copy.deepcopy(acceptance_cases)
+            if decision == "authorize"
+            else []
+        )
+        path = self._capability_gap_projection_path_for(
+            workspace,
+            plan,
+            projection,
+        )
+        with self._lock:
+            if self._capability_source_proposal_authorization_paths(workspace):
+                raise ProductPlanningError(
+                    "capability_gap_authorization_locked"
+                )
+            self._ensure_directory(path.parent)
+            stored = stored_projection
+            if stored is None:
+                self._write_immutable(path, projection)
+                stored = projection
+            if stored != projection:
+                raise ProductPlanningError(
+                    "capability_gap_projection_stale"
+                )
+            decisions = self._capability_gap_decisions(
+                workspace,
+                projection,
+            )
+            previous = decisions[-1] if decisions else None
+            actual_previous = (
+                previous["canonical_digest"] if previous is not None else None
+            )
+            semantics = {
+                "decision": decision,
+                "behavior_intent": normalized_behavior,
+                "reason": normalized_reason,
+                "acceptance_cases": normalized_cases,
+            }
+            if previous is not None and all(
+                previous[key] == value for key, value in semantics.items()
+            ):
+                return _ok(
+                    self._workspace_projection(
+                        workspace,
+                        current_catalog,
+                    )
+                )
+            if expected_previous_decision_digest != actual_previous:
+                raise ProductPlanningError(
+                    "capability_gap_decision_conflict"
+                )
+            if len(decisions) >= MAX_CAPABILITY_GAP_DECISIONS:
+                raise ProductPlanningError(
+                    "capability_gap_decision_limit"
+                )
+            body = {
+                "schema_version": CAPABILITY_GAP_DECISION_VERSION,
+                "gap_projection_digest": projection["projection_digest"],
+                "plan_digest": plan["canonical_digest"],
+                "catalog_digest": projection["catalog_digest"],
+                "sequence": len(decisions) + 1,
+                "previous_decision_digest": actual_previous,
+                **semantics,
+                "decision_source": "user_confirmed",
+                "decided_at": _now(),
+            }
+            record = {**body, "canonical_digest": _digest(body)}
+            self._validate_capability_gap_decision(
+                record,
+                projection,
+                previous,
+            )
+            directory = self._capability_gap_decisions_dir(
+                workspace,
+                plan,
+            )
+            self._ensure_directory(directory)
+            decision_path = directory / (
+                f"decision_{record['sequence']:06d}_"
+                f"{record['canonical_digest']}.json"
+            )
+            self._write_immutable(decision_path, record)
+        return _ok(
+            self._workspace_projection(
+                workspace,
+                current_catalog,
+            )
+        )
+
+    @_public_call
+    def prepare_capability_source_proposal(
+        self,
+        plan_token: str,
+        plan_digest: str,
+        projection_digest: str,
+        authorize_decision_digest: str,
+        catalog: dict[str, Any],
+    ) -> dict[str, Any]:
+        workspace = self._workspace_by_token(plan_token)
+        plan = workspace.get("plan")
+        if (
+            workspace.get("status") != "plan_review"
+            or type(plan) is not dict
+            or plan.get("canonical_digest") != plan_digest
+            or _DIGEST.fullmatch(str(projection_digest)) is None
+            or _DIGEST.fullmatch(str(authorize_decision_digest)) is None
+        ):
+            raise ProductPlanningError(
+                "capability_source_proposal_authorization_invalid"
+            )
+        current_catalog = self._catalog(catalog)
+        with self._lock:
+            projection = self._read_capability_gap_projection(workspace)
+            if projection is None:
+                raise ProductPlanningError(
+                    "capability_source_proposal_authorization_required"
+                )
+            expected, status = self._capability_gap_projection_for_workspace(
+                workspace,
+                plan,
+                current_catalog,
+            )
+            if (
+                status != "available"
+                or expected is None
+                or expected != projection
+                or projection["projection_digest"] != projection_digest
+                or projection["warehouse_revision"]
+                != current_catalog["warehouse_revision"]
+                or projection["catalog_digest"] != _digest(current_catalog)
+            ):
+                raise ProductPlanningError(
+                    "capability_source_proposal_authorization_stale"
+                )
+            decisions = self._capability_gap_decisions(
+                workspace,
+                projection,
+            )
+            decision = decisions[-1] if decisions else None
+            if (
+                decision is None
+                or decision["decision"] != "authorize"
+                or decision["canonical_digest"]
+                != authorize_decision_digest
+            ):
+                raise ProductPlanningError(
+                    "capability_source_proposal_authorization_required"
+                )
+            enum_adapter = (
+                projection["adapter_contract_version"]
+                == "computation_adapter.v4"
+            )
+            if enum_adapter and any(
+                contract.get("type") == "string"
+                for contract in projection["input_contract"][
+                    "properties"
+                ].values()
+            ):
+                raise ProductPlanningError(
+                    "capability_source_proposal_input_enumeration_review_required"
+                )
+            path = self._capability_source_proposal_authorization_path_for(
+                workspace,
+                plan,
+                projection,
+            )
+            existing_paths = (
+                self._capability_source_proposal_authorization_paths(
+                    workspace
+                )
+            )
+            if existing_paths:
+                if existing_paths != [path]:
+                    raise ProductPlanningError(
+                        "capability_source_proposal_already_locked"
+                    )
+                self._read_capability_source_proposal_authorization(
+                    workspace,
+                    projection,
+                    decision,
+                )
+                return _ok(
+                    self._workspace_projection(
+                        workspace,
+                        current_catalog,
+                    )
+                )
+            body = {
+                "schema_version": (
+                    CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_V2
+                    if enum_adapter
+                    else CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_VERSION
+                ),
+                "plan_id": plan["plan_id"],
+                "plan_version": plan["plan_version"],
+                "plan_digest": plan["canonical_digest"],
+                "gap_id": projection["gap_id"],
+                "projection_digest": projection["projection_digest"],
+                "capability_key": projection["capability_key"],
+                "capability_kind": "computation",
+                "slot": projection["slot"],
+                "input_contract": copy.deepcopy(
+                    projection["input_contract"]
+                ),
+                "output_contract": copy.deepcopy(
+                    projection["output_contract"]
+                ),
+                "error_contract": (
+                    self._capability_source_proposal_error_contract()
+                ),
+                "adapter_contract_version": projection[
+                    "adapter_contract_version"
+                ],
+                "result_field": projection["result_field"],
+                "passthrough_fields": copy.deepcopy(
+                    projection["passthrough_fields"]
+                ),
+                "authorize_decision_digest": decision[
+                    "canonical_digest"
+                ],
+                "behavior_intent": decision["behavior_intent"],
+                "acceptance_cases": copy.deepcopy(
+                    decision["acceptance_cases"]
+                ),
+                "warehouse_revision": projection["warehouse_revision"],
+                "catalog_digest": projection["catalog_digest"],
+                "authorization_source": "user_confirmed_gap_decision",
+                "locked_at": _now(),
+            }
+            if enum_adapter:
+                body.update(
+                    {
+                        "capture_mapping_schema": projection[
+                            "capture_mapping_schema"
+                        ],
+                        "proof_schema": projection["proof_schema"],
+                        "result_enum": copy.deepcopy(
+                            projection["result_enum"]
+                        ),
+                    }
+                )
+            authorization = {
+                **body,
+                "authorization_digest": _digest(body),
+            }
+            record = {
+                **authorization,
+                "request": (
+                    self._build_capability_source_proposal_request_v4(
+                        authorization
+                    )
+                    if enum_adapter
+                    else self._build_capability_source_proposal_request(
+                        authorization
+                    )
+                ),
+            }
+            self._validate_capability_source_proposal_authorization(
+                workspace,
+                record,
+                projection,
+                decision,
+            )
+            self._write_immutable(path, record)
+        return _ok(
+            self._workspace_projection(
+                workspace,
+                current_catalog,
+            )
+        )
+
+    def prepare_capability_source_proposal_run(
+        self,
+        plan_token: str,
+        plan_digest: str,
+        projection_digest: str,
+        authorization_digest: str,
+        supervisor_model: dict[str, Any],
+        catalog: dict[str, Any],
+    ) -> dict[str, Any]:
+        if (
+            _PLAN_TOKEN.fullmatch(str(plan_token)) is None
+            or _DIGEST.fullmatch(str(plan_digest)) is None
+            or _DIGEST.fullmatch(str(projection_digest)) is None
+            or _DIGEST.fullmatch(str(authorization_digest)) is None
+            or type(supervisor_model) is not dict
+            or set(supervisor_model) != {"name", "digest"}
+            or type(supervisor_model["name"]) is not str
+            or not supervisor_model["name"]
+            or _DIGEST.fullmatch(str(supervisor_model["digest"])) is None
+        ):
+            raise ProductPlanningError(
+                "capability_source_proposal_run_invalid"
+            )
+        workspace = self._workspace_by_token(plan_token)
+        plan = workspace.get("plan")
+        current_catalog = self._catalog(catalog)
+        projection = self._read_capability_gap_projection(workspace)
+        expected, status = (
+            self._capability_gap_projection_for_workspace(
+                workspace,
+                plan,
+                current_catalog,
+            )
+            if type(plan) is dict
+            else (None, "capability_gap_projection_missing")
+        )
+        decisions = (
+            self._capability_gap_decisions(workspace, projection)
+            if projection is not None
+            else []
+        )
+        decision = decisions[-1] if decisions else None
+        authorization = (
+            self._read_capability_source_proposal_authorization(
+                workspace,
+                projection,
+                decision,
+            )
+            if projection is not None
+            and type(decision) is dict
+            and decision.get("decision") == "authorize"
+            else None
+        )
+        selected_model = self._model_identity(
+            self._selected_model(check_current=False)
+        )
+        if (
+            workspace.get("status") != "plan_review"
+            or type(plan) is not dict
+            or plan.get("canonical_digest") != plan_digest
+            or projection is None
+            or expected != projection
+            or status != "available"
+            or projection.get("projection_digest") != projection_digest
+            or projection.get("warehouse_revision")
+            != current_catalog["warehouse_revision"]
+            or projection.get("catalog_digest") != _digest(current_catalog)
+            or decision is None
+            or decision.get("decision") != "authorize"
+            or authorization is None
+            or authorization.get("authorization_digest")
+            != authorization_digest
+            or workspace.get("model") != selected_model
+        ):
+            raise ProductPlanningError(
+                "capability_source_proposal_run_stale"
+            )
+        request = self._runtime_capability_source_proposal_request(
+            authorization
+        )
+        created = False
+        with self._lock:
+            path = self._capability_source_proposal_run_identity_path(
+                workspace,
+                plan,
+            )
+            if path.exists() or path.is_symlink():
+                identity = self._validate_capability_source_proposal_run_identity(
+                    workspace,
+                    self._read_json(path),
+                )
+                expected_binding = {
+                    "plan_token": plan_token,
+                    "plan_digest": plan_digest,
+                    "gap_id": projection["gap_id"],
+                    "projection_digest": projection_digest,
+                    "authorize_decision_digest": decision[
+                        "canonical_digest"
+                    ],
+                    "authorization_digest": authorization_digest,
+                    "request_digest": request["request_digest"],
+                    "warehouse_revision": current_catalog[
+                        "warehouse_revision"
+                    ],
+                    "catalog_digest": _digest(current_catalog),
+                    "source_proposal_model": selected_model,
+                    "supervision_model": copy.deepcopy(supervisor_model),
+                }
+                if any(
+                    identity[key] != value
+                    for key, value in expected_binding.items()
+                ):
+                    raise ProductPlanningError(
+                        "capability_source_proposal_run_stale"
+                    )
+            else:
+                now = _now()
+                body = {
+                    "schema_version": (
+                        CAPABILITY_SOURCE_PROPOSAL_RUN_VERSION
+                    ),
+                    "run_id": f"run_{uuid.uuid4().hex}",
+                    "plan_token": plan_token,
+                    "plan_digest": plan_digest,
+                    "gap_id": projection["gap_id"],
+                    "projection_digest": projection_digest,
+                    "authorize_decision_digest": decision[
+                        "canonical_digest"
+                    ],
+                    "authorization_digest": authorization_digest,
+                    "request_digest": request["request_digest"],
+                    "warehouse_revision": current_catalog[
+                        "warehouse_revision"
+                    ],
+                    "catalog_digest": _digest(current_catalog),
+                    "source_proposal_model": selected_model,
+                    "supervision_model": copy.deepcopy(supervisor_model),
+                    "attempt_count": 1,
+                    "created_at": now,
+                }
+                identity = {**body, "canonical_digest": _digest(body)}
+                self._validate_capability_source_proposal_run_identity(
+                    workspace,
+                    identity,
+                )
+                self._write_immutable(path, identity)
+                self._append_capability_source_proposal_run_event_locked(
+                    workspace,
+                    identity,
+                    status="pending",
+                    stage="source_proposal",
+                    evidence={},
+                    error_code=None,
+                )
+                created = True
+        return {
+            **self._capability_source_proposal_run_projection(
+                workspace,
+                identity,
+            ),
+            "created": created,
+        }
+
+    def append_capability_source_proposal_run_event(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        stage: str,
+        evidence: dict[str, Any] | None = None,
+        error_code: str | None = None,
+    ) -> dict[str, Any]:
+        workspace, identity = self._capability_source_proposal_run_by_id(
+            run_id
+        )
+        with self._lock:
+            self._append_capability_source_proposal_run_event_locked(
+                workspace,
+                identity,
+                status=status,
+                stage=stage,
+                evidence=evidence or {},
+                error_code=error_code,
+            )
+        return self._capability_source_proposal_run_projection(
+            workspace,
+            identity,
+        )
+
+    def get_capability_source_proposal_run(
+        self,
+        run_id: str,
+    ) -> dict[str, Any]:
+        workspace, identity = self._capability_source_proposal_run_by_id(
+            run_id
+        )
+        return self._capability_source_proposal_run_projection(
+            workspace,
+            identity,
+        )
+
+    def capability_source_proposal_run_paths(
+        self,
+        run_id: str,
+    ) -> dict[str, Path]:
+        workspace, identity = self._capability_source_proposal_run_by_id(
+            run_id
+        )
+        run_dir = self._capability_source_proposal_run_dir(
+            workspace,
+            workspace["plan"],
+        )
+        self._assert_no_symlink_components(run_dir)
+        return {
+            "run_dir": run_dir,
+            "source_dir": run_dir / "source",
+            "source_file": run_dir / "source" / "capability.js",
+            "validation_dir": run_dir / "validation",
+            "validation_database": (
+                run_dir / "validation" / "capsule_warehouse.sqlite3"
+            ),
+            "identity": self._capability_source_proposal_run_identity_path(
+                workspace,
+                workspace["plan"],
+            ),
+        }
+
+    def write_capability_source_proposal(
+        self,
+        run_id: str,
+        content: str,
+    ) -> dict[str, Any]:
+        if (
+            type(content) is not str
+            or not content.strip()
+            or not 1
+            <= len(content.encode("utf-8"))
+            <= CAPABILITY_SOURCE_PROPOSAL_MAX_BYTES
+        ):
+            raise ProductPlanningError(
+                "capability_source_proposal_response_invalid"
+            )
+        paths = self.capability_source_proposal_run_paths(run_id)
+        source_dir = paths["source_dir"]
+        source_file = paths["source_file"]
+        data = content.encode("utf-8")
+        digest = hashlib.sha256(data).hexdigest()
+        with self._lock:
+            self._ensure_directory(source_dir)
+            self._assert_no_symlink_components(source_dir)
+            if source_file.exists() or source_file.is_symlink():
+                try:
+                    metadata = source_file.lstat()
+                    flags = os.O_RDONLY | getattr(os, "O_NOFOLLOW", 0)
+                    descriptor = os.open(source_file, flags)
+                    try:
+                        existing = os.read(
+                            descriptor,
+                            CAPABILITY_SOURCE_PROPOSAL_MAX_BYTES + 1,
+                        )
+                    finally:
+                        os.close(descriptor)
+                except OSError as exc:
+                    raise ProductPlanningError(
+                        "capability_source_proposal_source_conflict"
+                    ) from exc
+                if (
+                    stat.S_ISLNK(metadata.st_mode)
+                    or not stat.S_ISREG(metadata.st_mode)
+                    or stat.S_IMODE(metadata.st_mode) & 0o077
+                    or existing != data
+                ):
+                    raise ProductPlanningError(
+                        "capability_source_proposal_source_conflict"
+                    )
+            else:
+                flags = (
+                    os.O_WRONLY
+                    | os.O_CREAT
+                    | os.O_EXCL
+                    | getattr(os, "O_NOFOLLOW", 0)
+                )
+                try:
+                    descriptor = os.open(source_file, flags, 0o600)
+                    try:
+                        view = memoryview(data)
+                        while view:
+                            written = os.write(descriptor, view)
+                            if written <= 0:
+                                raise OSError("source_write_incomplete")
+                            view = view[written:]
+                        os.fchmod(descriptor, 0o600)
+                        os.fsync(descriptor)
+                    finally:
+                        os.close(descriptor)
+                    directory_fd = os.open(
+                        source_dir,
+                        os.O_RDONLY
+                        | getattr(os, "O_DIRECTORY", 0)
+                        | getattr(os, "O_NOFOLLOW", 0),
+                    )
+                    try:
+                        os.fsync(directory_fd)
+                    finally:
+                        os.close(directory_fd)
+                except OSError as exc:
+                    raise ProductPlanningError(
+                        "product_planning_state_unavailable"
+                    ) from exc
+        return {
+            "source_relpath": "source/capability.js",
+            "source_sha256": digest,
+        }
+
+    def capability_source_proposal_run_context(
+        self,
+        run_id: str,
+    ) -> dict[str, Any]:
+        workspace, identity = self._capability_source_proposal_run_by_id(
+            run_id
+        )
+        plan = workspace["plan"]
+        projection = self._read_capability_gap_projection(workspace)
+        decisions = (
+            self._capability_gap_decisions(workspace, projection)
+            if projection is not None
+            else []
+        )
+        decision = decisions[-1] if decisions else None
+        authorization = (
+            self._read_capability_source_proposal_authorization(
+                workspace,
+                projection,
+                decision,
+            )
+            if projection is not None
+            and type(decision) is dict
+            and decision.get("decision") == "authorize"
+            else None
+        )
+        if (
+            authorization is None
+            or identity["plan_digest"] != plan["canonical_digest"]
+            or identity["projection_digest"]
+            != projection["projection_digest"]
+            or identity["authorization_digest"]
+            != authorization["authorization_digest"]
+        ):
+            raise ProductPlanningError(
+                "capability_source_proposal_run_conflict"
+            )
+        return {
+            "workspace": copy.deepcopy(workspace),
+            "identity": copy.deepcopy(identity),
+            "projection": copy.deepcopy(projection),
+            "decision": copy.deepcopy(decision),
+            "authorization": copy.deepcopy(authorization),
+            "request": self._runtime_capability_source_proposal_request(
+                authorization
+            ),
+        }
+
+    def run_capability_source_proposal_model(
+        self,
+        run_id: str,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
+        context = self.capability_source_proposal_run_context(run_id)
+        identity = context["identity"]
+        request_value = context["request"]
+        model = identity["source_proposal_model"]
+        self._cancelled(cancel_check)
+        current = self._model_identity(
+            self._selected_model(
+                check_current=True,
+                cancel_check=cancel_check,
+            )
+        )
+        if current != model or request_value["request_digest"] != identity[
+            "request_digest"
+        ]:
+            raise ProductPlanningError(
+                "capability_source_proposal_model_changed"
+            )
+        payload = {
+            "model": model["name"],
+            "prompt": request_value["prompt"],
+            "stream": False,
+            "think": False,
+            "format": request_value["format_schema"],
+            "options": {"temperature": 0},
+        }
+        response, http = self._request(
+            "/api/generate",
+            payload,
+            timeout_seconds=FORMAL_MODEL_TIMEOUT_SECONDS,
+        )
+        after = self._model_identity(
+            self._selected_model(check_current=True)
+        )
+        if after != model:
+            raise ProductPlanningError(
+                "capability_source_proposal_model_changed"
+            )
+        raw_output = response.get("response")
+        if type(raw_output) is not str:
+            raise ProductPlanningError(
+                "capability_source_proposal_response_invalid"
+            )
+        encoded = raw_output.encode("utf-8")
+        if len(encoded) > MAX_HTTP_RESPONSE_BYTES:
+            raise ProductPlanningError("ollama_response_too_large")
+        try:
+            value = _strict_json(encoded)
+        except (UnicodeError, ValueError, json.JSONDecodeError) as exc:
+            raise ProductPlanningError(
+                "capability_source_proposal_response_invalid"
+            ) from exc
+        proposal = self.validate_capability_source_proposal_response(
+            value,
+            request_value,
+        )
+        self._cancelled(cancel_check)
+        return {
+            "proposal": proposal,
+            "evidence": {
+                "request_digest": request_value["request_digest"],
+                "input_bytes": http["input_bytes"],
+                "output_bytes": len(encoded),
+                "duration_ms": http["duration_ms"],
+                "response_digest": hashlib.sha256(encoded).hexdigest(),
+            },
+        }
+
+    @_public_call
     def confirm(
         self,
         plan_token: str,
@@ -1621,6 +3037,7 @@ class ProductPlanner:
         parameter_capsules: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         workspace = self._workspace_by_token(plan_token)
+        current: dict[str, Any] | None = None
         if catalog is not None:
             current = self._catalog(catalog)
             plan = workspace.get("plan")
@@ -1681,7 +3098,7 @@ class ProductPlanner:
                     "parameterized_execution_binding_stale",
                     self._workspace_projection(workspace),
                 )
-        return _ok(self._workspace_projection(workspace))
+        return _ok(self._workspace_projection(workspace, current))
 
     @_public_call
     def abandon(self, plan_token: str) -> dict[str, Any]:
@@ -1698,11 +3115,28 @@ class ProductPlanner:
         workspace["outline_input_digest"] = None
         workspace["outline_response_digest"] = None
         workspace["current_question_set"] = None
+        if (
+            workspace["schema_version"]
+            in TARGET_SELECTION_WORKSPACE_SCHEMA_VERSIONS
+        ):
+            workspace["capability_gap_target_selection"] = None
         workspace["plan"] = None
         workspace["pending_diff"] = None
         workspace["pending_revision_feedback"] = None
         workspace["confirmation"] = None
-        workspace["section_checkpoints"] = []
+        if workspace["schema_version"] == LEGACY_WORKSPACE_SCHEMA_VERSION:
+            workspace["section_checkpoints"] = []
+        else:
+            if (
+                workspace["schema_version"]
+                in LOCKED_BLUEPRINT_WORKSPACE_SCHEMA_VERSIONS
+            ):
+                workspace["composition_selection"] = None
+                workspace["composition_selection_input_digest"] = None
+                workspace["composition_selection_response_digest"] = None
+            workspace["blueprint"] = None
+            workspace["blueprint_input_digest"] = None
+            workspace["blueprint_response_digest"] = None
         workspace["delivery_waves"] = {}
         workspace["failure_code"] = "product_goal_changed"
         workspace["updated_at"] = _now()
@@ -1976,8 +3410,11 @@ class ProductPlanner:
         call_type: str,
         request_value: dict[str, Any],
         cancel_check: Callable[[], bool] | None = None,
+        *,
+        prompt_version: str | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         self._cancelled(cancel_check)
+        prompt_version = prompt_version or PLANNING_PROMPT_VERSION
         current = next(
             (
                 item
@@ -1996,6 +3433,94 @@ class ProductPlanner:
                 "You are Reweave's local product planning role. For this schema probe, "
                 "return exactly the JSON object after this line. Copy every key and value "
                 "verbatim. Do not wrap it, rename keys, add keys, or add prose.\n"
+                + _canonical_bytes(request_value).decode("utf-8")
+            )
+        elif call_type == "composition_selection":
+            locked_selection = request_value.get("selection_locked") is True
+            prompt = (
+                "You are Reweave's local product planning role. REQUEST_JSON contains "
+                "the product goal, confirmed answers, requirements outline, safe complete "
+                "composition offers, and selection rules. Return exactly one JSON object "
+                "that matches the supplied response schema. "
+                + (
+                    "Select the one supplied capability_key; the deterministic core has "
+                    "already locked the complete offer. "
+                    if locked_selection
+                    else "Select only a capability_key or the empty string. "
+                )
+                + "Do not return offer members, candidate refs, dependencies, wiring, "
+                "identifiers, contracts, paths, source code, files, diffs, build claims, "
+                "validation claims, markdown, or prose.\nREQUEST_JSON:\n"
+                + _canonical_bytes(request_value).decode("utf-8")
+            )
+        elif (
+            call_type == "product_blueprint"
+            and request_value.get("selection_locked") is True
+            and type(request_value.get("capability_gap_lock")) is dict
+            and prompt_version
+            in {
+                PREVIOUS_GAP_PLANNING_PROMPT_VERSION,
+                PLANNING_PROMPT_VERSION,
+            }
+        ):
+            prompt = (
+                "You are Reweave's local product planning role. REQUEST_JSON contains "
+                "the product goal, requirements, confirmed answers, existing formal "
+                "members, and exactly one deterministic locked computation gap. Return "
+                "exactly one JSON object that matches the supplied response schema. "
+                "Describe only the title, reason, and section summaries for that one "
+                "gap; never add, split, remove, replace, or reinterpret it. The schema "
+                "locks its section, requirement coverage, member set, and gap count. "
+                "Do not return REQUEST_JSON, add keys, markdown, prose, identifiers, "
+                "contracts, paths, source code, files, diffs, build claims, or validation "
+                "claims.\nREQUEST_JSON:\n"
+                + _canonical_bytes(request_value).decode("utf-8")
+            )
+        elif (
+            call_type == "product_blueprint"
+            and request_value.get("selection_locked") is True
+            and prompt_version == PLANNING_PROMPT_VERSION
+        ):
+            prompt = (
+                "You are Reweave's local product planning role. REQUEST_JSON contains "
+                "the product goal, requirements, confirmed answers, exactly one locked "
+                "complete composition offer, and rules. Return exactly one JSON object "
+                "that matches the supplied response schema. Describe every member of the "
+                "locked offer and include each supplied candidate_ref exactly once; never "
+                "add, remove, replace, or mix members. Mark a section applicable when it "
+                "has an assignment or gap, and mark it not_applicable only when it has "
+                "neither. Formal requirement coverage comes only from assignment "
+                "requirement_refs or a real gap; section summaries do not count. Treat "
+                "product-wide absence constraints such as local-only, offline, no network, "
+                "no login, no database, or no deployment as acceptance conditions rather "
+                "than gaps when the locked offer covers the requested user-visible "
+                "behavior. Attach each such requirement_ref to at least one semantically "
+                "relevant supplied member and state the constraint in acceptance_intent. "
+                "Do not return REQUEST_JSON, add keys, markdown, prose, identifiers, "
+                "contracts, paths, source code, files, diffs, build claims, or validation "
+                "claims.\nREQUEST_JSON:\n"
+                + _canonical_bytes(request_value).decode("utf-8")
+            )
+        elif (
+            call_type == "product_blueprint"
+            and request_value.get("selection_locked") is True
+            and prompt_version
+            in {
+                PREVIOUS_LOCKED_BLUEPRINT_PROMPT_VERSION,
+                PREVIOUS_GAP_PLANNING_PROMPT_VERSION,
+            }
+        ):
+            prompt = (
+                "You are Reweave's local product planning role. REQUEST_JSON contains "
+                "the product goal, requirements, confirmed answers, exactly one locked "
+                "complete composition offer, and rules. Return exactly one JSON object "
+                "that matches the supplied response schema. Describe every member of the "
+                "locked offer and include each supplied candidate_ref exactly once; never "
+                "add, remove, replace, or mix members. Mark a section applicable when it "
+                "has an assignment or gap, and mark it not_applicable only when it has "
+                "neither. Do not return REQUEST_JSON, add keys, markdown, prose, "
+                "identifiers, contracts, paths, source code, files, diffs, build claims, "
+                "or validation claims.\nREQUEST_JSON:\n"
                 + _canonical_bytes(request_value).decode("utf-8")
             )
         else:
@@ -2023,7 +3548,11 @@ class ProductPlanner:
             "prompt": prompt,
             "stream": False,
             "think": False,
-            "format": _structured_output_schema(call_type, request_value),
+            "format": _structured_output_schema(
+                call_type,
+                request_value,
+                prompt_version=prompt_version,
+            ),
             "options": {"temperature": 0},
         }
         # One model generation is atomic. A cancellation observed after the call
@@ -2081,7 +3610,7 @@ class ProductPlanner:
             or type(value["capsules"]) is not list
         ):
             raise ProductPlanningError("product_planning_catalog_invalid")
-        keys = {
+        identity_keys = {
             "capsule_id",
             "version_id",
             "display_name",
@@ -2092,14 +3621,21 @@ class ProductPlanner:
             "canonical_hash",
             "identity_status",
         }
-        capsules: list[dict[str, str]] = []
+        contract_keys = {"input_contract", "output_contract", "error_contract"}
+        capsules: list[dict[str, Any]] = []
         identities: set[tuple[str, str]] = set()
         for raw in value["capsules"]:
-            row = _exact_dict(raw, keys)
+            raw_keys = set(raw) if type(raw) is dict else set()
+            if type(raw) is not dict or raw_keys not in (
+                identity_keys,
+                identity_keys | contract_keys,
+            ):
+                raise ProductPlanningError("product_planning_catalog_invalid")
+            row = _exact_dict(raw, set(raw))
             if (
                 any(
                     type(row[name]) is not str or not row[name]
-                    for name in keys
+                    for name in identity_keys
                 )
                 or row["identity_status"] != "formal_exact_version"
                 or _DIGEST.fullmatch(row["canonical_hash"]) is None
@@ -2109,6 +3645,22 @@ class ProductPlanner:
             if identity in identities:
                 raise ProductPlanningError("product_planning_catalog_invalid")
             identities.add(identity)
+            if contract_keys <= set(row):
+                try:
+                    (
+                        row["input_contract"],
+                        row["output_contract"],
+                        row["error_contract"],
+                    ) = normalize_capsule_contracts(
+                        row["capability_kind"],
+                        row["input_contract"],
+                        row["output_contract"],
+                        row["error_contract"],
+                    )
+                except DataContractError as exc:
+                    raise ProductPlanningError(
+                        "product_planning_catalog_invalid"
+                    ) from exc
             capsules.append(dict(row))
         capsules.sort(key=lambda item: (item["capsule_id"], item["version_id"]))
         return {
@@ -2183,12 +3735,22 @@ class ProductPlanner:
             "pending_revision_feedback": None,
             "confirmation": None,
             "model_calls": [],
-            "section_checkpoints": [],
+            "composition_selection": None,
+            "composition_selection_input_digest": None,
+            "composition_selection_response_digest": None,
+            "capability_gap_target_selection": None,
+            "blueprint": None,
+            "blueprint_input_digest": None,
+            "blueprint_response_digest": None,
             "delivery_waves": {},
             "failure_code": None,
         }
 
-    def _workspace_projection(self, workspace: dict[str, Any]) -> dict[str, Any]:
+    def _workspace_projection(
+        self,
+        workspace: dict[str, Any],
+        catalog: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         plan = copy.deepcopy(workspace.get("plan"))
         question_set = workspace.get("current_question_set")
         pending_diff = workspace.get("pending_diff")
@@ -2203,6 +3765,18 @@ class ProductPlanner:
                 else None
             )
         )
+        completed_sections = (
+            [
+                checkpoint["section_id"]
+                for checkpoint in workspace["section_checkpoints"]
+            ]
+            if workspace["schema_version"] == LEGACY_WORKSPACE_SCHEMA_VERSION
+            else (
+                list(SECTION_IDS)
+                if type(workspace.get("blueprint")) is dict
+                else []
+            )
+        )
         return {
             "plan_token": workspace["plan_token"],
             "display_name": workspace["display_name"],
@@ -2210,10 +3784,7 @@ class ProductPlanner:
             "goal_digest": workspace["goal_digest"],
             "status": workspace["status"],
             "phase": workspace["phase"],
-            "completed_sections": [
-                checkpoint["section_id"]
-                for checkpoint in workspace["section_checkpoints"]
-            ],
+            "completed_sections": completed_sections,
             "updated_at": workspace["updated_at"],
             "model": copy.deepcopy(workspace["model"]),
             "target_section_id": target_section_id,
@@ -2225,6 +3796,14 @@ class ProductPlanner:
                 else None
             ),
             "confirmation": copy.deepcopy(workspace.get("confirmation")),
+            "capability_gaps": self._capability_gap_views(
+                workspace,
+                catalog,
+            ),
+            "capability_replan": self._capability_replan_view(
+                workspace,
+                catalog,
+            ),
             "developer_evidence": self._developer_evidence(workspace),
         }
 
@@ -2238,8 +3817,16 @@ class ProductPlanner:
                 plan.get("canonical_digest") if type(plan) is dict else None
             ),
             "model": copy.deepcopy(workspace["model"]),
-            "planning_rules_version": PLANNING_RULES_VERSION,
-            "prompt_version": PLANNING_PROMPT_VERSION,
+            "planning_rules_version": (
+                plan.get("planning_rules_version")
+                if type(plan) is dict
+                else PLANNING_RULES_VERSION
+            ),
+            "prompt_version": (
+                plan.get("prompt_version")
+                if type(plan) is dict
+                else self._workspace_prompt_version(workspace)
+            ),
             "model_calls": [
                 {
                     key: call[key]
@@ -2253,10 +3840,18 @@ class ProductPlanner:
                 }
                 for call in workspace["model_calls"]
             ],
-            "completed_sections": [
-                checkpoint["section_id"]
-                for checkpoint in workspace["section_checkpoints"]
-            ],
+            "completed_sections": (
+                [
+                    checkpoint["section_id"]
+                    for checkpoint in workspace["section_checkpoints"]
+                ]
+                if workspace["schema_version"] == LEGACY_WORKSPACE_SCHEMA_VERSION
+                else (
+                    list(SECTION_IDS)
+                    if type(workspace.get("blueprint")) is dict
+                    else []
+                )
+            ),
             "failure_code": workspace.get("failure_code"),
             "contains_raw_prompt": False,
             "contains_raw_response": False,
@@ -2274,6 +3869,317 @@ class ProductPlanner:
             "updated_at": workspace["updated_at"],
             "plan_version": plan.get("plan_version") if type(plan) is dict else None,
             "confirmed": workspace["status"] == "confirmed",
+        }
+
+    def _capability_replan_handoffs_dir(self) -> Path:
+        return self.root / "capability_replan_handoffs"
+
+    def _capability_replan_handoff_path(self, plan_digest: str) -> Path:
+        if type(plan_digest) is not str or _DIGEST.fullmatch(plan_digest) is None:
+            raise ProductPlanningError(
+                "capability_replan_handoff_conflict"
+            )
+        return (
+            self._capability_replan_handoffs_dir()
+            / f"handoff_{plan_digest}.json"
+        )
+
+    def _validate_capability_replan_handoff(
+        self,
+        value: Any,
+    ) -> dict[str, Any]:
+        keys = {
+            "schema_version",
+            "source_workspace_id",
+            "source_plan_token",
+            "source_plan_digest",
+            "source_gap_id",
+            "projection_digest",
+            "authorize_decision_digest",
+            "source_proposal_authorization_digest",
+            "admission_review_id",
+            "admission_digest",
+            "publication_review_id",
+            "published_capsule",
+            "target_offer",
+            "target_offer_digest",
+            "planning_model",
+            "successor_workspace_id",
+            "successor_plan_token",
+            "authorization_revision",
+            "admission_revision_before",
+            "admission_revision_after",
+            "publication_revision",
+            "handoff_catalog_revision",
+            "catalog_digest",
+            "request_digest",
+            "acceptance_suggestions",
+            "created_at",
+            "handoff_digest",
+        }
+        if type(value) is not dict or set(value) != keys:
+            raise ProductPlanningError(
+                "capability_replan_handoff_conflict"
+            )
+        row = value
+        body = {
+            key: item for key, item in row.items() if key != "handoff_digest"
+        }
+        offer = row["target_offer"]
+        if (
+            type(offer) is not dict
+            or set(offer)
+            != {"schema_version", "capability_key", "gap_slot", "members"}
+        ):
+            raise ProductPlanningError(
+                "capability_replan_handoff_conflict"
+            )
+        members = offer["members"]
+        published = row["published_capsule"]
+        model = row["planning_model"]
+        request = {
+            "plan_token": row["source_plan_token"],
+            "plan_digest": row["source_plan_digest"],
+            "projection_digest": row["projection_digest"],
+        }
+        revisions = [
+            row["authorization_revision"],
+            row["admission_revision_before"],
+            row["admission_revision_after"],
+            row["publication_revision"],
+            row["handoff_catalog_revision"],
+        ]
+        if (
+            row["schema_version"] != CAPABILITY_REPLAN_HANDOFF_VERSION
+            or _WORKSPACE_ID.fullmatch(
+                str(row["source_workspace_id"])
+            )
+            is None
+            or _PLAN_TOKEN.fullmatch(str(row["source_plan_token"])) is None
+            or _DIGEST.fullmatch(str(row["source_plan_digest"])) is None
+            or _GAP_ID.fullmatch(str(row["source_gap_id"])) is None
+            or any(
+                _DIGEST.fullmatch(str(row[key])) is None
+                for key in (
+                    "projection_digest",
+                    "authorize_decision_digest",
+                    "source_proposal_authorization_digest",
+                    "admission_digest",
+                    "target_offer_digest",
+                    "catalog_digest",
+                    "request_digest",
+                    "handoff_digest",
+                )
+            )
+            or any(
+                type(row[key]) is not str or not row[key]
+                for key in ("admission_review_id", "publication_review_id")
+            )
+            or offer["schema_version"] != CAPABILITY_REPLAN_OFFER_VERSION
+            or type(offer["capability_key"]) is not str
+            or not offer["capability_key"]
+            or offer["gap_slot"]
+            not in {
+                "only_computation",
+                "before_existing_computation",
+                "after_existing_computation",
+            }
+            or type(members) is not list
+            or len(members) not in {2, 3, 4}
+            or any(
+                type(member) is not dict
+                or set(member)
+                != {
+                    "capsule_id",
+                    "version_id",
+                    "canonical_hash",
+                    "capability_kind",
+                    "role_key",
+                    "variant_key",
+                }
+                for member in members
+            )
+            or [
+                self._gap_capsule_identity(member) for member in members
+            ]
+            != members
+            or len(
+                {
+                    (member["capsule_id"], member["version_id"])
+                    for member in members
+                }
+            )
+            != len(members)
+            or type(published) is not dict
+            or set(published)
+            != {
+                "capsule_id",
+                "version_id",
+                "canonical_hash",
+                "capability_kind",
+                "role_key",
+                "variant_key",
+            }
+            or self._gap_capsule_identity(published) != published
+            or published["capability_kind"] != "computation"
+            or published not in members
+            or row["target_offer_digest"] != _digest(offer)
+            or type(model) is not dict
+            or set(model)
+            != {"name", "digest", "parameter_count", "parameter_size"}
+            or type(model["name"]) is not str
+            or not model["name"]
+            or _DIGEST.fullmatch(str(model["digest"])) is None
+            or type(model["parameter_count"]) is not int
+            or not 0 < model["parameter_count"] <= MAX_MODEL_PARAMETERS
+            or (
+                model["parameter_size"] is not None
+                and type(model["parameter_size"]) is not str
+            )
+            or _WORKSPACE_ID.fullmatch(
+                str(row["successor_workspace_id"])
+            )
+            is None
+            or _PLAN_TOKEN.fullmatch(
+                str(row["successor_plan_token"])
+            )
+            is None
+            or any(type(item) is not int or item < 0 for item in revisions)
+            or row["authorization_revision"]
+            != row["admission_revision_before"]
+            or row["admission_revision_after"]
+            != row["admission_revision_before"] + 1
+            or row["publication_revision"]
+            != row["admission_revision_after"] + 1
+            or row["handoff_catalog_revision"]
+            != row["publication_revision"]
+            or type(row["acceptance_suggestions"]) is not list
+            or len(row["acceptance_suggestions"]) > MAX_CANDIDATE_ACCEPTANCE_CASES
+            or any(
+                type(item) is not dict
+                or set(item) != {"input", "expected_output"}
+                or type(item["input"]) is not dict
+                or type(item["expected_output"]) is not dict
+                for item in row["acceptance_suggestions"]
+            )
+            or type(row["created_at"]) is not str
+            or not row["created_at"]
+            or row["request_digest"] != _digest(request)
+            or row["handoff_digest"] != _digest(body)
+        ):
+            raise ProductPlanningError(
+                "capability_replan_handoff_conflict"
+            )
+        return row
+
+    def _read_capability_replan_handoff(
+        self,
+        source: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        plan = source.get("plan")
+        if type(plan) is not dict:
+            return None
+        path = self._capability_replan_handoff_path(
+            plan["canonical_digest"]
+        )
+        if not path.exists() and not path.is_symlink():
+            return None
+        row = self._validate_capability_replan_handoff(
+            self._read_json(path)
+        )
+        if (
+            row["source_workspace_id"] != source["workspace_id"]
+            or row["source_plan_token"] != source["plan_token"]
+            or row["source_plan_digest"] != plan["canonical_digest"]
+        ):
+            raise ProductPlanningError(
+                "capability_replan_handoff_conflict"
+            )
+        return row
+
+    def _capability_replan_for_successor(
+        self,
+        workspace: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        directory = self._capability_replan_handoffs_dir()
+        if not directory.exists() and not directory.is_symlink():
+            return None
+        self._assert_no_symlink_components(directory)
+        if directory.is_symlink() or not directory.is_dir():
+            raise ProductPlanningError(
+                "capability_replan_handoff_conflict"
+            )
+        matches: list[dict[str, Any]] = []
+        for path in sorted(directory.iterdir(), key=lambda item: item.name):
+            if (
+                _CAPABILITY_REPLAN_HANDOFF_FILENAME.fullmatch(path.name)
+                is None
+                or path.is_symlink()
+                or not path.is_file()
+            ):
+                raise ProductPlanningError(
+                    "capability_replan_handoff_conflict"
+                )
+            row = self._validate_capability_replan_handoff(
+                self._read_json(path)
+            )
+            if row["successor_plan_token"] == workspace["plan_token"]:
+                matches.append(row)
+        if len(matches) > 1:
+            raise ProductPlanningError(
+                "capability_replan_handoff_conflict"
+            )
+        return matches[0] if matches else None
+
+    def _capability_replan_for_workspace(
+        self,
+        workspace: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        direct = self._read_capability_replan_handoff(workspace)
+        return (
+            direct
+            if direct is not None
+            else self._capability_replan_for_successor(workspace)
+        )
+
+    def _capability_replan_view(
+        self,
+        workspace: dict[str, Any],
+        catalog: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        try:
+            handoff = self._capability_replan_for_workspace(workspace)
+            if handoff is None:
+                return None
+            status = "started"
+            if catalog is not None:
+                self._validate_capability_replan_current(
+                    handoff,
+                    catalog,
+                )
+        except ProductPlanningError as exc:
+            return {
+                "schema_version": CAPABILITY_REPLAN_HANDOFF_VERSION,
+                "status": exc.code,
+                "source_gap_id": None,
+                "role_order": [],
+                "successor_plan_token": None,
+                "handoff_digest": None,
+                "acceptance_suggestions": [],
+            }
+        return {
+            "schema_version": CAPABILITY_REPLAN_HANDOFF_VERSION,
+            "status": status,
+            "source_gap_id": handoff["source_gap_id"],
+            "role_order": [
+                member["role_key"]
+                for member in handoff["target_offer"]["members"]
+            ],
+            "successor_plan_token": handoff["successor_plan_token"],
+            "handoff_digest": handoff["handoff_digest"],
+            "acceptance_suggestions": copy.deepcopy(
+                handoff["acceptance_suggestions"]
+            ),
         }
 
     def _workspace_dir(self, workspace_id: str) -> Path:
@@ -2333,7 +4239,7 @@ class ProductPlanner:
         *,
         expected_workspace_id: str | None = None,
     ) -> None:
-        required = {
+        common = {
             "schema_version",
             "workspace_id",
             "plan_token",
@@ -2356,14 +4262,44 @@ class ProductPlanner:
             "pending_revision_feedback",
             "confirmation",
             "model_calls",
-            "section_checkpoints",
             "delivery_waves",
             "failure_code",
         }
+        schema_version = (
+            workspace.get("schema_version") if type(workspace) is dict else None
+        )
+        if schema_version == LEGACY_WORKSPACE_SCHEMA_VERSION:
+            required = {*common, "section_checkpoints"}
+        else:
+            required = {
+                *common,
+                "blueprint",
+                "blueprint_input_digest",
+                "blueprint_response_digest",
+            }
+            if schema_version in LOCKED_BLUEPRINT_WORKSPACE_SCHEMA_VERSIONS:
+                required.update(
+                    {
+                        "composition_selection",
+                        "composition_selection_input_digest",
+                        "composition_selection_response_digest",
+                    }
+                )
+            if schema_version in TARGET_SELECTION_WORKSPACE_SCHEMA_VERSIONS:
+                required.add("capability_gap_target_selection")
         if (
             type(workspace) is not dict
             or set(workspace) != required
-            or workspace["schema_version"] != WORKSPACE_SCHEMA_VERSION
+            or schema_version
+            not in {
+                LEGACY_WORKSPACE_SCHEMA_VERSION,
+                DIRECT_BLUEPRINT_WORKSPACE_SCHEMA_VERSION,
+                LEGACY_LOCKED_BLUEPRINT_WORKSPACE_SCHEMA_VERSION,
+                PREVIOUS_LOCKED_BLUEPRINT_WORKSPACE_SCHEMA_VERSION,
+                PREVIOUS_GAP_WORKSPACE_SCHEMA_VERSION,
+                PREVIOUS_TARGET_SELECTION_WORKSPACE_SCHEMA_VERSION,
+                WORKSPACE_SCHEMA_VERSION,
+            }
             or _WORKSPACE_ID.fullmatch(str(workspace["workspace_id"])) is None
             or (
                 expected_workspace_id is not None
@@ -2394,7 +4330,10 @@ class ProductPlanner:
             or type(workspace["question_history"]) is not list
             or type(workspace["answers"]) is not list
             or type(workspace["model_calls"]) is not list
-            or type(workspace["section_checkpoints"]) is not list
+            or (
+                schema_version == LEGACY_WORKSPACE_SCHEMA_VERSION
+                and type(workspace["section_checkpoints"]) is not list
+            )
             or type(workspace["delivery_waves"]) is not dict
             or (
                 workspace["pending_revision_feedback"] is not None
@@ -2428,12 +4367,30 @@ class ProductPlanner:
         self._validate_stored_outline(workspace["outline"])
         outline_input_digest = workspace["outline_input_digest"]
         outline_response_digest = workspace["outline_response_digest"]
+        stored_plan = workspace.get("plan")
+        stored_rules_version = (
+            stored_plan.get("planning_rules_version")
+            if type(stored_plan) is dict
+            and stored_plan.get("planning_rules_version")
+            in SUPPORTED_PLANNING_RULES_VERSIONS
+            else self._workspace_rules_version(workspace)
+        )
+        stored_prompt_version = (
+            stored_plan.get("prompt_version")
+            if type(stored_plan) is dict
+            else self._workspace_prompt_version(workspace)
+        )
         if workspace["outline"] is None:
             if outline_input_digest is not None or outline_response_digest is not None:
                 raise ProductPlanningError("product_workspace_corrupt")
         elif (
             _DIGEST.fullmatch(str(outline_input_digest)) is None
-            or outline_input_digest != self._outline_input_digest(workspace)
+            or outline_input_digest
+            != self._outline_input_digest(
+                workspace,
+                stored_rules_version,
+                stored_prompt_version,
+            )
             or _DIGEST.fullmatch(str(outline_response_digest)) is None
             or not any(
                 call["call_type"] == "requirements_outline"
@@ -2453,6 +4410,10 @@ class ProductPlanner:
             raise ProductPlanningError("product_workspace_corrupt")
         self._validate_stored_question_set(workspace["current_question_set"])
         self._validate_stored_answers(workspace["answers"])
+        if schema_version in TARGET_SELECTION_WORKSPACE_SCHEMA_VERSIONS:
+            self._validate_capability_gap_target_selection(
+                workspace["capability_gap_target_selection"]
+            )
         for call_index, call in enumerate(workspace["model_calls"]):
             call_type = call.get("call_type") if type(call) is dict else None
             revision_schema_version = REVISION_SCHEMA_VERSIONS.get(str(call_type))
@@ -2578,7 +4539,24 @@ class ProductPlanner:
                 )
             ):
                 raise ProductPlanningError("product_workspace_corrupt")
-        self._validate_section_checkpoints(workspace)
+        if schema_version == LEGACY_WORKSPACE_SCHEMA_VERSION:
+            self._validate_section_checkpoints(workspace)
+        else:
+            if schema_version in LOCKED_BLUEPRINT_WORKSPACE_SCHEMA_VERSIONS:
+                self._validate_stored_composition_selection(workspace)
+            self._validate_stored_blueprint(workspace)
+            if schema_version in LOCKED_BLUEPRINT_WORKSPACE_SCHEMA_VERSIONS and (
+                (
+                    workspace["blueprint"] is not None
+                    and workspace["composition_selection"] is None
+                )
+                or (
+                    type(workspace["blueprint"]) is dict
+                    and workspace["blueprint"].get("schema_version")
+                    != "product_plan_blueprint.v2"
+                )
+            ):
+                raise ProductPlanningError("product_workspace_corrupt")
         plan = workspace["plan"]
         delivery_waves = workspace["delivery_waves"]
         if plan is None and delivery_waves:
@@ -2589,6 +4567,23 @@ class ProductPlanner:
             except ProductPlanningError as exc:
                 raise ProductPlanningError("product_workspace_corrupt") from exc
             if (
+                (
+                    schema_version == LEGACY_WORKSPACE_SCHEMA_VERSION
+                    and plan["schema_version"] != LEGACY_PLAN_SCHEMA_VERSION
+                )
+                or (
+                    schema_version
+                    in {
+                        DIRECT_BLUEPRINT_WORKSPACE_SCHEMA_VERSION,
+                        LEGACY_LOCKED_BLUEPRINT_WORKSPACE_SCHEMA_VERSION,
+                        PREVIOUS_LOCKED_BLUEPRINT_WORKSPACE_SCHEMA_VERSION,
+                        PREVIOUS_GAP_WORKSPACE_SCHEMA_VERSION,
+                        PREVIOUS_TARGET_SELECTION_WORKSPACE_SCHEMA_VERSION,
+                        WORKSPACE_SCHEMA_VERSION,
+                    }
+                    and plan["schema_version"] != PLAN_SCHEMA_VERSION
+                )
+                or
                 plan["goal"] != workspace["goal"]
                 or plan["goal_digest"] != workspace["goal_digest"]
                 or plan["model"] != workspace["model"]
@@ -2615,13 +4610,7 @@ class ProductPlanner:
                 )
             ):
                 raise ProductPlanningError("product_workspace_corrupt")
-            compiled_sections = copy.deepcopy(plan["sections"])
-            try:
-                self._compile_wave_dependencies(compiled_sections, delivery_waves)
-            except ProductPlanningError as exc:
-                raise ProductPlanningError("product_workspace_corrupt") from exc
-            if compiled_sections != plan["sections"]:
-                raise ProductPlanningError("product_workspace_corrupt")
+            self._validate_dependency_compilation(plan, delivery_waves)
         pending = workspace["pending_diff"]
         if pending is not None:
             if type(plan) is not dict:
@@ -2641,6 +4630,37 @@ class ProductPlanner:
         question_set = workspace["current_question_set"]
         if type(question_set) is dict and question_set["digest"] not in workspace["question_history"]:
             raise ProductPlanningError("product_workspace_corrupt")
+        if schema_version in TARGET_SELECTION_WORKSPACE_SCHEMA_VERSIONS:
+            target_selection = (
+                self._validate_capability_gap_target_selection(
+                    workspace["capability_gap_target_selection"]
+                )
+            )
+            target_answers = [
+                answer
+                for answer in workspace["answers"]
+                if answer["purpose"] == "capability_gap_target"
+            ]
+            if (
+                (
+                    type(question_set) is dict
+                    and question_set.get("purpose")
+                    == "capability_gap_target"
+                    and target_selection is not None
+                )
+                or (target_selection is None and target_answers)
+                or (
+                    target_selection is not None
+                    and (
+                        len(target_answers) != 1
+                        or target_answers[0]["question_set_digest"]
+                        != target_selection["question_set_digest"]
+                        or target_answers[0]["answers_digest"]
+                        != target_selection["user_answer_digest"]
+                    )
+                )
+            ):
+                raise ProductPlanningError("product_workspace_corrupt")
         status = workspace["status"]
         if (
             (status == "needs_clarification" and type(question_set) is not dict)
@@ -2657,7 +4677,8 @@ class ProductPlanner:
             or (
                 status in {"plan_review", "confirmed"}
                 and type(plan) is dict
-                and plan["planning_answers"] != workspace["answers"]
+                and plan["planning_answers"]
+                != self._planning_answers(workspace)
             )
         ):
             raise ProductPlanningError("product_workspace_corrupt")
@@ -2757,10 +4778,24 @@ class ProductPlanner:
                 },
             )
             target_section_id = row["target_section_id"]
+        elif schema_version == "product_plan_question_set.v3":
+            row = _stored_exact(
+                value,
+                {
+                    "schema_version",
+                    "purpose",
+                    "warehouse_revision",
+                    "catalog_digest",
+                    "questions",
+                    "digest",
+                },
+            )
+            target_section_id = None
         else:
             raise ProductPlanningError("product_workspace_corrupt")
         if (
-            row["purpose"] not in {"initial", "revision"}
+            row["purpose"]
+            not in {"initial", "revision", "capability_gap_target"}
             or (
                 schema_version == "product_plan_question_set.v2"
                 and (
@@ -2768,8 +4803,27 @@ class ProductPlanner:
                     or target_section_id not in SECTION_IDS
                 )
             )
+            or (
+                schema_version == "product_plan_question_set.v3"
+                and (
+                    row["purpose"] != "capability_gap_target"
+                    or type(row["warehouse_revision"]) is not int
+                    or row["warehouse_revision"] < 0
+                    or _DIGEST.fullmatch(
+                        str(row["catalog_digest"])
+                    )
+                    is None
+                )
+            )
             or type(row["questions"]) is not list
-            or not 1 <= len(row["questions"]) <= 3
+            or (
+                schema_version == "product_plan_question_set.v3"
+                and len(row["questions"]) != 1
+            )
+            or (
+                schema_version != "product_plan_question_set.v3"
+                and not 1 <= len(row["questions"]) <= 3
+            )
             or row["digest"] != _digest({key: item for key, item in row.items() if key != "digest"})
         ):
             raise ProductPlanningError("product_workspace_corrupt")
@@ -2783,7 +4837,14 @@ class ProductPlanner:
                 not str(item["question_id"]).startswith("question_")
                 or item["question_id"] in seen
                 or type(item["prompt"]) is not str
-                or item["allow_custom"] is not True
+                or (
+                    schema_version == "product_plan_question_set.v3"
+                    and item["allow_custom"] is not False
+                )
+                or (
+                    schema_version != "product_plan_question_set.v3"
+                    and item["allow_custom"] is not True
+                )
                 or type(item["options"]) is not list
                 or not 2 <= len(item["options"]) <= 3
             ):
@@ -2800,7 +4861,14 @@ class ProductPlanner:
                     or current["option_id"] in option_ids
                     or type(current["label"]) is not str
                     or type(current["impact"]) is not str
-                    or current["recommended"] is (index != 0)
+                    or (
+                        schema_version == "product_plan_question_set.v3"
+                        and current["recommended"] is not False
+                    )
+                    or (
+                        schema_version != "product_plan_question_set.v3"
+                        and current["recommended"] is (index != 0)
+                    )
                     or type(current["forms_gap"]) is not bool
                 ):
                     raise ProductPlanningError("product_workspace_corrupt")
@@ -2822,7 +4890,12 @@ class ProductPlanner:
             )
             if (
                 _DIGEST.fullmatch(str(row["question_set_digest"])) is None
-                or row["purpose"] not in {"initial", "revision"}
+                or row["purpose"]
+                not in {
+                    "initial",
+                    "revision",
+                    "capability_gap_target",
+                }
                 or type(row["answers"]) is not list
                 or type(row["submitted_at"]) is not str
                 or row["answers_digest"] != _digest(row["answers"])
@@ -2845,15 +4918,24 @@ class ProductPlanner:
                     raise ProductPlanningError("product_workspace_corrupt")
                 question_ids.add(item["question_id"])
 
-    def _outline_input_digest(self, workspace: dict[str, Any]) -> str:
+    def _outline_input_digest(
+        self,
+        workspace: dict[str, Any],
+        planning_rules_version: str | None = None,
+        prompt_version: str | None = None,
+    ) -> str:
+        planning_rules_version = (
+            planning_rules_version or self._workspace_rules_version(workspace)
+        )
+        prompt_version = prompt_version or self._workspace_prompt_version(workspace)
         return _digest(
             {
                 "schema_version": "product_plan_outline_input.v1",
                 "goal_digest": workspace["goal_digest"],
                 "planning_answers": self._planning_answers(workspace),
                 "model": workspace["model"],
-                "planning_rules_version": PLANNING_RULES_VERSION,
-                "prompt_version": PLANNING_PROMPT_VERSION,
+                "planning_rules_version": planning_rules_version,
+                "prompt_version": prompt_version,
             }
         )
 
@@ -2863,15 +4945,21 @@ class ProductPlanner:
         outline: dict[str, Any],
         section_id: str,
         candidate_refs: list[str],
+        planning_rules_version: str | None = None,
+        prompt_version: str | None = None,
     ) -> str:
+        planning_rules_version = (
+            planning_rules_version or self._workspace_rules_version(workspace)
+        )
+        prompt_version = prompt_version or self._workspace_prompt_version(workspace)
         return _digest(
             {
                 "schema_version": "product_plan_section_draft_input.v1",
                 "goal_digest": workspace["goal_digest"],
                 "planning_answers": self._planning_answers(workspace),
                 "model": workspace["model"],
-                "planning_rules_version": PLANNING_RULES_VERSION,
-                "prompt_version": PLANNING_PROMPT_VERSION,
+                "planning_rules_version": planning_rules_version,
+                "prompt_version": prompt_version,
                 "outline": outline,
                 "outline_response_digest": workspace["outline_response_digest"],
                 "section_id": section_id,
@@ -2967,6 +5055,24 @@ class ProductPlanner:
 
     def _validate_section_checkpoints(self, workspace: dict[str, Any]) -> None:
         checkpoints = workspace["section_checkpoints"]
+        plan = workspace.get("plan")
+        planning_rules_version = (
+            plan.get("planning_rules_version")
+            if type(plan) is dict
+            and plan.get("planning_rules_version")
+            in SUPPORTED_PLANNING_RULES_VERSIONS
+            else SECTION_PLANNING_RULES_VERSION
+        )
+        prompt_version = (
+            plan.get("prompt_version")
+            if type(plan) is dict
+            and plan.get("prompt_version")
+            in {
+                HISTORICAL_PLANNING_PROMPT_VERSION,
+                LEGACY_PLANNING_PROMPT_VERSION,
+            }
+            else LEGACY_PLANNING_PROMPT_VERSION
+        )
         if len(checkpoints) > len(SECTION_IDS):
             raise ProductPlanningError("product_workspace_corrupt")
         if checkpoints and (
@@ -3022,6 +5128,8 @@ class ProductPlanner:
                     workspace["outline"],
                     section_id,
                     candidate_refs,
+                    planning_rules_version,
+                    prompt_version,
                 )
                 or checkpoint["section_digest"] != _digest(checkpoint["section"])
                 or _DIGEST.fullmatch(str(checkpoint["model_call_digest"])) is None
@@ -3035,6 +5143,391 @@ class ProductPlanner:
                 != 1
             ):
                 raise ProductPlanningError("product_workspace_corrupt")
+
+    def _validate_blueprint(
+        self,
+        value: Any,
+        requirements: list[dict[str, Any]],
+        candidate_refs: set[str],
+        composition_offers: dict[str, set[str]] | None = None,
+    ) -> dict[str, Any]:
+        if type(value) is not dict:
+            raise ProductPlanningError(
+                "product_plan_response_invalid",
+                "blueprint.shape_invalid",
+            )
+        schema_version = value.get("schema_version")
+        if schema_version == "product_plan_blueprint.v1":
+            row = _exact_dict(
+                value,
+                {"schema_version", "sections", "assignments", "gaps"},
+                "blueprint.shape_invalid",
+            )
+            offer_ref = None
+        elif schema_version == "product_plan_blueprint.v2":
+            row = _exact_dict(
+                value,
+                {"schema_version", "sections", "selection", "gaps"},
+                "blueprint.shape_invalid",
+            )
+            selection = _exact_dict(
+                row["selection"],
+                {"offer_ref", "assignments"},
+                "blueprint.selection_invalid",
+            )
+            offer_ref = selection["offer_ref"]
+            if type(offer_ref) is not str or type(selection["assignments"]) is not dict:
+                raise ProductPlanningError(
+                    "product_plan_response_invalid",
+                    "blueprint.selection_invalid",
+                )
+            expected = (composition_offers or {}).get(offer_ref)
+            if offer_ref:
+                if expected is None:
+                    raise ProductPlanningError(
+                        "product_plan_offer_unknown",
+                        "blueprint.offer_ref_unknown",
+                    )
+                if set(selection["assignments"]) != expected:
+                    raise ProductPlanningError(
+                        "product_plan_role_coverage_invalid",
+                        "blueprint.offer_members_invalid",
+                    )
+            elif selection["assignments"]:
+                raise ProductPlanningError(
+                    "product_plan_role_coverage_invalid",
+                    "blueprint.offer_members_invalid",
+                )
+            row = {
+                **row,
+                "assignments": selection["assignments"],
+            }
+        else:
+            raise ProductPlanningError(
+                "product_plan_response_invalid",
+                "blueprint.schema_version_invalid",
+            )
+        requirement_order = {
+            str(item["ref"]): index for index, item in enumerate(requirements)
+        }
+        if (
+            len(requirement_order) != len(requirements)
+            or any(_SAFE_REF.fullmatch(ref) is None for ref in requirement_order)
+        ):
+            raise ProductPlanningError(
+                "product_plan_response_invalid",
+                "blueprint.requirements_invalid",
+            )
+        sections_raw = _exact_dict(
+            row["sections"],
+            set(SECTION_IDS),
+            "blueprint.sections_invalid",
+        )
+        sections: dict[str, dict[str, str]] = {}
+        for section_id in SECTION_IDS:
+            section = _exact_dict(
+                sections_raw[section_id],
+                {"applicability", "summary"},
+                "blueprint.section_invalid",
+            )
+            if section["applicability"] not in {
+                "applicable",
+                "not_applicable",
+            }:
+                raise ProductPlanningError(
+                    "product_plan_response_invalid",
+                    "blueprint.applicability_invalid",
+                )
+            sections[section_id] = {
+                "applicability": section["applicability"],
+                "summary": _safe_text(
+                    section["summary"],
+                    maximum=500,
+                    rule_code="blueprint.section_summary_invalid",
+                ),
+            }
+
+        if type(row["assignments"]) is not dict:
+            raise ProductPlanningError(
+                "product_plan_response_invalid",
+                "blueprint.assignments_invalid",
+            )
+        unknown = set(row["assignments"]) - candidate_refs
+        if unknown:
+            raise ProductPlanningError(
+                "product_plan_candidate_unknown",
+                "blueprint.candidate_ref_unknown",
+            )
+        assignments: dict[str, dict[str, Any]] = {}
+        covered: set[str] = set()
+        active_sections: set[str] = set()
+        for candidate_ref in sorted(row["assignments"]):
+            assignment = _exact_dict(
+                row["assignments"][candidate_ref],
+                {
+                    "section_id",
+                    "requirement_refs",
+                    "title",
+                    "summary",
+                    "acceptance_intent",
+                },
+                "blueprint.assignment_invalid",
+            )
+            section_id = assignment["section_id"]
+            refs = assignment["requirement_refs"]
+            if (
+                section_id not in SECTION_IDS
+                or type(refs) is not list
+                or not refs
+                or any(type(ref) is not str for ref in refs)
+                or len(set(refs)) != len(refs)
+                or set(refs) - set(requirement_order)
+            ):
+                raise ProductPlanningError(
+                    "product_plan_response_invalid",
+                    "blueprint.assignment_reference_invalid",
+                )
+            normalized_refs = sorted(refs, key=requirement_order.__getitem__)
+            assignments[candidate_ref] = {
+                "section_id": section_id,
+                "requirement_refs": normalized_refs,
+                "title": _safe_text(
+                    assignment["title"],
+                    maximum=180,
+                    rule_code="blueprint.assignment_text_invalid",
+                ),
+                "summary": _safe_text(
+                    assignment["summary"],
+                    maximum=800,
+                    rule_code="blueprint.assignment_text_invalid",
+                ),
+                "acceptance_intent": _safe_text(
+                    assignment["acceptance_intent"],
+                    maximum=500,
+                    rule_code="blueprint.assignment_text_invalid",
+                ),
+            }
+            covered.update(normalized_refs)
+            active_sections.add(section_id)
+
+        if type(row["gaps"]) is not list or len(row["gaps"]) > 64:
+            raise ProductPlanningError(
+                "product_plan_response_invalid",
+                "blueprint.gaps_invalid",
+            )
+        statements = {
+            str(item["ref"]): str(item["statement"]) for item in requirements
+        }
+        gaps: list[dict[str, Any]] = []
+        for raw_gap in row["gaps"]:
+            gap = _exact_dict(
+                raw_gap,
+                {"section_id", "requirement_refs", "title", "reason"},
+                "blueprint.gap_invalid",
+            )
+            refs = gap["requirement_refs"]
+            if (
+                gap["section_id"] not in SECTION_IDS
+                or type(refs) is not list
+                or not refs
+                or any(type(ref) is not str for ref in refs)
+                or len(set(refs)) != len(refs)
+                or set(refs) - set(requirement_order)
+                or all(_ABSENCE_CONSTRAINT.search(statements[ref]) for ref in refs)
+            ):
+                raise ProductPlanningError(
+                    "product_plan_response_invalid",
+                    "blueprint.gap_reference_invalid",
+                )
+            normalized_refs = sorted(refs, key=requirement_order.__getitem__)
+            normalized_gap = {
+                "section_id": gap["section_id"],
+                "requirement_refs": normalized_refs,
+                "title": _safe_text(
+                    gap["title"],
+                    maximum=180,
+                    rule_code="blueprint.gap_text_invalid",
+                ),
+                "reason": _safe_text(
+                    gap["reason"],
+                    maximum=500,
+                    rule_code="blueprint.gap_text_invalid",
+                ),
+            }
+            gaps.append(normalized_gap)
+            covered.update(normalized_refs)
+            active_sections.add(gap["section_id"])
+        gaps.sort(
+            key=lambda item: (
+                SECTION_IDS.index(item["section_id"]),
+                item["title"],
+                item["reason"],
+                item["requirement_refs"],
+            )
+        )
+
+        for section_id in SECTION_IDS:
+            applicability = sections[section_id]["applicability"]
+            if (section_id in active_sections) != (applicability == "applicable"):
+                raise ProductPlanningError(
+                    "product_plan_response_invalid",
+                    "blueprint.applicability_mismatch",
+                )
+        if covered != set(requirement_order):
+            raise ProductPlanningError(
+                "product_plan_requirement_uncovered",
+                "blueprint.requirement_uncovered",
+            )
+        normalized = {
+            "schema_version": schema_version,
+            "sections": sections,
+            "gaps": gaps,
+        }
+        if schema_version == "product_plan_blueprint.v1":
+            normalized["assignments"] = assignments
+        else:
+            normalized["selection"] = {
+                "offer_ref": offer_ref,
+                "assignments": assignments,
+            }
+        return normalized
+
+    @staticmethod
+    def _validate_composition_selection(value: Any) -> dict[str, str]:
+        row = _exact_dict(
+            value,
+            {"schema_version", "capability_key"},
+            "composition_selection.shape_invalid",
+        )
+        capability_key = row["capability_key"]
+        if (
+            row["schema_version"] != "product_composition_selection.v1"
+            or type(capability_key) is not str
+            or (
+                capability_key
+                and _SAFE_REF.fullmatch(capability_key) is None
+            )
+        ):
+            raise ProductPlanningError(
+                "product_plan_response_invalid",
+                "composition_selection.value_invalid",
+            )
+        return {
+            "schema_version": "product_composition_selection.v1",
+            "capability_key": capability_key,
+        }
+
+    @classmethod
+    def _resolve_composition_selection(
+        cls,
+        selection: dict[str, str],
+        composition_offers: list[dict[str, Any]],
+    ) -> dict[str, Any] | None:
+        normalized = cls._validate_composition_selection(selection)
+        capability_key = normalized["capability_key"]
+        if not capability_key:
+            return None
+        matches = [
+            offer
+            for offer in composition_offers
+            if offer.get("capability_key") == capability_key
+        ]
+        if not matches:
+            raise ProductPlanningError("product_plan_composition_unknown")
+        if len(matches) != 1:
+            raise ProductPlanningError(
+                "product_plan_composition_selection_ambiguous"
+            )
+        return matches[0]
+
+    def _validate_stored_composition_selection(
+        self,
+        workspace: dict[str, Any],
+    ) -> None:
+        selection = workspace["composition_selection"]
+        input_digest = workspace["composition_selection_input_digest"]
+        response_digest = workspace["composition_selection_response_digest"]
+        if selection is None:
+            if input_digest is not None or response_digest is not None:
+                raise ProductPlanningError("product_workspace_corrupt")
+            return
+        if (
+            type(workspace["outline"]) is not dict
+            or workspace["outline"]["needs_clarification"] is not False
+            or _DIGEST.fullmatch(str(input_digest)) is None
+            or _DIGEST.fullmatch(str(response_digest)) is None
+        ):
+            raise ProductPlanningError("product_workspace_corrupt")
+        try:
+            normalized = self._validate_composition_selection(selection)
+        except ProductPlanningError as exc:
+            raise ProductPlanningError("product_workspace_corrupt") from exc
+        if (
+            normalized != selection
+            or sum(
+                call["call_type"] == "composition_selection"
+                and call["structured_response_digest"] == response_digest
+                for call in workspace["model_calls"]
+            )
+            != 1
+        ):
+            raise ProductPlanningError("product_workspace_corrupt")
+
+    def _validate_stored_blueprint(self, workspace: dict[str, Any]) -> None:
+        blueprint = workspace["blueprint"]
+        input_digest = workspace["blueprint_input_digest"]
+        response_digest = workspace["blueprint_response_digest"]
+        if blueprint is None:
+            if input_digest is not None or response_digest is not None:
+                raise ProductPlanningError("product_workspace_corrupt")
+            return
+        if (
+            type(workspace["outline"]) is not dict
+            or workspace["outline"]["needs_clarification"] is not False
+            or _DIGEST.fullmatch(str(input_digest)) is None
+            or _DIGEST.fullmatch(str(response_digest)) is None
+        ):
+            raise ProductPlanningError("product_workspace_corrupt")
+        try:
+            schema_version = (
+                blueprint.get("schema_version")
+                if type(blueprint) is dict
+                else None
+            )
+            assignments = (
+                blueprint.get("assignments", {})
+                if schema_version == "product_plan_blueprint.v1"
+                else blueprint.get("selection", {}).get("assignments", {})
+                if type(blueprint) is dict
+                and type(blueprint.get("selection")) is dict
+                else {}
+            )
+            offers = (
+                {
+                    blueprint["selection"]["offer_ref"]: set(assignments)
+                }
+                if schema_version == "product_plan_blueprint.v2"
+                and blueprint["selection"]["offer_ref"]
+                else {}
+            )
+            normalized = self._validate_blueprint(
+                blueprint,
+                workspace["outline"]["requirements"],
+                set(assignments),
+                offers,
+            )
+        except ProductPlanningError as exc:
+            raise ProductPlanningError("product_workspace_corrupt") from exc
+        if (
+            normalized != blueprint
+            or sum(
+                call["call_type"] == "product_blueprint"
+                and call["structured_response_digest"] == response_digest
+                for call in workspace["model_calls"]
+            )
+            != 1
+        ):
+            raise ProductPlanningError("product_workspace_corrupt")
 
     def _validate_stored_confirmation(
         self,
@@ -3247,6 +5740,2415 @@ class ProductPlanner:
                 raise ProductPlanningError("product_plan_confirmation_conflict")
             return
         self._atomic_write(path, value)
+
+    def _capability_gap_plan_dir(
+        self,
+        workspace: dict[str, Any],
+        plan: dict[str, Any],
+    ) -> Path:
+        return (
+            self._workspace_dir(workspace["workspace_id"])
+            / "capability_gaps"
+            / f"plan_v{plan['plan_version']}_{plan['canonical_digest']}"
+        )
+
+    def _capability_gap_projection_path(
+        self,
+        workspace: dict[str, Any],
+        plan: dict[str, Any],
+    ) -> Path:
+        return self._capability_gap_plan_dir(workspace, plan) / "projection_v1.json"
+
+    def _capability_gap_projection_v2_path(
+        self,
+        workspace: dict[str, Any],
+        plan: dict[str, Any],
+    ) -> Path:
+        return self._capability_gap_plan_dir(workspace, plan) / "projection_v2.json"
+
+    def _capability_gap_projection_path_for(
+        self,
+        workspace: dict[str, Any],
+        plan: dict[str, Any],
+        projection: dict[str, Any],
+    ) -> Path:
+        if projection.get("schema_version") == CAPABILITY_GAP_PROJECTION_VERSION:
+            return self._capability_gap_projection_path(workspace, plan)
+        if projection.get("schema_version") == CAPABILITY_GAP_PROJECTION_V2:
+            return self._capability_gap_projection_v2_path(workspace, plan)
+        raise ProductPlanningError("capability_gap_projection_invalid")
+
+    def _capability_gap_decisions_dir(
+        self,
+        workspace: dict[str, Any],
+        plan: dict[str, Any],
+    ) -> Path:
+        return self._capability_gap_plan_dir(workspace, plan) / "decisions"
+
+    def _capability_source_proposal_authorization_path(
+        self,
+        workspace: dict[str, Any],
+        plan: dict[str, Any],
+    ) -> Path:
+        return (
+            self._capability_gap_plan_dir(workspace, plan)
+            / "source_proposal_authorization_v1.json"
+        )
+
+    def _capability_source_proposal_authorization_v2_path(
+        self,
+        workspace: dict[str, Any],
+        plan: dict[str, Any],
+    ) -> Path:
+        return (
+            self._capability_gap_plan_dir(workspace, plan)
+            / "source_proposal_authorization_v2.json"
+        )
+
+    def _capability_source_proposal_authorization_path_for(
+        self,
+        workspace: dict[str, Any],
+        plan: dict[str, Any],
+        projection: dict[str, Any],
+    ) -> Path:
+        if projection.get("schema_version") == CAPABILITY_GAP_PROJECTION_VERSION:
+            return self._capability_source_proposal_authorization_path(
+                workspace,
+                plan,
+            )
+        if projection.get("schema_version") == CAPABILITY_GAP_PROJECTION_V2:
+            return self._capability_source_proposal_authorization_v2_path(
+                workspace,
+                plan,
+            )
+        raise ProductPlanningError("capability_gap_projection_invalid")
+
+    def _capability_source_proposal_authorization_paths(
+        self,
+        workspace: dict[str, Any],
+    ) -> list[Path]:
+        root = self._workspace_dir(workspace["workspace_id"]) / "capability_gaps"
+        if not root.exists() and not root.is_symlink():
+            return []
+        self._assert_no_symlink_components(root)
+        if root.is_symlink() or not root.is_dir():
+            raise ProductPlanningError("product_workspace_symlink_forbidden")
+        paths: list[Path] = []
+        for entry in sorted(root.iterdir(), key=lambda path: path.name):
+            if entry.is_symlink() or not entry.is_dir():
+                raise ProductPlanningError("product_workspace_symlink_forbidden")
+            for name in (
+                "source_proposal_authorization_v1.json",
+                "source_proposal_authorization_v2.json",
+            ):
+                candidate = entry / name
+                if candidate.exists() or candidate.is_symlink():
+                    if candidate.is_symlink() or not candidate.is_file():
+                        raise ProductPlanningError(
+                            "product_workspace_symlink_forbidden"
+                        )
+                    paths.append(candidate)
+        return paths
+
+    def _capability_source_proposal_run_dir(
+        self,
+        workspace: dict[str, Any],
+        plan: dict[str, Any],
+    ) -> Path:
+        return (
+            self._capability_gap_plan_dir(workspace, plan)
+            / "source_proposal_run_v1"
+        )
+
+    def _capability_source_proposal_run_identity_path(
+        self,
+        workspace: dict[str, Any],
+        plan: dict[str, Any],
+    ) -> Path:
+        return (
+            self._capability_source_proposal_run_dir(workspace, plan)
+            / "run.json"
+        )
+
+    def _capability_source_proposal_run_events_dir(
+        self,
+        workspace: dict[str, Any],
+        plan: dict[str, Any],
+    ) -> Path:
+        return (
+            self._capability_source_proposal_run_dir(workspace, plan)
+            / "events"
+        )
+
+    def _validate_capability_source_proposal_run_identity(
+        self,
+        workspace: dict[str, Any],
+        value: Any,
+    ) -> dict[str, Any]:
+        row = _stored_exact(
+            value,
+            {
+                "schema_version",
+                "run_id",
+                "plan_token",
+                "plan_digest",
+                "gap_id",
+                "projection_digest",
+                "authorize_decision_digest",
+                "authorization_digest",
+                "request_digest",
+                "warehouse_revision",
+                "catalog_digest",
+                "source_proposal_model",
+                "supervision_model",
+                "attempt_count",
+                "created_at",
+                "canonical_digest",
+            },
+        )
+        body = {
+            key: item
+            for key, item in row.items()
+            if key != "canonical_digest"
+        }
+        source_model = _stored_exact(
+            row["source_proposal_model"],
+            {"name", "digest", "parameter_count", "parameter_size"},
+        )
+        supervision_model = _stored_exact(
+            row["supervision_model"],
+            {"name", "digest"},
+        )
+        plan = workspace.get("plan")
+        projection = self._read_capability_gap_projection(workspace)
+        decisions = (
+            self._capability_gap_decisions(workspace, projection)
+            if projection is not None
+            else []
+        )
+        decision = decisions[-1] if decisions else None
+        authorization = (
+            self._read_capability_source_proposal_authorization(
+                workspace,
+                projection,
+                decision,
+            )
+            if projection is not None
+            and type(decision) is dict
+            and decision.get("decision") == "authorize"
+            else None
+        )
+        if (
+            row["schema_version"]
+            != CAPABILITY_SOURCE_PROPOSAL_RUN_VERSION
+            or _SOURCE_PROPOSAL_RUN_ID.fullmatch(str(row["run_id"]))
+            is None
+            or row["plan_token"] != workspace["plan_token"]
+            or type(plan) is not dict
+            or row["plan_digest"] != plan["canonical_digest"]
+            or projection is None
+            or row["gap_id"] != projection["gap_id"]
+            or row["projection_digest"]
+            != projection["projection_digest"]
+            or decision is None
+            or row["authorize_decision_digest"]
+            != decision["canonical_digest"]
+            or authorization is None
+            or row["authorization_digest"]
+            != authorization["authorization_digest"]
+            or row["request_digest"]
+            != self._runtime_capability_source_proposal_request(
+                authorization
+            )["request_digest"]
+            or row["warehouse_revision"]
+            != authorization["warehouse_revision"]
+            or row["catalog_digest"] != authorization["catalog_digest"]
+            or source_model != workspace["model"]
+            or type(source_model["name"]) is not str
+            or not source_model["name"]
+            or _DIGEST.fullmatch(str(source_model["digest"])) is None
+            or type(source_model["parameter_count"]) is not int
+            or source_model["parameter_count"] <= 0
+            or type(source_model["parameter_size"]) is not str
+            or not source_model["parameter_size"]
+            or type(supervision_model["name"]) is not str
+            or not supervision_model["name"]
+            or _DIGEST.fullmatch(str(supervision_model["digest"])) is None
+            or row["attempt_count"] != 1
+            or type(row["created_at"]) is not str
+            or not row["created_at"]
+            or row["canonical_digest"] != _digest(body)
+        ):
+            raise ProductPlanningError(
+                "capability_source_proposal_run_conflict"
+            )
+        return copy.deepcopy(row)
+
+    @staticmethod
+    def _validate_capability_source_proposal_run_evidence(
+        value: Any,
+    ) -> dict[str, Any]:
+        allowed = {
+            "source_sha256",
+            "source_relpath",
+            "model_response_digest",
+            "source_identity_sha256",
+            "capture_digest",
+            "security_digest",
+            "runtime_digest",
+            "supervision_digest",
+            "validation_database_sha256",
+            "admission_digest",
+            "review_id",
+            "canonical_hash",
+            "warehouse_revision",
+        }
+        if type(value) is not dict or set(value) - allowed:
+            raise ProductPlanningError(
+                "capability_source_proposal_run_event_invalid"
+            )
+        row = copy.deepcopy(value)
+        for key, item in row.items():
+            if key == "warehouse_revision":
+                if type(item) is not int or item < 0:
+                    raise ProductPlanningError(
+                        "capability_source_proposal_run_event_invalid"
+                    )
+            elif key == "source_relpath":
+                if item != "source/capability.js":
+                    raise ProductPlanningError(
+                        "capability_source_proposal_run_event_invalid"
+                    )
+            elif key == "review_id":
+                if (
+                    type(item) is not str
+                    or re.fullmatch(r"[A-Za-z0-9_-]{1,160}", item)
+                    is None
+                ):
+                    raise ProductPlanningError(
+                        "capability_source_proposal_run_event_invalid"
+                    )
+            elif _DIGEST.fullmatch(str(item)) is None:
+                raise ProductPlanningError(
+                    "capability_source_proposal_run_event_invalid"
+                )
+        return row
+
+    def _validate_capability_source_proposal_run_event(
+        self,
+        value: Any,
+        identity: dict[str, Any],
+        previous: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        row = _stored_exact(
+            value,
+            {
+                "schema_version",
+                "run_digest",
+                "sequence",
+                "previous_event_digest",
+                "status",
+                "stage",
+                "evidence",
+                "error_code",
+                "created_at",
+                "canonical_digest",
+            },
+        )
+        body = {
+            key: item
+            for key, item in row.items()
+            if key != "canonical_digest"
+        }
+        evidence = self._validate_capability_source_proposal_run_evidence(
+            row["evidence"]
+        )
+        if (
+            row["schema_version"]
+            != CAPABILITY_SOURCE_PROPOSAL_RUN_EVENT_VERSION
+            or row["run_digest"] != identity["canonical_digest"]
+            or type(row["sequence"]) is not int
+            or row["sequence"] != (1 if previous is None else previous[
+                "sequence"
+            ] + 1)
+            or row["previous_event_digest"]
+            != (
+                None
+                if previous is None
+                else previous["canonical_digest"]
+            )
+            or row["status"]
+            not in CAPABILITY_SOURCE_PROPOSAL_RUN_STATUSES
+            or row["stage"]
+            not in CAPABILITY_SOURCE_PROPOSAL_RUN_STAGES
+            or evidence != row["evidence"]
+            or (
+                row["error_code"] is not None
+                and (
+                    type(row["error_code"]) is not str
+                    or re.fullmatch(
+                        r"[a-z][a-z0-9_]{1,95}",
+                        row["error_code"],
+                    )
+                    is None
+                )
+            )
+            or type(row["created_at"]) is not str
+            or not row["created_at"]
+            or row["canonical_digest"] != _digest(body)
+        ):
+            raise ProductPlanningError(
+                "capability_source_proposal_run_event_invalid"
+            )
+        if previous is None:
+            if (
+                row["status"] != "pending"
+                or row["stage"] != "source_proposal"
+                or row["error_code"] is not None
+                or row["evidence"]
+            ):
+                raise ProductPlanningError(
+                    "capability_source_proposal_run_event_invalid"
+                )
+        else:
+            terminal = {"review_required", "failed", "cancelled"}
+            previous_index = CAPABILITY_SOURCE_PROPOSAL_RUN_STAGES.index(
+                previous["stage"]
+            )
+            current_index = CAPABILITY_SOURCE_PROPOSAL_RUN_STAGES.index(
+                row["stage"]
+            )
+            if (
+                previous["status"] in terminal
+                or row["status"] == "pending"
+                or current_index < previous_index
+                or current_index > previous_index + 1
+                or (
+                    row["status"] == "running"
+                    and row["error_code"] is not None
+                )
+                or (
+                    row["status"] in {"failed", "cancelled"}
+                    and row["error_code"] is None
+                )
+                or (
+                    row["status"] == "review_required"
+                    and (
+                        row["stage"] != "admission"
+                        or row["error_code"] is not None
+                        or "review_id" not in row["evidence"]
+                        or "admission_digest" not in row["evidence"]
+                    )
+                )
+            ):
+                raise ProductPlanningError(
+                    "capability_source_proposal_run_event_invalid"
+                )
+        return copy.deepcopy(row)
+
+    def _capability_source_proposal_run_events(
+        self,
+        workspace: dict[str, Any],
+        identity: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        directory = self._capability_source_proposal_run_events_dir(
+            workspace,
+            workspace["plan"],
+        )
+        if not directory.exists() and not directory.is_symlink():
+            return []
+        self._assert_no_symlink_components(directory)
+        if directory.is_symlink() or not directory.is_dir():
+            raise ProductPlanningError(
+                "capability_source_proposal_run_conflict"
+            )
+        try:
+            entries = sorted(directory.iterdir(), key=lambda path: path.name)
+        except OSError as exc:
+            raise ProductPlanningError(
+                "product_planning_state_unavailable"
+            ) from exc
+        events: list[dict[str, Any]] = []
+        previous = None
+        for entry in entries:
+            match = _SOURCE_PROPOSAL_RUN_EVENT_FILENAME.fullmatch(
+                entry.name
+            )
+            if (
+                match is None
+                or entry.is_symlink()
+                or not entry.is_file()
+            ):
+                raise ProductPlanningError(
+                    "capability_source_proposal_run_event_invalid"
+                )
+            row = self._validate_capability_source_proposal_run_event(
+                self._read_json(entry),
+                identity,
+                previous,
+            )
+            if (
+                int(match.group(1)) != row["sequence"]
+                or match.group(2) != row["canonical_digest"]
+            ):
+                raise ProductPlanningError(
+                    "capability_source_proposal_run_event_invalid"
+                )
+            events.append(row)
+            previous = row
+        if not events:
+            raise ProductPlanningError(
+                "capability_source_proposal_run_conflict"
+            )
+        return events
+
+    def _append_capability_source_proposal_run_event_locked(
+        self,
+        workspace: dict[str, Any],
+        identity: dict[str, Any],
+        *,
+        status: str,
+        stage: str,
+        evidence: dict[str, Any],
+        error_code: str | None,
+    ) -> dict[str, Any]:
+        events = self._capability_source_proposal_run_events(
+            workspace,
+            identity,
+        )
+        previous = events[-1] if events else None
+        body = {
+            "schema_version": (
+                CAPABILITY_SOURCE_PROPOSAL_RUN_EVENT_VERSION
+            ),
+            "run_digest": identity["canonical_digest"],
+            "sequence": 1 if previous is None else previous["sequence"] + 1,
+            "previous_event_digest": (
+                None
+                if previous is None
+                else previous["canonical_digest"]
+            ),
+            "status": status,
+            "stage": stage,
+            "evidence": copy.deepcopy(evidence),
+            "error_code": error_code,
+            "created_at": _now(),
+        }
+        event = {**body, "canonical_digest": _digest(body)}
+        self._validate_capability_source_proposal_run_event(
+            event,
+            identity,
+            previous,
+        )
+        directory = self._capability_source_proposal_run_events_dir(
+            workspace,
+            workspace["plan"],
+        )
+        self._ensure_directory(directory)
+        path = directory / (
+            f"event_{event['sequence']:06d}_"
+            f"{event['canonical_digest']}.json"
+        )
+        self._write_immutable(path, event)
+        return event
+
+    def _capability_source_proposal_run_by_id(
+        self,
+        run_id: str,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        if _SOURCE_PROPOSAL_RUN_ID.fullmatch(str(run_id)) is None:
+            raise ProductPlanningError(
+                "capability_source_proposal_run_not_found"
+            )
+        matches: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for workspace in self._workspaces():
+            plan = workspace.get("plan")
+            if type(plan) is not dict:
+                continue
+            path = self._capability_source_proposal_run_identity_path(
+                workspace,
+                plan,
+            )
+            if not path.exists() and not path.is_symlink():
+                continue
+            identity = self._validate_capability_source_proposal_run_identity(
+                workspace,
+                self._read_json(path),
+            )
+            if identity["run_id"] == run_id:
+                matches.append((workspace, identity))
+        if len(matches) != 1:
+            raise ProductPlanningError(
+                "capability_source_proposal_run_not_found"
+                if not matches
+                else "capability_source_proposal_run_conflict"
+            )
+        return matches[0]
+
+    def _capability_source_proposal_run_projection(
+        self,
+        workspace: dict[str, Any],
+        identity: dict[str, Any],
+    ) -> dict[str, Any]:
+        events = self._capability_source_proposal_run_events(
+            workspace,
+            identity,
+        )
+        current = events[-1]
+        completed_stages = []
+        for stage in CAPABILITY_SOURCE_PROPOSAL_RUN_STAGES:
+            if any(
+                event["stage"] == stage
+                and (
+                    event["stage"] != current["stage"]
+                    or current["status"]
+                    in {"review_required", "failed", "cancelled"}
+                )
+                for event in events
+            ):
+                completed_stages.append(stage)
+        return {
+            "schema_version": CAPABILITY_SOURCE_PROPOSAL_RUN_VERSION,
+            "run_id": identity["run_id"],
+            "attempt_count": identity["attempt_count"],
+            "status": current["status"],
+            "stage": current["stage"],
+            "completed_stages": completed_stages,
+            "error_code": current["error_code"],
+            "review_id": current["evidence"].get("review_id"),
+            "created_at": identity["created_at"],
+            "updated_at": current["created_at"],
+        }
+
+    @staticmethod
+    def _validate_gap_endpoint(value: Any) -> dict[str, Any]:
+        row = _stored_exact(
+            value,
+            {
+                "capsule_id",
+                "version_id",
+                "canonical_hash",
+                "capability_kind",
+                "role_key",
+                "variant_key",
+                "port_kind",
+                "port_name",
+                "contract_digest",
+            },
+        )
+        if (
+            any(
+                type(row[key]) is not str or not row[key]
+                for key in (
+                    "capsule_id",
+                    "version_id",
+                    "capability_kind",
+                    "role_key",
+                    "variant_key",
+                    "port_kind",
+                    "port_name",
+                )
+            )
+            or row["capability_kind"]
+            not in {"presentation", "interaction", "computation"}
+            or row["port_kind"] not in {"event", "input", "output"}
+            or _DIGEST.fullmatch(str(row["canonical_hash"])) is None
+            or _DIGEST.fullmatch(str(row["contract_digest"])) is None
+        ):
+            raise ProductPlanningError("capability_gap_projection_invalid")
+        return row
+
+    def _validate_capability_gap_projection(
+        self,
+        workspace: dict[str, Any],
+        value: Any,
+    ) -> dict[str, Any]:
+        plan = workspace.get("plan")
+        schema_version = (
+            value.get("schema_version") if type(value) is dict else None
+        )
+        exact_fields = {
+            "schema_version",
+            "plan_id",
+            "plan_version",
+            "plan_digest",
+            "gap_id",
+            "requirement_ids",
+            "capability_key",
+            "capability_group_display_name",
+            "capability_kind",
+            "slot",
+            "input_contract",
+            "output_contract",
+            "adapter_contract_version",
+            "capture_mapping_schema",
+            "result_field",
+            "passthrough_fields",
+            "upstream",
+            "downstream",
+            "existing_members",
+            "warehouse_revision",
+            "catalog_digest",
+            "projection_source",
+            "projection_digest",
+        }
+        if schema_version == CAPABILITY_GAP_PROJECTION_V2:
+            exact_fields |= {"proof_schema", "result_enum"}
+        row = _stored_exact(
+            value,
+            exact_fields,
+        )
+        body = {
+            key: item for key, item in row.items() if key != "projection_digest"
+        }
+        if (
+            type(plan) is not dict
+            or row["schema_version"]
+            not in {
+                CAPABILITY_GAP_PROJECTION_VERSION,
+                CAPABILITY_GAP_PROJECTION_V2,
+            }
+            or row["plan_id"] != plan["plan_id"]
+            or row["plan_version"] != plan["plan_version"]
+            or row["plan_digest"] != plan["canonical_digest"]
+            or _GAP_ID.fullmatch(str(row["gap_id"])) is None
+            or type(row["requirement_ids"]) is not list
+            or not row["requirement_ids"]
+            or len(set(row["requirement_ids"])) != len(row["requirement_ids"])
+            or row["requirement_ids"] != sorted(row["requirement_ids"])
+            or any(type(item) is not str for item in row["requirement_ids"])
+            or type(row["capability_key"]) is not str
+            or not row["capability_key"]
+            or type(row["capability_group_display_name"]) is not str
+            or not row["capability_group_display_name"]
+            or row["capability_kind"] != "computation"
+            or row["slot"]
+            not in {
+                "only_computation",
+                "before_existing_computation",
+                "after_existing_computation",
+            }
+            or (
+                row["schema_version"] == CAPABILITY_GAP_PROJECTION_VERSION
+                and (
+                    row["adapter_contract_version"]
+                    not in {"computation_adapter.v2", "computation_adapter.v3"}
+                    or row["capture_mapping_schema"]
+                    not in {
+                        "computation_capture_mapping.v2",
+                        "computation_capture_mapping.v3",
+                    }
+                )
+            )
+            or (
+                row["schema_version"] == CAPABILITY_GAP_PROJECTION_V2
+                and (
+                    row["adapter_contract_version"]
+                    != "computation_adapter.v4"
+                    or row["capture_mapping_schema"]
+                    != "computation_capture_mapping.v4"
+                    or row["proof_schema"] != "source_graph_proof.v2"
+                    or type(row["result_enum"]) is not list
+                    or not row["result_enum"]
+                    or len(row["result_enum"]) > 32
+                    or not self._utf8_sorted_unique_strings(
+                        row["result_enum"]
+                    )
+                )
+            )
+            or type(row["result_field"]) is not str
+            or not row["result_field"]
+            or type(row["passthrough_fields"]) is not list
+            or row["passthrough_fields"] != sorted(row["passthrough_fields"])
+            or len(set(row["passthrough_fields"]))
+            != len(row["passthrough_fields"])
+            or any(
+                type(item) is not str or not item
+                for item in row["passthrough_fields"]
+            )
+            or type(row["existing_members"]) is not list
+            or len(row["existing_members"]) not in {2, 3}
+            or type(row["warehouse_revision"]) is not int
+            or row["warehouse_revision"] < 0
+            or _DIGEST.fullmatch(str(row["catalog_digest"])) is None
+            or row["projection_source"] != "deterministic_unique_serial_gap"
+            or _DIGEST.fullmatch(str(row["projection_digest"])) is None
+            or row["projection_digest"] != _digest(body)
+        ):
+            raise ProductPlanningError("capability_gap_projection_invalid")
+        try:
+            normalized_input, normalized_output, _error = (
+                normalize_capsule_contracts(
+                    "computation",
+                    row["input_contract"],
+                    row["output_contract"],
+                    {"schema": "error_contract.v1", "errors": {}},
+                )
+            )
+        except DataContractError as exc:
+            raise ProductPlanningError(
+                "capability_gap_projection_invalid"
+            ) from exc
+        adapter = (
+            self._integer_gap_adapter(normalized_input, normalized_output)
+            if row["schema_version"] == CAPABILITY_GAP_PROJECTION_VERSION
+            else self._finite_enum_gap_adapter(
+                normalized_input,
+                normalized_output,
+            )
+        )
+        adapter_fields = [
+            "adapter_contract_version",
+            "capture_mapping_schema",
+            "result_field",
+            "passthrough_fields",
+        ]
+        if row["schema_version"] == CAPABILITY_GAP_PROJECTION_V2:
+            adapter_fields.extend(["proof_schema", "result_enum"])
+        if (
+            normalized_input != row["input_contract"]
+            or normalized_output != row["output_contract"]
+            or adapter is None
+            or any(
+                row[key] != adapter[key]
+                for key in adapter_fields
+            )
+        ):
+            raise ProductPlanningError("capability_gap_projection_invalid")
+        self._validate_gap_endpoint(row["upstream"])
+        self._validate_gap_endpoint(row["downstream"])
+        identities: set[tuple[str, str]] = set()
+        for member in row["existing_members"]:
+            identity = self._gap_capsule_identity(member)
+            if identity != member:
+                raise ProductPlanningError("capability_gap_projection_invalid")
+            pair = (identity["capsule_id"], identity["version_id"])
+            if pair in identities:
+                raise ProductPlanningError("capability_gap_projection_invalid")
+            identities.add(pair)
+        gaps = [
+            gap
+            for section in plan["sections"]
+            for gap in section["gaps"]
+        ]
+        if (
+            len(gaps) != 1
+            or gaps[0]["gap_id"] != row["gap_id"]
+            or sorted(gaps[0]["requirement_ids"]) != row["requirement_ids"]
+        ):
+            raise ProductPlanningError("capability_gap_projection_invalid")
+        return row
+
+    def _read_capability_gap_projection(
+        self,
+        workspace: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        plan = workspace.get("plan")
+        if type(plan) is not dict:
+            return None
+        paths = [
+            path
+            for path in (
+                self._capability_gap_projection_path(workspace, plan),
+                self._capability_gap_projection_v2_path(workspace, plan),
+            )
+            if path.exists() or path.is_symlink()
+        ]
+        if not paths:
+            return None
+        if len(paths) != 1:
+            raise ProductPlanningError("capability_gap_projection_conflict")
+        return self._validate_capability_gap_projection(
+            workspace,
+            self._read_json(paths[0]),
+        )
+
+    def _capability_gap_projection_for_workspace(
+        self,
+        workspace: dict[str, Any],
+        plan: dict[str, Any],
+        catalog: dict[str, Any],
+    ) -> tuple[dict[str, Any] | None, str]:
+        selection = (
+            self._validate_capability_gap_target_selection(
+                workspace.get("capability_gap_target_selection")
+            )
+            if (
+                workspace["schema_version"]
+                in TARGET_SELECTION_WORKSPACE_SCHEMA_VERSIONS
+            )
+            else None
+        )
+        return self._capability_gap_projection(
+            plan,
+            catalog,
+            (
+                selection["candidate_digest"]
+                if selection is not None
+                else None
+            ),
+        )
+
+    def _prepare_capability_gap_projection(
+        self,
+        workspace: dict[str, Any],
+        catalog: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        plan = workspace.get("plan")
+        if type(plan) is not dict:
+            return None
+        projection, status = self._capability_gap_projection_for_workspace(
+            workspace,
+            plan,
+            catalog,
+        )
+        if projection is None or status != "available":
+            return None
+        path = self._capability_gap_projection_path_for(
+            workspace,
+            plan,
+            projection,
+        )
+        self._ensure_directory(path.parent)
+        self._write_immutable(path, projection)
+        return projection
+
+    def _validate_capability_gap_decision(
+        self,
+        value: Any,
+        projection: dict[str, Any],
+        previous: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        row = _stored_exact(
+            value,
+            {
+                "schema_version",
+                "gap_projection_digest",
+                "plan_digest",
+                "catalog_digest",
+                "sequence",
+                "previous_decision_digest",
+                "decision",
+                "behavior_intent",
+                "reason",
+                "acceptance_cases",
+                "decision_source",
+                "decided_at",
+                "canonical_digest",
+            },
+        )
+        body = {
+            key: item for key, item in row.items() if key != "canonical_digest"
+        }
+        expected_sequence = 1 if previous is None else previous["sequence"] + 1
+        expected_previous = (
+            None if previous is None else previous["canonical_digest"]
+        )
+        if (
+            row["schema_version"] != CAPABILITY_GAP_DECISION_VERSION
+            or row["gap_projection_digest"] != projection["projection_digest"]
+            or row["plan_digest"] != projection["plan_digest"]
+            or row["catalog_digest"] != projection["catalog_digest"]
+            or row["sequence"] != expected_sequence
+            or row["previous_decision_digest"] != expected_previous
+            or row["decision"] not in {"authorize", "defer", "reject"}
+            or row["decision_source"] != "user_confirmed"
+            or type(row["decided_at"]) is not str
+            or not row["decided_at"]
+            or _DIGEST.fullmatch(str(row["canonical_digest"])) is None
+            or row["canonical_digest"] != _digest(body)
+            or type(row["acceptance_cases"]) is not list
+        ):
+            raise ProductPlanningError("capability_gap_decision_invalid")
+        if row["decision"] == "authorize":
+            if (
+                type(row["behavior_intent"]) is not str
+                or not row["behavior_intent"]
+                or row["reason"] is not None
+                or not 1 <= len(row["acceptance_cases"]) <= 3
+            ):
+                raise ProductPlanningError("capability_gap_decision_invalid")
+            case_digests: set[str] = set()
+            for case in row["acceptance_cases"]:
+                exact = _stored_exact(case, {"input", "expected_output"})
+                digest = _digest(exact)
+                if (
+                    digest in case_digests
+                    or not data_contract_accepts(
+                        projection["input_contract"],
+                        exact["input"],
+                    )
+                    or not data_contract_accepts(
+                        projection["output_contract"],
+                        exact["expected_output"],
+                    )
+                    or any(
+                        _canonical_bytes(exact["input"][field])
+                        != _canonical_bytes(
+                            exact["expected_output"][field]
+                        )
+                        for field in projection["passthrough_fields"]
+                    )
+                ):
+                    raise ProductPlanningError(
+                        "capability_gap_acceptance_invalid"
+                    )
+                case_digests.add(digest)
+        elif (
+            row["behavior_intent"] is not None
+            or row["acceptance_cases"]
+        ):
+            raise ProductPlanningError("capability_gap_decision_invalid")
+        if row["decision"] == "reject":
+            if type(row["reason"]) is not str or not row["reason"]:
+                raise ProductPlanningError("capability_gap_decision_invalid")
+        elif row["decision"] == "defer" and (
+            row["reason"] is not None
+            and (type(row["reason"]) is not str or not row["reason"])
+        ):
+                raise ProductPlanningError("capability_gap_decision_invalid")
+        return row
+
+    @staticmethod
+    def _capability_source_proposal_error_contract() -> dict[str, Any]:
+        details = {
+            "schema": "data_contract.v1",
+            "type": "object",
+            "properties": {},
+            "required": [],
+            "additional_properties": False,
+        }
+        return {
+            "schema": "error_contract.v1",
+            "errors": {
+                "INPUT_CONTRACT_VIOLATION": {
+                    "field": None,
+                    "details": details,
+                },
+                "OUTPUT_CONTRACT_VIOLATION": {
+                    "field": None,
+                    "details": details,
+                },
+            },
+        }
+
+    @staticmethod
+    def _capability_source_proposal_format_schema() -> dict[str, Any]:
+        return {
+            "type": "object",
+            "properties": {
+                "schema": {
+                    "type": "string",
+                    "enum": [CAPABILITY_SOURCE_PROPOSAL_OUTPUT_VERSION],
+                },
+                "entry": {
+                    "type": "object",
+                    "properties": {
+                        "module_relpath": {
+                            "type": "string",
+                            "enum": ["capability.js"],
+                        },
+                        "export_name": {
+                            "type": "string",
+                            "enum": ["compute"],
+                        },
+                    },
+                    "required": ["module_relpath", "export_name"],
+                    "additionalProperties": False,
+                },
+                "files": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "enum": ["capability.js"],
+                            },
+                            "content": {"type": "string"},
+                        },
+                        "required": ["path", "content"],
+                        "additionalProperties": False,
+                    },
+                    "minItems": 1,
+                    "maxItems": 1,
+                },
+            },
+            "required": ["schema", "entry", "files"],
+            "additionalProperties": False,
+        }
+
+    @staticmethod
+    def _capability_source_proposal_format_schema_v2(
+        input_contract: dict[str, Any],
+        result_enum: list[str],
+    ) -> dict[str, Any]:
+        input_properties: dict[str, Any] = {}
+        for field in sorted(
+            input_contract["properties"],
+            key=lambda value: value.encode("utf-8"),
+        ):
+            contract = input_contract["properties"][field]
+            if contract["type"] == "integer":
+                input_properties[field] = {"type": "integer"}
+            elif contract["type"] == "boolean":
+                input_properties[field] = {"type": "boolean"}
+            else:
+                raise ProductPlanningError(
+                    "capability_source_proposal_request_invalid"
+                )
+        witness_count = len(result_enum)
+        return {
+            "type": "object",
+            "properties": {
+                "schema": {
+                    "type": "string",
+                    "enum": [CAPABILITY_SOURCE_PROPOSAL_OUTPUT_V2],
+                },
+                "entry": {
+                    "type": "object",
+                    "properties": {
+                        "module_relpath": {
+                            "type": "string",
+                            "enum": ["capability.js"],
+                        },
+                        "export_name": {
+                            "type": "string",
+                            "enum": ["compute"],
+                        },
+                    },
+                    "required": ["module_relpath", "export_name"],
+                    "additionalProperties": False,
+                },
+                "files": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "path": {
+                                "type": "string",
+                                "enum": ["capability.js"],
+                            },
+                            "content": {"type": "string"},
+                        },
+                        "required": ["path", "content"],
+                        "additionalProperties": False,
+                    },
+                    "minItems": 1,
+                    "maxItems": 1,
+                },
+                "witnesses": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "input": {
+                                "type": "object",
+                                "properties": input_properties,
+                                "required": list(input_properties),
+                                "additionalProperties": False,
+                            },
+                            "expected_scalar_result": {
+                                "type": "string",
+                                "enum": copy.deepcopy(result_enum),
+                            },
+                        },
+                        "required": ["input", "expected_scalar_result"],
+                        "additionalProperties": False,
+                    },
+                    "minItems": witness_count,
+                    "maxItems": witness_count,
+                },
+            },
+            "required": ["schema", "entry", "files", "witnesses"],
+            "additionalProperties": False,
+        }
+
+    @classmethod
+    def _build_capability_source_proposal_request(
+        cls,
+        authorization: dict[str, Any],
+    ) -> dict[str, Any]:
+        adapter_version = authorization["adapter_contract_version"]
+        adapter_semantics = {
+            "contract_version": adapter_version,
+            "result_field": authorization["result_field"],
+            "passthrough_fields": copy.deepcopy(
+                authorization["passthrough_fields"]
+            ),
+            "source_result": "scalar_integer",
+            "adapter_output": (
+                "proved_scalar_result"
+                if adapter_version == "computation_adapter.v2"
+                else "validated_input_passthrough_plus_proved_scalar_result"
+            ),
+        }
+        safe_input = {
+            "schema_version": "capability_source_proposal_input.v1",
+            "behavior_intent": authorization["behavior_intent"],
+            "input_contract": copy.deepcopy(authorization["input_contract"]),
+            "output_contract": copy.deepcopy(authorization["output_contract"]),
+            "error_contract": copy.deepcopy(authorization["error_contract"]),
+            "acceptance_cases": copy.deepcopy(
+                authorization["acceptance_cases"]
+            ),
+            "adapter": adapter_semantics,
+            "entry": {
+                "module_relpath": "capability.js",
+                "export_name": "compute",
+            },
+            "safety_constraints": [
+                "input_immutable",
+                "no_dependencies",
+                "no_environment",
+                "no_filesystem",
+                "no_global_state",
+                "no_network",
+                "no_process",
+                "no_randomness",
+                "no_time",
+                "output_contract_required",
+            ],
+        }
+        prompt = (
+            "Generate one deterministic pure JavaScript computation. "
+            "Return exactly one JSON object matching FORMAT_SCHEMA. "
+            "Create only capability.js with the named export compute. "
+            "The source function returns the scalar integer for result_field; "
+            "the declared adapter constructs the formal output. "
+            "Do not add Markdown or explanation text.\n"
+            "REQUEST_JSON:\n"
+            + _canonical_bytes(safe_input).decode("utf-8")
+        )
+        body = {
+            "schema_version": CAPABILITY_SOURCE_PROPOSAL_REQUEST_VERSION,
+            "formal_binding": {
+                "authorization_digest": authorization[
+                    "authorization_digest"
+                ],
+                "plan_digest": authorization["plan_digest"],
+                "gap_id": authorization["gap_id"],
+                "projection_digest": authorization["projection_digest"],
+                "authorize_decision_digest": authorization[
+                    "authorize_decision_digest"
+                ],
+                "warehouse_revision": authorization[
+                    "warehouse_revision"
+                ],
+                "catalog_digest": authorization["catalog_digest"],
+                "prompt_version": CAPABILITY_SOURCE_PROPOSAL_PROMPT_VERSION,
+                "output_protocol_version": (
+                    CAPABILITY_SOURCE_PROPOSAL_OUTPUT_VERSION
+                ),
+            },
+            "model_safe_input": safe_input,
+            "prompt": prompt,
+            "format_schema": cls._capability_source_proposal_format_schema(),
+            "stream": False,
+        }
+        return {**body, "request_digest": _digest(body)}
+
+    @classmethod
+    def _build_capability_source_proposal_request_v2(
+        cls,
+        authorization: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            row = _stored_exact(
+                authorization,
+                {
+                    "schema_version",
+                    "plan_id",
+                    "plan_version",
+                    "plan_digest",
+                    "gap_id",
+                    "projection_digest",
+                    "capability_key",
+                    "capability_kind",
+                    "slot",
+                    "input_contract",
+                    "output_contract",
+                    "error_contract",
+                    "adapter_contract_version",
+                    "result_field",
+                    "passthrough_fields",
+                    "authorize_decision_digest",
+                    "behavior_intent",
+                    "acceptance_cases",
+                    "warehouse_revision",
+                    "catalog_digest",
+                    "authorization_source",
+                    "locked_at",
+                    "authorization_digest",
+                    "request",
+                },
+            )
+            authorization_body = {
+                key: item
+                for key, item in row.items()
+                if key not in {"authorization_digest", "request"}
+            }
+            if (
+                row["schema_version"]
+                != CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_VERSION
+                or row["capability_kind"] != "computation"
+                or row["authorization_source"]
+                != "user_confirmed_gap_decision"
+                or row["authorization_digest"] != _digest(authorization_body)
+                or row["request"]
+                != cls._build_capability_source_proposal_request(row)
+            ):
+                raise ProductPlanningError(
+                    "capability_source_proposal_request_invalid"
+                )
+            normalized_input, normalized_output, normalized_error = (
+                normalize_capsule_contracts(
+                    "computation",
+                    row["input_contract"],
+                    row["output_contract"],
+                    row["error_contract"],
+                )
+            )
+            adapter = cls._integer_gap_adapter(
+                normalized_input,
+                normalized_output,
+            )
+            if (
+                normalized_input != row["input_contract"]
+                or normalized_output != row["output_contract"]
+                or normalized_error != row["error_contract"]
+                or adapter is None
+                or adapter["adapter_contract_version"]
+                != row["adapter_contract_version"]
+                or adapter["result_field"] != row["result_field"]
+                or adapter["passthrough_fields"]
+                != row["passthrough_fields"]
+            ):
+                raise ProductPlanningError(
+                    "capability_source_proposal_request_invalid"
+                )
+            input_properties = normalized_input["properties"]
+            output_properties = normalized_output["properties"]
+            input_fields = sorted(
+                input_properties,
+                key=lambda field: field.encode("utf-8"),
+            )
+            scalar_contracts = [
+                input_properties[field] for field in input_fields
+            ] + [output_properties[row["result_field"]]]
+            if any(
+                set(contract) != {"type", "minimum", "maximum"}
+                or contract["type"] != "integer"
+                or type(contract["minimum"]) is not int
+                or type(contract["maximum"]) is not int
+                or contract["minimum"] > contract["maximum"]
+                for contract in scalar_contracts
+            ):
+                raise ProductPlanningError(
+                    "capability_source_proposal_request_invalid"
+                )
+            source_function = {
+                "schema_version": CAPABILITY_SOURCE_FUNCTION_ABI_VERSION,
+                "module_relpath": "capability.js",
+                "export_name": "compute",
+                "parameters": [
+                    {
+                        "position": position,
+                        "parameter_name": f"arg{position}",
+                        "input_field": field,
+                        "contract": copy.deepcopy(
+                            input_properties[field]
+                        ),
+                    }
+                    for position, field in enumerate(input_fields)
+                ],
+                "return_contract": copy.deepcopy(
+                    output_properties[row["result_field"]]
+                ),
+            }
+            source_examples = []
+            for case in row["acceptance_cases"]:
+                exact = _stored_exact(
+                    case,
+                    {"input", "expected_output"},
+                )
+                if (
+                    not data_contract_accepts(
+                        normalized_input,
+                        exact["input"],
+                    )
+                    or not data_contract_accepts(
+                        normalized_output,
+                        exact["expected_output"],
+                    )
+                    or any(
+                        _canonical_bytes(exact["input"][field])
+                        != _canonical_bytes(
+                            exact["expected_output"][field]
+                        )
+                        for field in row["passthrough_fields"]
+                    )
+                ):
+                    raise ProductPlanningError(
+                        "capability_source_proposal_request_invalid"
+                    )
+                source_examples.append(
+                    {
+                        "arguments": [
+                            copy.deepcopy(exact["input"][field])
+                            for field in input_fields
+                        ],
+                        "expected_scalar_result": copy.deepcopy(
+                            exact["expected_output"][row["result_field"]]
+                        ),
+                    }
+                )
+            safe_input = {
+                "source_function": source_function,
+                "adapter_projection": {
+                    "contract_version": row[
+                        "adapter_contract_version"
+                    ],
+                    "result_field": row["result_field"],
+                    "passthrough_fields": copy.deepcopy(
+                        row["passthrough_fields"]
+                    ),
+                },
+                "source_examples": source_examples,
+            }
+            parameter_names = ", ".join(
+                item["parameter_name"]
+                for item in source_function["parameters"]
+            )
+            prompt = (
+                "Generate one deterministic pure JavaScript source proposal. "
+                f"Implement exactly export function compute({parameter_names}). "
+                "The parameters and their order must match source_function. "
+                "Return one integer scalar matching return_contract. "
+                "Do not return an object, array, Promise, or wrapped result; "
+                "Reweave's adapter constructs the formal output object. "
+                "Do not modify inputs and do not use dependencies, network, "
+                "filesystem, environment variables, process state, global "
+                "state, randomness, or time. Return exactly one JSON object "
+                "matching FORMAT_SCHEMA with no Markdown or explanation.\n"
+                "REQUEST_JSON:\n"
+                + _canonical_bytes(safe_input).decode("utf-8")
+            )
+            v1_request_digest = row["request"]["request_digest"]
+            source_abi_digest = _digest(source_function)
+            body = {
+                "schema_version": CAPABILITY_SOURCE_PROPOSAL_REQUEST_V2,
+                "formal_binding": {
+                    "authorization_digest": row[
+                        "authorization_digest"
+                    ],
+                    "plan_digest": row["plan_digest"],
+                    "gap_id": row["gap_id"],
+                    "projection_digest": row["projection_digest"],
+                    "authorize_decision_digest": row[
+                        "authorize_decision_digest"
+                    ],
+                    "warehouse_revision": row["warehouse_revision"],
+                    "catalog_digest": row["catalog_digest"],
+                    "prompt_version": (
+                        CAPABILITY_SOURCE_PROPOSAL_PROMPT_V2
+                    ),
+                    "output_protocol_version": (
+                        CAPABILITY_SOURCE_PROPOSAL_OUTPUT_VERSION
+                    ),
+                    "source_abi_digest": source_abi_digest,
+                    "supersedes_request_digest": v1_request_digest,
+                    "supersession_reason": (
+                        "source_abi_protocol_clarification"
+                    ),
+                },
+                "model_safe_input": safe_input,
+                "prompt": prompt,
+                "format_schema": (
+                    cls._capability_source_proposal_format_schema()
+                ),
+                "stream": False,
+            }
+            return {**body, "request_digest": _digest(body)}
+        except ProductPlanningError as exc:
+            if exc.code == "capability_source_proposal_request_invalid":
+                raise
+            raise ProductPlanningError(
+                "capability_source_proposal_request_invalid"
+            ) from exc
+        except (DataContractError, KeyError, TypeError) as exc:
+            raise ProductPlanningError(
+                "capability_source_proposal_request_invalid"
+            ) from exc
+
+    @classmethod
+    def _build_capability_source_proposal_request_v3(
+        cls,
+        authorization: dict[str, Any],
+        *,
+        request_version: str = CAPABILITY_SOURCE_PROPOSAL_REQUEST_V3,
+    ) -> dict[str, Any]:
+        try:
+            if request_version not in {
+                CAPABILITY_SOURCE_PROPOSAL_REQUEST_V3,
+                CAPABILITY_SOURCE_PROPOSAL_REQUEST_V4,
+            }:
+                raise ProductPlanningError(
+                    "capability_source_proposal_request_invalid"
+                )
+            unordered_witnesses = (
+                request_version == CAPABILITY_SOURCE_PROPOSAL_REQUEST_V4
+            )
+            authorization_value = (
+                {
+                    key: item
+                    for key, item in authorization.items()
+                    if key != "request"
+                }
+                if type(authorization) is dict
+                else authorization
+            )
+            row = _stored_exact(
+                authorization_value,
+                {
+                    "schema_version",
+                    "plan_id",
+                    "plan_version",
+                    "plan_digest",
+                    "gap_id",
+                    "projection_digest",
+                    "capability_key",
+                    "capability_kind",
+                    "slot",
+                    "input_contract",
+                    "output_contract",
+                    "error_contract",
+                    "adapter_contract_version",
+                    "capture_mapping_schema",
+                    "proof_schema",
+                    "result_field",
+                    "result_enum",
+                    "passthrough_fields",
+                    "authorize_decision_digest",
+                    "behavior_intent",
+                    "acceptance_cases",
+                    "warehouse_revision",
+                    "catalog_digest",
+                    "authorization_source",
+                    "locked_at",
+                    "authorization_digest",
+                },
+            )
+            authorization_body = {
+                key: item
+                for key, item in row.items()
+                if key != "authorization_digest"
+            }
+            normalized_input, normalized_output, normalized_error = (
+                normalize_capsule_contracts(
+                    "computation",
+                    row["input_contract"],
+                    row["output_contract"],
+                    row["error_contract"],
+                )
+            )
+            adapter = cls._finite_enum_gap_adapter(
+                normalized_input,
+                normalized_output,
+            )
+            if (
+                row["schema_version"]
+                != CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_V2
+                or row["capability_kind"] != "computation"
+                or row["authorization_source"]
+                != "user_confirmed_gap_decision"
+                or row["authorization_digest"] != _digest(authorization_body)
+                or normalized_input != row["input_contract"]
+                or normalized_output != row["output_contract"]
+                or normalized_error != row["error_contract"]
+                or adapter is None
+                or any(
+                    row[key] != adapter[key]
+                    for key in (
+                        "adapter_contract_version",
+                        "capture_mapping_schema",
+                        "proof_schema",
+                        "result_field",
+                        "result_enum",
+                        "passthrough_fields",
+                    )
+                )
+            ):
+                raise ProductPlanningError(
+                    "capability_source_proposal_request_invalid"
+                )
+            input_properties = normalized_input["properties"]
+            input_fields = sorted(
+                input_properties,
+                key=lambda value: value.encode("utf-8"),
+            )
+            for contract in input_properties.values():
+                if (
+                    set(contract) == {"type", "minimum", "maximum"}
+                    and contract["type"] == "integer"
+                    and type(contract["minimum"]) is int
+                    and type(contract["maximum"]) is int
+                    and contract["minimum"] <= contract["maximum"]
+                ) or contract == {"type": "boolean"}:
+                    continue
+                if contract.get("type") == "string":
+                    raise ProductPlanningError(
+                        "capability_source_proposal_input_enumeration_review_required"
+                    )
+                raise ProductPlanningError(
+                    "capability_source_proposal_request_invalid"
+                )
+            for case in row["acceptance_cases"]:
+                exact = _stored_exact(case, {"input", "expected_output"})
+                if not data_contract_accepts(
+                    normalized_input,
+                    exact["input"],
+                ) or not data_contract_accepts(
+                    normalized_output,
+                    exact["expected_output"],
+                ):
+                    raise ProductPlanningError(
+                        "capability_source_proposal_request_invalid"
+                    )
+            source_function = {
+                "schema_version": CAPABILITY_SOURCE_FUNCTION_ABI_V2,
+                "module_relpath": "capability.js",
+                "export_name": "compute",
+                "parameters": [
+                    {
+                        "position": position,
+                        "parameter_name": f"arg{position}",
+                        "input_field": field,
+                        "contract": copy.deepcopy(input_properties[field]),
+                    }
+                    for position, field in enumerate(input_fields)
+                ],
+                "return_contract": copy.deepcopy(
+                    normalized_output["properties"][row["result_field"]]
+                ),
+            }
+            safe_input = {
+                "source_function": source_function,
+                "adapter_projection": {
+                    "contract_version": row["adapter_contract_version"],
+                    "capture_mapping_schema": row[
+                        "capture_mapping_schema"
+                    ],
+                    "proof_schema": row["proof_schema"],
+                    "result_field": row["result_field"],
+                    "result_enum": copy.deepcopy(row["result_enum"]),
+                    "passthrough_fields": [],
+                },
+                "user_acceptance_examples": copy.deepcopy(
+                    row["acceptance_cases"]
+                ),
+                "witness_requirements": {
+                    "count": len(row["result_enum"]),
+                    (
+                        "expected_scalar_results"
+                        if unordered_witnesses
+                        else "ordered_expected_scalar_results"
+                    ): copy.deepcopy(row["result_enum"]),
+                    "unique_inputs": True,
+                },
+            }
+            parameter_names = ", ".join(
+                item["parameter_name"]
+                for item in source_function["parameters"]
+            )
+            witness_instruction = (
+                "Provide exactly one witness for each enum result; "
+                "witness array order has no meaning. "
+                if unordered_witnesses
+                else
+                "Provide exactly one witness for each ordered enum result, "
+            )
+            prompt = (
+                "Generate one deterministic pure JavaScript source proposal. "
+                f"Implement exactly export function compute({parameter_names}). "
+                "The parameters and their order must match source_function. "
+                "Return one scalar string from return_contract.enum. "
+                "Do not return an object, array, Promise, or wrapped result; "
+                "Reweave's adapter constructs the formal output object. "
+                f"{witness_instruction}"
+                "using unique contract-valid inputs. Do not modify inputs and "
+                "do not use dependencies, network, filesystem, environment "
+                "variables, process state, global state, randomness, or time. "
+                "Return exactly one JSON object matching FORMAT_SCHEMA with "
+                "no Markdown or explanation.\nREQUEST_JSON:\n"
+                + _canonical_bytes(safe_input).decode("utf-8")
+            )
+            body = {
+                "schema_version": request_version,
+                "formal_binding": {
+                    "authorization_digest": row["authorization_digest"],
+                    "plan_digest": row["plan_digest"],
+                    "gap_id": row["gap_id"],
+                    "projection_digest": row["projection_digest"],
+                    "authorize_decision_digest": row[
+                        "authorize_decision_digest"
+                    ],
+                    "warehouse_revision": row["warehouse_revision"],
+                    "catalog_digest": row["catalog_digest"],
+                    "prompt_version": (
+                        CAPABILITY_SOURCE_PROPOSAL_PROMPT_V4
+                        if unordered_witnesses
+                        else CAPABILITY_SOURCE_PROPOSAL_PROMPT_V3
+                    ),
+                    "output_protocol_version": (
+                        CAPABILITY_SOURCE_PROPOSAL_OUTPUT_V2
+                    ),
+                    "source_abi_digest": _digest(source_function),
+                },
+                "model_safe_input": safe_input,
+                "prompt": prompt,
+                "format_schema": cls._capability_source_proposal_format_schema_v2(
+                    normalized_input,
+                    row["result_enum"],
+                ),
+                "stream": False,
+            }
+            return {**body, "request_digest": _digest(body)}
+        except ProductPlanningError as exc:
+            if exc.code in {
+                "capability_source_proposal_request_invalid",
+                "capability_source_proposal_input_enumeration_review_required",
+            }:
+                raise
+            raise ProductPlanningError(
+                "capability_source_proposal_request_invalid"
+            ) from exc
+        except (DataContractError, KeyError, TypeError) as exc:
+            raise ProductPlanningError(
+                "capability_source_proposal_request_invalid"
+            ) from exc
+
+    @classmethod
+    def _build_capability_source_proposal_request_v4(
+        cls,
+        authorization: dict[str, Any],
+    ) -> dict[str, Any]:
+        return cls._build_capability_source_proposal_request_v3(
+            authorization,
+            request_version=CAPABILITY_SOURCE_PROPOSAL_REQUEST_V4,
+        )
+
+    @classmethod
+    def _runtime_capability_source_proposal_request(
+        cls,
+        authorization: dict[str, Any],
+    ) -> dict[str, Any]:
+        if (
+            authorization.get("schema_version")
+            == CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_V2
+        ):
+            request = authorization.get("request")
+            request_version = (
+                request.get("schema_version")
+                if type(request) is dict
+                else CAPABILITY_SOURCE_PROPOSAL_REQUEST_V4
+            )
+            if request_version == CAPABILITY_SOURCE_PROPOSAL_REQUEST_V3:
+                return cls._build_capability_source_proposal_request_v3(
+                    authorization
+                )
+            if request_version == CAPABILITY_SOURCE_PROPOSAL_REQUEST_V4:
+                return cls._build_capability_source_proposal_request_v4(
+                    authorization
+                )
+            raise ProductPlanningError(
+                "capability_source_proposal_request_invalid"
+            )
+        return cls._build_capability_source_proposal_request_v2(
+            authorization
+        )
+
+    @classmethod
+    def validate_capability_source_proposal_response(
+        cls,
+        value: Any,
+        request: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        if (
+            type(value) is dict
+            and value.get("schema") == CAPABILITY_SOURCE_PROPOSAL_OUTPUT_V2
+        ):
+            return cls._validate_capability_source_proposal_response_v2(
+                value,
+                request,
+            )
+        try:
+            row = _stored_exact(value, {"schema", "entry", "files"})
+            entry = _stored_exact(
+                row["entry"],
+                {"module_relpath", "export_name"},
+            )
+            if (
+                row["schema"] != CAPABILITY_SOURCE_PROPOSAL_OUTPUT_VERSION
+                or entry
+                != {
+                    "module_relpath": "capability.js",
+                    "export_name": "compute",
+                }
+                or type(row["files"]) is not list
+                or len(row["files"]) != 1
+            ):
+                raise ProductPlanningError(
+                    "capability_source_proposal_response_invalid"
+                )
+            file = _stored_exact(row["files"][0], {"path", "content"})
+            content = file["content"]
+            if type(content) is not str:
+                raise ProductPlanningError(
+                    "capability_source_proposal_response_invalid"
+                )
+            encoded = content.encode("utf-8")
+            exports = re.findall(
+                r"\bexport\s+function\s+"
+                r"([A-Za-z_$][A-Za-z0-9_$]*)\s*\(",
+                content,
+            )
+            if (
+                file["path"] != "capability.js"
+                or not content.strip()
+                or not 1 <= len(encoded)
+                <= CAPABILITY_SOURCE_PROPOSAL_MAX_BYTES
+                or "```" in content
+                or exports != ["compute"]
+                or len(re.findall(r"\bexport\b", content)) != 1
+            ):
+                raise ProductPlanningError(
+                    "capability_source_proposal_response_invalid"
+                )
+        except ProductPlanningError as exc:
+            if exc.code == "capability_source_proposal_response_invalid":
+                raise
+            raise ProductPlanningError(
+                "capability_source_proposal_response_invalid"
+            ) from exc
+        except (TypeError, UnicodeEncodeError) as exc:
+            raise ProductPlanningError(
+                "capability_source_proposal_response_invalid"
+            ) from exc
+        return copy.deepcopy(row)
+
+    @classmethod
+    def _validate_capability_source_proposal_response_v2(
+        cls,
+        value: Any,
+        request: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        try:
+            row = _stored_exact(
+                value,
+                {"schema", "entry", "files", "witnesses"},
+            )
+            entry = _stored_exact(
+                row["entry"],
+                {"module_relpath", "export_name"},
+            )
+            if (
+                type(request) is not dict
+                or request.get("schema_version")
+                not in {
+                    CAPABILITY_SOURCE_PROPOSAL_REQUEST_V3,
+                    CAPABILITY_SOURCE_PROPOSAL_REQUEST_V4,
+                }
+                or row["schema"] != CAPABILITY_SOURCE_PROPOSAL_OUTPUT_V2
+                or entry
+                != {
+                    "module_relpath": "capability.js",
+                    "export_name": "compute",
+                }
+                or type(row["files"]) is not list
+                or len(row["files"]) != 1
+            ):
+                raise ProductPlanningError(
+                    "capability_source_proposal_response_invalid"
+                )
+            file = _stored_exact(row["files"][0], {"path", "content"})
+            content = file["content"]
+            if type(content) is not str:
+                raise ProductPlanningError(
+                    "capability_source_proposal_response_invalid"
+                )
+            encoded = content.encode("utf-8")
+            exports = re.findall(
+                r"\bexport\s+function\s+"
+                r"([A-Za-z_$][A-Za-z0-9_$]*)\s*\(",
+                content,
+            )
+            source_function = request["model_safe_input"]["source_function"]
+            request_version = request["schema_version"]
+            requirement_key = (
+                "expected_scalar_results"
+                if request_version
+                == CAPABILITY_SOURCE_PROPOSAL_REQUEST_V4
+                else "ordered_expected_scalar_results"
+            )
+            result_enum = request["model_safe_input"][
+                "witness_requirements"
+            ][requirement_key]
+            parameters = source_function["parameters"]
+            input_contract = {
+                "schema": "data_contract.v1",
+                "type": "object",
+                "properties": {
+                    item["input_field"]: copy.deepcopy(item["contract"])
+                    for item in parameters
+                },
+                "required": [
+                    item["input_field"]
+                    for item in parameters
+                ],
+                "additional_properties": False,
+            }
+            if (
+                file["path"] != "capability.js"
+                or not content.strip()
+                or not 1 <= len(encoded)
+                <= CAPABILITY_SOURCE_PROPOSAL_MAX_BYTES
+                or "```" in content
+                or exports != ["compute"]
+                or len(re.findall(r"\bexport\b", content)) != 1
+                or type(row["witnesses"]) is not list
+                or len(row["witnesses"]) != len(result_enum)
+            ):
+                raise ProductPlanningError(
+                    "capability_source_proposal_response_invalid"
+                )
+            inputs: set[bytes] = set()
+            actual_results: list[str] = []
+            witnesses_by_result: dict[str, dict[str, Any]] = {}
+            for witness in row["witnesses"]:
+                exact = _stored_exact(
+                    witness,
+                    {"input", "expected_scalar_result"},
+                )
+                if not data_contract_accepts(
+                    input_contract,
+                    exact["input"],
+                ):
+                    raise ProductPlanningError(
+                        "capability_source_proposal_response_invalid"
+                    )
+                input_bytes = _canonical_bytes(exact["input"])
+                if input_bytes in inputs:
+                    raise ProductPlanningError(
+                        "capability_source_proposal_response_invalid"
+                    )
+                inputs.add(input_bytes)
+                scalar = exact["expected_scalar_result"]
+                if type(scalar) is not str:
+                    raise ProductPlanningError(
+                        "capability_source_proposal_response_invalid"
+                    )
+                actual_results.append(scalar)
+                if scalar in witnesses_by_result:
+                    raise ProductPlanningError(
+                        "capability_source_proposal_response_invalid"
+                    )
+                witnesses_by_result[scalar] = copy.deepcopy(exact)
+            if (
+                request_version == CAPABILITY_SOURCE_PROPOSAL_REQUEST_V3
+                and actual_results != result_enum
+            ) or (
+                request_version == CAPABILITY_SOURCE_PROPOSAL_REQUEST_V4
+                and set(witnesses_by_result) != set(result_enum)
+            ):
+                raise ProductPlanningError(
+                    "capability_source_proposal_response_invalid"
+                )
+        except ProductPlanningError as exc:
+            if exc.code == "capability_source_proposal_response_invalid":
+                raise
+            raise ProductPlanningError(
+                "capability_source_proposal_response_invalid"
+            ) from exc
+        except (
+            DataContractError,
+            KeyError,
+            TypeError,
+            UnicodeEncodeError,
+        ) as exc:
+            raise ProductPlanningError(
+                "capability_source_proposal_response_invalid"
+            ) from exc
+        normalized = copy.deepcopy(row)
+        if request_version == CAPABILITY_SOURCE_PROPOSAL_REQUEST_V4:
+            normalized["witnesses"] = [
+                witnesses_by_result[result]
+                for result in result_enum
+            ]
+        return normalized
+
+    def _validate_capability_source_proposal_authorization(
+        self,
+        workspace: dict[str, Any],
+        value: Any,
+        projection: dict[str, Any],
+        decision: dict[str, Any],
+    ) -> dict[str, Any]:
+        if (
+            type(value) is dict
+            and value.get("schema_version")
+            == CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_V2
+        ):
+            return self._validate_capability_source_proposal_authorization_v2(
+                workspace,
+                value,
+                projection,
+                decision,
+            )
+        row = _stored_exact(
+            value,
+            {
+                "schema_version",
+                "plan_id",
+                "plan_version",
+                "plan_digest",
+                "gap_id",
+                "projection_digest",
+                "capability_key",
+                "capability_kind",
+                "slot",
+                "input_contract",
+                "output_contract",
+                "error_contract",
+                "adapter_contract_version",
+                "result_field",
+                "passthrough_fields",
+                "authorize_decision_digest",
+                "behavior_intent",
+                "acceptance_cases",
+                "warehouse_revision",
+                "catalog_digest",
+                "authorization_source",
+                "locked_at",
+                "authorization_digest",
+                "request",
+            },
+        )
+        body = {
+            key: item
+            for key, item in row.items()
+            if key not in {"authorization_digest", "request"}
+        }
+        plan = workspace.get("plan")
+        if (
+            type(plan) is not dict
+            or row["schema_version"]
+            != CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_VERSION
+            or row["plan_id"] != plan["plan_id"]
+            or row["plan_version"] != plan["plan_version"]
+            or row["plan_digest"] != plan["canonical_digest"]
+            or row["gap_id"] != projection["gap_id"]
+            or row["projection_digest"] != projection["projection_digest"]
+            or row["capability_key"] != projection["capability_key"]
+            or row["capability_kind"] != "computation"
+            or row["slot"] != projection["slot"]
+            or row["input_contract"] != projection["input_contract"]
+            or row["output_contract"] != projection["output_contract"]
+            or row["error_contract"]
+            != self._capability_source_proposal_error_contract()
+            or row["adapter_contract_version"]
+            != projection["adapter_contract_version"]
+            or row["result_field"] != projection["result_field"]
+            or row["passthrough_fields"]
+            != projection["passthrough_fields"]
+            or decision["decision"] != "authorize"
+            or row["authorize_decision_digest"]
+            != decision["canonical_digest"]
+            or row["behavior_intent"] != decision["behavior_intent"]
+            or row["acceptance_cases"] != decision["acceptance_cases"]
+            or row["warehouse_revision"]
+            != projection["warehouse_revision"]
+            or row["catalog_digest"] != projection["catalog_digest"]
+            or row["authorization_source"]
+            != "user_confirmed_gap_decision"
+            or type(row["locked_at"]) is not str
+            or not row["locked_at"]
+            or row["authorization_digest"] != _digest(body)
+            or row["request"]
+            != self._build_capability_source_proposal_request(row)
+        ):
+            raise ProductPlanningError(
+                "capability_source_proposal_authorization_invalid"
+            )
+        return row
+
+    def _validate_capability_source_proposal_authorization_v2(
+        self,
+        workspace: dict[str, Any],
+        value: Any,
+        projection: dict[str, Any],
+        decision: dict[str, Any],
+    ) -> dict[str, Any]:
+        row = _stored_exact(
+            value,
+            {
+                "schema_version",
+                "plan_id",
+                "plan_version",
+                "plan_digest",
+                "gap_id",
+                "projection_digest",
+                "capability_key",
+                "capability_kind",
+                "slot",
+                "input_contract",
+                "output_contract",
+                "error_contract",
+                "adapter_contract_version",
+                "capture_mapping_schema",
+                "proof_schema",
+                "result_field",
+                "result_enum",
+                "passthrough_fields",
+                "authorize_decision_digest",
+                "behavior_intent",
+                "acceptance_cases",
+                "warehouse_revision",
+                "catalog_digest",
+                "authorization_source",
+                "locked_at",
+                "authorization_digest",
+                "request",
+            },
+        )
+        body = {
+            key: item
+            for key, item in row.items()
+            if key not in {"authorization_digest", "request"}
+        }
+        plan = workspace.get("plan")
+        authorization = {
+            key: item for key, item in row.items() if key != "request"
+        }
+        if (
+            type(plan) is not dict
+            or projection.get("schema_version")
+            != CAPABILITY_GAP_PROJECTION_V2
+            or row["schema_version"]
+            != CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_V2
+            or row["plan_id"] != plan["plan_id"]
+            or row["plan_version"] != plan["plan_version"]
+            or row["plan_digest"] != plan["canonical_digest"]
+            or row["gap_id"] != projection["gap_id"]
+            or row["projection_digest"] != projection["projection_digest"]
+            or row["capability_key"] != projection["capability_key"]
+            or row["capability_kind"] != "computation"
+            or row["slot"] != projection["slot"]
+            or row["input_contract"] != projection["input_contract"]
+            or row["output_contract"] != projection["output_contract"]
+            or row["error_contract"]
+            != self._capability_source_proposal_error_contract()
+            or any(
+                row[key] != projection[key]
+                for key in (
+                    "adapter_contract_version",
+                    "capture_mapping_schema",
+                    "proof_schema",
+                    "result_field",
+                    "result_enum",
+                    "passthrough_fields",
+                )
+            )
+            or decision["decision"] != "authorize"
+            or row["authorize_decision_digest"]
+            != decision["canonical_digest"]
+            or row["behavior_intent"] != decision["behavior_intent"]
+            or row["acceptance_cases"] != decision["acceptance_cases"]
+            or row["warehouse_revision"]
+            != projection["warehouse_revision"]
+            or row["catalog_digest"] != projection["catalog_digest"]
+            or row["authorization_source"]
+            != "user_confirmed_gap_decision"
+            or type(row["locked_at"]) is not str
+            or not row["locked_at"]
+            or row["authorization_digest"] != _digest(body)
+            or type(row["request"]) is not dict
+        ):
+            raise ProductPlanningError(
+                "capability_source_proposal_authorization_invalid"
+            )
+        request_version = row["request"].get("schema_version")
+        if request_version == CAPABILITY_SOURCE_PROPOSAL_REQUEST_V3:
+            expected_request = (
+                self._build_capability_source_proposal_request_v3(
+                    authorization
+                )
+            )
+        elif request_version == CAPABILITY_SOURCE_PROPOSAL_REQUEST_V4:
+            expected_request = (
+                self._build_capability_source_proposal_request_v4(
+                    authorization
+                )
+            )
+        else:
+            raise ProductPlanningError(
+                "capability_source_proposal_authorization_invalid"
+            )
+        if row["request"] != expected_request:
+            raise ProductPlanningError(
+                "capability_source_proposal_authorization_invalid"
+            )
+        return row
+
+    def _read_capability_source_proposal_authorization(
+        self,
+        workspace: dict[str, Any],
+        projection: dict[str, Any],
+        decision: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        plan = workspace["plan"]
+        path = self._capability_source_proposal_authorization_path_for(
+            workspace,
+            plan,
+            projection,
+        )
+        paths = self._capability_source_proposal_authorization_paths(workspace)
+        if not paths:
+            return None
+        if paths != [path]:
+            raise ProductPlanningError(
+                "capability_source_proposal_authorization_invalid"
+            )
+        return self._validate_capability_source_proposal_authorization(
+            workspace,
+            self._read_json(path),
+            projection,
+            decision,
+        )
+
+    def _capability_gap_decisions(
+        self,
+        workspace: dict[str, Any],
+        projection: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        plan = workspace["plan"]
+        directory = self._capability_gap_decisions_dir(workspace, plan)
+        if not directory.exists() and not directory.is_symlink():
+            return []
+        self._assert_no_symlink_components(directory)
+        if directory.is_symlink() or not directory.is_dir():
+            raise ProductPlanningError("product_workspace_symlink_forbidden")
+        try:
+            entries = sorted(directory.iterdir(), key=lambda path: path.name)
+        except OSError as exc:
+            raise ProductPlanningError(
+                "product_planning_state_unavailable"
+            ) from exc
+        if len(entries) > MAX_CAPABILITY_GAP_DECISIONS:
+            raise ProductPlanningError("capability_gap_decision_limit")
+        decisions: list[dict[str, Any]] = []
+        previous: dict[str, Any] | None = None
+        for entry in entries:
+            match = _GAP_DECISION_FILENAME.fullmatch(entry.name)
+            if match is None or entry.is_symlink() or not entry.is_file():
+                raise ProductPlanningError("capability_gap_decision_invalid")
+            row = self._validate_capability_gap_decision(
+                self._read_json(entry),
+                projection,
+                previous,
+            )
+            if (
+                int(match.group(1)) != row["sequence"]
+                or match.group(2) != row["canonical_digest"]
+            ):
+                raise ProductPlanningError("capability_gap_decision_invalid")
+            decisions.append(row)
+            previous = row
+        return decisions
+
+    def _capability_gap_views(
+        self,
+        workspace: dict[str, Any],
+        catalog: dict[str, Any] | None,
+    ) -> list[dict[str, Any]]:
+        plan = workspace.get("plan")
+        if type(plan) is not dict:
+            return []
+        gaps = [
+            gap
+            for section in plan["sections"]
+            for gap in section["gaps"]
+        ]
+        if not gaps:
+            return []
+        stored = self._read_capability_gap_projection(workspace)
+        expected: dict[str, Any] | None = None
+        status = "capability_gap_projection_missing"
+        if catalog is not None:
+            expected, status = (
+                self._capability_gap_projection_for_workspace(
+                    workspace,
+                    plan,
+                    catalog,
+                )
+            )
+        elif stored is not None:
+            expected, status = stored, "available"
+        if stored is not None:
+            projection = stored
+            if (
+                catalog is not None
+                and (
+                    expected is None
+                    or expected != stored
+                    or stored["warehouse_revision"]
+                    != catalog["warehouse_revision"]
+                    or stored["catalog_digest"] != _digest(catalog)
+                )
+            ):
+                status = "capability_gap_projection_stale"
+            else:
+                status = "available"
+        else:
+            projection = expected
+        decisions = (
+            self._capability_gap_decisions(workspace, projection)
+            if projection is not None
+            else []
+        )
+        authorization = None
+        source_proposal_run = None
+        if projection is not None:
+            authorization_path = (
+                self._capability_source_proposal_authorization_path_for(
+                    workspace,
+                    plan,
+                    projection,
+                )
+            )
+            if authorization_path.exists() or authorization_path.is_symlink():
+                if not decisions or decisions[-1]["decision"] != "authorize":
+                    raise ProductPlanningError(
+                        "capability_source_proposal_authorization_invalid"
+                    )
+                authorization = (
+                    self._read_capability_source_proposal_authorization(
+                        workspace,
+                        projection,
+                        decisions[-1],
+                    )
+                )
+                run_path = (
+                    self._capability_source_proposal_run_identity_path(
+                        workspace,
+                        plan,
+                    )
+                )
+                if run_path.exists() or run_path.is_symlink():
+                    identity = (
+                        self._validate_capability_source_proposal_run_identity(
+                            workspace,
+                            self._read_json(run_path),
+                        )
+                    )
+                    source_proposal_run = (
+                        self._capability_source_proposal_run_projection(
+                            workspace,
+                            identity,
+                        )
+                    )
+        public_projection = (
+            {
+                key: copy.deepcopy(projection[key])
+                for key in (
+                    "projection_digest",
+                    "capability_key",
+                    "capability_group_display_name",
+                    "capability_kind",
+                    "slot",
+                    "input_contract",
+                    "output_contract",
+                    "adapter_contract_version",
+                    "result_field",
+                    "passthrough_fields",
+                    "warehouse_revision",
+                    "catalog_digest",
+                )
+            }
+            if projection is not None
+            else None
+        )
+        if (
+            public_projection is not None
+            and projection["schema_version"] == CAPABILITY_GAP_PROJECTION_V2
+        ):
+            public_projection.update(
+                {
+                    "schema_version": CAPABILITY_GAP_PROJECTION_V2,
+                    "proof_schema": projection["proof_schema"],
+                    "result_enum": copy.deepcopy(
+                        projection["result_enum"]
+                    ),
+                }
+            )
+        return [
+            {
+                "gap_id": gap["gap_id"],
+                "title": gap["title"],
+                "reason": gap["reason"],
+                "requirement_ids": copy.deepcopy(gap["requirement_ids"]),
+                "status": (
+                    status
+                    if len(gaps) == 1
+                    else "capability_gap_plan_count_unsupported"
+                ),
+                "projection": (
+                    public_projection
+                    if len(gaps) == 1
+                    and projection is not None
+                    and gap["gap_id"] == projection["gap_id"]
+                    else None
+                ),
+                "decision_history": copy.deepcopy(decisions),
+                "current_decision": (
+                    copy.deepcopy(decisions[-1]) if decisions else None
+                ),
+                "source_proposal_authorization": (
+                    {
+                        "authorization_digest": authorization[
+                            "authorization_digest"
+                        ],
+                        "locked_at": authorization["locked_at"],
+                        "status": "locked",
+                    }
+                    if authorization is not None
+                    else None
+                ),
+                "source_proposal_request": (
+                    {
+                        "request_digest": authorization["request"][
+                            "request_digest"
+                        ],
+                        "prompt_version": authorization["request"][
+                            "formal_binding"
+                        ]["prompt_version"],
+                        "output_protocol_version": authorization["request"][
+                            "formal_binding"
+                        ]["output_protocol_version"],
+                        "status": "waiting_model_authorization",
+                    }
+                    if authorization is not None
+                    else None
+                ),
+                "source_proposal_run": (
+                    copy.deepcopy(source_proposal_run)
+                    if source_proposal_run is not None
+                    and source_proposal_run["run_id"]
+                    else None
+                ),
+            }
+            for gap in gaps
+        ]
 
     def _validate_confirmed_snapshot(self, workspace: dict[str, Any]) -> None:
         plan = workspace.get("plan")
@@ -3521,6 +8423,84 @@ class ProductPlanner:
             if submission["purpose"] == "initial"
         ]
 
+    @staticmethod
+    def _workspace_rules_version(workspace: dict[str, Any]) -> str:
+        if workspace["schema_version"] == LEGACY_WORKSPACE_SCHEMA_VERSION:
+            return SECTION_PLANNING_RULES_VERSION
+        if (
+            workspace["schema_version"]
+            == DIRECT_BLUEPRINT_WORKSPACE_SCHEMA_VERSION
+        ):
+            blueprint = workspace.get("blueprint")
+            if (
+                type(blueprint) is dict
+                and blueprint.get("schema_version")
+                == "product_plan_blueprint.v1"
+            ):
+                return LEGACY_BLUEPRINT_PLANNING_RULES_VERSION
+            return DIRECT_BLUEPRINT_PLANNING_RULES_VERSION
+        if workspace["schema_version"] in {
+            LEGACY_LOCKED_BLUEPRINT_WORKSPACE_SCHEMA_VERSION,
+            PREVIOUS_LOCKED_BLUEPRINT_WORKSPACE_SCHEMA_VERSION,
+        }:
+            return PREVIOUS_LOCKED_BLUEPRINT_PLANNING_RULES_VERSION
+        if (
+            workspace["schema_version"]
+            == PREVIOUS_GAP_WORKSPACE_SCHEMA_VERSION
+        ):
+            return PREVIOUS_GAP_PLANNING_RULES_VERSION
+        if (
+            workspace["schema_version"]
+            == PREVIOUS_TARGET_SELECTION_WORKSPACE_SCHEMA_VERSION
+        ):
+            return PREVIOUS_TARGET_SELECTION_PLANNING_RULES_VERSION
+        blueprint = workspace.get("blueprint")
+        if (
+            type(blueprint) is dict
+            and blueprint.get("schema_version") == "product_plan_blueprint.v1"
+        ):
+            return LEGACY_BLUEPRINT_PLANNING_RULES_VERSION
+        return PLANNING_RULES_VERSION
+
+    @staticmethod
+    def _workspace_prompt_version(workspace: dict[str, Any]) -> str:
+        if workspace["schema_version"] == LEGACY_WORKSPACE_SCHEMA_VERSION:
+            return LEGACY_PLANNING_PROMPT_VERSION
+        if (
+            workspace["schema_version"]
+            == LEGACY_LOCKED_BLUEPRINT_WORKSPACE_SCHEMA_VERSION
+        ):
+            return LEGACY_LOCKED_BLUEPRINT_PROMPT_VERSION
+        if (
+            workspace["schema_version"]
+            == PREVIOUS_LOCKED_BLUEPRINT_WORKSPACE_SCHEMA_VERSION
+        ):
+            return PREVIOUS_LOCKED_BLUEPRINT_PROMPT_VERSION
+        if workspace["schema_version"] in {
+            PREVIOUS_GAP_WORKSPACE_SCHEMA_VERSION,
+            PREVIOUS_TARGET_SELECTION_WORKSPACE_SCHEMA_VERSION,
+        }:
+            return PREVIOUS_GAP_PLANNING_PROMPT_VERSION
+        if (
+            workspace["schema_version"]
+            == DIRECT_BLUEPRINT_WORKSPACE_SCHEMA_VERSION
+        ):
+            blueprint = workspace.get("blueprint")
+            if (
+                type(blueprint) is dict
+                and blueprint.get("schema_version")
+                == "product_plan_blueprint.v1"
+            ):
+                return LEGACY_BLUEPRINT_PROMPT_VERSION
+            return DIRECT_BLUEPRINT_PROMPT_VERSION
+        blueprint = workspace.get("blueprint")
+        if (
+            type(blueprint) is dict
+            and blueprint.get("schema_version") == "product_plan_blueprint.v1"
+        ):
+            return LEGACY_BLUEPRINT_PROMPT_VERSION
+        return PLANNING_PROMPT_VERSION
+
     def _continue_initial_planning(
         self,
         workspace: dict[str, Any],
@@ -3532,7 +8512,11 @@ class ProductPlanner:
         workspace["failure_code"] = None
         outline = workspace.get("outline")
         if outline is None:
-            outline_input_digest = self._outline_input_digest(workspace)
+            outline_input_digest = self._outline_input_digest(
+                workspace,
+                self._workspace_rules_version(workspace),
+                self._workspace_prompt_version(workspace),
+            )
             self._enter_phase(workspace, "requirements_outline", phase_callback)
             outline, calls = self._outline(
                 str(workspace["goal"]),
@@ -3550,7 +8534,11 @@ class ProductPlanner:
             workspace["updated_at"] = _now()
             with self._lock:
                 self._save_workspace(workspace)
-        elif workspace["outline_input_digest"] != self._outline_input_digest(workspace):
+        elif workspace["outline_input_digest"] != self._outline_input_digest(
+            workspace,
+            self._workspace_rules_version(workspace),
+            self._workspace_prompt_version(workspace),
+        ):
             raise ProductPlanningError("product_plan_resume_input_changed")
         self._cancelled(cancel_check)
         if outline["needs_clarification"]:
@@ -3573,13 +8561,26 @@ class ProductPlanner:
             phase_callback,
         )
         workspace["model_calls"].extend(match_calls)
+        if plan is None:
+            if (
+                workspace["status"] != "needs_clarification"
+                or workspace["current_question_set"] is None
+            ):
+                raise ProductPlanningError(
+                    "product_plan_capability_gap_target_ambiguous"
+                )
+            return _ok(self._workspace_projection(workspace))
         workspace["plan"] = plan
         workspace["status"] = "plan_review"
         workspace["failure_code"] = None
         workspace["updated_at"] = _now()
         with self._lock:
+            self._prepare_capability_gap_projection(
+                workspace,
+                catalog,
+            )
             self._save_workspace(workspace)
-        return _ok(self._workspace_projection(workspace))
+        return _ok(self._workspace_projection(workspace, catalog))
 
     def _outline(
         self,
@@ -3875,6 +8876,77 @@ class ProductPlanner:
         result["digest"] = _digest(result)
         return result
 
+    @classmethod
+    def _capability_gap_target_question_set(
+        cls,
+        candidates: list[dict[str, Any]],
+        catalog: dict[str, Any],
+    ) -> dict[str, Any]:
+        if not 2 <= len(candidates) <= 3:
+            raise ProductPlanningError(
+                "product_plan_capability_gap_target_ambiguous"
+            )
+        catalog_digest = _digest(catalog)
+        options = []
+        for candidate in sorted(
+            candidates,
+            key=lambda item: _digest(item),
+        ):
+            candidate_digest = _digest(candidate)
+            input_names = "、".join(
+                item["name"]
+                for item in cls._safe_gap_contract_fields(
+                    candidate["input_contract"]
+                )
+            )
+            output_names = "、".join(
+                item["name"]
+                for item in cls._safe_gap_contract_fields(
+                    candidate["output_contract"]
+                )
+            )
+            options.append(
+                {
+                    "option_id": "option_"
+                    + _digest(
+                        {
+                            "catalog_digest": catalog_digest,
+                            "candidate_digest": candidate_digest,
+                        }
+                    )[:20],
+                    "label": candidate["capability_group_display_name"],
+                    "impact": (
+                        f"输入：{input_names}；输出：{output_names}；"
+                        "缺少一个计算能力。"
+                    ),
+                    "recommended": False,
+                    "forms_gap": True,
+                }
+            )
+        question = {
+            "question_id": "question_"
+            + _digest(
+                {
+                    "purpose": "capability_gap_target",
+                    "catalog_digest": catalog_digest,
+                    "option_ids": [
+                        option["option_id"] for option in options
+                    ],
+                }
+            )[:20],
+            "prompt": "当前正式能力中有多个可补齐的计算缺口，请选择本次要完成的业务能力。",
+            "options": options,
+            "allow_custom": False,
+        }
+        body = {
+            "schema_version": "product_plan_question_set.v3",
+            "purpose": "capability_gap_target",
+            "warehouse_revision": catalog["warehouse_revision"],
+            "catalog_digest": catalog_digest,
+            "questions": [question],
+        }
+        return {**body, "digest": _digest(body)}
+
     def _answers(
         self,
         question_set: dict[str, Any],
@@ -3889,7 +8961,15 @@ class ProductPlanner:
             row = _exact_dict(raw, {"question_id", "source", "value"})
             question_id = str(row["question_id"])
             question = by_id.get(question_id)
-            if question is None or question_id in seen or row["source"] not in {"option", "custom"}:
+            if (
+                question is None
+                or question_id in seen
+                or row["source"] not in {"option", "custom"}
+                or (
+                    row["source"] == "custom"
+                    and question["allow_custom"] is not True
+                )
+            ):
                 raise ProductPlanningError("product_plan_answers_invalid")
             seen.add(question_id)
             answer_value = _safe_text(row["value"], maximum=500)
@@ -3915,6 +8995,126 @@ class ProductPlanner:
                 }
             )
         return sorted(result, key=lambda item: item["question_id"])
+
+    @staticmethod
+    def _validate_capability_gap_target_selection(
+        value: Any,
+    ) -> dict[str, Any] | None:
+        if value is None:
+            return None
+        row = _stored_exact(
+            value,
+            {
+                "schema_version",
+                "question_set_digest",
+                "option_id",
+                "candidate_digest",
+                "warehouse_revision",
+                "catalog_digest",
+                "user_answer_digest",
+                "canonical_digest",
+            },
+        )
+        body = {
+            key: item
+            for key, item in row.items()
+            if key != "canonical_digest"
+        }
+        if (
+            row["schema_version"]
+            != CAPABILITY_GAP_TARGET_SELECTION_VERSION
+            or _DIGEST.fullmatch(str(row["question_set_digest"])) is None
+            or not str(row["option_id"]).startswith("option_")
+            or _DIGEST.fullmatch(str(row["candidate_digest"])) is None
+            or type(row["warehouse_revision"]) is not int
+            or row["warehouse_revision"] < 0
+            or _DIGEST.fullmatch(str(row["catalog_digest"])) is None
+            or _DIGEST.fullmatch(str(row["user_answer_digest"])) is None
+            or row["canonical_digest"] != _digest(body)
+        ):
+            raise ProductPlanningError("product_workspace_corrupt")
+        return copy.deepcopy(row)
+
+    @classmethod
+    def _capability_gap_target_selection(
+        cls,
+        question_set: dict[str, Any],
+        answers: list[dict[str, Any]],
+        catalog: dict[str, Any],
+    ) -> dict[str, Any]:
+        current = cls._capability_gap_target_question_set(
+            cls._capability_gap_candidates(catalog),
+            catalog,
+        )
+        if current != question_set:
+            raise ProductPlanningError(
+                "product_plan_capability_gap_target_stale"
+            )
+        if (
+            len(answers) != 1
+            or answers[0]["source"] != "option"
+        ):
+            raise ProductPlanningError("product_plan_answers_invalid")
+        option_id = answers[0]["value"]
+        candidates = sorted(
+            cls._capability_gap_candidates(catalog),
+            key=lambda item: _digest(item),
+        )
+        option_ids = [
+            option["option_id"]
+            for option in current["questions"][0]["options"]
+        ]
+        try:
+            candidate = candidates[option_ids.index(option_id)]
+        except (ValueError, IndexError) as exc:
+            raise ProductPlanningError(
+                "product_plan_answers_invalid"
+            ) from exc
+        body = {
+            "schema_version": CAPABILITY_GAP_TARGET_SELECTION_VERSION,
+            "question_set_digest": question_set["digest"],
+            "option_id": option_id,
+            "candidate_digest": _digest(candidate),
+            "warehouse_revision": catalog["warehouse_revision"],
+            "catalog_digest": _digest(catalog),
+            "user_answer_digest": _digest(answers),
+        }
+        return {**body, "canonical_digest": _digest(body)}
+
+    @classmethod
+    def _selected_capability_gap_candidate(
+        cls,
+        selection: dict[str, Any],
+        catalog: dict[str, Any],
+    ) -> dict[str, Any]:
+        if (
+            selection["warehouse_revision"]
+            != catalog["warehouse_revision"]
+            or selection["catalog_digest"] != _digest(catalog)
+        ):
+            raise ProductPlanningError(
+                "product_plan_capability_gap_target_stale"
+            )
+        matches = [
+            candidate
+            for candidate in cls._capability_gap_candidates(catalog)
+            if _digest(candidate) == selection["candidate_digest"]
+        ]
+        if len(matches) != 1:
+            raise ProductPlanningError(
+                "product_plan_capability_gap_target_stale"
+            )
+        expected_option_id = "option_" + _digest(
+            {
+                "catalog_digest": selection["catalog_digest"],
+                "candidate_digest": selection["candidate_digest"],
+            }
+        )[:20]
+        if selection["option_id"] != expected_option_id:
+            raise ProductPlanningError(
+                "product_plan_capability_gap_target_stale"
+            )
+        return matches[0]
 
     @staticmethod
     def _compile_wave_dependencies(
@@ -3949,12 +9149,224 @@ class ProductPlanner:
             for work_item_id in by_wave[wave]:
                 by_id[work_item_id]["depends_on"] = dependencies
 
+    @classmethod
+    def _validate_dependency_compilation(
+        cls,
+        plan: dict[str, Any],
+        delivery_waves: dict[str, int],
+    ) -> None:
+        item_ids = {
+            item["work_item_id"]
+            for section in plan["sections"]
+            for item in section["work_items"]
+        }
+        if (
+            set(delivery_waves) != item_ids
+            or any(
+                type(wave) is not int or wave not in {1, 2, 3, 4}
+                for wave in delivery_waves.values()
+            )
+        ):
+            raise ProductPlanningError("product_plan_dependency_invalid")
+        if plan["schema_version"] == PLAN_SCHEMA_VERSION:
+            by_id = {
+                item["work_item_id"]: item
+                for section in plan["sections"]
+                for item in section["work_items"]
+            }
+            unresolved = set(by_id)
+            expected_waves: dict[str, int] = {}
+            while unresolved:
+                ready = sorted(
+                    work_item_id
+                    for work_item_id in unresolved
+                    if set(by_id[work_item_id]["depends_on"]) <= set(expected_waves)
+                )
+                if not ready:
+                    raise ProductPlanningError("product_plan_dependency_invalid")
+                for work_item_id in ready:
+                    dependencies = by_id[work_item_id]["depends_on"]
+                    expected_waves[work_item_id] = (
+                        1
+                        if not dependencies
+                        else 1
+                        + max(expected_waves[dependency] for dependency in dependencies)
+                    )
+                    unresolved.remove(work_item_id)
+            if expected_waves != delivery_waves:
+                raise ProductPlanningError("product_plan_dependency_invalid")
+            return
+        bound_computations = {
+            (binding["capsule_id"], binding["version_id"])
+            for section in plan["sections"]
+            for item in section["work_items"]
+            for binding in item["capsule_bindings"]
+            if binding["capability_kind"] == "computation"
+        }
+        if (
+            plan["planning_rules_version"] == LEGACY_PLANNING_RULES_VERSION
+            or len(bound_computations) != 2
+        ):
+            compiled_sections = copy.deepcopy(plan["sections"])
+            cls._compile_wave_dependencies(compiled_sections, delivery_waves)
+            if compiled_sections != plan["sections"]:
+                raise ProductPlanningError("product_plan_dependency_invalid")
+
+    @staticmethod
+    def _compile_multi_computation_dependencies(
+        sections: list[dict[str, Any]],
+        candidate_map: dict[str, dict[str, Any]],
+    ) -> None:
+        exact_catalog = {
+            (item["capsule_id"], item["version_id"]): item
+            for item in candidate_map.values()
+        }
+        occurrences: dict[tuple[str, str], list[dict[str, Any]]] = {}
+        selected_groups: set[str] = set()
+        for section in sections:
+            for work_item in section["work_items"]:
+                for binding in work_item["capsule_bindings"]:
+                    pair = (binding["capsule_id"], binding["version_id"])
+                    capsule = exact_catalog.get(pair)
+                    if capsule is None:
+                        raise ProductPlanningError(
+                            "product_plan_catalog_validation_failed"
+                        )
+                    selected_groups.add(capsule["capability_key"])
+                    occurrences.setdefault(pair, []).append(work_item)
+        if not occurrences:
+            return
+
+        catalog_groups: dict[str, list[dict[str, Any]]] = {}
+        for capsule in candidate_map.values():
+            catalog_groups.setdefault(capsule["capability_key"], []).append(capsule)
+        multi_groups = {
+            capability_key
+            for capability_key in selected_groups
+            if sum(
+                capsule["capability_kind"] == "computation"
+                for capsule in catalog_groups[capability_key]
+            )
+            == 2
+        }
+        if not multi_groups:
+            return
+        if len(selected_groups) != 1 or len(multi_groups) != 1:
+            raise ProductPlanningError(
+                "product_plan_multi_computation_shape_invalid"
+            )
+
+        capability_key = next(iter(multi_groups))
+        group = catalog_groups[capability_key]
+        presentations = [
+            capsule
+            for capsule in group
+            if capsule["capability_kind"] == "presentation"
+        ]
+        interactions = [
+            capsule
+            for capsule in group
+            if capsule["capability_kind"] == "interaction"
+        ]
+        computations = [
+            capsule
+            for capsule in group
+            if capsule["capability_kind"] == "computation"
+        ]
+        if (
+            len(group) not in {3, 4}
+            or len(presentations) != 1
+            or len(interactions) > 1
+            or len(computations) != 2
+        ):
+            raise ProductPlanningError(
+                "product_plan_multi_computation_shape_invalid"
+            )
+        if any(
+            not {"input_contract", "output_contract", "error_contract"}
+            <= set(capsule)
+            for capsule in group
+        ):
+            raise ProductPlanningError("product_plan_contract_facts_missing")
+
+        expected_pairs = {
+            (capsule["capsule_id"], capsule["version_id"])
+            for capsule in group
+        }
+        if set(occurrences) != expected_pairs:
+            raise ProductPlanningError("product_plan_role_coverage_invalid")
+        if any(len(items) != 1 for items in occurrences.values()):
+            raise ProductPlanningError("product_plan_binding_ambiguous")
+
+        compatible_orders = [
+            (first, terminal)
+            for first, terminal in (
+                (computations[0], computations[1]),
+                (computations[1], computations[0]),
+            )
+            if contracts_compatible(
+                first["output_contract"], terminal["input_contract"]
+            )
+        ]
+        if len(compatible_orders) != 1:
+            raise ProductPlanningError(
+                "product_plan_connection_order_ambiguous"
+            )
+        first, terminal = compatible_orders[0]
+        presentation = presentations[0]
+        if not contracts_compatible(
+            terminal["output_contract"], presentation["input_contract"]
+        ):
+            raise ProductPlanningError(
+                "product_plan_connection_target_ambiguous"
+            )
+
+        chain: list[dict[str, Any]] = []
+        if interactions:
+            interaction = interactions[0]
+            events = interaction["output_contract"].get("events")
+            matches = (
+                [
+                    name
+                    for name, contract in events.items()
+                    if contracts_compatible(contract, first["input_contract"])
+                ]
+                if type(events) is dict
+                else []
+            )
+            if len(matches) != 1:
+                raise ProductPlanningError(
+                    "product_plan_connection_source_ambiguous"
+                )
+            chain.append(
+                occurrences[
+                    (interaction["capsule_id"], interaction["version_id"])
+                ][0]
+            )
+
+        chain.extend(
+            [
+                occurrences[(first["capsule_id"], first["version_id"])][0],
+                occurrences[(terminal["capsule_id"], terminal["version_id"])][0],
+            ]
+        )
+        chain.append(
+            occurrences[
+                (presentation["capsule_id"], presentation["version_id"])
+            ][0]
+        )
+
+        previous: str | None = None
+        for work_item in chain:
+            work_item["depends_on"] = [] if previous is None else [previous]
+            previous = work_item["work_item_id"]
+
     def _compile_section_drafts(
         self,
         plan_id: str,
         sections_raw: list[dict[str, Any]],
         requirement_map: dict[str, str],
-        candidate_map: dict[str, dict[str, str]],
+        candidate_map: dict[str, dict[str, Any]],
     ) -> tuple[list[dict[str, Any]], dict[str, int]]:
         sections: list[dict[str, Any]] = []
         delivery_waves: dict[str, int] = {}
@@ -4040,9 +9452,37 @@ class ProductPlanner:
                 }
             )
         self._compile_wave_dependencies(sections, delivery_waves)
+        self._compile_multi_computation_dependencies(
+            sections,
+            candidate_map,
+        )
         return sections, delivery_waves
 
     def _build_plan(
+        self,
+        workspace: dict[str, Any],
+        outline: dict[str, Any],
+        catalog: dict[str, Any],
+        cancel_check: Callable[[], bool] | None,
+        phase_callback: Callable[[str], None] | None,
+    ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+        if workspace["schema_version"] == LEGACY_WORKSPACE_SCHEMA_VERSION:
+            return self._build_legacy_plan(
+                workspace,
+                outline,
+                catalog,
+                cancel_check,
+                phase_callback,
+            )
+        return self._build_blueprint_plan(
+            workspace,
+            outline,
+            catalog,
+            cancel_check,
+            phase_callback,
+        )
+
+    def _build_legacy_plan(
         self,
         workspace: dict[str, Any],
         outline: dict[str, Any],
@@ -4086,7 +9526,7 @@ class ProductPlanner:
                     ),
                 }
             )
-        candidate_map: dict[str, dict[str, str]] = {}
+        candidate_map: dict[str, dict[str, Any]] = {}
         for index, capsule in enumerate(catalog["capsules"]):
             candidate_ref = "candidate_" + _digest(
                 {
@@ -4169,7 +9609,7 @@ class ProductPlanner:
             candidate_map,
         )
         plan: dict[str, Any] = {
-            "schema_version": PLAN_SCHEMA_VERSION,
+            "schema_version": LEGACY_PLAN_SCHEMA_VERSION,
             "plan_id": plan_id,
             "plan_version": 1,
             "parent_plan_digest": None,
@@ -4181,8 +9621,8 @@ class ProductPlanner:
             "planning_answers": copy.deepcopy(planning_answers),
             "sections": sections,
             "model": copy.deepcopy(workspace["model"]),
-            "planning_rules_version": PLANNING_RULES_VERSION,
-            "prompt_version": PLANNING_PROMPT_VERSION,
+            "planning_rules_version": SECTION_PLANNING_RULES_VERSION,
+            "prompt_version": LEGACY_PLANNING_PROMPT_VERSION,
             "structured_response_digests": [
                 workspace["outline_response_digest"],
                 *section_call_digests,
@@ -4199,13 +9639,1853 @@ class ProductPlanner:
         workspace["delivery_waves"] = delivery_waves
         return plan, []
 
+    @staticmethod
+    def _safe_blueprint_candidates(
+        candidate_map: dict[str, dict[str, Any]],
+    ) -> list[dict[str, str]]:
+        return [
+            {
+                "candidate_ref": candidate_ref,
+                "display_name": item["display_name"],
+                "capability_key": item["capability_key"],
+                "role_key": item["role_key"],
+                "variant_key": item["variant_key"],
+                "capability_kind": item["capability_kind"],
+            }
+            for candidate_ref, item in sorted(candidate_map.items())
+        ]
+
+    @staticmethod
+    def _composition_chain(
+        selected: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        roles = [
+            (item["capability_kind"], item["role_key"], item["variant_key"])
+            for item in selected
+        ]
+        presentations = [
+            item for item in selected if item["capability_kind"] == "presentation"
+        ]
+        interactions = [
+            item for item in selected if item["capability_kind"] == "interaction"
+        ]
+        computations = [
+            item for item in selected if item["capability_kind"] == "computation"
+        ]
+        if (
+            len(roles) != len(set(roles))
+            or len(presentations) != 1
+            or len(interactions) > 1
+            or len(computations) not in {1, 2}
+            or len(selected) not in {2, 3, 4}
+            or any(
+                not {"input_contract", "output_contract", "error_contract"}
+                <= set(item)
+                for item in selected
+            )
+        ):
+            raise ProductPlanningError("product_plan_capability_shape_invalid")
+        if len(computations) == 1:
+            computation_order = computations
+        else:
+            compatible_orders = [
+                [first, terminal]
+                for first, terminal in (
+                    (computations[0], computations[1]),
+                    (computations[1], computations[0]),
+                )
+                if contracts_compatible(
+                    first["output_contract"], terminal["input_contract"]
+                )
+            ]
+            if len(compatible_orders) != 1:
+                raise ProductPlanningError(
+                    "product_plan_connection_order_ambiguous"
+                )
+            computation_order = compatible_orders[0]
+        presentation = presentations[0]
+        if not contracts_compatible(
+            computation_order[-1]["output_contract"],
+            presentation["input_contract"],
+        ):
+            raise ProductPlanningError("product_plan_connection_target_ambiguous")
+        chain: list[dict[str, Any]] = []
+        if interactions:
+            interaction = interactions[0]
+            events = interaction["output_contract"].get("events")
+            matches = (
+                [
+                    name
+                    for name, contract in events.items()
+                    if contracts_compatible(
+                        contract,
+                        computation_order[0]["input_contract"],
+                    )
+                ]
+                if type(events) is dict
+                else []
+            )
+            if len(matches) != 1:
+                raise ProductPlanningError(
+                    "product_plan_connection_source_ambiguous"
+                )
+            chain.append(interaction)
+        return [*chain, *computation_order, presentation]
+
+    @classmethod
+    def _composition_offers(
+        cls,
+        candidate_map: dict[str, dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        by_key: dict[str, list[tuple[str, dict[str, Any]]]] = {}
+        for candidate_ref, capsule in candidate_map.items():
+            by_key.setdefault(capsule["capability_key"], []).append(
+                (candidate_ref, capsule)
+            )
+        safe_by_ref = {
+            item["candidate_ref"]: item
+            for item in cls._safe_blueprint_candidates(candidate_map)
+        }
+        offers: list[dict[str, Any]] = []
+        for capability_key, rows in sorted(by_key.items()):
+            ref_by_pair = {
+                (capsule["capsule_id"], capsule["version_id"]): candidate_ref
+                for candidate_ref, capsule in rows
+            }
+            if len(ref_by_pair) != len(rows):
+                continue
+            try:
+                chain = cls._composition_chain(
+                    [capsule for _, capsule in rows]
+                )
+            except ProductPlanningError:
+                continue
+            member_refs = [
+                ref_by_pair[(capsule["capsule_id"], capsule["version_id"])]
+                for capsule in chain
+            ]
+            offer_ref = "offer_" + _digest(
+                {
+                    "schema_version": "product_composition_offer.v1",
+                    "capability_key": capability_key,
+                    "members": member_refs,
+                }
+            )[:24]
+            offers.append(
+                {
+                    "offer_ref": offer_ref,
+                    "capability_key": capability_key,
+                    "members": [
+                        safe_by_ref[candidate_ref]
+                        for candidate_ref in member_refs
+                    ],
+                }
+            )
+        return sorted(offers, key=lambda offer: offer["offer_ref"])
+
+    def _validate_capability_replan_binding(
+        self,
+        value: Any,
+        projection: dict[str, Any],
+        decision: dict[str, Any],
+        authorization: dict[str, Any],
+    ) -> dict[str, Any]:
+        keys = {
+            "admission_review_id",
+            "admission_digest",
+            "publication_review_id",
+            "published_capsule",
+            "authorization_revision",
+            "admission_revision_before",
+            "admission_revision_after",
+            "publication_revision",
+        }
+        if type(value) is not dict or set(value) != keys:
+            raise ProductPlanningError("capability_replan_unavailable")
+        row = value
+        published = row["published_capsule"]
+        if (
+            any(
+                type(row[key]) is not str or not row[key]
+                for key in ("admission_review_id", "publication_review_id")
+            )
+            or _DIGEST.fullmatch(str(row["admission_digest"])) is None
+            or type(published) is not dict
+            or set(published)
+            != {
+                "capsule_id",
+                "version_id",
+                "canonical_hash",
+                "capability_kind",
+                "role_key",
+                "variant_key",
+            }
+            or self._gap_capsule_identity(published) != published
+            or published["capability_kind"] != "computation"
+            or any(
+                type(row[key]) is not int or row[key] < 0
+                for key in (
+                    "authorization_revision",
+                    "admission_revision_before",
+                    "admission_revision_after",
+                    "publication_revision",
+                )
+            )
+            or row["authorization_revision"]
+            != projection["warehouse_revision"]
+            or row["authorization_revision"]
+            != authorization["warehouse_revision"]
+            or row["admission_revision_before"]
+            != row["authorization_revision"]
+            or row["admission_revision_after"]
+            != row["admission_revision_before"] + 1
+            or row["publication_revision"]
+            != row["admission_revision_after"] + 1
+            or decision["canonical_digest"]
+            != authorization["authorize_decision_digest"]
+        ):
+            raise ProductPlanningError("capability_replan_unavailable")
+        return copy.deepcopy(row)
+
+    @classmethod
+    def _capability_replan_offer(
+        cls,
+        catalog: dict[str, Any],
+        projection: dict[str, Any],
+        published_capsule: dict[str, Any],
+        authorized_error_contract: dict[str, Any] | None = None,
+    ) -> dict[str, Any] | None:
+        expected_members = {
+            (
+                member["capsule_id"],
+                member["version_id"],
+                member["canonical_hash"],
+            )
+            for member in projection["existing_members"]
+        }
+        expected_members.add(
+            (
+                published_capsule["capsule_id"],
+                published_capsule["version_id"],
+                published_capsule["canonical_hash"],
+            )
+        )
+        group = [
+            capsule
+            for capsule in catalog["capsules"]
+            if capsule["capability_key"] == projection["capability_key"]
+        ]
+        actual_members = {
+            (
+                capsule["capsule_id"],
+                capsule["version_id"],
+                capsule["canonical_hash"],
+            )
+            for capsule in group
+        }
+        published = [
+            capsule
+            for capsule in group
+            if cls._gap_capsule_identity(capsule)
+            == published_capsule
+        ]
+        if (
+            actual_members != expected_members
+            or len(group) != len(expected_members)
+            or len(published) != 1
+            or published[0]["capability_kind"] != "computation"
+            or published[0].get("input_contract")
+            != projection["input_contract"]
+            or published[0].get("output_contract")
+            != projection["output_contract"]
+            or (
+                authorized_error_contract is not None
+                and published[0].get("error_contract")
+                != authorized_error_contract
+            )
+        ):
+            return None
+        try:
+            chain = cls._composition_chain(group)
+        except ProductPlanningError:
+            return None
+        computations = [
+            item for item in chain if item["capability_kind"] == "computation"
+        ]
+        published_pair = (
+            published_capsule["capsule_id"],
+            published_capsule["version_id"],
+        )
+        published_index = next(
+            (
+                index
+                for index, item in enumerate(computations)
+                if (item["capsule_id"], item["version_id"])
+                == published_pair
+            ),
+            -1,
+        )
+        slot = projection["slot"]
+        if (
+            (
+                slot == "only_computation"
+                and (len(computations), published_index) != (1, 0)
+            )
+            or (
+                slot == "before_existing_computation"
+                and (len(computations), published_index) != (2, 0)
+            )
+            or (
+                slot == "after_existing_computation"
+                and (len(computations), published_index) != (2, 1)
+            )
+        ):
+            return None
+        return {
+            "schema_version": CAPABILITY_REPLAN_OFFER_VERSION,
+            "capability_key": projection["capability_key"],
+            "gap_slot": slot,
+            "members": [
+                cls._gap_capsule_identity(member) for member in chain
+            ],
+        }
+
+    @classmethod
+    def _capability_replan_acceptance_suggestions(
+        cls,
+        catalog: dict[str, Any],
+        projection: dict[str, Any],
+        decision: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        if (
+            projection["slot"] != "only_computation"
+            or projection["upstream"]["capability_kind"] != "interaction"
+            or projection["downstream"]["capability_kind"] != "presentation"
+        ):
+            return []
+        by_identity = {
+            (item["capsule_id"], item["version_id"]): item
+            for item in catalog["capsules"]
+        }
+        upstream = by_identity.get(
+            (
+                projection["upstream"]["capsule_id"],
+                projection["upstream"]["version_id"],
+            )
+        )
+        downstream = by_identity.get(
+            (
+                projection["downstream"]["capsule_id"],
+                projection["downstream"]["version_id"],
+            )
+        )
+        events = (
+            upstream.get("output_contract", {}).get("events")
+            if type(upstream) is dict
+            else None
+        )
+        if (
+            type(events) is not dict
+            or events.get(projection["upstream"]["port_name"])
+            != projection["input_contract"]
+            or type(downstream) is not dict
+            or downstream.get("input_contract")
+            != projection["output_contract"]
+        ):
+            return []
+        return copy.deepcopy(decision["acceptance_cases"])
+
+    def _source_workspace_from_handoff(
+        self,
+        handoff: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            source = self._read_json(
+                self._workspace_dir(handoff["source_workspace_id"])
+                / "workspace.json"
+            )
+            self._validate_workspace(
+                source,
+                expected_workspace_id=handoff["source_workspace_id"],
+            )
+        except ProductPlanningError as exc:
+            raise ProductPlanningError(
+                "capability_replan_handoff_conflict"
+            ) from exc
+        if source["plan_token"] != handoff["source_plan_token"]:
+            raise ProductPlanningError(
+                "capability_replan_handoff_conflict"
+            )
+        return source
+
+    def _successor_workspace_from_handoff(
+        self,
+        handoff: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            successor = self._read_json(
+                self._workspace_dir(handoff["successor_workspace_id"])
+                / "workspace.json"
+            )
+            self._validate_workspace(
+                successor,
+                expected_workspace_id=handoff["successor_workspace_id"],
+            )
+        except ProductPlanningError as exc:
+            raise ProductPlanningError(
+                "capability_replan_handoff_conflict"
+            ) from exc
+        if successor["plan_token"] != handoff["successor_plan_token"]:
+            raise ProductPlanningError(
+                "capability_replan_handoff_conflict"
+            )
+        return successor
+
+    def _validate_capability_replan_current(
+        self,
+        handoff: dict[str, Any],
+        catalog: dict[str, Any],
+        *,
+        check_model: bool = False,
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
+        handoff = self._validate_capability_replan_handoff(handoff)
+        try:
+            source = self._source_workspace_from_handoff(handoff)
+            plan = source.get("plan")
+            projection = self._read_capability_gap_projection(source)
+            decisions = (
+                self._capability_gap_decisions(source, projection)
+                if projection is not None
+                else []
+            )
+            decision = decisions[-1] if decisions else None
+            authorization = (
+                self._read_capability_source_proposal_authorization(
+                    source,
+                    projection,
+                    decision,
+                )
+                if projection is not None
+                and type(decision) is dict
+                and decision.get("decision") == "authorize"
+                else None
+            )
+        except ProductPlanningError as exc:
+            raise ProductPlanningError(
+                "capability_replan_handoff_conflict"
+            ) from exc
+        if (
+            type(plan) is not dict
+            or plan["canonical_digest"] != handoff["source_plan_digest"]
+            or projection is None
+            or projection["gap_id"] != handoff["source_gap_id"]
+            or projection["projection_digest"]
+            != handoff["projection_digest"]
+        ):
+            raise ProductPlanningError(
+                "capability_replan_handoff_conflict"
+            )
+        if (
+            authorization is None
+            or decision["canonical_digest"]
+            != handoff["authorize_decision_digest"]
+            or authorization["authorization_digest"]
+            != handoff["source_proposal_authorization_digest"]
+        ):
+            raise ProductPlanningError(
+                "capability_replan_handoff_conflict"
+            )
+        try:
+            selected = self._model_identity(
+                self._selected_model(
+                    check_current=check_model,
+                    cancel_check=cancel_check,
+                )
+            )
+        except ProductPlanningError as exc:
+            raise ProductPlanningError(
+                "capability_replan_handoff_stale"
+            ) from exc
+        normalized_catalog = self._catalog(catalog)
+        if (
+            selected != handoff["planning_model"]
+            or normalized_catalog["warehouse_revision"]
+            != handoff["handoff_catalog_revision"]
+            or _digest(normalized_catalog) != handoff["catalog_digest"]
+        ):
+            raise ProductPlanningError(
+                "capability_replan_handoff_stale"
+            )
+        offer = self._capability_replan_offer(
+            normalized_catalog,
+            projection,
+            handoff["published_capsule"],
+            authorization["error_contract"],
+        )
+        if (
+            offer is None
+            or offer != handoff["target_offer"]
+            or _digest(offer) != handoff["target_offer_digest"]
+        ):
+            raise ProductPlanningError(
+                "capability_replan_handoff_stale"
+            )
+        return {
+            "handoff": handoff,
+            "source": source,
+            "projection": projection,
+            "authorization": authorization,
+            "catalog": {
+                "warehouse_revision": normalized_catalog[
+                    "warehouse_revision"
+                ],
+                "capsules": [
+                    capsule
+                    for capsule in normalized_catalog["capsules"]
+                    if self._gap_capsule_identity(capsule)
+                    in offer["members"]
+                ],
+            },
+        }
+
+    @staticmethod
+    def _gap_capsule_identity(capsule: dict[str, Any]) -> dict[str, str]:
+        return {
+            key: str(capsule[key])
+            for key in (
+                "capsule_id",
+                "version_id",
+                "canonical_hash",
+                "capability_kind",
+                "role_key",
+                "variant_key",
+            )
+        }
+
+    @staticmethod
+    def _integer_gap_adapter(
+        input_contract: dict[str, Any],
+        output_contract: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        input_properties = input_contract.get("properties")
+        output_properties = output_contract.get("properties")
+        if (
+            input_contract.get("type") != "object"
+            or output_contract.get("type") != "object"
+            or type(input_properties) is not dict
+            or type(output_properties) is not dict
+            or not input_properties
+            or not output_properties
+            or set(input_contract.get("required", [])) != set(input_properties)
+            or set(output_contract.get("required", [])) != set(output_properties)
+            or any(
+                contract.get("type") != "integer"
+                for contract in (
+                    *input_properties.values(),
+                    *output_properties.values(),
+                )
+            )
+        ):
+            return None
+        passthrough = sorted(
+            field
+            for field, contract in output_properties.items()
+            if input_properties.get(field) == contract
+        )
+        result_fields = sorted(set(output_properties) - set(passthrough))
+        if len(result_fields) != 1:
+            return None
+        result_field = result_fields[0]
+        if passthrough:
+            adapter_version = "computation_adapter.v3"
+            mapping_schema = "computation_capture_mapping.v3"
+        elif len(output_properties) == 1:
+            adapter_version = "computation_adapter.v2"
+            mapping_schema = "computation_capture_mapping.v2"
+        else:
+            return None
+        return {
+            "adapter_contract_version": adapter_version,
+            "capture_mapping_schema": mapping_schema,
+            "result_field": result_field,
+            "passthrough_fields": passthrough,
+        }
+
+    @staticmethod
+    def _finite_enum_values(contract: Any) -> list[str] | None:
+        if (
+            type(contract) is not dict
+            or set(contract)
+            != {"type", "min_length", "max_length", "enum"}
+            or contract.get("type") != "string"
+            or type(contract.get("min_length")) is not int
+            or type(contract.get("max_length")) is not int
+        ):
+            return None
+        values = contract.get("enum")
+        if (
+            type(values) is not list
+            or not values
+            or len(values) > 32
+            or any(type(value) is not str for value in values)
+            or len(set(values)) != len(values)
+        ):
+            return None
+        try:
+            ordered = sorted(values, key=lambda value: value.encode("utf-8"))
+            lengths = [
+                len(value.encode("utf-16-le")) // 2 for value in ordered
+            ]
+        except UnicodeEncodeError:
+            return None
+        if (
+            values != ordered
+            or contract["min_length"] != min(lengths)
+            or contract["max_length"] != max(lengths)
+        ):
+            return None
+        return ordered
+
+    @staticmethod
+    def _utf8_sorted_unique_strings(values: Any) -> bool:
+        if (
+            type(values) is not list
+            or any(type(value) is not str for value in values)
+            or len(set(values)) != len(values)
+        ):
+            return False
+        try:
+            return values == sorted(
+                values,
+                key=lambda value: value.encode("utf-8"),
+            )
+        except UnicodeEncodeError:
+            return False
+
+    @classmethod
+    def _finite_enum_gap_adapter(
+        cls,
+        input_contract: dict[str, Any],
+        output_contract: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        input_properties = input_contract.get("properties")
+        output_properties = output_contract.get("properties")
+        if (
+            input_contract.get("type") != "object"
+            or output_contract.get("type") != "object"
+            or input_contract.get("additional_properties") is not False
+            or output_contract.get("additional_properties") is not False
+            or type(input_properties) is not dict
+            or type(output_properties) is not dict
+            or not input_properties
+            or len(output_properties) != 1
+            or input_contract.get("required") != sorted(input_properties)
+            or output_contract.get("required") != sorted(output_properties)
+        ):
+            return None
+        for contract in input_properties.values():
+            if (
+                set(contract) == {"type", "minimum", "maximum"}
+                and contract.get("type") == "integer"
+                and type(contract.get("minimum")) is int
+                and type(contract.get("maximum")) is int
+                and contract["minimum"] <= contract["maximum"]
+            ):
+                continue
+            if contract == {"type": "boolean"}:
+                continue
+            if cls._finite_enum_values(contract) is not None:
+                continue
+            return None
+        result_field = next(iter(output_properties))
+        result_enum = cls._finite_enum_values(output_properties[result_field])
+        if result_enum is None:
+            return None
+        return {
+            "adapter_contract_version": "computation_adapter.v4",
+            "capture_mapping_schema": "computation_capture_mapping.v4",
+            "proof_schema": "source_graph_proof.v2",
+            "result_field": result_field,
+            "result_enum": result_enum,
+            "passthrough_fields": [],
+        }
+
+    @classmethod
+    def _gap_adapter(
+        cls,
+        input_contract: dict[str, Any],
+        output_contract: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        return cls._integer_gap_adapter(
+            input_contract,
+            output_contract,
+        ) or cls._finite_enum_gap_adapter(
+            input_contract,
+            output_contract,
+        )
+
+    @classmethod
+    def _capability_gap_candidates(
+        cls,
+        catalog: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        by_key: dict[str, list[dict[str, Any]]] = {}
+        for capsule in catalog["capsules"]:
+            by_key.setdefault(capsule["capability_key"], []).append(capsule)
+        candidates: list[dict[str, Any]] = []
+        for capability_key, raw_group in sorted(by_key.items()):
+            group = sorted(
+                raw_group,
+                key=lambda item: (
+                    item["capability_kind"],
+                    item["role_key"],
+                    item["variant_key"],
+                    item["capsule_id"],
+                    item["version_id"],
+                ),
+            )
+            presentations = [
+                item
+                for item in group
+                if item["capability_kind"] == "presentation"
+            ]
+            interactions = [
+                item
+                for item in group
+                if item["capability_kind"] == "interaction"
+            ]
+            computations = [
+                item
+                for item in group
+                if item["capability_kind"] == "computation"
+            ]
+            if (
+                len(group) not in {2, 3}
+                or len(presentations) != 1
+                or len(interactions) != 1
+                or len(computations) not in {0, 1}
+                or any(
+                    not {"input_contract", "output_contract", "error_contract"}
+                    <= set(item)
+                    for item in group
+                )
+                or len(
+                    {
+                        (
+                            item["capability_kind"],
+                            item["role_key"],
+                            item["variant_key"],
+                        )
+                        for item in group
+                    }
+                )
+                != len(group)
+            ):
+                continue
+            interaction = interactions[0]
+            presentation = presentations[0]
+            events = interaction["output_contract"].get("events")
+            if type(events) is not dict or len(events) != 1:
+                continue
+            event_name = next(iter(events))
+            event_contract = events[event_name]
+            positions: list[
+                tuple[
+                    str,
+                    dict[str, Any],
+                    dict[str, Any],
+                    dict[str, Any],
+                    dict[str, Any],
+                ]
+            ] = []
+            if not computations:
+                adapter = cls._gap_adapter(
+                    event_contract,
+                    presentation["input_contract"],
+                )
+                if adapter is not None:
+                    positions.append(
+                        (
+                            "only_computation",
+                            event_contract,
+                            presentation["input_contract"],
+                            {
+                                **cls._gap_capsule_identity(interaction),
+                                "port_kind": "event",
+                                "port_name": event_name,
+                                "contract_digest": _digest(event_contract),
+                            },
+                            {
+                                **cls._gap_capsule_identity(presentation),
+                                "port_kind": "input",
+                                "port_name": "input",
+                                "contract_digest": _digest(
+                                    presentation["input_contract"]
+                                ),
+                            },
+                        )
+                    )
+            else:
+                computation = computations[0]
+                if (
+                    contracts_compatible(
+                        event_contract,
+                        computation["input_contract"],
+                    )
+                    and contracts_compatible(
+                        computation["output_contract"],
+                        presentation["input_contract"],
+                    )
+                ):
+                    continue
+                if contracts_compatible(
+                    computation["output_contract"],
+                    presentation["input_contract"],
+                ):
+                    adapter = cls._gap_adapter(
+                        event_contract,
+                        computation["input_contract"],
+                    )
+                    if adapter is not None:
+                        positions.append(
+                            (
+                                "before_existing_computation",
+                                event_contract,
+                                computation["input_contract"],
+                                {
+                                    **cls._gap_capsule_identity(interaction),
+                                    "port_kind": "event",
+                                    "port_name": event_name,
+                                    "contract_digest": _digest(event_contract),
+                                },
+                                {
+                                    **cls._gap_capsule_identity(computation),
+                                    "port_kind": "input",
+                                    "port_name": "input",
+                                    "contract_digest": _digest(
+                                        computation["input_contract"]
+                                    ),
+                                },
+                            )
+                        )
+                if contracts_compatible(
+                    event_contract,
+                    computation["input_contract"],
+                ):
+                    adapter = cls._gap_adapter(
+                        computation["output_contract"],
+                        presentation["input_contract"],
+                    )
+                    if adapter is not None:
+                        positions.append(
+                            (
+                                "after_existing_computation",
+                                computation["output_contract"],
+                                presentation["input_contract"],
+                                {
+                                    **cls._gap_capsule_identity(computation),
+                                    "port_kind": "output",
+                                    "port_name": "output",
+                                    "contract_digest": _digest(
+                                        computation["output_contract"]
+                                    ),
+                                },
+                                {
+                                    **cls._gap_capsule_identity(presentation),
+                                    "port_kind": "input",
+                                    "port_name": "input",
+                                    "contract_digest": _digest(
+                                        presentation["input_contract"]
+                                    ),
+                                },
+                            )
+                        )
+            if len(positions) != 1:
+                continue
+            slot, input_contract, output_contract, upstream, downstream = positions[0]
+            adapter = cls._gap_adapter(input_contract, output_contract)
+            if adapter is None:
+                continue
+            display_names = {str(item["display_name"]) for item in group}
+            if len(display_names) != 1:
+                continue
+            candidates.append(
+                {
+                    "capability_key": capability_key,
+                    "capability_group_display_name": next(iter(display_names)),
+                    "capability_kind": "computation",
+                    "slot": slot,
+                    "input_contract": copy.deepcopy(input_contract),
+                    "output_contract": copy.deepcopy(output_contract),
+                    **adapter,
+                    "upstream": upstream,
+                    "downstream": downstream,
+                    "existing_members": [
+                        cls._gap_capsule_identity(item) for item in group
+                    ],
+                }
+            )
+        return sorted(
+            candidates,
+            key=lambda item: (
+                item["capability_key"],
+                item["slot"],
+                item["upstream"]["capsule_id"],
+                item["downstream"]["capsule_id"],
+            ),
+        )
+
+    @staticmethod
+    def _safe_gap_contract_fields(
+        contract: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        properties = contract["properties"]
+        return [
+            {
+                key: value
+                for key, value in {
+                    "name": name,
+                    "type": field["type"],
+                    "minimum": field.get("minimum"),
+                    "maximum": field.get("maximum"),
+                    "min_length": field.get("min_length"),
+                    "max_length": field.get("max_length"),
+                    "enum": copy.deepcopy(field.get("enum")),
+                }.items()
+                if value is not None
+            }
+            for name, field in sorted(properties.items())
+        ]
+
+    @classmethod
+    def _capability_gap_blueprint_lock(
+        cls,
+        candidate: dict[str, Any],
+        candidate_map: dict[str, dict[str, Any]],
+    ) -> dict[str, Any]:
+        safe_by_pair = {
+            (capsule["capsule_id"], capsule["version_id"]): safe
+            for safe in cls._safe_blueprint_candidates(candidate_map)
+            for capsule in [candidate_map[safe["candidate_ref"]]]
+        }
+        existing_members: list[dict[str, str]] = []
+        for identity in candidate["existing_members"]:
+            safe = safe_by_pair.get(
+                (identity["capsule_id"], identity["version_id"])
+            )
+            if (
+                safe is None
+                or safe["capability_key"] != candidate["capability_key"]
+                or any(
+                    safe[key] != identity[key]
+                    for key in (
+                        "role_key",
+                        "variant_key",
+                        "capability_kind",
+                    )
+                )
+            ):
+                raise ProductPlanningError(
+                    "product_plan_capability_gap_lock_invalid"
+                )
+            existing_members.append(copy.deepcopy(safe))
+        existing_members.sort(
+            key=lambda item: (
+                {"interaction": 0, "computation": 1, "presentation": 2}[
+                    item["capability_kind"]
+                ],
+                item["role_key"],
+                item["variant_key"],
+                item["candidate_ref"],
+            )
+        )
+        return {
+            "schema_version": (
+                "product_capability_gap_blueprint_lock.v2"
+                if candidate["adapter_contract_version"]
+                == "computation_adapter.v4"
+                else "product_capability_gap_blueprint_lock.v1"
+            ),
+            "capability_key": candidate["capability_key"],
+            "capability_group_display_name": candidate[
+                "capability_group_display_name"
+            ],
+            "capability_kind": "computation",
+            "slot": candidate["slot"],
+            "adapter_contract_version": candidate[
+                "adapter_contract_version"
+            ],
+            "input_fields": cls._safe_gap_contract_fields(
+                candidate["input_contract"]
+            ),
+            "output_fields": cls._safe_gap_contract_fields(
+                candidate["output_contract"]
+            ),
+            "existing_members": existing_members,
+        }
+
+    @classmethod
+    def _capability_gap_projection(
+        cls,
+        plan: dict[str, Any],
+        catalog: dict[str, Any],
+        candidate_digest: str | None = None,
+    ) -> tuple[dict[str, Any] | None, str]:
+        gaps = [
+            gap
+            for section in plan["sections"]
+            for gap in section["gaps"]
+        ]
+        if len(gaps) != 1:
+            return None, "capability_gap_plan_count_unsupported"
+        candidates = cls._capability_gap_candidates(catalog)
+        if candidate_digest is not None:
+            candidates = [
+                candidate
+                for candidate in candidates
+                if _digest(candidate) == candidate_digest
+            ]
+        if not candidates:
+            return None, "capability_gap_boundary_unavailable"
+        if len(candidates) != 1:
+            return None, "capability_gap_boundary_ambiguous"
+        candidate = candidates[0]
+        gap = gaps[0]
+        body = {
+            "schema_version": (
+                CAPABILITY_GAP_PROJECTION_V2
+                if candidate["adapter_contract_version"]
+                == "computation_adapter.v4"
+                else CAPABILITY_GAP_PROJECTION_VERSION
+            ),
+            "plan_id": plan["plan_id"],
+            "plan_version": plan["plan_version"],
+            "plan_digest": plan["canonical_digest"],
+            "gap_id": gap["gap_id"],
+            "requirement_ids": sorted(gap["requirement_ids"]),
+            **candidate,
+            "warehouse_revision": catalog["warehouse_revision"],
+            "catalog_digest": _digest(catalog),
+            "projection_source": "deterministic_unique_serial_gap",
+        }
+        if candidate["adapter_contract_version"] == "computation_adapter.v4":
+            body["proof_schema"] = candidate["proof_schema"]
+            body["result_enum"] = copy.deepcopy(candidate["result_enum"])
+        return {**body, "projection_digest": _digest(body)}, "available"
+
+    def _composition_selection_input_digest(
+        self,
+        workspace: dict[str, Any],
+        outline: dict[str, Any],
+        composition_offers: list[dict[str, Any]],
+    ) -> str:
+        return _digest(
+            {
+                "schema_version": "product_composition_selection_input.v1",
+                "goal_digest": workspace["goal_digest"],
+                "planning_answers": self._planning_answers(workspace),
+                "model": workspace["model"],
+                "planning_rules_version": self._workspace_rules_version(workspace),
+                "prompt_version": self._workspace_prompt_version(workspace),
+                "outline": outline,
+                "outline_response_digest": workspace["outline_response_digest"],
+                "composition_offers": sorted(
+                    composition_offers,
+                    key=lambda offer: offer["offer_ref"],
+                ),
+            }
+        )
+
+    def _composition_selection_call(
+        self,
+        model: dict[str, Any],
+        goal: str,
+        outline: dict[str, Any],
+        answers: list[dict[str, Any]],
+        composition_offers: list[dict[str, Any]],
+        cancel_check: Callable[[], bool] | None,
+        *,
+        selection_locked: bool = False,
+    ) -> tuple[dict[str, str], dict[str, Any]]:
+        if selection_locked and len(composition_offers) != 1:
+            raise ProductPlanningError(
+                "product_plan_composition_selection_ambiguous"
+            )
+        request = {
+            "goal": goal,
+            "prior_answers": answers,
+            "outline": outline,
+            "composition_offers": sorted(
+                composition_offers,
+                key=lambda offer: offer["offer_ref"],
+            ),
+            "rules": {
+                "selection": (
+                    "Select the one supplied complete composition."
+                    if selection_locked
+                    else (
+                        "Choose exactly one supplied capability_key whose complete "
+                        "composition matches the product semantics, or use an empty "
+                        "capability_key when none matches."
+                    )
+                ),
+                "authority": (
+                    "Do not select offer members, candidate refs, dependencies, "
+                    "delivery waves, contracts, or wiring."
+                ),
+            },
+        }
+        if selection_locked:
+            request["selection_locked"] = True
+        result, evidence = self._generate_json(
+            model,
+            "composition_selection",
+            request,
+            cancel_check,
+        )
+        selection = self._validate_composition_selection(result)
+        evidence["structured_response_digest"] = _digest(selection)
+        return selection, evidence
+
+    def _blueprint_input_digest(
+        self,
+        workspace: dict[str, Any],
+        outline: dict[str, Any],
+        candidate_map: dict[str, dict[str, Any]],
+        composition_offers: list[dict[str, Any]] | None = None,
+    ) -> str:
+        if composition_offers is None:
+            return _digest(
+                {
+                    "schema_version": "product_plan_blueprint_input.v1",
+                    "goal_digest": workspace["goal_digest"],
+                    "planning_answers": self._planning_answers(workspace),
+                    "model": workspace["model"],
+                    "planning_rules_version": (
+                        LEGACY_BLUEPRINT_PLANNING_RULES_VERSION
+                    ),
+                    "prompt_version": LEGACY_BLUEPRINT_PROMPT_VERSION,
+                    "outline": outline,
+                    "outline_response_digest": workspace[
+                        "outline_response_digest"
+                    ],
+                    "candidate_catalog": self._safe_blueprint_candidates(
+                        candidate_map
+                    ),
+                }
+            )
+        return _digest(
+            {
+                "schema_version": "product_plan_blueprint_input.v2",
+                "goal_digest": workspace["goal_digest"],
+                "planning_answers": self._planning_answers(workspace),
+                "model": workspace["model"],
+                "planning_rules_version": (
+                    DIRECT_BLUEPRINT_PLANNING_RULES_VERSION
+                ),
+                "prompt_version": DIRECT_BLUEPRINT_PROMPT_VERSION,
+                "outline": outline,
+                "outline_response_digest": workspace["outline_response_digest"],
+                "composition_offers": sorted(
+                    composition_offers,
+                    key=lambda offer: offer["offer_ref"],
+                ),
+            }
+        )
+
+    def _selected_blueprint_input_digest(
+        self,
+        workspace: dict[str, Any],
+        outline: dict[str, Any],
+        selected_offer: dict[str, Any] | None,
+        capability_gap_lock: dict[str, Any] | None = None,
+    ) -> str:
+        body = {
+            "schema_version": (
+                "product_plan_blueprint_input.v6"
+                if workspace["schema_version"] == WORKSPACE_SCHEMA_VERSION
+                else (
+                    "product_plan_blueprint_input.v5"
+                    if workspace["schema_version"]
+                    == PREVIOUS_TARGET_SELECTION_WORKSPACE_SCHEMA_VERSION
+                    else (
+                        "product_plan_blueprint_input.v4"
+                        if workspace["schema_version"]
+                        == PREVIOUS_GAP_WORKSPACE_SCHEMA_VERSION
+                        else "product_plan_blueprint_input.v3"
+                    )
+                )
+            ),
+            "goal_digest": workspace["goal_digest"],
+            "planning_answers": self._planning_answers(workspace),
+            "model": workspace["model"],
+            "planning_rules_version": self._workspace_rules_version(workspace),
+            "prompt_version": self._workspace_prompt_version(workspace),
+            "outline": outline,
+            "outline_response_digest": workspace["outline_response_digest"],
+            "composition_selection_response_digest": workspace[
+                "composition_selection_response_digest"
+            ],
+            "composition_offers": (
+                [] if selected_offer is None else [selected_offer]
+            ),
+        }
+        if workspace["schema_version"] in GAP_WORKSPACE_SCHEMA_VERSIONS:
+            body["capability_gap_lock"] = copy.deepcopy(capability_gap_lock)
+        if (
+            workspace["schema_version"]
+            in TARGET_SELECTION_WORKSPACE_SCHEMA_VERSIONS
+        ):
+            body["capability_gap_target_selection"] = copy.deepcopy(
+                workspace["capability_gap_target_selection"]
+            )
+        return _digest(body)
+
+    def _blueprint_call(
+        self,
+        model: dict[str, Any],
+        goal: str,
+        outline: dict[str, Any],
+        answers: list[dict[str, Any]],
+        candidates: dict[str, dict[str, Any]],
+        composition_offers: list[dict[str, Any]],
+        cancel_check: Callable[[], bool] | None,
+        *,
+        selection_locked: bool = False,
+        prompt_version: str | None = None,
+        capability_gap_lock: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        prompt_version = prompt_version or PLANNING_PROMPT_VERSION
+        composition_offers = sorted(
+            composition_offers,
+            key=lambda offer: offer["offer_ref"],
+        )
+        requirements = outline["requirements"]
+        section_example = {
+            section_id: {
+                "applicability": "not_applicable",
+                "summary": "This section is not required for the product.",
+            }
+            for section_id in SECTION_IDS
+        }
+        selected_offer = composition_offers[0] if composition_offers else None
+        current_locked_offer_protocol = (
+            selection_locked
+            and selected_offer is not None
+            and prompt_version == PLANNING_PROMPT_VERSION
+        )
+        assignments: dict[str, dict[str, Any]] = {}
+        gaps: list[dict[str, Any]] = []
+        requirement_refs = [item["ref"] for item in requirements]
+        if selected_offer is not None:
+            section_example["frontend"]["applicability"] = "applicable"
+            section_example["frontend"]["summary"] = "User-visible product capability."
+            for member in selected_offer["members"]:
+                assignments[member["candidate_ref"]] = {
+                    "section_id": "frontend",
+                    "requirement_refs": requirement_refs,
+                    "title": member["display_name"],
+                    "summary": "Use this member of the selected formal composition.",
+                    "acceptance_intent": "Verify its user-visible behavior.",
+                }
+        else:
+            section_example["frontend"]["applicability"] = "applicable"
+            section_example["frontend"]["summary"] = "A required capability is missing."
+            gaps.append(
+                {
+                    "section_id": "frontend",
+                    "requirement_refs": requirement_refs,
+                    "title": "Missing user-visible capability",
+                    "reason": "The current formal catalog has no compatible capability.",
+                }
+            )
+        request: dict[str, Any] = {
+            "goal": goal,
+            "requirements": requirements,
+            "prior_answers": answers,
+            "composition_offers": composition_offers,
+            "rules": {
+                "selection": (
+                    (
+                        "Describe every member of the selected complete composition; "
+                        "never add, remove, replace, or mix members."
+                    )
+                    if selection_locked and selected_offer is not None
+                    else (
+                        "Describe the one deterministic locked computation gap; "
+                        "never add, split, remove, replace, or reinterpret it."
+                    )
+                    if capability_gap_lock is not None
+                    else (
+                        "Create only real gaps; no composition offer was selected."
+                    )
+                    if selection_locked
+                    else (
+                        "Select exactly one complete composition offer or the empty offer. "
+                        "Describe every member required by that offer; never add, remove, "
+                        "or mix members."
+                    )
+                )
+                + " Do not emit identifiers, contracts, dependencies, or waves.",
+                "sections": (
+                    "Use all four fixed sections. A section with an assignment or gap "
+                    "must be applicable; a not_applicable section has neither."
+                ),
+                "gaps": (
+                    "Create a gap only for a required user-visible capability absent "
+                    "from the catalog. Absence constraints such as offline, local-only, "
+                    "no network, no login, no database, or no deployment are not gaps."
+                ),
+                "coverage": (
+                    "Cover every requirement with an assignment or a real gap. Section "
+                    "summaries do not count as requirement coverage. When the locked "
+                    "offer covers the requested user-visible behavior, attach each "
+                    "product-wide absence constraint requirement_ref to at least one "
+                    "semantically relevant assignment and state the constraint in its "
+                    "acceptance_intent."
+                    if current_locked_offer_protocol
+                    else "Cover every requirement with an assignment or a real gap."
+                ),
+            },
+        }
+        if selection_locked:
+            request["selection_locked"] = True
+        if capability_gap_lock is not None:
+            request["capability_gap_lock"] = copy.deepcopy(
+                capability_gap_lock
+            )
+        else:
+            if not selection_locked:
+                request["schema_example"] = {
+                    "schema_version": "product_plan_blueprint.v2",
+                    "sections": section_example,
+                    "selection": {
+                        "offer_ref": (
+                            selected_offer["offer_ref"]
+                            if selected_offer is not None
+                            else ""
+                        ),
+                        "assignments": assignments,
+                    },
+                    "gaps": gaps,
+                }
+        result, evidence = self._generate_json(
+            model,
+            "product_blueprint",
+            request,
+            cancel_check,
+            prompt_version=prompt_version,
+        )
+        if capability_gap_lock is not None:
+            result = self._expand_locked_gap_blueprint(
+                result,
+                requirements,
+            )
+        blueprint = self._validate_blueprint(
+            result,
+            requirements,
+            set(candidates),
+            {
+                offer["offer_ref"]: {
+                    member["candidate_ref"] for member in offer["members"]
+                }
+                for offer in composition_offers
+            },
+        )
+        evidence["structured_response_digest"] = _digest(blueprint)
+        return blueprint, evidence
+
+    @staticmethod
+    def _expand_locked_gap_blueprint(
+        value: Any,
+        requirements: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        row = _exact_dict(
+            value,
+            {"schema_version", "sections", "selection", "gaps"},
+            "blueprint.shape_invalid",
+        )
+        selection = _exact_dict(
+            row["selection"],
+            {"offer_ref", "assignments"},
+            "blueprint.selection_invalid",
+        )
+        if (
+            row["schema_version"] != "product_plan_blueprint.v2"
+            or selection != {"offer_ref": "", "assignments": {}}
+            or type(row["gaps"]) is not list
+            or len(row["gaps"]) != 1
+        ):
+            raise ProductPlanningError(
+                "product_plan_response_invalid",
+                "blueprint.locked_gap_invalid",
+            )
+        gap = _exact_dict(
+            row["gaps"][0],
+            {"title", "reason"},
+            "blueprint.locked_gap_invalid",
+        )
+        return {
+            "schema_version": "product_plan_blueprint.v2",
+            "sections": row["sections"],
+            "selection": selection,
+            "gaps": [
+                {
+                    "section_id": "backend",
+                    "requirement_refs": [
+                        requirement["ref"] for requirement in requirements
+                    ],
+                    "title": gap["title"],
+                    "reason": gap["reason"],
+                }
+            ],
+        }
+
+    @staticmethod
+    def _compile_blueprint_dependencies(
+        sections: list[dict[str, Any]],
+        candidate_map: dict[str, dict[str, Any]],
+        selected_refs: list[str],
+    ) -> dict[str, int]:
+        if not selected_refs:
+            return {}
+        selected = [candidate_map[candidate_ref] for candidate_ref in selected_refs]
+        pairs = [(item["capsule_id"], item["version_id"]) for item in selected]
+        if len(set(pairs)) != len(pairs):
+            raise ProductPlanningError("product_plan_binding_ambiguous")
+        capability_keys = {item["capability_key"] for item in selected}
+        if len(capability_keys) != 1:
+            raise ProductPlanningError("product_plan_capability_group_invalid")
+        capability_key = next(iter(capability_keys))
+        group = [
+            item
+            for item in candidate_map.values()
+            if item["capability_key"] == capability_key
+        ]
+        if {
+            (item["capsule_id"], item["version_id"]) for item in group
+        } != set(pairs):
+            raise ProductPlanningError("product_plan_role_coverage_invalid")
+        occurrences: dict[tuple[str, str], dict[str, Any]] = {}
+        for section in sections:
+            for work_item in section["work_items"]:
+                binding = work_item["capsule_bindings"][0]
+                pair = (binding["capsule_id"], binding["version_id"])
+                if pair in occurrences:
+                    raise ProductPlanningError("product_plan_binding_ambiguous")
+                occurrences[pair] = work_item
+        if set(occurrences) != set(pairs):
+            raise ProductPlanningError("product_plan_role_coverage_invalid")
+        chain = ProductPlanner._composition_chain(selected)
+
+        delivery_waves: dict[str, int] = {}
+        previous: str | None = None
+        for wave, capsule in enumerate(chain, start=1):
+            work_item = occurrences[(capsule["capsule_id"], capsule["version_id"])]
+            work_item["depends_on"] = [] if previous is None else [previous]
+            delivery_waves[work_item["work_item_id"]] = wave
+            previous = work_item["work_item_id"]
+        return delivery_waves
+
+    def _build_blueprint_plan(
+        self,
+        workspace: dict[str, Any],
+        outline: dict[str, Any],
+        catalog: dict[str, Any],
+        cancel_check: Callable[[], bool] | None,
+        phase_callback: Callable[[str], None] | None,
+    ) -> tuple[dict[str, Any] | None, list[dict[str, Any]]]:
+        planning_answers = self._planning_answers(workspace)
+        replan_handoff = self._capability_replan_for_successor(workspace)
+        if replan_handoff is not None:
+            catalog = self._validate_capability_replan_current(
+                replan_handoff,
+                catalog,
+            )["catalog"]
+        plan_id = "plan_" + _digest(
+            {
+                "workspace_id": workspace["workspace_id"],
+                "goal_digest": workspace["goal_digest"],
+                "outline_response_digest": workspace["outline_response_digest"],
+            }
+        )[:32]
+        requirement_map: dict[str, str] = {}
+        requirements: list[dict[str, Any]] = []
+        for index, raw in enumerate(outline["requirements"], start=1):
+            requirement_id = "requirement_" + _digest(
+                {
+                    "plan_id": plan_id,
+                    "index": index,
+                    "statement": raw["statement"],
+                }
+            )[:20]
+            requirement_map[raw["ref"]] = requirement_id
+            requirements.append(
+                {
+                    "requirement_id": requirement_id,
+                    "statement": raw["statement"],
+                    "source": (
+                        "planning_answer"
+                        if raw["source"] == "planning_answer"
+                        else "product_goal"
+                    ),
+                    "source_digest": (
+                        _digest(planning_answers)
+                        if raw["source"] == "planning_answer"
+                        else workspace["goal_digest"]
+                    ),
+                }
+            )
+
+        candidate_map: dict[str, dict[str, Any]] = {}
+        for index, capsule in enumerate(catalog["capsules"]):
+            candidate_ref = "candidate_" + _digest(
+                {
+                    "workspace_id": workspace["workspace_id"],
+                    "warehouse_revision": catalog["warehouse_revision"],
+                    "index": index,
+                    "capsule_id": capsule["capsule_id"],
+                    "version_id": capsule["version_id"],
+                    "canonical_hash": capsule["canonical_hash"],
+                }
+            )[:24]
+            candidate_map[candidate_ref] = capsule
+
+        blueprint = workspace.get("blueprint")
+        direct_blueprint_workspace = (
+            workspace["schema_version"]
+            == DIRECT_BLUEPRINT_WORKSPACE_SCHEMA_VERSION
+        )
+        legacy_blueprint = (
+            direct_blueprint_workspace
+            and
+            type(blueprint) is dict
+            and blueprint.get("schema_version") == "product_plan_blueprint.v1"
+        )
+        composition_offers = self._composition_offers(candidate_map)
+        blueprint_offers = composition_offers
+        selected_offer: dict[str, Any] | None = None
+        capability_gap_lock: dict[str, Any] | None = None
+        if not direct_blueprint_workspace:
+            selection = workspace["composition_selection"]
+            selection_input_digest = self._composition_selection_input_digest(
+                workspace,
+                outline,
+                composition_offers,
+            )
+            if selection is None:
+                self._enter_phase(
+                    workspace,
+                    "composition_selection",
+                    phase_callback,
+                )
+                selection, evidence = self._composition_selection_call(
+                    workspace["model"],
+                    workspace["goal"],
+                    outline,
+                    planning_answers,
+                    composition_offers,
+                    cancel_check,
+                    selection_locked=replan_handoff is not None,
+                )
+                workspace["model_calls"].append(evidence)
+                workspace["composition_selection"] = copy.deepcopy(selection)
+                workspace[
+                    "composition_selection_input_digest"
+                ] = selection_input_digest
+                workspace[
+                    "composition_selection_response_digest"
+                ] = evidence["structured_response_digest"]
+                workspace["updated_at"] = _now()
+                with self._lock:
+                    self._save_workspace(workspace)
+            elif (
+                workspace["composition_selection_input_digest"]
+                != selection_input_digest
+                or self._validate_composition_selection(selection) != selection
+            ):
+                raise ProductPlanningError(
+                    "product_plan_resume_input_changed"
+                )
+            selected_offer = self._resolve_composition_selection(
+                selection,
+                composition_offers,
+            )
+            if replan_handoff is not None and selected_offer is None:
+                raise ProductPlanningError(
+                    "product_plan_composition_unknown"
+                )
+            blueprint_offers = (
+                [] if selected_offer is None else [selected_offer]
+            )
+            if (
+                selected_offer is None
+                and workspace["schema_version"] in GAP_WORKSPACE_SCHEMA_VERSIONS
+            ):
+                gap_candidates = self._capability_gap_candidates(catalog)
+                if len(gap_candidates) == 1:
+                    capability_gap_lock = (
+                        self._capability_gap_blueprint_lock(
+                            gap_candidates[0],
+                            candidate_map,
+                        )
+                    )
+                elif (
+                    workspace["schema_version"]
+                    in TARGET_SELECTION_WORKSPACE_SCHEMA_VERSIONS
+                    and 2 <= len(gap_candidates) <= 3
+                ):
+                    target_selection = (
+                        self._validate_capability_gap_target_selection(
+                            workspace[
+                                "capability_gap_target_selection"
+                            ]
+                        )
+                    )
+                    if target_selection is None:
+                        question_set = (
+                            self._capability_gap_target_question_set(
+                                gap_candidates,
+                                catalog,
+                            )
+                        )
+                        if (
+                            question_set["digest"]
+                            in workspace["question_history"]
+                        ):
+                            raise ProductPlanningError(
+                                "product_plan_question_repeated"
+                            )
+                        workspace["question_history"].append(
+                            question_set["digest"]
+                        )
+                        workspace["current_question_set"] = question_set
+                        workspace["status"] = "needs_clarification"
+                        workspace["phase"] = None
+                        workspace["updated_at"] = _now()
+                        with self._lock:
+                            self._save_workspace(workspace)
+                        return None, []
+                    capability_gap_lock = (
+                        self._capability_gap_blueprint_lock(
+                            self._selected_capability_gap_candidate(
+                                target_selection,
+                                catalog,
+                            ),
+                            candidate_map,
+                        )
+                    )
+                elif (
+                    workspace["schema_version"]
+                    in TARGET_SELECTION_WORKSPACE_SCHEMA_VERSIONS
+                    and len(gap_candidates) > 3
+                ):
+                    raise ProductPlanningError(
+                        "product_plan_capability_gap_target_ambiguous"
+                    )
+        offer_members = {
+            offer["offer_ref"]: {
+                member["candidate_ref"] for member in offer["members"]
+            }
+            for offer in blueprint_offers
+        }
+        expected_input_digest = (
+            self._blueprint_input_digest(
+                workspace,
+                outline,
+                candidate_map,
+                None if legacy_blueprint else composition_offers,
+            )
+            if direct_blueprint_workspace
+            else self._selected_blueprint_input_digest(
+                workspace,
+                outline,
+                selected_offer,
+                capability_gap_lock,
+            )
+        )
+        model_calls: list[dict[str, Any]] = []
+        if blueprint is None:
+            self._enter_phase(workspace, "product_blueprint", phase_callback)
+            blueprint, evidence = self._blueprint_call(
+                workspace["model"],
+                workspace["goal"],
+                outline,
+                planning_answers,
+                candidate_map,
+                blueprint_offers,
+                cancel_check,
+                selection_locked=not direct_blueprint_workspace,
+                prompt_version=self._workspace_prompt_version(workspace),
+                capability_gap_lock=capability_gap_lock,
+            )
+            workspace["model_calls"].append(evidence)
+            workspace["blueprint"] = copy.deepcopy(blueprint)
+            workspace["blueprint_input_digest"] = expected_input_digest
+            workspace["blueprint_response_digest"] = evidence[
+                "structured_response_digest"
+            ]
+            workspace["updated_at"] = _now()
+            with self._lock:
+                self._save_workspace(workspace)
+        elif (
+            workspace["blueprint_input_digest"] != expected_input_digest
+            or self._validate_blueprint(
+                blueprint,
+                outline["requirements"],
+                set(candidate_map),
+                None if legacy_blueprint else offer_members,
+            )
+            != blueprint
+        ):
+            raise ProductPlanningError("product_plan_resume_input_changed")
+
+        self._cancelled(cancel_check)
+        self._enter_phase(workspace, "validation", phase_callback)
+        sections_by_id = {
+            section_id: {
+                "section_id": section_id,
+                "applicability": blueprint["sections"][section_id][
+                    "applicability"
+                ],
+                "summary": blueprint["sections"][section_id]["summary"],
+                "work_items": [],
+                "gaps": [],
+            }
+            for section_id in SECTION_IDS
+        }
+        selected_pairs: set[tuple[str, str]] = set()
+        assignments = (
+            blueprint["assignments"]
+            if legacy_blueprint
+            else blueprint["selection"]["assignments"]
+        )
+        selected_refs = sorted(assignments)
+        for candidate_ref in selected_refs:
+            assignment = assignments[candidate_ref]
+            capsule = candidate_map[candidate_ref]
+            pair = (capsule["capsule_id"], capsule["version_id"])
+            if pair in selected_pairs:
+                raise ProductPlanningError("product_plan_binding_ambiguous")
+            selected_pairs.add(pair)
+            requirement_ids = [
+                requirement_map[ref] for ref in assignment["requirement_refs"]
+            ]
+            work_item_id = "work_item_" + _digest(
+                {
+                    "plan_id": plan_id,
+                    "candidate_ref": candidate_ref,
+                    "section_id": assignment["section_id"],
+                    "requirement_ids": requirement_ids,
+                }
+            )[:20]
+            sections_by_id[assignment["section_id"]]["work_items"].append(
+                {
+                    "work_item_id": work_item_id,
+                    "title": assignment["title"],
+                    "description": assignment["summary"],
+                    "requirement_ids": requirement_ids,
+                    "depends_on": [],
+                    "acceptance_intent": assignment["acceptance_intent"],
+                    "capsule_bindings": [
+                        {
+                            "capsule_id": capsule["capsule_id"],
+                            "version_id": capsule["version_id"],
+                            "display_name": capsule["display_name"],
+                            "capability_kind": capsule["capability_kind"],
+                            "canonical_hash": capsule["canonical_hash"],
+                            "identity_status": "formal_exact_version",
+                            "selection_status": "model_suggested",
+                            "review_status": "pending",
+                            "reason": assignment["summary"],
+                        }
+                    ],
+                    "gap_reason": None,
+                }
+            )
+        for index, gap in enumerate(blueprint["gaps"]):
+            requirement_ids = [
+                requirement_map[ref] for ref in gap["requirement_refs"]
+            ]
+            sections_by_id[gap["section_id"]]["gaps"].append(
+                {
+                    "gap_id": "gap_"
+                    + _digest(
+                        {
+                            "plan_id": plan_id,
+                            "index": index,
+                            "section_id": gap["section_id"],
+                            "title": gap["title"],
+                            "reason": gap["reason"],
+                            "requirement_ids": requirement_ids,
+                        }
+                    )[:20],
+                    "title": gap["title"],
+                    "reason": gap["reason"],
+                    "requirement_ids": requirement_ids,
+                }
+            )
+        sections = [sections_by_id[section_id] for section_id in SECTION_IDS]
+        delivery_waves = self._compile_blueprint_dependencies(
+            sections,
+            candidate_map,
+            selected_refs,
+        )
+        if legacy_blueprint:
+            planning_rules_version = LEGACY_BLUEPRINT_PLANNING_RULES_VERSION
+            prompt_version = LEGACY_BLUEPRINT_PROMPT_VERSION
+        elif direct_blueprint_workspace:
+            planning_rules_version = DIRECT_BLUEPRINT_PLANNING_RULES_VERSION
+            prompt_version = DIRECT_BLUEPRINT_PROMPT_VERSION
+        else:
+            planning_rules_version = self._workspace_rules_version(workspace)
+            prompt_version = self._workspace_prompt_version(workspace)
+        plan: dict[str, Any] = {
+            "schema_version": PLAN_SCHEMA_VERSION,
+            "plan_id": plan_id,
+            "plan_version": 1,
+            "parent_plan_digest": None,
+            "product_name": outline["product_name"],
+            "goal": workspace["goal"],
+            "goal_digest": workspace["goal_digest"],
+            "language": outline["language"],
+            "requirements": requirements,
+            "planning_answers": copy.deepcopy(planning_answers),
+            "sections": sections,
+            "model": copy.deepcopy(workspace["model"]),
+            "planning_rules_version": planning_rules_version,
+            "prompt_version": prompt_version,
+            "structured_response_digests": (
+                [
+                    workspace["outline_response_digest"],
+                    workspace["blueprint_response_digest"],
+                ]
+                if direct_blueprint_workspace
+                else [
+                    workspace["outline_response_digest"],
+                    workspace["composition_selection_response_digest"],
+                    workspace["blueprint_response_digest"],
+                ]
+            ),
+            "warehouse_revision": catalog["warehouse_revision"],
+            "candidate_generated": False,
+            "product_generated": False,
+        }
+        plan["canonical_digest"] = self._plan_digest(plan)
+        self._validate_plan(plan)
+        if self._stale_bindings(plan, catalog):
+            raise ProductPlanningError("product_plan_catalog_validation_failed")
+        workspace["delivery_waves"] = delivery_waves
+        return plan, model_calls
+
     def _section_call(
         self,
         model: dict[str, Any],
         section_id: str,
         requirements: list[dict[str, str]],
         answers: list[dict[str, Any]],
-        candidates: dict[str, dict[str, str]],
+        candidates: dict[str, dict[str, Any]],
         cancel_check: Callable[[], bool] | None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         safe_candidates = [
@@ -4255,7 +11535,15 @@ class ProductPlanner:
                     "4 for deployment, operations and final validation. Use only a supplied "
                     "candidate_ref when suggesting a capsule. Otherwise use candidate_ref='' "
                     "and provide a concrete gap_reason. A supplied candidate_ref requires "
-                    "gap_reason=''. Text limits are: section summary 1-500 characters; "
+                    "gap_reason=''. Product-wide absence constraints such as local-only or "
+                    "offline operation, no network, login, database, persistence, deployment, "
+                    "or backend service are acceptance conditions, not standalone capabilities. "
+                    "When supplied candidates cover the requested user-visible behavior, attach "
+                    "those constraint requirement_refs to a relevant candidate-backed work item "
+                    "and describe them in acceptance_intent; do not create a gap solely for such "
+                    "a constraint. Create a gap only when no supplied candidate covers a required "
+                    "user-visible behavior, data capability, or integration. Text limits are: "
+                    "section summary 1-500 characters; "
                     "work-item title 1-180, summary 1-800, acceptance_intent 1-500, and "
                     "gap_reason 0-500 characters. These text fields must not have leading "
                     "or trailing whitespace. Control characters are forbidden except tab "
@@ -4477,7 +11765,8 @@ class ProductPlanner:
         if (
             type(plan) is not dict
             or set(plan) != required
-            or plan["schema_version"] != PLAN_SCHEMA_VERSION
+            or plan["schema_version"]
+            not in {LEGACY_PLAN_SCHEMA_VERSION, PLAN_SCHEMA_VERSION}
             or not re.fullmatch(r"plan_[0-9a-f]{32}", str(plan["plan_id"]))
             or type(plan["plan_version"]) is not int
             or plan["plan_version"] < 1
@@ -4495,8 +11784,55 @@ class ProductPlanner:
             or type(plan["sections"]) is not list
             or [section.get("section_id") for section in plan["sections"]]
             != list(SECTION_IDS)
-            or plan["planning_rules_version"] != PLANNING_RULES_VERSION
-            or plan["prompt_version"] != PLANNING_PROMPT_VERSION
+            or (
+                plan["schema_version"] == LEGACY_PLAN_SCHEMA_VERSION
+                and (
+                    plan["planning_rules_version"]
+                    not in {
+                        LEGACY_PLANNING_RULES_VERSION,
+                        SECTION_PLANNING_RULES_VERSION,
+                    }
+                    or plan["prompt_version"]
+                    not in {
+                        HISTORICAL_PLANNING_PROMPT_VERSION,
+                        LEGACY_PLANNING_PROMPT_VERSION,
+                    }
+                )
+            )
+            or (
+                plan["schema_version"] == PLAN_SCHEMA_VERSION
+                and (
+                    plan["planning_rules_version"],
+                    plan["prompt_version"],
+                )
+                not in {
+                    (
+                        LEGACY_BLUEPRINT_PLANNING_RULES_VERSION,
+                        LEGACY_BLUEPRINT_PROMPT_VERSION,
+                    ),
+                    (
+                        DIRECT_BLUEPRINT_PLANNING_RULES_VERSION,
+                        DIRECT_BLUEPRINT_PROMPT_VERSION,
+                    ),
+                    (
+                        PREVIOUS_LOCKED_BLUEPRINT_PLANNING_RULES_VERSION,
+                        LEGACY_LOCKED_BLUEPRINT_PROMPT_VERSION,
+                    ),
+                    (
+                        PREVIOUS_LOCKED_BLUEPRINT_PLANNING_RULES_VERSION,
+                        PREVIOUS_LOCKED_BLUEPRINT_PROMPT_VERSION,
+                    ),
+                    (
+                        PREVIOUS_GAP_PLANNING_RULES_VERSION,
+                        PREVIOUS_GAP_PLANNING_PROMPT_VERSION,
+                    ),
+                    (
+                        PREVIOUS_TARGET_SELECTION_PLANNING_RULES_VERSION,
+                        PREVIOUS_GAP_PLANNING_PROMPT_VERSION,
+                    ),
+                    (PLANNING_RULES_VERSION, PLANNING_PROMPT_VERSION),
+                }
+            )
             or type(plan["structured_response_digests"]) is not list
             or any(
                 _DIGEST.fullmatch(str(item)) is None
@@ -4553,17 +11889,49 @@ class ProductPlanner:
                 raise ProductPlanningError("product_plan_invalid")
             requirement_ids.add(requirement_id)
         work_items: dict[str, dict[str, Any]] = {}
+        binding_pairs: set[tuple[str, str]] = set()
         covered: set[str] = set()
         for section in plan["sections"]:
             row = _exact_dict(
-                section, {"section_id", "summary", "work_items", "gaps"}
+                section,
+                (
+                    {"section_id", "summary", "work_items", "gaps"}
+                    if plan["schema_version"] == LEGACY_PLAN_SCHEMA_VERSION
+                    else {
+                        "section_id",
+                        "applicability",
+                        "summary",
+                        "work_items",
+                        "gaps",
+                    }
+                ),
             )
             if (
                 row["section_id"] not in SECTION_IDS
                 or type(row["summary"]) is not str
                 or type(row["work_items"]) is not list
                 or type(row["gaps"]) is not list
-                or not row["work_items"] and not row["gaps"]
+                or (
+                    plan["schema_version"] == LEGACY_PLAN_SCHEMA_VERSION
+                    and not row["work_items"]
+                    and not row["gaps"]
+                )
+                or (
+                    plan["schema_version"] == PLAN_SCHEMA_VERSION
+                    and (
+                        row["applicability"]
+                        not in {"applicable", "not_applicable"}
+                        or (
+                            row["applicability"] == "applicable"
+                            and not row["work_items"]
+                            and not row["gaps"]
+                        )
+                        or (
+                            row["applicability"] == "not_applicable"
+                            and (row["work_items"] or row["gaps"])
+                        )
+                    )
+                )
             ):
                 raise ProductPlanningError("product_plan_invalid")
             for item in row["work_items"]:
@@ -4634,6 +12002,13 @@ class ProductPlanner:
                         )
                     ):
                         raise ProductPlanningError("product_plan_invalid")
+                    pair = (exact["capsule_id"], exact["version_id"])
+                    if (
+                        plan["schema_version"] == PLAN_SCHEMA_VERSION
+                        and pair in binding_pairs
+                    ):
+                        raise ProductPlanningError("product_plan_binding_ambiguous")
+                    binding_pairs.add(pair)
                 work_items[work_id] = work
                 covered.update(work["requirement_ids"])
             for gap in row["gaps"]:
@@ -5870,7 +13245,18 @@ class ProductPlanner:
                     target[1]["capsule_bindings"] = []
                     target[1]["gap_reason"] = "revision_requires_capsule_rematch"
                 delivery_waves[work_id] = delivery_wave
-        self._compile_wave_dependencies(proposed["sections"], delivery_waves)
+        bound_computations = {
+            (binding["capsule_id"], binding["version_id"])
+            for section in plan["sections"]
+            for item in section["work_items"]
+            for binding in item["capsule_bindings"]
+            if binding["capability_kind"] == "computation"
+        }
+        if (
+            plan["planning_rules_version"] == LEGACY_PLANNING_RULES_VERSION
+            or len(bound_computations) != 2
+        ):
+            self._compile_wave_dependencies(proposed["sections"], delivery_waves)
         for section in proposed["sections"]:
             section["gaps"] = [
                 {
@@ -6020,26 +13406,26 @@ class ProductPlanner:
         proposed_delivery_waves = row["proposed_delivery_waves"]
         if type(proposed_delivery_waves) is not dict:
             raise ProductPlanningError("product_plan_diff_invalid")
-        compiled_sections = copy.deepcopy(proposed["sections"])
         try:
-            self._compile_wave_dependencies(
-                compiled_sections,
+            self._validate_dependency_compilation(
+                proposed,
                 proposed_delivery_waves,
             )
         except ProductPlanningError as exc:
             raise ProductPlanningError("product_plan_diff_invalid") from exc
-        if compiled_sections != proposed["sections"]:
-            raise ProductPlanningError("product_plan_diff_invalid")
         if proposed["parent_plan_digest"] != current["canonical_digest"]:
             raise ProductPlanningError("product_plan_diff_invalid")
         if is_targeted:
             base_delivery_waves = row["base_delivery_waves"]
             if type(base_delivery_waves) is not dict:
                 raise ProductPlanningError("product_plan_diff_invalid")
-            current_sections = copy.deepcopy(current["sections"])
-            self._compile_wave_dependencies(current_sections, base_delivery_waves)
-            if current_sections != current["sections"]:
-                raise ProductPlanningError("product_plan_diff_invalid")
+            try:
+                self._validate_dependency_compilation(
+                    current,
+                    base_delivery_waves,
+                )
+            except ProductPlanningError as exc:
+                raise ProductPlanningError("product_plan_diff_invalid") from exc
             edit_scope = _exact_dict(
                 row["edit_scope"],
                 {

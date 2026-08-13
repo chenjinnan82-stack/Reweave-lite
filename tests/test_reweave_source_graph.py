@@ -228,6 +228,95 @@ def _assert_integer_proof(
     return proof
 
 
+def test_finite_string_enum_return_uses_v2_proof_and_capture() -> None:
+    source = """export function classifyPriority(urgent, important) {
+  if (urgent && important) return "do_now";
+  if (!urgent && important) return "schedule";
+  if (urgent && !important) return "delegate";
+  return "drop";
+}
+"""
+    expected = ["delegate", "do_now", "drop", "schedule"]
+    proved = _prove(
+        {"main.js": source},
+        "main.js",
+        "classifyPriority",
+        [_boolean(False, True), _boolean(False, True)],
+    )
+    assert proved["status"] == "ok", proved
+    assert proved["proof"]["schema"] == "source_graph_proof.v2"
+    assert proved["proof"]["result_domain"] == {
+        "kind": "enum",
+        "values": expected,
+    }
+    captured = _capture(
+        {"main.js": source},
+        "main.js",
+        "classifyPriority",
+        [_boolean(False, True), _boolean(False, True)],
+    )
+    assert captured["status"] == "ok", captured
+    assert captured["proof"] == proved["proof"]
+
+
+def test_integer_proof_keeps_v1_external_shape() -> None:
+    result = _prove(
+        {"main.js": "export function double(value) { return value * 2; }\n"},
+        "main.js",
+        "double",
+        [_integer(0, 10)],
+    )
+    proof = _assert_integer_proof(result, [[0, 20]])
+    assert "schema" not in proof
+    assert _canonical_sha256(result) == (
+        "a7e88291d7bded88542edf8d57210c433a7326b44ea05cba3e98b8d119d90b42"
+    )
+
+
+def test_mixed_scalar_return_does_not_become_enum_proof() -> None:
+    result = _prove(
+        {
+            "main.js": (
+                'export function classify(enabled) { return enabled ? "yes" : 0; }\n'
+            )
+        },
+        "main.js",
+        "classify",
+        [_boolean(False, True)],
+    )
+    _assert_rejected(result, "interval_unproven")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        'export function f(enabled) { return "state_" + enabled; }\n',
+        'export function f(enabled) { return {state: enabled ? "on" : "off"}; }\n',
+        'export function f(enabled) { if (enabled) return "on"; }\n',
+    ],
+)
+def test_non_finite_or_uncovered_string_returns_fail_closed(source: str) -> None:
+    result = _prove(
+        {"main.js": source},
+        "main.js",
+        "f",
+        [_boolean(False, True)],
+    )
+    _assert_rejected(result, "interval_unproven", "unsupported_control_flow")
+
+
+def test_more_than_32_reachable_string_returns_fail_closed() -> None:
+    branches = "\n".join(
+        f'  if (value === {index}) return "v{index}";'
+        for index in range(32)
+    )
+    source = f'export function f(value) {{\n{branches}\n  return "v32";\n}}\n'
+    result = _prove(
+        {"main.js": source}, "main.js", "f", [_integer(0, 32)]
+    )
+    _assert_rejected(result, "interval_unproven")
+
+
 def test_graph_uses_lexical_bindings_and_is_deterministic() -> None:
     modules = {
         "src/calc.js": """const rate = 2;
@@ -878,15 +967,19 @@ def test_unreachable_transitive_helper_is_still_audited(helper_body: str) -> Non
     _assert_rejected(result, "unsupported_control_flow", "closure_unproven")
 
 
-def test_enum_input_cannot_be_the_final_computation_output() -> None:
+def test_finite_enum_input_can_be_the_final_computation_output() -> None:
     result = _prove(
         {"main.js": "export function f(kind) { return kind; }"},
         "main.js",
         "f",
-        [_enum("public", "customer@example.com")],
+        [_enum("public", "private")],
     )
-    _assert_rejected(result, "interval_unproven")
-    assert "customer@example.com" not in json.dumps(result)
+    assert result["status"] == "ok", result
+    assert result["proof"]["schema"] == "source_graph_proof.v2"
+    assert result["proof"]["result_domain"] == {
+        "kind": "enum",
+        "values": ["private", "public"],
+    }
 
 
 def test_cross_module_top_level_side_effect_is_rejected() -> None:

@@ -40,6 +40,12 @@ from pimos_lite.reweave_source_registry import state_dir
 
 EXTRACTION_CONTRACT_VERSION = "extraction_contract.v2"
 COMPUTATION_ADAPTER_CONTRACT_VERSION = "computation_adapter.v1"
+COMPUTATION_ADAPTER_V2 = "computation_adapter.v2"
+COMPUTATION_ADAPTER_V3 = "computation_adapter.v3"
+COMPUTATION_ADAPTER_V4 = "computation_adapter.v4"
+EPHEMERAL_COMPUTATION_ADAPTER_VERSIONS = frozenset(
+    {COMPUTATION_ADAPTER_V2, COMPUTATION_ADAPTER_V3, COMPUTATION_ADAPTER_V4}
+)
 COMPUTATION_ADAPTER_ENTRY = "__reweave_adapter__/compute.js"
 REDACTION_RULES_VERSION = "redaction_rules.v1"
 SECURITY_RULES_VERSION = "not_run.stage2"
@@ -1554,14 +1560,14 @@ class ReweaveCapsuleIntake:
                 candidate = json.loads(row["sanitized_candidate_json"])
             except (json.JSONDecodeError, TypeError) as exc:
                 raise IntakeError("review_decision_not_allowed") from exc
-            capture_v2 = (
+            ephemeral_capture = (
                 type(candidate) is dict
                 and candidate.get("candidate_origin")
                 == "deterministic_computation_adapter"
                 and candidate.get("adapter_contract_version")
-                == "computation_adapter.v2"
+                in EPHEMERAL_COMPUTATION_ADAPTER_VERSIONS
             )
-            if capture_v2:
+            if ephemeral_capture:
                 with self._capture_decision_lock:
                     authorization = self._capture_decision_authorizations.get(review_id)
                 if (
@@ -1696,7 +1702,7 @@ class ReweaveCapsuleIntake:
             updated = connection.execute(
                 "SELECT * FROM review_items WHERE review_id = ?", (review_id,)
             ).fetchone()
-        if capture_v2:
+        if ephemeral_capture:
             with self._capture_decision_lock:
                 current = self._capture_decision_authorizations.get(review_id)
                 if current is not None and secrets.compare_digest(
@@ -2359,11 +2365,11 @@ class ReweaveCapsuleIntake:
         codes = set(raw_codes)
         failure = candidate.get("stage3_failure")
         failure_code = failure.get("error_code") if type(failure) is dict else None
-        capture_v2 = (
+        ephemeral_capture = (
             candidate.get("candidate_origin")
             == "deterministic_computation_adapter"
             and candidate.get("adapter_contract_version")
-            == "computation_adapter.v2"
+            in EPHEMERAL_COMPUTATION_ADAPTER_VERSIONS
         )
         allowed: set[str] = set()
         if (
@@ -2372,7 +2378,7 @@ class ReweaveCapsuleIntake:
         ):
             allowed.update(
                 {"confirm_fictional_fixture", "confirm_real_record_reject"}
-                if capture_v2
+                if ephemeral_capture
                 else _SENSITIVITY_DECISIONS
             )
         if (
@@ -2380,7 +2386,7 @@ class ReweaveCapsuleIntake:
             or failure_code == "brand_confirmation_required"
         ):
             allowed.update(
-                {"retain_brand_limited"} if capture_v2 else _BRAND_DECISIONS
+                {"retain_brand_limited"} if ephemeral_capture else _BRAND_DECISIONS
             )
         if failure_code == "asset_content_confirmation_required_stage3":
             allowed.update(_ASSET_DECISIONS)

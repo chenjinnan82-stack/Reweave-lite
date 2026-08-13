@@ -301,6 +301,14 @@ class ReweaveBridge:
                 return self._phase4_call("start_product_plan", payload_json)
 
             @Slot(str, result=str)
+            def start_product_capability_replan(
+                self, payload_json: str = ""
+            ) -> str:
+                return self._phase4_call(
+                    "start_product_capability_replan", payload_json
+                )
+
+            @Slot(str, result=str)
             def submit_product_plan_answers(self, payload_json: str = "") -> str:
                 return self._phase4_call(
                     "submit_product_plan_answers", payload_json
@@ -333,6 +341,33 @@ class ReweaveBridge:
             @Slot(str, result=str)
             def confirm_product_plan(self, payload_json: str = "") -> str:
                 return self._phase4_call("confirm_product_plan", payload_json)
+
+            @Slot(str, result=str)
+            def record_product_capability_gap_decision(
+                self, payload_json: str = ""
+            ) -> str:
+                return self._phase4_call(
+                    "record_product_capability_gap_decision",
+                    payload_json,
+                )
+
+            @Slot(str, result=str)
+            def prepare_product_capability_source_proposal(
+                self, payload_json: str = ""
+            ) -> str:
+                return self._phase4_call(
+                    "prepare_product_capability_source_proposal",
+                    payload_json,
+                )
+
+            @Slot(str, result=str)
+            def start_product_capability_source_proposal(
+                self, payload_json: str = ""
+            ) -> str:
+                return self._phase4_call(
+                    "start_product_capability_source_proposal",
+                    payload_json,
+                )
 
             @Slot(str, result=str)
             def confirm_product_candidate_acceptance(

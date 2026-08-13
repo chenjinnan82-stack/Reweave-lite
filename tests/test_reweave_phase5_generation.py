@@ -18,7 +18,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from pimos_lite.composer.module_native import (
+    ADAPTER_V4_FORMAL_PRODUCT_COMPOSER_VERSION,
     _bundle_formal_capsule,
+    _normalize_formal_capsule,
     compose_capsule_product,
 )
 from pimos_lite.reweave_app_service import (
@@ -35,7 +37,10 @@ from pimos_lite.reweave_capsule_stage3 import (
     SUPERVISION_RULES_VERSION,
     VALIDATION_CONTRACT_VERSION,
     generate_computation_adapter_v2,
+    generate_computation_adapter_v3,
+    generate_computation_adapter_v4,
 )
+from pimos_lite.reweave_canonical import canonical_json_digest
 from pimos_lite.reweave_capsule_store import (
     CANONICALIZATION_VERSION,
     CapsuleStoreError,
@@ -82,12 +87,12 @@ def _object_contract(properties: dict[str, object]) -> dict[str, object]:
 EMPTY_OBJECT = _object_contract({})
 ERRORS = {"schema": "error_contract.v1", "errors": {}}
 QUOTE_HTML = (
-    '<section class="quote">'
+    '<main class="quote">'
     '<label>Quantity <input data-ref="quantity" type="number" min="1" max="10" '
     'step="1" value="2"></label>'
     '<button data-action="calculate" type="button">Calculate</button>'
     '<output data-ref="total"></output>'
-    "</section>"
+    "</main>"
 )
 QUOTE_CSS = "__CAPSULE_ROOT__ .quote { display: grid; gap: 0.5rem; }\n"
 
@@ -1330,6 +1335,15 @@ for name in sys.modules:
         )
         self.assertEqual(first, second)
         self.assertNotIn("reweave-formal-compose-", first["files"]["app.js"])
+        self.assertIn(
+            '<div id="reweave-1234567890abcdef-root" '
+            'data-reweave-product-root="true">',
+            first["files"]["index.html"],
+        )
+        self.assertNotIn(
+            '<main id="reweave-1234567890abcdef-root"',
+            first["files"]["index.html"],
+        )
 
     def test_static_web_target_service_returns_review_only_patch_without_writes(
         self,
@@ -1602,6 +1616,10 @@ export function compute(input) {
         )
 
         self.assertEqual(composition["status"], "composed")
+        self.assertEqual(
+            composition["composer_version"],
+            "module_native_formal_product.v3",
+        )
         self.assertIn("ReweaveFormalCapsule", composition["files"]["app.js"])
 
     def test_formal_composer_rejects_invalid_computation_adapter_v2_modules(self) -> None:
@@ -1672,6 +1690,359 @@ export function compute(input) {
             ValueError, "computation_adapter_authorization_invalid"
         ):
             _bundle_formal_capsule(capsule, "ReweaveAdapterV2Tampered")
+
+    def test_formal_composer_accepts_v3_identity_and_rejects_tampering(self) -> None:
+        capsule = _capsule_payload("computation")
+        capsule.update(
+            candidate_origin="deterministic_computation_adapter",
+            adapter_contract_version="computation_adapter.v3",
+        )
+        capsule["error_contract"] = _adapter_errors()
+        capsule["activation"] = {
+            "mode": "declared_input_compute",
+            "entry_module": "__reweave_adapter__/compute.js",
+            "entrypoint": "compute",
+        }
+        capsule["output_contract"] = _object_contract(
+            {
+                "quantity": {"type": "integer", "minimum": 1, "maximum": 10},
+                "unit_price": {"type": "integer", "minimum": 55, "maximum": 100},
+            }
+        )
+        adapter = generate_computation_adapter_v3(
+            ["quantity"],
+            capsule["input_contract"],
+            capsule["output_contract"],
+            "unit_price",
+            ["quantity"],
+        )
+        capsule["javascript_modules"] = [
+            {
+                "path": "__reweave_adapter__/compute.js",
+                "source": adapter,
+            },
+            {
+                "path": "__reweave_capture__/selected.js",
+                "source": (
+                    "export function __selected(quantity) { "
+                    "return 105 - quantity * 5; }\n"
+                ),
+            },
+        ]
+        bundle = _bundle_formal_capsule(capsule, "ReweaveAdapterV3")
+        self.assertIn("ReweaveAdapterV3", bundle)
+
+        missing = copy.deepcopy(capsule)
+        missing["javascript_modules"] = missing["javascript_modules"][:1]
+        with self.assertRaisesRegex(
+            ValueError, "formal_computation_adapter_v3_modules_invalid"
+        ):
+            _bundle_formal_capsule(missing, "ReweaveAdapterV3")
+
+        source_tampered = copy.deepcopy(capsule)
+        source_tampered["javascript_modules"][0]["source"] = adapter.replace(
+            '"quantity": input.quantity',
+            '"quantity": result',
+        )
+        with self.assertRaisesRegex(
+            ValueError, "computation_adapter_authorization_invalid"
+        ):
+            _bundle_formal_capsule(source_tampered, "ReweaveAdapterV3")
+
+        passthrough_tampered = copy.deepcopy(capsule)
+        passthrough_tampered["output_contract"]["properties"]["quantity"][
+            "minimum"
+        ] = 0
+        with self.assertRaisesRegex(
+            ValueError, "computation_adapter_authorization_invalid"
+        ):
+            _bundle_formal_capsule(
+                passthrough_tampered,
+                "ReweaveAdapterV3",
+            )
+
+        identity_tampered = copy.deepcopy(capsule)
+        identity_tampered.update(
+            capsule_id="capsule_adapter_v3",
+            version_id="version_adapter_v3",
+            capability_key="quote_calculation",
+            role_key="discount_policy",
+            variant_key="default",
+            canonical_hash="f" * 64,
+        )
+        with self.assertRaisesRegex(ValueError, "formal_capsule_identity_invalid"):
+            _normalize_formal_capsule(identity_tampered)
+        mapping_tampered = copy.deepcopy(identity_tampered)
+        mapping_tampered["mapping"] = {
+            "schema": "computation_capture_mapping.v3",
+            "passthrough_fields": ["unit_price"],
+        }
+        with self.assertRaisesRegex(ValueError, "formal_capsule_object_invalid"):
+            _normalize_formal_capsule(mapping_tampered)
+
+    def test_formal_composer_v6_accepts_v4_evidence_and_rejects_tampering(self) -> None:
+        input_contract = _object_contract(
+            {
+                "urgent": {"type": "boolean"},
+                "important": {"type": "boolean"},
+            }
+        )
+        output_contract = _object_contract(
+            {
+                "priority": {
+                    "type": "string",
+                    "min_length": 4,
+                    "max_length": 8,
+                    "enum": ["delegate", "do_now", "drop", "schedule"],
+                }
+            }
+        )
+        selected_source = (
+            """export function __selected(urgent, important) {
+  if (urgent && important) return "do_now";
+  if (!urgent && important) return "schedule";
+  if (urgent && !important) return "delegate";
+  return "drop";
+}
+"""
+        )
+        computation = _capsule_payload("computation")
+        computation.update(
+            capsule_id="capsule_priority_computation",
+            version_id="version_priority_computation",
+            capability_key="priority_classification",
+            role_key="classify_priority",
+            variant_key="default",
+            candidate_origin="deterministic_computation_adapter",
+            adapter_contract_version="computation_adapter.v4",
+            input_contract=input_contract,
+            output_contract=output_contract,
+            error_contract=_adapter_errors(),
+            activation={
+                "mode": "declared_input_compute",
+                "entry_module": "__reweave_adapter__/compute.js",
+                "entrypoint": "compute",
+            },
+        )
+        computation["javascript_modules"] = [
+            {
+                "path": "__reweave_adapter__/compute.js",
+                "source": generate_computation_adapter_v4(
+                    ["urgent", "important"], input_contract, output_contract
+                ),
+            },
+            {
+                "path": "__reweave_capture__/selected.js",
+                "source": selected_source,
+            },
+        ]
+        canonical = canonicalize_capsule(
+            {
+                key: computation[key]
+                for key in (
+                    "capability_kind",
+                    "activation",
+                    "input_contract",
+                    "output_contract",
+                    "error_contract",
+                    "runtime_allowlist",
+                    "dom_scope",
+                    "usage_scope",
+                    "html",
+                    "css",
+                    "javascript_modules",
+                    "assets",
+                )
+            }
+        )
+        computation["canonical_hash"] = canonical.sha256
+        urgent_binding = "a" * 64
+        important_binding = "b" * 64
+        target_binding = "f" * 64
+        mapping = {
+            "schema": "computation_capture_mapping.v4",
+            "arguments": [
+                {
+                    "parameter_binding_id": urgent_binding,
+                    "input_field": "urgent",
+                    "kind": "boolean",
+                },
+                {
+                    "parameter_binding_id": important_binding,
+                    "input_field": "important",
+                    "kind": "boolean",
+                }
+            ],
+            "result_field": "priority",
+            "result_enum": ["delegate", "do_now", "drop", "schedule"],
+            "proof_schema": "source_graph_proof.v2",
+            "examples": [
+                {
+                    "input": {"urgent": False, "important": False},
+                    "expected": {"priority": "drop"},
+                },
+                {
+                    "input": {"urgent": False, "important": True},
+                    "expected": {"priority": "schedule"},
+                },
+                {
+                    "input": {"urgent": True, "important": False},
+                    "expected": {"priority": "delegate"},
+                },
+                {
+                    "input": {"urgent": True, "important": True},
+                    "expected": {"priority": "do_now"},
+                },
+            ],
+        }
+        proof_closure = {
+            "module_paths": ["priority.js"],
+            "binding_ids": [urgent_binding, important_binding, target_binding],
+        }
+        proof = {
+            "schema": "source_graph_proof.v2",
+            "target_binding_id": target_binding,
+            "parameter_domains": [
+                {
+                    "parameter_binding_id": urgent_binding,
+                    "domain": {"kind": "boolean", "values": [False, True]},
+                },
+                {
+                    "parameter_binding_id": important_binding,
+                    "domain": {"kind": "boolean", "values": [False, True]},
+                }
+            ],
+            "result_domain": {
+                "kind": "enum",
+                "values": ["delegate", "do_now", "drop", "schedule"],
+            },
+            "closure": proof_closure,
+            "closure_sha256": canonical_json_digest(proof_closure),
+            "dependency_evidence_sha256": "c" * 64,
+            "module_evidence_sha256": "d" * 64,
+            "top_level_evidence_sha256": "e" * 64,
+        }
+        evidence = {
+            "schema": "ephemeral_capture_candidate.v1",
+            "candidate_origin": "deterministic_computation_adapter",
+            "adapter_contract_version": "computation_adapter.v4",
+            "source_graph_version": "source_graph.v1",
+            "bundle_contract_version": "reweave_capture_bundle.v1",
+            "project_id": "project_priority",
+            "source_identity_sha256": "1" * 64,
+            "scope_snapshot_sha256": "2" * 64,
+            "selected_function": {
+                "module_relpath": "priority.js",
+                "export_name": "classifyPriority",
+                "target_binding_id": target_binding,
+                "selected_bundle_sha256": hashlib.sha256(
+                    selected_source.encode("utf-8")
+                ).hexdigest(),
+                "capture_entry_sha256": "3" * 64,
+            },
+            "dependency_closure": {},
+            "mapping": mapping,
+            "mapping_sha256": canonical_json_digest(mapping),
+            "enumerations_digest": canonical_json_digest([]),
+            "examples": {
+                "count": 4,
+                "canonical_sha256": canonical_json_digest(mapping["examples"]),
+            },
+            "execution_bundle_sha256": "4" * 64,
+            "rule_versions": {
+                "source_graph_version": "source_graph.v1",
+                "adapter_contract_version": "computation_adapter.v4"
+            },
+            "canonical_candidate": canonical.payload,
+            "source_graph_proof": proof,
+            "source_graph_proof_sha256": canonical_json_digest(proof),
+        }
+        computation["adapter_evidence"] = evidence
+
+        presentation = _capsule_payload("presentation")
+        presentation.update(
+            capsule_id="capsule_priority_presentation",
+            version_id="version_priority_presentation",
+            capability_key="priority_classification",
+            role_key="priority_result",
+            variant_key="default",
+            candidate_origin=None,
+            adapter_contract_version=None,
+            input_contract=output_contract,
+        )
+        presentation["javascript_modules"] = [
+            {
+                "path": "presentation.js",
+                "source": """export function render(root, input) {
+  const total = root.querySelector("[data-ref='total']");
+  total.textContent = String(input.priority);
+}
+""",
+            }
+        ]
+        composed = compose_capsule_product(
+            task="Show priority",
+            product_id="product_1234567890abcdef",
+            generated_at="2026-08-12T00:00:00Z",
+            capsules=[presentation, computation],
+        )
+        self.assertEqual(
+            composed["composer_version"],
+            ADAPTER_V4_FORMAL_PRODUCT_COMPOSER_VERSION,
+        )
+        self.assertEqual(
+            composed["provenance"]["composer_version"],
+            ADAPTER_V4_FORMAL_PRODUCT_COMPOSER_VERSION,
+        )
+        without_v6_evidence = copy.deepcopy(computation)
+        without_v6_evidence.pop("adapter_evidence")
+        with self.assertRaisesRegex(
+            ValueError, "formal_adapter_v4_evidence_invalid"
+        ):
+            _normalize_formal_capsule(without_v6_evidence)
+        reversed_composed = compose_capsule_product(
+            task="Show priority",
+            product_id="product_1234567890abcdef",
+            generated_at="2026-08-12T00:00:00Z",
+            capsules=[computation, presentation],
+        )
+        self.assertEqual(composed, reversed_composed)
+
+        for label, mutate in (
+            (
+                "mapping",
+                lambda value: value["adapter_evidence"].update(
+                    mapping_sha256="0" * 64
+                ),
+            ),
+            (
+                "proof",
+                lambda value: value["adapter_evidence"].update(
+                    source_graph_proof_sha256="0" * 64
+                ),
+            ),
+            (
+                "source",
+                lambda value: value["javascript_modules"][1].update(
+                    source=selected_source + "// forged\n"
+                ),
+            ),
+            (
+                "adapter",
+                lambda value: value["javascript_modules"][0].update(
+                    source=value["javascript_modules"][0]["source"] + "// forged\n"
+                ),
+            ),
+        ):
+            changed = copy.deepcopy(computation)
+            mutate(changed)
+            with self.subTest(label=label), self.assertRaises(ValueError):
+                compose_capsule_product(
+                    task="Show priority",
+                    product_id="product_1234567890abcdef",
+                    generated_at="2026-08-12T00:00:00Z",
+                    capsules=[presentation, changed],
+                )
 
     def test_formal_composer_does_not_apply_v2_module_rule_to_plain_computation(self) -> None:
         capsule = _capsule_payload("computation")

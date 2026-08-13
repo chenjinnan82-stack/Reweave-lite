@@ -65,6 +65,8 @@ const allowedEvents = new Set(["change", "click", "input", "reset", "select", "s
 const computationAdapterEntry = "__reweave_adapter__/compute.js";
 const computationCaptureEntry = "__reweave_capture__/selected.js";
 const computationAdapterV2 = "computation_adapter.v2";
+const computationAdapterV3 = "computation_adapter.v3";
+const computationAdapterV4 = "computation_adapter.v4";
 const deterministicAdapterOrigin = "deterministic_computation_adapter";
 
 function parseModule(path, source) {
@@ -341,16 +343,21 @@ function analyzeCandidate() {
   let adapterCallCount = 0;
   const declaredAdapterV2 = input.candidate_origin === deterministicAdapterOrigin
     && input.adapter_contract_version === computationAdapterV2;
-  if (declaredAdapterV2 && (!trees.has(computationCaptureEntry)
+  const declaredAdapterV3 = input.candidate_origin === deterministicAdapterOrigin
+    && input.adapter_contract_version === computationAdapterV3;
+  const declaredAdapterV4 = input.candidate_origin === deterministicAdapterOrigin
+    && input.adapter_contract_version === computationAdapterV4;
+  const declaredAdapter = declaredAdapterV2 || declaredAdapterV3 || declaredAdapterV4;
+  if (declaredAdapter && (!trees.has(computationCaptureEntry)
       || !trees.has(computationAdapterEntry) || entryPath !== computationAdapterEntry)) {
     throw new Rejection("computation_adapter_authorization_invalid", computationAdapterEntry);
   }
-  if (trees.has(computationCaptureEntry) && !declaredAdapterV2) {
+  if (trees.has(computationCaptureEntry) && !declaredAdapter) {
     throw new Rejection("computation_adapter_authorization_invalid", computationCaptureEntry);
   }
 
   if (trees.has(computationAdapterEntry) || entryPath === computationAdapterEntry) {
-    const adapterV2 = declaredAdapterV2;
+    const adapterV2 = declaredAdapterV2 || declaredAdapterV3 || declaredAdapterV4;
     const inputContract = input.input_contract;
     const outputContract = input.output_contract;
     const errorContract = input.error_contract;
@@ -360,8 +367,17 @@ function analyzeCandidate() {
       : [];
     const outputProperties = outputContract?.properties;
     const outputFields = outputProperties && typeof outputProperties === "object" && !Array.isArray(outputProperties)
-      ? Object.keys(outputProperties)
+      ? Object.keys(outputProperties).sort()
       : [];
+    const passthroughFields = outputFields.filter((field) => inputFields.includes(field));
+    const resultFields = outputFields.filter((field) => !inputFields.includes(field));
+    const outputShapeValid = declaredAdapterV3
+        && passthroughFields.length > 0
+        && resultFields.length === 1
+        && passthroughFields.every((field) =>
+          JSON.stringify(outputProperties[field]) === JSON.stringify(properties[field]))
+      || !declaredAdapterV3 && outputFields.length === 1;
+    const resultField = resultFields.length === 1 ? resultFields[0] : outputFields[0];
     const errors = errorContract?.errors;
     const errorCodes = errors && typeof errors === "object" && !Array.isArray(errors)
       ? Object.keys(errors).sort()
@@ -390,13 +406,28 @@ function analyzeCandidate() {
               || value.length < contract.min_length || value.length > contract.max_length);
         })
         || outputContract?.schema !== "data_contract.v1" || outputContract?.type !== "object"
-        || outputContract?.additional_properties !== false || outputFields.length !== 1
-        || !Array.isArray(outputContract.required) || outputContract.required.length !== 1
-        || outputContract.required[0] !== outputFields[0]
-        || outputProperties[outputFields[0]]?.type !== "integer"
-        || !Number.isSafeInteger(outputProperties[outputFields[0]]?.minimum)
-        || !Number.isSafeInteger(outputProperties[outputFields[0]]?.maximum)
-        || outputProperties[outputFields[0]].minimum > outputProperties[outputFields[0]].maximum
+        || outputContract?.additional_properties !== false || !outputShapeValid
+        || !Array.isArray(outputContract.required)
+        || JSON.stringify([...outputContract.required].sort()) !== JSON.stringify(outputFields)
+        || (declaredAdapterV4
+          ? outputProperties[resultField]?.type !== "string"
+            || !Number.isSafeInteger(outputProperties[resultField]?.min_length)
+            || !Number.isSafeInteger(outputProperties[resultField]?.max_length)
+            || outputProperties[resultField].min_length < 0
+            || outputProperties[resultField].min_length > outputProperties[resultField].max_length
+            || !Array.isArray(outputProperties[resultField].enum)
+            || outputProperties[resultField].enum.length === 0
+            || outputProperties[resultField].enum.length > 32
+            || new Set(outputProperties[resultField].enum).size
+              !== outputProperties[resultField].enum.length
+            || outputProperties[resultField].enum.some((value) =>
+              typeof value !== "string"
+              || value.length < outputProperties[resultField].min_length
+              || value.length > outputProperties[resultField].max_length)
+          : outputProperties[resultField]?.type !== "integer"
+            || !Number.isSafeInteger(outputProperties[resultField]?.minimum)
+            || !Number.isSafeInteger(outputProperties[resultField]?.maximum)
+            || outputProperties[resultField].minimum > outputProperties[resultField].maximum)
         || errorContract?.schema !== "error_contract.v1"
         || JSON.stringify(errorCodes) !== JSON.stringify([
           "INPUT_CONTRACT_VIOLATION", "OUTPUT_CONTRACT_VIOLATION",
@@ -405,7 +436,7 @@ function analyzeCandidate() {
           || !emptyDetailsContract(errors[code]?.details))) {
       throw new Rejection("computation_adapter_authorization_invalid", computationAdapterEntry);
     }
-    if (adapterV2 && (trees.size !== 2 || !trees.has(computationCaptureEntry))) {
+    if (declaredAdapter && (trees.size !== 2 || !trees.has(computationCaptureEntry))) {
       throw new Rejection("computation_adapter_authorization_invalid", computationAdapterEntry);
     }
     if (entryTree.statements.length !== 2) {
@@ -487,10 +518,21 @@ function analyzeCandidate() {
         `(${contract.enum.map((value) => `${inputName}.${field} !== ${JSON.stringify(value)}`).join(" && ")})`,
       ];
     });
-    const outputField = outputFields[0];
+    const outputField = resultField;
     const outputValue = outputProperties[outputField];
     const inputError = '    return { ok: false, error: { code: "INPUT_CONTRACT_VIOLATION", field: null, details: {} } };';
     const outputError = '    return { ok: false, error: { code: "OUTPUT_CONTRACT_VIOLATION", field: null, details: {} } };';
+    const outputChecks = declaredAdapterV4
+      ? [
+        '    typeof result !== "string"',
+        `    || (${outputValue.enum.map((value) =>
+          `result !== ${JSON.stringify(value)}`).join(" && ")})`,
+      ]
+      : [
+        "    !Number.isSafeInteger(result)",
+        `    || result < ${outputValue.minimum}`,
+        `    || result > ${outputValue.maximum}`,
+      ];
     const expectedSource = [
       `import { ${importedName} as __source } from ${JSON.stringify(moduleSpecifier)};`,
       "",
@@ -507,13 +549,13 @@ function analyzeCandidate() {
       "  }",
       `  const result = __source(${mappedFields.map((field) => `${inputName}.${field}`).join(", ")});`,
       "  if (",
-      "    !Number.isSafeInteger(result)",
-      `    || result < ${outputValue.minimum}`,
-      `    || result > ${outputValue.maximum}`,
+      ...outputChecks,
       "  ) {",
       outputError,
       "  }",
-      `  return { ok: true, value: { ${JSON.stringify(outputField)}: result } };`,
+      `  return { ok: true, value: { ${outputFields.map((field) =>
+        `${JSON.stringify(field)}: ${field === outputField ? "result" : `${inputName}.${field}`}`
+      ).join(", ")} } };`,
       "}",
       "",
     ].join("\n");

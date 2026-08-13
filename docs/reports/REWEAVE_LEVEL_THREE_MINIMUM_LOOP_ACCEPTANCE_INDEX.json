@@ -1,0 +1,574 @@
+{
+  "schema_version": "reweave_level_three_minimum_loop_acceptance_index.v1",
+  "document_role": "stable locator for frozen local acceptance evidence",
+  "status": {
+    "level_three_system_minimum_loop": "PASS_BOUNDED",
+    "level_three_fixed_model_capability": "PARTIAL",
+    "level_three_ordinary_user_flow": "PARTIAL",
+    "level_three_overall": "PARTIAL",
+    "independent_upstream_verification": "NOT_ASSERTED"
+  },
+  "scope": {
+    "proved": [
+      "one deterministic capability gap or one user-selected target from a bounded two-candidate deterministic set",
+      "pure computation source proposals for bounded integer and finite-string-enum results",
+      "side-effect-free computations with explicit input, output and error contracts",
+      "one locked catalog and composition shape",
+      "one capability_key",
+      "existing Intake, Stage 3, publication, replan, candidate and standalone delivery paths",
+      "one non-numeric boolean-to-finite-string-enum standalone delivery"
+    ],
+    "not_proved": [
+      "presentation source proposal",
+      "interaction source proposal",
+      "Data capability",
+      "creating multiple simultaneous gaps",
+      "more than three deterministic gap candidates",
+      "arbitrary or open strings",
+      "arbitrary object returns or a general type system",
+      "cross-capability_key composition",
+      "network access",
+      "filesystem or database writes",
+      "other side-effecting capability creation",
+      "ordinary-user productization across broader gap shapes and task distributions"
+    ]
+  },
+  "artifact_location": {
+    "base": "local audit collection",
+    "relative_root": "reweave-candidate-business-acceptance-v1-20260724",
+    "path_rule": "Resolve each artifact_relative_path below this relative root.",
+    "upstream_availability": "not asserted"
+  },
+  "repository_identity": {
+    "branch": "codex/product-planning-v1",
+    "head": "77b348158d6362894e7c89e36e4f50d0ae079372",
+    "implementation_identity_source": "each frozen artifact manifest and its startup or baseline receipt",
+    "dirty_worktree_evidence": true
+  },
+  "warehouse_identity": {
+    "final_revision": 73,
+    "final_sqlite_sha256": "0d1acbdf3c4fdc98290de31d38676dc395b7c99dcd84919f2000a3838c6c275b",
+    "final_catalog_digest": "fc793ac707e24e1c41d1378e50ef0711b1fa8efd6fc492a88d40613348f085ad",
+    "identity_source_record": "workflow_state_classification_formal_publication"
+  },
+  "verification": {
+    "manifest_digest_source": "embedded manifest_digest when present, otherwise sibling manifest-digest.txt",
+    "entry_check": "verify every relative artifact entry against its recorded raw-byte SHA-256 and size; verify mode when recorded",
+    "implementation_file_digests": "resolved from each manifest and its startup or baseline receipt rather than duplicated here",
+    "result": "24 of 24 indexed manifests and all indexed entries verified",
+    "verified_on": "2026-08-13"
+  },
+  "task_distribution_baseline": {
+    "status": "PARTIAL",
+    "existing_redacted_export_task_count": 4,
+    "first_non_numeric_real_task": "PASS_INCLUDED_IN_EXPERIENCE_EXPORT",
+    "correct_planning_rate": 0.75,
+    "standalone_delivery_success_rate": 0.75,
+    "task_distribution_breadth": "INSUFFICIENT",
+    "architecture_pass": false,
+    "model_qualification": false,
+    "training_authorization": false,
+    "source_manifest_digest": "12dd89e8fe96af9c275b511d4033d0c2e66a28481716a8233bc42a8a8fb85ec0",
+    "next_measurement": "broaden the frozen task distribution, then recompute fixed-model task coverage before choosing another capability expansion",
+    "not_a_training_dataset": true
+  },
+  "model_role_set": {
+    "status": "PARTIAL_CONFIGURATION_FREEZE",
+    "baseline_unit": [
+      "role",
+      "model name",
+      "model digest",
+      "quantization identity",
+      "inference backend version",
+      "context limit",
+      "sampling parameters",
+      "structured-output protocol"
+    ],
+    "roles": [
+      {
+        "role_id": "planner_and_source_proposal",
+        "model_name": "qwen3:14b-q4_K_M",
+        "model_digest": "bdbd181c33f2ed1b31c972991882db3cf4d192569092138a7d29e973cd9debe8",
+        "quantization_identity": "Q4_K_M",
+        "qualification_scope": [
+          "composition selection under reweave_product_planning_prompt.v9",
+          "capability source proposal ABI v2 and v3",
+          "one bounded real locked plan under reweave_product_planning_prompt.v12",
+          "one bounded finite-string-enum source proposal under capability_source_proposal_prompt.v4"
+        ],
+        "real_loop_protocols": [
+          "reweave_product_planning_prompt.v11/v12",
+          "capability_source_proposal_prompt.v1/v4",
+          "capability_source_proposal.v1/v2"
+        ],
+        "configuration_evidence": {
+          "source_proposal_sampling": {
+            "seed": 0,
+            "temperature": 0,
+            "stream": false
+          },
+          "planner_sampling": "not consolidated in one frozen role receipt",
+          "backend_version": "not consolidated in one frozen role receipt",
+          "context_limit": "not consolidated in one frozen role receipt"
+        },
+        "evidence_record_ids": [
+          "planner_composition_selection_qualification",
+          "source_proposal_abi_qualification",
+          "source_proposal",
+          "real_replan",
+          "finite_enum_gap_plan",
+          "workflow_source_proposal_review",
+          "workflow_real_replan"
+        ]
+      },
+      {
+        "role_id": "stage3_supervisor",
+        "model_name": "qwen2.5-coder:7b",
+        "model_digest": "dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364",
+        "quantization_identity": "not consolidated in one frozen role receipt",
+        "qualification_scope": [
+          "runtime readiness diagnostic",
+          "one real Stage 3 supervision approval frozen by admission"
+        ],
+        "real_loop_protocols": [
+          "capsule_supervision.v1",
+          "Ollama format=json"
+        ],
+        "configuration_evidence": {
+          "readiness_backend_version": "Ollama 0.32.4",
+          "readiness_sampling": {
+            "temperature": 0,
+            "stream": false,
+            "keep_alive": "5m"
+          },
+          "production_context_limit": "not consolidated in one frozen role receipt",
+          "production_sampling": "not consolidated in one frozen role receipt"
+        },
+        "evidence_record_ids": [
+          "supervisor_runtime_readiness",
+          "source_supervision",
+          "frozen_review_admission",
+          "workflow_source_proposal_review"
+        ]
+      }
+    ],
+    "remaining_gap": "No single receipt freezes every role and all inference configuration fields; fixed-model-role-set capability therefore remains PARTIAL."
+  },
+  "implementation_bindings": [
+    {
+      "claim_id": "gap_and_decision",
+      "schema_versions": [
+        "capability_gap_projection.v1",
+        "capability_gap_projection.v2",
+        "product_plan_question_set.v3",
+        "product_capability_gap_target_selection.v1",
+        "capability_gap_decision.v1"
+      ],
+      "entry_points": [
+        "ProductPlanner._capability_gap_projection_for_workspace",
+        "ProductPlanner._capability_gap_target_question_set",
+        "ProductPlanner._capability_gap_target_selection",
+        "ProductPlanner.record_capability_gap_decision",
+        "ReweaveAppService.record_product_capability_gap_decision"
+      ],
+      "evidence_record_ids": [
+        "gap_projection",
+        "gap_decision",
+        "finite_enum_gap_plan"
+      ]
+    },
+    {
+      "claim_id": "source_proposal",
+      "schema_versions": [
+        "capability_source_proposal_authorization.v1",
+        "capability_source_proposal_authorization.v2",
+        "capability_source_proposal_request.v4",
+        "capability_source_function_abi.v2",
+        "capability_source_proposal.v1",
+        "capability_source_proposal.v2"
+      ],
+      "entry_points": [
+        "ProductPlanner.prepare_capability_source_proposal",
+        "ProductPlanner.validate_capability_source_proposal_response",
+        "ReweaveAppService.prepare_product_capability_source_proposal"
+      ],
+      "evidence_record_ids": [
+        "source_proposal",
+        "source_proposal_abi_qualification",
+        "workflow_source_proposal_review"
+      ]
+    },
+    {
+      "claim_id": "intake_validation_and_supervision",
+      "schema_versions": [
+        "source_graph.v1",
+        "source_graph_proof.v2",
+        "computation_capture_mapping.v2",
+        "computation_capture_mapping.v4",
+        "computation_adapter.v2",
+        "computation_adapter.v4",
+        "runtime_validation.v1",
+        "capsule_supervision.v1"
+      ],
+      "entry_points": [
+        "ReweaveCapsuleIntake.run_intake",
+        "capture_static_gate",
+        "ReweaveCapsuleStage3.prepare_ephemeral_computation_capture_v2",
+        "ReweaveCapsuleStage3.prepare_ephemeral_computation_capture_v4",
+        "ReweaveCapsuleStage3.process_review"
+      ],
+      "evidence_record_ids": [
+        "source_intake_capture",
+        "source_runtime_validation",
+        "source_supervision",
+        "finite_enum_capture_v4",
+        "workflow_source_proposal_review"
+      ]
+    },
+    {
+      "claim_id": "admission_and_publication",
+      "schema_versions": [
+        "frozen_stage3_review_admission.v2"
+      ],
+      "entry_points": [
+        "ReweaveCapsuleStage3.admit_frozen_review",
+        "ReweaveAppService.admit_frozen_review",
+        "ReweaveCapsuleStage3.publish_review"
+      ],
+      "evidence_record_ids": [
+        "frozen_review_admission",
+        "formal_publication",
+        "workflow_source_proposal_review",
+        "workflow_formal_publication"
+      ]
+    },
+    {
+      "claim_id": "replan_handoff",
+      "schema_versions": [
+        "capability_replan_handoff.v1",
+        "product_capability_replan_offer.v1",
+        "product_plan.v2"
+      ],
+      "entry_points": [
+        "ProductPlanner.start_capability_replan",
+        "ReweaveAppService.start_product_capability_replan"
+      ],
+      "evidence_record_ids": [
+        "replan_handoff",
+        "real_replan",
+        "workflow_real_replan"
+      ]
+    },
+    {
+      "claim_id": "candidate_and_standalone_delivery",
+      "schema_versions": [
+        "product_candidate.v2",
+        "product_candidate_provenance.v1",
+        "plan_execution.v1",
+        "module_native_formal_product.v3",
+        "module_native_formal_product.v6"
+      ],
+      "entry_points": [
+        "ReweaveAppService._build_product_candidate",
+        "ReweaveAppService.export_product_candidate"
+      ],
+      "evidence_record_ids": [
+        "candidate_business_acceptance",
+        "standalone_offline_delivery",
+        "workflow_candidate_business_acceptance",
+        "workflow_standalone_offline_delivery",
+        "workflow_visual_confirmation"
+      ]
+    },
+    {
+      "claim_id": "nonformal_experience_baseline",
+      "schema_versions": [
+        "planning_experience.v1",
+        "validation_experience.v1",
+        "reweave_experience_derivation.v1",
+        "reweave_experience_redaction.v1"
+      ],
+      "entry_points": [
+        "scripts/export_reweave_experience.py"
+      ],
+      "evidence_record_ids": [
+        "experience_redacted_export_baseline"
+      ],
+      "claim_boundary": "Derived read-only experience is non-formal and does not alter plans, catalog facts, qualification, or validation rules."
+    }
+  ],
+  "evidence_records": [
+    {
+      "record_id": "gap_projection",
+      "record_type": "acceptance",
+      "schema_versions": [
+        "capability_gap_projection.v1"
+      ],
+      "artifact_relative_path": "year-month-conversion-real-capability-gap-plan-v1-02/checksums.json",
+      "artifact_digest": "ea5de186333576c286cc2a2a20c03b993213158462da3150b40cbb5fee9eedcd",
+      "index_verdict": "PASS_BOUNDED"
+    },
+    {
+      "record_id": "gap_decision",
+      "record_type": "acceptance",
+      "schema_versions": [
+        "capability_gap_decision.v1"
+      ],
+      "artifact_relative_path": "year-month-conversion-capability-gap-decision-v1-01/checksums.json",
+      "artifact_digest": "954efc900d6e025b90a4d28c15ad686b6671b8c053086ad17ce51d9711dd66af",
+      "index_verdict": "PASS_BOUNDED"
+    },
+    {
+      "record_id": "source_proposal",
+      "record_type": "acceptance",
+      "schema_versions": [
+        "capability_source_proposal_authorization.v1",
+        "capability_source_proposal.v1"
+      ],
+      "artifact_relative_path": "year-month-conversion-capability-source-proposal-v1-01/checksums.json",
+      "artifact_digest": "5f0ab6dd338b474fae756d2898c0320ecd834a181da8028c3a7496b650e6fab4",
+      "index_verdict": "PASS_BOUNDED"
+    },
+    {
+      "record_id": "source_intake_capture",
+      "record_type": "acceptance",
+      "schema_versions": [
+        "source_graph.v1",
+        "computation_capture_mapping.v2",
+        "computation_adapter.v2"
+      ],
+      "artifact_relative_path": "year-month-conversion-capability-source-intake-capture-v1-01/checksums.json",
+      "artifact_digest": "0d8b02539cdee27075ffd0c265d0a837b231503660d3c766f71184e86286958b",
+      "index_verdict": "PASS_BOUNDED"
+    },
+    {
+      "record_id": "source_runtime_validation",
+      "record_type": "acceptance",
+      "schema_versions": [
+        "runtime_validation.v1"
+      ],
+      "artifact_relative_path": "year-month-conversion-capability-source-runtime-validation-v1-01/checksums.json",
+      "artifact_digest": "33ee99fbb1825820e597e77bd4f32d4ebf0a9633f5121673e22ac1fbc5ed5327",
+      "index_verdict": "PASS_BOUNDED"
+    },
+    {
+      "record_id": "source_supervision",
+      "record_type": "acceptance",
+      "schema_versions": [
+        "capsule_supervision.v1"
+      ],
+      "artifact_relative_path": "year-month-conversion-capability-source-supervision-v1-01/checksums.json",
+      "artifact_digest": "f9b8db57a2f567d018d838fa076f664dca3256a6329141117015cf77b29da3dd",
+      "index_verdict": "PASS_BOUNDED"
+    },
+    {
+      "record_id": "frozen_review_admission",
+      "record_type": "acceptance",
+      "schema_versions": [
+        "frozen_stage3_review_admission.v2"
+      ],
+      "artifact_relative_path": "stage3-frozen-review-formal-warehouse-admission-v2-02/checksum-manifest.json",
+      "artifact_digest": "84f92faeb57973886a5a55192930ff90c1260ebb854b8a940d570594d174b198",
+      "index_verdict": "PASS_BOUNDED"
+    },
+    {
+      "record_id": "formal_publication",
+      "record_type": "acceptance",
+      "schema_versions": [
+        "formal capsule publication",
+        "year_month_authoritative_upstream_audits.v1"
+      ],
+      "artifact_relative_path": "year-month-conversion-authoritative-state-seal-v1-01/checksums.json",
+      "artifact_digest": "e6c810b99d56af53dbc8637f09108706d346943fef837e19944c820e8dfb51f9",
+      "source_publication_manifest_digest": "0a49134cb9b3c0d3894922f788a73dcccf4f3c9c58916965e562a0782ae9a5d0",
+      "index_verdict": "PASS_BOUNDED",
+      "scope_limit": "the authoritative seal independently verified the publication manifest before its archived SQLite copy was reused by a later audit"
+    },
+    {
+      "record_id": "replan_handoff",
+      "record_type": "acceptance",
+      "schema_versions": [
+        "capability_replan_handoff.v1",
+        "product_capability_replan_offer.v1"
+      ],
+      "artifact_relative_path": "year-month-conversion-post-publication-replan-handoff-v1-01/checksums.json",
+      "artifact_digest": "8c6d67c2ba9f9d407d10d6a2e29decbd26d8ce7999b75b7355b9bf13370129b4",
+      "index_verdict": "PASS_BOUNDED"
+    },
+    {
+      "record_id": "real_replan",
+      "record_type": "acceptance",
+      "schema_versions": [
+        "product_plan.v2",
+        "product_workspace.v7"
+      ],
+      "artifact_relative_path": "year-month-conversion-post-publication-real-replan-v1-01/checksums.json",
+      "artifact_digest": "ef48bc4023becb45f4ad4a18b70eeae1d55a94586060d1549ef92a02995600b1",
+      "index_verdict": "PASS_BOUNDED"
+    },
+    {
+      "record_id": "candidate_business_acceptance",
+      "record_type": "acceptance",
+      "schema_versions": [
+        "product_candidate.v2",
+        "product_candidate_provenance.v1"
+      ],
+      "artifact_relative_path": "year-month-conversion-candidate-business-acceptance-v1-01/checksums.json",
+      "artifact_digest": "3e8971422c4b2dd1ba9ba14ed5f41c2a0b1f7f184cb523c3191edd2fedd37587",
+      "index_verdict": "PASS_BOUNDED"
+    },
+    {
+      "record_id": "standalone_offline_delivery",
+      "record_type": "acceptance",
+      "schema_versions": [
+        "year_month_conversion_standalone_offline_gate.v1"
+      ],
+      "artifact_relative_path": "year-month-conversion-standalone-offline-runtime-v1-01/checksums.json",
+      "artifact_digest": "0d2357fcf530ab94e9b3d77a65ff32ed1505a6988e7f6c250d119ed7ab9a250c",
+      "index_verdict": "PASS_BOUNDED"
+    },
+    {
+      "record_id": "planner_composition_selection_qualification",
+      "record_type": "model_qualification",
+      "schema_versions": [
+        "multi_offer_semantic_selection_qualification.v1"
+      ],
+      "artifact_relative_path": "multi-offer-semantic-selection-model-qualification-v1-01/checksums.json",
+      "artifact_digest": "462527c571b8af60b40350b2f3030edafc483416a4b5851d0f9cb2cc4a2318dc",
+      "index_verdict": "PASS_SCOPED",
+      "scope_limit": "composition selection under prompt v9; not the entire current prompt v11 planner role"
+    },
+    {
+      "record_id": "source_proposal_abi_qualification",
+      "record_type": "model_qualification",
+      "schema_versions": [
+        "capability_source_proposal_dual_adapter_qualification.v1"
+      ],
+      "artifact_relative_path": "capability-source-proposal-dual-adapter-model-qualification-v1-04/checksums.json",
+      "artifact_digest": "5a4d48f104e3eeead911f07d595482b8a5c1dd70f511ccdd378512e28b0b5704",
+      "index_verdict": "PASS_SCOPED",
+      "scope_limit": "source proposal ABI v2 and v3 only"
+    },
+    {
+      "record_id": "supervisor_runtime_readiness",
+      "record_type": "runtime_readiness",
+      "schema_versions": [
+        "capsule_supervision_runtime_diagnostic.v1"
+      ],
+      "artifact_relative_path": "capsule-supervision-runtime-readiness-diagnostic-v1-01/checksums.json",
+      "artifact_digest": "d5a10cb5ae28318e10d6f0ef0bf0379aa5b6dac68671709e503d435446b655a1",
+      "index_verdict": "PASS_DIAGNOSTIC",
+      "scope_limit": "runtime readiness only; real supervision approval is recorded separately"
+    },
+    {
+      "record_id": "finite_enum_gap_plan",
+      "record_type": "acceptance",
+      "schema_versions": [
+        "product_workspace.v8",
+        "product_plan_question_set.v3",
+        "product_capability_gap_target_selection.v1",
+        "capability_gap_projection.v2"
+      ],
+      "artifact_relative_path": "workflow-state-classification-real-qwen3-gap-plan-v1-01/checksum-manifest.json",
+      "artifact_digest": "f8442ed9c24d3fee4ef7ad05acf0c6f8e02fbd470171dc733748c58879644063",
+      "index_verdict": "PASS_BOUNDED"
+    },
+    {
+      "record_id": "finite_enum_capture_v4",
+      "record_type": "acceptance",
+      "schema_versions": [
+        "source_graph_proof.v2",
+        "computation_capture_mapping.v4",
+        "computation_adapter.v4"
+      ],
+      "artifact_relative_path": "finite-string-enum-computation-capture-adapter-v4-v1-01/checksum-manifest.json",
+      "artifact_digest": "0f642b075ce7266a885103cc2147c3e507fbecbbc29443d3b0581166d3d1349f",
+      "index_verdict": "PASS_BOUNDED"
+    },
+    {
+      "record_id": "workflow_source_proposal_review",
+      "record_type": "acceptance",
+      "schema_versions": [
+        "capability_source_proposal_authorization.v2",
+        "capability_source_proposal_request.v4",
+        "capability_source_proposal.v2",
+        "frozen_stage3_review_admission.v2"
+      ],
+      "artifact_relative_path": "workflow-state-classification-real-source-proposal-review-v1-02/checksum-manifest.json",
+      "artifact_digest": "2a3325b8ac8dcc1ebab3326402a871b8e9dd4f5086bf5e9c99777fb89f3d7027",
+      "index_verdict": "PASS_BOUNDED"
+    },
+    {
+      "record_id": "workflow_formal_publication",
+      "record_type": "acceptance",
+      "schema_versions": [
+        "formal capsule publication",
+        "computation_adapter.v4"
+      ],
+      "artifact_relative_path": "workflow-state-classification-computation-publication-v1-01/checksum-manifest.json",
+      "artifact_digest": "3cdbaff0a4781fb9f1e55ef7a2f0333796a263f36bc524902fa2868126372e30",
+      "index_verdict": "PASS_BOUNDED"
+    },
+    {
+      "record_id": "workflow_real_replan",
+      "record_type": "acceptance",
+      "schema_versions": [
+        "product_workspace.v9",
+        "reweave_product_planning_rules.v9",
+        "reweave_product_planning_prompt.v12",
+        "product_plan.v2"
+      ],
+      "artifact_relative_path": "workflow-state-classification-post-publication-real-replan-v1-02/checksum-manifest.json",
+      "artifact_digest": "238595eb553eaa1027d5972bbffc29e9888719ff672cdd375a2cc6fe895946f4",
+      "index_verdict": "PASS_BOUNDED"
+    },
+    {
+      "record_id": "workflow_candidate_business_acceptance",
+      "record_type": "acceptance",
+      "schema_versions": [
+        "product_candidate.v2",
+        "product_candidate_provenance.v1",
+        "plan_execution.v1",
+        "module_native_formal_product.v6"
+      ],
+      "artifact_relative_path": "workflow-state-classification-candidate-business-acceptance-v1-01/checksum-manifest.json",
+      "artifact_digest": "ad3c671c565cb169dd78baed500a112c70c2ab4bc78660677cd204682b887c21",
+      "index_verdict": "PASS_BOUNDED"
+    },
+    {
+      "record_id": "workflow_standalone_offline_delivery",
+      "record_type": "acceptance",
+      "schema_versions": [
+        "workflow_state_classification_standalone_gate.v1"
+      ],
+      "artifact_relative_path": "workflow-state-classification-standalone-offline-runtime-v1-01/checksum-manifest.json",
+      "artifact_digest": "f15aa8099c19f41de05f8428b3d99b24a10a7eedb4531b4f5f64c6d456c1548a",
+      "index_verdict": "PASS_BOUNDED"
+    },
+    {
+      "record_id": "workflow_visual_confirmation",
+      "record_type": "user_confirmation",
+      "schema_versions": [
+        "workflow_state_classification_visual_confirmation.v1"
+      ],
+      "artifact_relative_path": "workflow-state-classification-visual-confirmation-v1-01/checksum-manifest.json",
+      "artifact_digest": "a49d15d38de38b452931bd1e72af9ca6ec50e2547e3bc99fd27ac77614c08c9c",
+      "index_verdict": "PASS_AUXILIARY",
+      "scope_limit": "closes user visual review only; core capability proof is runtime and offline delivery"
+    },
+    {
+      "record_id": "experience_redacted_export_baseline",
+      "record_type": "derived_experience",
+      "schema_versions": [
+        "planning_experience.v1",
+        "validation_experience.v1",
+        "reweave_experience_derivation.v1",
+        "reweave_experience_redaction.v1"
+      ],
+      "artifact_relative_path": "planning-validation-experience-nonnumeric-task-baseline-v1-01/checksum-manifest.json",
+      "artifact_digest": "12dd89e8fe96af9c275b511d4033d0c2e66a28481716a8233bc42a8a8fb85ec0",
+      "index_verdict": "PASS_NON_FORMAL_BASELINE",
+      "scope_limit": "four-task baseline including the first non-numeric delivery; task distribution remains insufficient and no architecture pass, model qualification, retrieval or training authority is created"
+    }
+  ]
+}

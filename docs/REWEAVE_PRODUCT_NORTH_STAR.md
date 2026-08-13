@@ -2,100 +2,85 @@
 
 文档性质：长期产品方向与演进指引
 
-已发布基线：Reweave Static Web V1（v0.3.0）
-
-当前工作分支：本地小模型产品计划候选与 Static Web review-only 交付
-
-更新时间：2026-07-23
+更新时间：2026-08-13
 
 ## 1. 文档定位
 
 本文回答三个问题：Reweave 今天是什么、最终希望成为什么、应当按什么顺序前进。
 
-本文不是当前实现规范，也不表示文中所有能力已经完成。当前代码行为和正式契约以代码及
-`docs/REWEAVE_CAPSULE_INGESTION_DESIGN.md` 为准；阶段验收以对应验收记录为准；发布状态以 Git Tag 和托管 CI
-为准。历史设计与验收记录保留形成时的事实，不因后续发布而回写；这些权威来源与本文冲突时应修订本文。
+本文不是当前实现规范，也不替代阶段验收记录。当前代码行为和正式契约以代码、
+`REWEAVE_CAPSULE_INGESTION_DESIGN.md` 与 `ARCHITECTURE.md` 为准；阶段状态以对应冻结验收证据为准；
+发布状态以 Git Tag 和托管 CI 为准。历史设计、计划、候选和导出继续固定引用形成时的精确身份，不因本文更新而迁移。
 
-本文不会替代阶段验收记录。测试数量、临时环境路径和单次审计结果不写入北极星文档，避免短期证据变化
-使长期方向失真。
-
-长期产品方向、交付顺序和硬边界继续由本文负责；具体前端体验、场景和交互方向由
-`docs/REWEAVE_FRONTEND_EXPERIENCE.md` 负责，详细 UI 不在本文重复维护。
+测试数量、临时路径、数据库内部序号和具体业务样例不写入本文，避免短期证据变化使长期方向失真。
+第 5.4 节只为“已实现”结论保留最小冻结证据索引；其余单次审计摘要不进入北极星。
+具体前端体验由 `REWEAVE_FRONTEND_EXPERIENCE.md` 维护。
 
 ## 2. 当前 Reweave
 
-当前 Reweave 是一个本地优先、来源和目标只读的 Static Web 能力提取、正式仓储、独立产品生成和
-review-only 目标 Patch 桌面审阅系统；当前工作分支另包含正式产品规划协议与界面实现候选，其真实模型门仍为 `PARTIAL`。
+当前 Reweave 是一个本地优先的软件能力系统。它由三条用途不同、不得混称的路径组成。
 
-当前正式主线是：
-
-```text
-来源项目
-→ 只读一致性快照
-→ presentation / interaction / computation 原子胶囊
-→ 固定安全规则、本地监督和隔离运行验证
-→ 人工复核
-→ 单一 SQLite 正式仓库
-→ 单一 module_native 组合器
-→ 独立的 index.html / styles.css / app.js 产品
-→ manifest、精确版本 usage 和本地历史
-```
-
-同一仓库和组合核心现在还有一条只读目标交付支线：
+### 2.1 正式胶囊生命周期
 
 ```text
-满足资格的正式胶囊 + 用户授权的精确目标快照
-→ 目标路径、HTML 资源引用和 JavaScript module 闭包校验
-→ 同一个 module_native 组合器
-→ static_web_iframe_embed.v1
-→ 结构化文件 Patch、文本 Diff、Weave Plan 和拒绝证据
-→ 桌面双入口、简单/开发者模式、胶囊卡片和最终确认
-→ 目标项目、产品仓和 usage 零写入
+已有只读来源或用户授权的隔离 source proposal
+→ 冻结来源快照
+→ 唯一 Intake / Stage 3
+→ 固定安全分析
+→ 本地监督与真实 runtime 验证
+→ 人工复核与用户发布
+→ 单一 SQLite 正式仓库中的不可变能力版本
 ```
 
-当前工作分支的主输入候选还有一条停在计划确认的正式产品规划协议路径：
+这条路径负责把来源中的可验证能力变成正式胶囊。模型可以提供监督或源码提案，但不能决定正式身份、契约、
+资格或发布状态。
+
+### 2.2 计划驱动的独立产品交付
 
 ```text
-产品目标
-→ 用户明确选择并通过 Schema 探针的本地 ≤15B 规划模型（以 Ollama 实际参数量证明）
-→ 必要时进行 1–3 个阻塞性规划提问
-→ 按前端、后端、数据、基础设施分段规划
-→ 确定性后端绑定满足资格的精确胶囊版本，无法绑定的能力保留为明确缺口
-→ 审阅解释或结构化 plan_diff
-→ 在应用状态 product_workspaces 中保存规范计划版本和确认回执
-→ 可显式编译为隔离、只读候选
-→ 不写正式产品目录、不写 usage
+产品目标与已确认回答
+→ 确定性枚举完整合法 composition offers
+→ 模型选择一个完整 offer 或明确无匹配
+→ 确定性绑定、依赖和执行
+→ 隔离 Candidate 与业务验收
+→ 用户审阅
+→ 安全导出为不依赖 Reweave 的独立产品
 ```
 
-当前已经具备：
+这条路径已经完成单 computation 与有界双 computation 的真实交付证明。模型不增删 offer 成员、不决定 wiring；
+确定性核心负责精确身份、连接、摘要、资格、持久化和失败关闭。导出不会自动登记正式产品、写 usage 或修改用户项目。
 
-- 来源项目只读扫描和一致性证据。
-- 单一 SQLite 正式胶囊仓库及不可变版本。
-- presentation、interaction、computation 三类原子胶囊契约。
-- JavaScript、HTML、CSS、资产和数据契约安全门。
-- 本地 Ollama 监督边界，以及隔离的 Node、图片和 QWebEngine 验证。
-- 单一 `module_native` 组合器、产品 manifest 和精确版本 usage。
-- 备份、恢复、停用和选择性重新验证。
-- JavaScript computation capture 阶段 A–G，以及固定第三方项目和真实产品交互的正向验收。
-- 单入口 Static Web 目标的只读画像、精确快照授权、确定性 Weave Plan 和可审查结构化 Patch 后端。
-- 独立的桌面目标接入页面、双入口、简单/开发者模式、胶囊卡片、文本 Diff/二进制元数据、验证/拒绝证据，
-  以及绑定 `plan_id` 和目标快照的内存态最终确认。
-- 与胶囊监督角色分离的本地产品规划模型角色、`product_plan.v1`、受控提问、四章计划、精确胶囊建议、明确缺口、
-  解释／计划 Diff、确认回执和跨重启恢复的实现候选。模型只建议；正式身份、依赖、摘要、资格、持久化和确认均由确定性后端裁决。
-- `plan_execution.v1`、`product_candidate.v1`、唯一 `module_native` 调用、隔离候选文件树/Diff/provenance、静态与真实 QWebEngine
-  验证、幂等生成和跨重启恢复。候选只写应用状态，不写正式产品、usage 或用户项目。
+模型返回“无匹配”只是一项规划语义建议，不构成正式 capability gap。正式 gap 必须由确定性核心基于用户确认的
+结构化需求、锁定 catalog、正式契约和当前规则生成唯一投影。
 
-当前仍未完成：
+### 2.3 Review-only 目标接入
 
-- React + Vite 与 Node 目标项目的受控接入。
-- 直接应用、commit 或回滚用户真实工作树的事务能力。
-- 将隔离候选晋升为新的不可变正式产品版本。
-- 使用当前组合器搭建大型多能力产品；现有 `module_native` 仍只接受同一 capability group 中 1–3 个胶囊。
-- 真实强模型的完整目标、四章、自由文本修订和确认基线；7B 只定位为规划草稿与受限字段建议模型。
+```text
+正式胶囊 + 用户授权的目标快照
+→ 只读目标画像与安全校验
+→ 确定性 Target Adapter
+→ Weave Plan、结构化 Patch、Diff 与拒绝证据
+→ 桌面审阅与内存态确认
+→ 目标项目零写入
+```
 
-因此，当前 Static Web V1 支持面内的本地闭环、Stage G 第三方正向证明、计划三 review-only Patch 后端和计划四桌面
-审阅闭环已经 `PASS`。这不证明任意项目接入、真实工作树应用、外部 presentation/interaction 自动拆分或后续框架支持。
-已发布基线 Tag 仍为 `v0.3.0`；计划四不移动该 Tag。
+这条路径当前只覆盖单入口 Static Web 的 review-only 交付。它不应用 Patch、不 commit、不修改真实工作树，
+也不复制胶囊仓库或组合核心。
+
+三条路径共用一个正式仓库、一个 Capsule IR、一个 Composer 产品线和一条 Stage 3 发布主线。能力增长是内部机制，
+不是第三种交付模式。
+
+当前正式组合边界为：
+
+- 同一个 `capability_key`。
+- presentation 恰好一个。
+- interaction 零或一个。
+- computation 一个或两个。
+- 总数最多四个。
+- 只接受唯一、无歧义的串联。
+
+当前不支持 fan-out、fan-in、Data 胶囊、跨 `capability_key`、多 presentation、多 interaction，
+也不允许模型选择 topology 或 connection。
 
 ## 3. 长期北极星
 
@@ -111,8 +96,35 @@ Reweave 的长期使命是：
 4. 在隔离环境中完成组合或接入，运行真实验证。
 5. 交付独立产品，或交付面向已有目标项目的可审查、可回滚改动。
 
-模型负责命名、分组、监督和有限的语义建议。确定性程序继续负责代码边界、事实关系、权限、安全、
-哈希、执行、验证和发布。模型不能绕过规则、生成未经约束的 adapter 或自动发布正式版本。
+Reweave 的目标不是单纯训练出更强的模型，也不是普通插件仓库，而是积累系统化的软件开发能力。该能力分布在：
+
+- 正式胶囊与语义契约；
+- 合法 composition offers 与确定性连接；
+- Intake、Stage 3、源码协议和验证器；
+- 历史规划、用户决定与失败归因；
+- 模型的语义能力。
+
+系统主要通过三条飞轮增长：
+
+1. **能力增长飞轮**：真实需求暴露缺口，经用户授权创建、验证和发布新能力，供后续任务复用。
+2. **规划经验飞轮**：把当时可用的 offers、模型选择、用户决定、执行结果和失败归因沉淀为可检索经验。
+3. **验证能力飞轮**：把经过归因的运行、业务或连接失败转化为版本化契约、测试、语义检查和失败关闭规则。
+
+模型参数可以暂时保持不变。训练、LoRA、监督微调或蒸馏只是后期可选优化，不是当前闭环成立的前提。
+
+长期增长的关键观测不是“模型换新后完成更多任务”，而是：在冻结任务分布、模型角色集合和推理配置下，
+正式能力、契约、offers、可检索经验和验证器增长后，已验证任务覆盖率持续提高。基线至少绑定每个模型角色的
+精确 digest 与量化身份，以及推理后端、上下文上限、采样参数和结构化输出协议；任一项改变都必须建立新基线，
+不得把模型或推理配置升级的收益混入外部能力系统增长。
+
+planning experience 与 validation experience 必须遵守：
+
+- **项目隔离**：默认绑定原项目、workspace 和授权边界；未经用户授权，不跨项目检索原始记录。
+- **默认脱敏**：导出或跨项目检索前移除源码、绝对路径、凭据、用户敏感文本和不必要的正式身份，只保留完成任务所需的
+  最小结构化事实。
+- **非正式事实**：经验是可撤销的建议证据，不是 Capsule IR、catalog、契约、计划、验收或发布事实，不能直接改变正式摘要。
+- **验证规则晋升门**：失败必须绑定输入快照、执行身份、失败阶段、根因归类和人工确认状态；新规则必须有独立版本、
+  明确适用范围、冻结正反例回归、误拒绝检查和回滚路径，通过后才能进入确定性门禁。未通过时只保留为经验。
 
 ## 4. 一个核心，两种交付
 
@@ -121,259 +133,319 @@ Reweave 长期保留两种正式交付方式：
 1. **独立产品模式**：从正式胶囊生成一个新的、可独立运行的产品。
 2. **目标接入模式**：把正式胶囊受控接入用户已有项目，并交付可回滚改动。
 
-两种模式共用同一个正式仓库、同一套胶囊契约、同一个组合核心和同一条证据主线。目标接入不会发展成
-第二个仓库、第二个 composer 或绕过正式门禁的旁路。
+两种模式共用同一正式仓库、胶囊契约、组合核心和证据主线。目标接入不会发展成第二个仓库、第二个 Composer
+或绕过正式门禁的旁路。
 
 ```mermaid
 flowchart LR
-  A["只读来源"] --> B["项目事实与能力边界"]
-  B --> C["正式胶囊"]
-  C --> D["单一 SQLite 仓库"]
-  D --> E["选择与单一组合核心"]
-  E --> F["独立新产品（当前）"]
-  E --> G["Static Web Target Adapter（当前后端）"]
-  G --> J["桌面可审查 Patch（当前）"]
-  J -.-> H["临时目标副本（未来）"]
-  H --> I["构建与行为验证"]
-  I --> K["回滚凭证"]
+  A["冻结来源（已有来源或授权 source proposal）"] --> B["正式胶囊"]
+  B --> C["单一正式仓库"]
+  C --> D["选择与单一组合核心"]
+  D --> E["独立产品"]
+  D --> F["目标接入适配"]
+  F --> G["可审查 Patch"]
+  G -.-> H["隔离副本中的应用与验证（未来）"]
+  H --> I["回滚凭证"]
 ```
 
-目标接入的适配顺序固定为：
-
-```text
-单入口 Static Web
-→ React + Vite
-→ Node 后端
-```
-
-三类目标分别验收、顺序实施，不同时开工，也不通过放宽 Static Web 规则冒充框架支持。
+目标接入分支的内部类型顺序是 `Static Web → React + Vite → Node`。后两项只有在用户重新授权目标接入扩展后
+才继续，不能被解释为当前全局下一阶段。
 
 ## 5. 现有基础与目标模型
 
 ### 5.1 Project IR
 
-当前 `projects`、`project_file_index`、一致性快照和进程内 `source_graph.v1` 是 Project IR 的窄基础。
-它们已经能表达受控 JavaScript 来源中的文件、模块、导出、函数和依赖事实。
+当前 `projects`、`project_file_index`、一致性快照和进程内 Source Graph 是 Project IR 的窄基础，
+已能表达受控 JavaScript 来源中的文件、模块、导出、函数和依赖事实。
 
-未来只有在目标接入出现真实消费需求时，才逐步增加路由、API、配置、数据库、测试和构建事实。
-不提前建立第二个 Graph Store，也不为了“完整”持久化无人使用的关系。
+未来只有在真实消费者出现时，才增加路由、API、配置、数据库、测试和构建事实。不提前建立第二个 Graph Store，
+也不为了“完整”持久化无人使用的关系。
 
 ### 5.2 Capsule IR
 
 当前 SQLite 中的 capability group、capsule、immutable version、contract、scope、source、asset、status event
-和 validation evidence 已经是唯一权威的 Capsule IR。未来只在现有模型上进行受控迁移，不建立目录式第二仓库
-或并行胶囊格式。
+和 validation evidence 是唯一权威的 Capsule IR。未来只在现有模型上受控演进，不建立目录式第二仓库或并行胶囊格式。
 
-### 5.3 Weave Plan
+### 5.3 当前正式版本摘要
 
-当前存在两个不同用途的正式计划契约：
+- 规划：`product_plan.v2`、`product_workspace.v9`、`reweave_product_planning_rules.v9`、
+  `reweave_product_planning_prompt.v12`。
+- 完整组合选择：`product_composition_offer.v1`；模型只选择完整 offer，确定性核心展开成员与依赖。
+- 执行：单 computation 使用 `plan_execution.v1`；双 computation 使用 `plan_execution.v3`。
+- 唯一 Composer 产品线：
+  - `module_native_formal_product.v3`：单 computation 与中性文档宿主。
+  - `module_native_formal_product.v4`：普通、唯一的双 computation 串联。
+  - `module_native_formal_product.v5`：包含 `computation_adapter.v3` 的正式串联。
+  - `module_native_formal_product.v6`：包含有限字符串枚举 `computation_adapter.v4` 的正式串联。
 
-- `product_plan.v1` 绑定产品目标、规划问答、固定四章、需求、工作项、依赖、精确胶囊建议或缺口、模型与规则版本、
-  warehouse 事实和规范摘要。它的确认只产生应用状态回执。
-- `static_web_weave_plan.v1` 绑定精确胶囊版本、目标快照、固定 adapter、受影响文件、验证步骤和失败策略，用于目标接入。
+历史计划、workspace、执行、Composer、manifest 和导出继续按自身精确版本验证，不迁移、不重算。
+更细的职责与兼容矩阵见 `ARCHITECTURE.md`。
 
-现有胶囊选择、连接关系和产品 manifest 继续支撑旧的独立 Static Web 产品生成后端；主输入不再绕过计划直接触发它。
+### 5.4 当前已经实现并经真实验证的等级三结构
 
-目标接入的 Weave Plan 需要显式描述：
+等级三目标是：
 
-- 选用了哪些精确胶囊版本。
-- 目标项目中将影响哪些位置。
-- 使用哪一种确定性适配策略。
-- 需要新增、修改或删除哪些文件。
-- 将运行哪些构建、测试和行为验证。
-- 每一步失败时如何停止和回滚。
+```text
+产品目标
+→ 现有正式能力无法形成合法 offer
+→ 确定性 capability gap
+→ 用户授权
+→ 隔离 capability source proposal
+→ 现有 Intake / 安全 / 监督 / runtime
+→ Frozen Review 接纳
+→ 用户发布 formal capsule
+→ catalog 更新
+→ Replan Handoff
+→ 使用新增能力完成原任务
+```
 
-当前 Weave Plan 只生成 Static Web 可审查 Patch，不直接写用户项目；它不是覆盖所有框架的通用计划语言。
+三个概念不得混用：
 
-### 5.4 当前尚不存在的能力
+- `capability gap`：确定性核心基于用户确认的结构化需求与回答、锁定的 warehouse revision 和 catalog digest、
+  满足资格的精确正式版本与契约，以及当时生效的 composition/adapter 规则生成的唯一缺失能力投影。
+  模型返回无匹配、自由文本 gap 或标题理由都不构成正式 gap，也不参与其位置、契约或 digest。
+- `capability source proposal`：模型在隔离目录生成的最小源码提案，不是胶囊。
+- `formal capsule`：通过正式门禁并由用户发布的不可变能力版本。
 
-以下能力属于未来，不得在产品说明中写成已经完成：
+当前 `LEVEL_THREE_SYSTEM_MINIMUM_LOOP=PASS` 只证明：在锁定 catalog、既有 composition 形状和同一
+`capability_key` 内，补齐一个具有明确输入、输出和错误契约、无外部副作用的单一纯 computation 缺口。
+当核心同时枚举出两个或三个合格候选时，用户可在不接触技术身份的情况下选择一个，核心随后按原 candidate digest
+锁定正式 gap；一个候选保持自动锁定，零个或超过三个继续失败关闭。模型不参与正式 gap 选择。
+已验证结果类型包括受控整数以及有限字符串枚举；后者由 `source_graph_proof.v2`、capture/adapter v4 和精确
+枚举 witness 共同约束，不等于任意字符串、任意对象返回或通用类型系统。
 
-- 面向任意项目和框架的完整目标画像。
-- 面向任意外部项目导入的跨项目兼容性规划器。
-- 面向任意框架的 Target Adapter。
-- 临时工作树中的目标项目改动应用。
-- 目标项目构建、测试和行为验证编排。
-- 把 Patch 直接应用为 commit 或可回滚事务的交付。
+它不证明 presentation、interaction、Data、同时创建多个 gap、跨 `capability_key`、网络、文件系统或数据库写入，
+也不证明其他有副作用能力的创建。
+
+等级三必须拆成三个独立状态，不用一个 PASS 代替另外两个：
+
+```text
+LEVEL_THREE_MINIMUM_REAL_LOOP=PASS
+LEVEL_THREE_SYSTEM_MINIMUM_LOOP=PASS
+LEVEL_THREE_FIXED_MODEL_CAPABILITY=PARTIAL
+LEVEL_THREE_ORDINARY_USER_FLOW=PARTIAL
+LEVEL_THREE_OVERALL=PARTIAL
+LEVEL_THREE_FINITE_ENUM_STANDALONE_DELIVERY=PASS
+```
+
+- **系统最小闭环 `PASS`**：确定性 gap、用户决定、隔离源码提案、唯一 Intake/Stage 3、接纳、发布、Handoff、
+  重新规划和独立交付已经在一条真实有界链上贯通。
+- **固定小模型能力 `PARTIAL`**：规划／源码提案模型与监督模型的精确角色身份已在真实链中记录并复用；
+  这证明“冻结模型角色集合借助外部能力系统增长”的最小事实，但现有证据尚未把所有角色的推理后端、上下文上限、
+  采样参数和结构化输出协议统一冻结为一份角色集合基线，也未在冻结的更广任务分布上证明覆盖率持续增长。
+- **普通用户流程 `PARTIAL`**：受支持的纯 computation gap 已经能从确定性单候选或有限多候选用户选择进入
+  source proposal、Intake、安全、runtime、监督和精确 Review，并在用户发布后返回原任务；但
+  presentation/interaction 来源准备、正式接纳与更广缺口形状仍需要独立门和人工审计编排。
+
+整体保持 `PARTIAL`，剩余原因只包括：
+
+- planning experience 与 validation experience 已有包含首个非数值任务的非正式、只读、脱敏导出基线；
+  任务分布广度仍不足，也没有正式记录或检索能力。
+- presentation/interaction 等非纯 computation 能力准备以及部分正式接纳仍需人工审计编排。
+- 尚未证明覆盖更广的缺口位置和真实任务分布。
+
+当前不建设训练平台，不进行在线自训练，也不把 Candidate 或导出产品自动晋升为胶囊。
+
+在独立正式能力组上的复现已经证明同一有界结构可重复交付。随后，第一条非数值 boolean 输入到有限字符串枚举输出的
+真实链又贯通了有限多 gap 用户选择、源码提案、capture/adapter v4、正式发布、固定模型重新规划、
+`review_ready` Candidate、安全导出和独立离线运行。该里程碑证明
+`LEVEL_THREE_FINITE_ENUM_STANDALONE_DELIVERY=PASS`，并加强
+`LEVEL_THREE_MINIMUM_REAL_LOOP=PASS` 的任务分布证据；它仍只覆盖同一 `capability_key` 内
+一个 interaction、一个 computation、一个 presentation 的唯一串联，不把等级三整体提升为 PASS。
+Candidate 仍是审阅候选，不等于 products 晋升或完整产品版本历史。视觉确认只关闭用户审阅边界，
+不是核心类型能力成立的主要证据。
+
+#### 5.4.1 已实现结论的冻结证据索引
+
+稳定验收入口：
+[等级三最小真实闭环验收索引](reports/REWEAVE_LEVEL_THREE_MINIMUM_LOOP_ACCEPTANCE_INDEX.json)。
+该索引把下列 digest 映射到可定位的相对 artifact path，并记录适用范围、代码身份、模型角色证据和复算方法。
+
+下列代码身份使用版本化 Schema 和具体入口函数；对应 manifest digest 固定了该验收门保存的回执与证据，
+其中记录的实现文件摘要仍是代码字节权威。“不适用”表示该正式事实由确定性核心或用户决定产生，没有模型所有权。
+模型资格只在索引列明的窄角色范围内成立；现有记录不等于对当前完整模型角色集合与全部推理配置的统一资格确认。
+
+1. **确定性 gap、有限候选选择与用户决定**
+   - 代码身份：`capability_gap_projection.v1/v2`、`product_plan_question_set.v3`、
+     `product_capability_gap_target_selection.v1`、`capability_gap_decision.v1`；
+     `ProductPlanner._capability_gap_projection_for_workspace()`、
+     `ProductPlanner._capability_gap_target_question_set()`、
+     `ProductPlanner._capability_gap_target_selection()`、
+     `ProductPlanner.record_capability_gap_decision()`、
+     `ReweaveAppService.record_product_capability_gap_decision()`。
+   - 冻结记录：`ea5de186333576c286cc2a2a20c03b993213158462da3150b40cbb5fee9eedcd`、
+     `954efc900d6e025b90a4d28c15ad686b6671b8c053086ad17ce51d9711dd66af`、
+     `f8442ed9c24d3fee4ef7ad05acf0c6f8e02fbd470171dc733748c58879644063`。
+   - 模型身份：正式投影和决定不适用；模型仅补充语义说明时使用
+     `qwen3:14b-q4_K_M` / `bdbd181c33f2ed1b31c972991882db3cf4d192569092138a7d29e973cd9debe8`。
+
+2. **源码提案授权与一次性隔离提案**
+   - 代码身份：`capability_source_proposal_authorization.v1/v2`、
+     `capability_source_proposal_request.v1/v4`、`capability_source_proposal.v1/v2`、
+     `capability_source_function_abi.v1/v2`；
+     `ProductPlanner.prepare_capability_source_proposal()`、
+     `ProductPlanner.validate_capability_source_proposal_response()`、
+     `ReweaveAppService.prepare_product_capability_source_proposal()`。
+   - 冻结记录：`5f0ab6dd338b474fae756d2898c0320ecd834a181da8028c3a7496b650e6fab4`、
+     `2a3325b8ac8dcc1ebab3326402a871b8e9dd4f5086bf5e9c99777fb89f3d7027`。
+   - 模型身份：`qwen3:14b-q4_K_M` /
+     `bdbd181c33f2ed1b31c972991882db3cf4d192569092138a7d29e973cd9debe8`。
+
+3. **Intake、固定安全、runtime 与监督**
+   - 代码身份：`source_graph.v1`、`source_graph_proof.v2`、
+     `computation_capture_mapping.v2/v4`、`computation_adapter.v2/v4`、
+     `runtime_validation.v1`、`capsule_supervision.v1`；`ReweaveCapsuleIntake.run_intake()`、
+     `capture_static_gate()`、`ReweaveCapsuleStage3.prepare_ephemeral_computation_capture_v2()`、
+     `ReweaveCapsuleStage3.prepare_ephemeral_computation_capture_v4()`、
+     `ReweaveCapsuleStage3.process_review()`。
+   - 冻结记录：`0d8b02539cdee27075ffd0c265d0a837b231503660d3c766f71184e86286958b`、
+     `33ee99fbb1825820e597e77bd4f32d4ebf0a9633f5121673e22ac1fbc5ed5327`、
+     `f9b8db57a2f567d018d838fa076f664dca3256a6329141117015cf77b29da3dd`、
+     `0f642b075ce7266a885103cc2147c3e507fbecbbc29443d3b0581166d3d1349f`、
+     `2a3325b8ac8dcc1ebab3326402a871b8e9dd4f5086bf5e9c99777fb89f3d7027`。
+   - 模型身份：Intake、安全与 runtime 不适用；监督使用 `qwen2.5-coder:7b` /
+     `dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364`。
+
+4. **Frozen Review 接纳与用户发布**
+   - 代码身份：`frozen_stage3_review_admission.v2`；`ReweaveCapsuleStage3.admit_frozen_review()`、
+     `ReweaveAppService.admit_frozen_review()`、`ReweaveCapsuleStage3.publish_review()`。
+   - 冻结记录：`84f92faeb57973886a5a55192930ff90c1260ebb854b8a940d570594d174b198`、
+     `0a49134cb9b3c0d3894922f788a73dcccf4f3c9c58916965e562a0782ae9a5d0`。
+   - 模型身份：接纳冻结并复核既有监督身份，不重新调用模型；绑定的监督 digest 为
+     `dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364`。发布决定由用户作出。
+
+5. **发布后 Handoff 与固定模型重新规划**
+   - 代码身份：`capability_replan_handoff.v1`、`product_capability_replan_offer.v1`；
+     `ProductPlanner.start_capability_replan()`、`ReweaveAppService.start_product_capability_replan()`。
+   - 冻结记录：`8c6d67c2ba9f9d407d10d6a2e29decbd26d8ce7999b75b7355b9bf13370129b4`、
+     `ef48bc4023becb45f4ad4a18b70eeae1d55a94586060d1549ef92a02995600b1`。
+   - 模型身份：`qwen3:14b-q4_K_M` /
+     `bdbd181c33f2ed1b31c972991882db3cf4d192569092138a7d29e973cd9debe8`。
+
+6. **新能力进入候选、独立导出和离线运行**
+   - 代码身份：`ReweaveAppService._build_product_candidate()`、`ReweaveAppService.export_product_candidate()`；
+     `product_candidate.v2`、`product_candidate_provenance.v1`，执行与 Composer 精确身份引用第 5.3 节的
+     单 computation 路径。
+   - 冻结记录：`3e8971422c4b2dd1ba9ba14ed5f41c2a0b1f7f184cb523c3191edd2fedd37587`、
+     `0d2357fcf530ab94e9b3d77a65ff32ed1505a6988e7f6c250d119ed7ab9a250c`。
+   - 模型身份：Candidate、验收和导出不调用模型；其确认计划绑定上一步同一 Qwen3 digest。
+
+7. **有限字符串枚举正式交付**
+   - 代码身份：`product_workspace.v9`、`reweave_product_planning_rules.v9`、
+     `reweave_product_planning_prompt.v12`、`product_plan.v2`、`plan_execution.v1`、
+     `module_native_formal_product.v6`。
+   - 冻结记录：`3cdbaff0a4781fb9f1e55ef7a2f0333796a263f36bc524902fa2868126372e30`、
+     `238595eb553eaa1027d5972bbffc29e9888719ff672cdd375a2cc6fe895946f4`、
+     `ad3c671c565cb169dd78baed500a112c70c2ab4bc78660677cd204682b887c21`、
+     `f15aa8099c19f41de05f8428b3d99b24a10a7eedb4531b4f5f64c6d456c1548a`、
+     `a49d15d38de38b452931bd1e72af9ca6ec50e2547e3bc99fd27ac77614c08c9c`。
+   - 模型身份：规划使用 `qwen3:14b-q4_K_M` /
+     `bdbd181c33f2ed1b31c972991882db3cf4d192569092138a7d29e973cd9debe8`；
+     Candidate、导出和离线运行不调用模型。视觉确认只作为用户审阅回执。
+
+### 5.5 当前尚不存在的能力
+
+- 面向任意项目和框架的完整目标画像与 Target Adapter。
+- 在隔离工作树中应用目标 Patch、构建、测试并生成回滚凭证。
+- 把 Patch 直接应用为 commit 或可回滚事务。
+- 正式 products 晋升与完整产品版本历史。
+- fan-out、fan-in、Data、跨能力组和通用多 capability 组合。
+- 覆盖非纯 computation 能力准备与更广缺口形状、无需人工审计编排的完整等级三体验。
+- 规划经验与验证经验的正式记录和检索产品；当前只有非正式、只读、脱敏导出基线。
 
 ## 6. 当前总路线图
 
-当前只保留以下四个可独立验收的计划。每个计划有自己的完成条件，不把后续能力夹带到前一计划。
+以下四个标题保留历史路线语境，不承载当前版本矩阵：
 
 ### 计划一：Stage G 发布收口（已完成）
 
-- 只处理托管 CI、发布候选和 Tag，不夹带新功能。
-- Ubuntu、Windows 和 CodeQL 托管检查通过，发布主线以 `v0.3.0` 收口。
+托管检查、发布候选与既定 Tag 已收口；结论不夹带后续功能。
 
 ### 计划二：遗留清理与北极星校准（已完成）
 
-- 可达性证明确认 `scripts/run_public_stage4_demo.py` 只剩文档、发布面分类和固定失败测试引用；正式 CLI、桌面启动器、
-  生产调用图和托管 CI 均不能到达，直接执行也在写入前固定失败。
-- 删除该旧 Stage 4 公开 demo 入口及只为它存在的引用和测试；发布面继续只承认正式 SQLite CLI。
-- 本文正式纳入版本控制，作为唯一总路线图。
-- 仍可达的兼容代码、旧 composer、QWebChannel 槽位、前端清理和依赖清理不属于本计划，不能用本次结论扩大删除范围。
+退役公开旧 Stage 4 入口并建立北极星；结论不扩大删除仍可达的兼容实现。
 
 ### 计划三：后端——Static Web 最小闭环（已完成）
 
-首个目标接入后端切片只支持单入口、无需安装或构建的 Static Web 目标：
-
-```text
-用户选择目标站点
-→ 只读建立目标画像
-→ 校验目标路径、资源引用和授权边界
-→ 生成显式 Weave Plan
-→ 生成文件级可审查 Diff 与 Patch
-→ 返回验证证据和拒绝原因
-```
-
-完成边界固定为：
-
-- 目标画像仅存在于进程内，显式绑定单一 HTML 入口和稳定快照摘要，不写入 `projects` 或 `project_file_index`。
-- 路径、symlink、大小写/Unicode 冲突、HTML 资源引用、CSS 未支持资源语法和本地 JavaScript module 闭包均失败关闭。
-- Patch 授权模式只接受 `review_patch_only` 并绑定精确目标快照；受影响路径由后端生成，不能请求 apply、write 或 commit。
-- 只消费满足资格的 active-current 正式版本和 `general` usage scope；缺少可信目标品牌身份时结构化拒绝 `brand_limited`。
-- `module_native` 仍是唯一组合器；固定 `static_web_iframe_embed.v1` 只把其唯一结果映射到内容寻址命名空间。
-- 返回完整 UTF-8/base64 文件内容、hash、文件级文本 Diff、Weave Plan、provenance 和拒绝证据；二进制不伪造文本 Diff。
-- 返回前重新核对胶囊资格和目标快照；目标项目、产品仓与 `product_capsule_usage` 均零写入。
-
-本计划没有新增前端页面或桌面桥接槽位，没有应用 Patch，也不把 Capsule IR 尚未表达的法律许可证判断写成自动授权。
-任何真实工作树应用、commit 或回滚事务都必须在本计划之外另行批准。
+完成只读目标画像、确定性 Patch 与结构化拒绝；不应用 Patch，也不写用户项目。
 
 ### 计划四：前端——完整交互闭环（已完成）
 
-- 增加目标接入新页面，并保留与现有独立产品模式清楚分离的双入口。
-- 提供默认简单模式和显式开发者模式、满足资格的胶囊卡片、文本 Diff、二进制元数据、验证/拒绝证据以及最终确认。
-- 前端只消费计划三定义的后端契约，不复制路径、资源、授权或 Patch 生成规则。
-- 最终确认只在内存中记录与 `plan_id` 和目标快照绑定的审阅回执，不发起 bridge call，也不自动扩大为写入真实项目的授权。
-- 桌面流程始终保持目标项目、产品仓和 usage 零写入；不提供 apply、commit 或目标写入动作。公开 CLI 仍没有目标接入入口。
+完成目标接入的可审阅桌面闭环；最终确认仍是内存态回执，不构成真实工作树写入授权。
 
-四计划完成后，长期目标类型仍按 `Static Web → React + Vite → Node` 顺序推进。这里的 Node 指未来要接入的
-目标项目类型，不是计划三的 Reweave 后端工作；React/Vite 和 Node 都需要各自的设计与真实项目验收。
+当前全局产品主线固定为：
 
-### 当前工作分支候选：正式产品计划 v1（未发布，真实门仍为 PARTIAL）
+```text
+继续补齐等级三普通用户流程
+→ 建立 planning / validation experience 的正式记录、脱敏导出与检索
+→ 根据冻结任务分布下的真实指标决定下一次能力扩展
+```
 
-- 原主输入直接从产品目标进入真实本地规划，不保留 fixture、Demo 或第二个“计划预览”入口。
-- 规划模型和胶囊监督模型是两个独立逻辑角色；都可选择同一安装模型，但各自绑定精确 name、digest、探针和证据。
-- 分段模型调用只产生建议；确定性后端独占精确胶囊资格、计划身份、依赖合法性、摘要、持久化、失效和确认。
-- `product_workspaces` 位于应用状态，只保存小型结构化计划数据；它不是第二个胶囊仓库，也不改变正式 SQLite schema。
-- “确认计划”本身不调用 `module_native`。独立候选动作可在重新校验后调用唯一 Composer，且只写隔离候选目录。
-- 大型规划证据和大型产品搭建证据严格分开；后者继续为 `PARTIAL`，直到唯一 `module_native` 的多能力组合另行设计和验收。
-- 协议替身、服务和 QWebEngine 回归不能替代真实强模型证明；7B 不再承担自由文本 Revision 的最终语义权威。
-- 这些能力不属于既有 `v0.3.0` Tag，不移动或重写该发布基线。
+独立产品交付继续保持有界能力，目标接入分支保持 review-only。React/Vite 与 Node 仅是目标接入分支在用户
+重新授权后的内部顺序，不与当前全局主线并行启动。
 
 ## 7. 计划成功原则
 
-每个计划都必须有独立、可证伪的完成门：
+每项能力必须有独立、可证伪的完成门：
 
-- 计划一以托管 CI、发布候选和精确 Tag 为门。
-- 计划二以可达性证明、精确删除和北极星文档进入版本控制为门。
-- 计划三以目标来源摘要不变、路径/资源/授权校验、确定性 Patch 和结构化拒绝证据为门。
-- 计划四以双入口、双模式、胶囊卡片、文本 Diff/二进制元数据、验证/拒绝证据，以及零 bridge call 的内存态最终确认为门。
-- 提取或目标接入能力使用固定、不可事后替换的第三方项目样本。
-- 不安装、构建、运行或修改来源项目，除非后续目标事务契约明确允许在临时副本执行目标命令。
-- 来源摘要、正式版本、产物和验证证据必须可追溯。
+- 事实、正式版本、产物和验证证据必须可追溯。
 - 真实业务断言必须验证输入、操作和结果；窗口启动或测试数量不等于能力通过。
-- 未达到门槛时标记 `PARTIAL`，不通过新增 fallback、模板或模型改写制造成功。
+- 未达到门槛时标记 `PARTIAL`，不通过 fallback、模板或模型改写制造成功。
+- 不安装、构建、运行或修改来源项目，除非受控事务明确允许在临时副本执行。
+- 交付边界不能由一次成功样例扩大到未验证的框架、拓扑或业务分布。
+
+能力增长不以胶囊数量为成功指标，优先观察：
+
+- **`FIXED_MODEL_ROLE_SET_TASK_COVERAGE`（冻结模型角色集合下的已验证任务覆盖率）**：冻结任务分布、
+  每个模型角色的精确 digest 与量化身份、推理后端、上下文上限、采样参数和结构化输出协议，逐次记录 catalog、
+  规则、经验与验证器版本；未完整冻结时只能标记基线 `PARTIAL`，不能与模型或推理配置升级混算。
+- 合法 offer 覆盖率。
+- 正确规划率与无解时正确拒绝率。
+- capability gap 准确率与 source proposal 门禁通过率。
+- 正式能力后续复用率与平均人工纠正次数。
+- 强模型升级调用率与单次交付总成本。
+- 相对直接让同一模型生成产品的成功率和成本优势。
+
+这些指标必须绑定冻结任务分布、模型角色集合与推理配置，以及正式结果标签；普通日志、测试计数或模型自评不能冒充改进证据。
 
 ## 8. 硬边界
 
-- 始终保持一个 SQLite 正式仓库、一个胶囊模型、一个组合核心和一个发布主线。
-- 不增加第二 repository、第二 composer、长期运行时双路径或隐藏 fallback。
-- 不让模型决定代码边界、放宽安全规则、生成自由 adapter 或自动发布。
-- 不提前建设插件平台、CAS、OCI、MCP/WIT 分发、Nix 环境或五工作区大型 UI。
-- 不为未来框架预先增加抽象；只有经过验证的第二个真实消费者出现后，才提取公共接口。
-- 计划三后端只读分析目标并生成可审查 Patch，不直接写用户项目；未来如需应用验证，只能先在隔离临时副本进行。
-- 计划四的最终确认只生成内存态审阅回执，不发起 bridge call，也不等于用户真实工作树的写入授权。
-- React/Vite 和 Node 是明确路线目标，但必须在 Static Web 目标事务闭合后顺序实施。
+- 始终保持一个 SQLite 正式仓库、一个 Capsule IR、一个 Composer 产品线和一条 Stage 3 发布主线。
+- 不增加第二正式能力仓库、第二 Composer 产品线、第二事实图或隐藏 fallback。
+- 不让模型决定代码边界、正式身份、wiring、安全放宽或自动发布。
+- source proposal 只能在用户授权后写隔离目录，并重新进入唯一 Intake 与 Stage 3。
+- 能力增长是内部机制，不是第三种产品交付模式。
+- 不提前建设插件平台、训练平台、CAS、OCI、MCP/WIT 分发或大型多工作区 UI。
+- 目标接入只读分析并生成可审查 Patch；未来应用验证只能先在隔离副本进行。
+- `Static Web → React + Vite → Node` 只属于目标接入分支；继续该分支必须获得用户新的明确授权。
 
 ## 9. 已确认产品决定
 
-1. 独立产品生成是长期正式能力，不是临时过渡路径。
-2. 目标项目接入也是长期正式能力，但不得取代或复制独立产品主线。
-3. 第一个目标接入类型是单入口 Static Web。
-4. React/Vite 和 Node 目标项目必须在当前四计划之后进入后续路线，但分别设计、分别验收、顺序实施。
-5. 现有 SQLite 胶囊仓库继续是唯一权威状态。
-6. `module_native` 继续是唯一组合器；当前 Static Web Target Adapter 只负责把唯一组合结果映射为目标 Patch，未来 adapter
-   也不得复制组合逻辑。
-7. 当前总路线固定为四个独立验收计划；计划三后端和计划四前端不得互相夹带能力。
-8. 目标接入的最终确认只绑定 `plan_id` 与目标快照并保存在内存中；它不发起 bridge call，也不自动授予真实项目写入权限。
+1. 独立产品和目标接入是两种长期交付方式，共用同一正式能力核心。
+2. 当前目标接入保持单入口 Static Web、review-only 和目标项目零写入。
+3. React/Vite 与 Node 不是当前全局下一阶段；用户重新授权目标接入扩展后，才按既定内部顺序分别设计、验收。
+4. SQLite 正式胶囊仓库、Capsule IR、Composer 产品线和 Stage 3 继续保持唯一。
+5. 模型选择完整 offer 或生成隔离 source proposal，确定性核心和用户继续掌握正式事实与发布权。
+6. Reweave 通过正式能力、契约、组合规则、经验和验证器共同增长；训练只是后期可选优化。
+7. 当前优先继续补齐等级三普通用户流程，并把 planning / validation experience 从非正式、脱敏导出推进到
+   正式记录与检索；之后按冻结任务分布下的真实指标选择能力扩展。
 
 ## 10. 文档维护规则
 
 只有以下情况需要修订本文：
 
 - 产品交付方式发生改变。
-- 支持目标的顺序或硬边界由用户重新确认。
+- 全局优先级、目标接入分支顺序或硬边界由用户重新确认。
 - 一个未来能力经过真实验收，正式成为当前能力。
 - 当前代码与本文对“已实现”的描述产生冲突。
 
-单次测试数字、临时路径、局部缺陷和阶段审计过程不写入本文，继续记录在正式设计或验收证据中。
+除第 5.4 节“已实现”结论的最小冻结索引外，单次测试数字、临时路径、局部缺陷和审计过程继续记录在正式设计
+或验收证据中。
 
 ## 11. RepoNavigator 研究边界
 
-本节记录一项 Stage G 之后可能采用的开发者导航 UX 参考，不属于当前实施范围，也不改变任何提取、
-安全、监督、验证、仓储或发布契约。
+未来开发者导航可以评估复用现有 Source Graph，提供只读“跳到定义／查看依赖链”。不得因此增加第二事实图、
+向量库或模型轨迹权威，也不得改变 capture、安全或正式结果。
 
-### 11.1 论文实际证明了什么
-
-参考论文：[*One Tool Is Enough: Reinforcement Learning of LLM Agents for Repository-Level Code Navigation*，
-arXiv:2512.20957 v6，2026-05-26](https://arxiv.org/html/2512.20957)。
-
-论文解决的是 repository-level issue localization：输入代码仓库和 issue 描述，输出可能需要修改的文件与函数位置。
-它没有研究代码抽取、胶囊边界、安全证明、行为等价或受控发布。
-
-论文的核心工具 `jump` 由 language server 解析符号引用并返回定义代码。模型负责选择下一次跳转以及何时停止；
-论文也明确说明 `jump` 不是自动揭示相关代码的 oracle。
-
-实验还有四项不能省略的适用条件：
-
-- 论文偏离原 SWE-bench 协议，为 RepoNavigator 和所有基线提供精确入口文件及对应入口函数。
-- 实验只使用 Python 仓库。
-- 作者明确说明只成功实现了 Python language server，其他语言仍待实现和验证。
-- GRPO 训练中，7B 使用 8 张 NVIDIA Tesla A100 80G，14B 和 32B 使用 16 张同规格 GPU。
-
-因此，该论文没有证明能从完全未知的大型 JavaScript 仓库中自动找到用户需要的业务函数，也没有证明其轨迹
-可以成为 Reweave 的确定性依赖闭包。
-
-### 11.2 对 Reweave 有价值的部分
-
-Reweave 只借鉴两个产品原则：
-
-1. 沿真实词法绑定、import 和定义关系导航，比纯关键词检索更适合解释代码结构。
-2. 一个清晰、只读的“跳到定义/查看依赖链”动作，优于增加搜索、向量库、RAG 和多套松散检索工具。
-
-当前 `source_graph.v1` 已经提供本项目最需要的确定性基础：TypeScript lexical symbol graph、import/export
-resolution、selected function identity、依赖闭包和失败关闭。未来导航界面必须复用现有 node identity、逻辑路径
-和 UTF span，不新建第二个事实来源。
-
-如果后续原型通过，普通模式可以显示一句可操作结论，例如“可抓取；依赖 3 个 helper 和 2 个常量”，
-或“不可抓取：依赖可变共享状态”。开发者模式可以提供只读“跳到定义”和“查看依赖链”。源码只能按当前快照
-临时读取，不进入 SQLite、不缓存到前端，也不发送给 Ollama。
-
-### 11.3 明确不采用的部分
-
-- 不接入 RepoNavigator runtime，不进行本地 RL 训练。
-- 不增加第二 language server、第二索引、第二 graph、向量库、RAG 或第二候选主线。
-- 不把模型的 jump 轨迹当作 dependency closure；漏跳不能使危险依赖消失。
-- 不让 RepoNavigator 或模型决定胶囊边界、纯度、data contract、安全、canonical evidence 或等价关系。
-- 不用它解决业务字段映射，也不减少现有人工确认。
-- 不把论文结果扩大为 JavaScript、DOM/Event、QWeb、bundle、SQLite 或 `module_native` 的有效性证明。
-
-Stage G 不因本研究增加依赖、接口、测试或实施任务。
-
-### 11.4 Stage G 之后的可证伪原型门
-
-Stage G 已完成只满足研究前置条件，不构成启动批准。RepoNavigator 不在当前四计划内；只有用户另行批准，
-并且用户仍难以理解目标函数和阻断依赖时，才允许进行一次只改展示的对照原型。原型不得改变抓取结果。
-
-固定研究方式：
-
-- 使用 6–8 个冻结 JavaScript 项目。
-- 对照当前 offer 详情与基于同一 `source_graph.v1` 的 jump/依赖链视图。
-- 任务固定为定位目标函数、识别一个 helper、解释一个 fail-closed 原因。
-- 记录完成时间、错误选择次数、源码查看次数和阻断原因复述准确性。
-- 两组必须得到完全相同的 source graph、offer、canonical hash 和 Stage 3 outcome。
-- 原型只能读取已有图证据，不增加持久化或模型输入。
-
-只有显著减少理解时间或误选，并且安全与持久化结果零变化时，才进入正式产品；否则删除原型。
-即使通过，也只能声称改善了结构导航体验，不能声称 Reweave 已能自动拆解普通旧项目。
+详细范围、论文事实与可证伪原型门见
+[RepoNavigator 只读研究评估](research/REPO_NAVIGATOR_EVALUATION.md)。

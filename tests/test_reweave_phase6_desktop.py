@@ -288,11 +288,24 @@ def test_simple_mode_scans_multiply_without_creating_candidate(
                 10,
                 "empty warehouse management entry",
             )
-            js("document.getElementById('btn-open-capsule-ingestion').click(); true")
+            js(
+                "document.getElementById('btn-open-capsule-ingestion').focus(); "
+                "document.getElementById('btn-open-capsule-ingestion').click(); true"
+            )
             wait_js(
                 "document.getElementById('warehouse-projects').textContent.includes('Multiply source')",
                 30,
                 "project_row",
+            )
+            assert js(
+                "(() => { const block = Array.from(document.querySelectorAll("
+                "'#warehouse-projects .warehouse-project-config')).find(item => "
+                "item.textContent.includes('Multiply source')); "
+                "const button = block && block.querySelector('[data-specimen-project-id]'); "
+                "button.click(); return "
+                "!document.getElementById('capsule-ingestion-specimen').classList.contains('is-empty') && "
+                "document.getElementById('ingestion-specimen-name').textContent.includes('Multiply source') && "
+                "document.getElementById('ingestion-specimen-presentation').textContent === '—'; })()"
             )
             before_click = json.loads(
                 str(
@@ -686,19 +699,82 @@ def test_static_web_target_review_ui_never_writes_or_calls_confirm_service(
                     pump(0.08)
                 raise TimeoutError(f"{label}:{last!r}")
 
+            screenshot_root = os.environ.get("REWEAVE_GATE23_SCREENSHOT_DIR", "").strip()
+
+            def capture(name: str, width: int = 1440, height: int = 900) -> None:
+                window.resize(width, height)
+                pump(0.25)
+                if not screenshot_root:
+                    return
+                destination = Path(screenshot_root)
+                destination.mkdir(parents=True, exist_ok=True)
+                assert window.grab().save(str(destination / f"{name}.png"))
+
             wait_js(
                 "document.readyState === 'complete' && !!window.reweaveBridge && "
                 "!document.getElementById('screen-main').classList.contains('hidden')",
                 30,
                 "desktop_bridge",
             )
+            capture("gate3-01-compat-tools")
+            js(
+                "document.querySelectorAll('.screen').forEach(function(node){"
+                "node.classList.add('hidden');});"
+                "document.getElementById('screen-welcome').classList.remove('hidden'); true"
+            )
+            capture("gate3-02-welcome")
+            js(
+                "document.getElementById('screen-welcome').classList.add('hidden');"
+                "document.getElementById('screen-cleaning').classList.remove('hidden');"
+                "document.getElementById('cleaning-steps').innerHTML="
+                "'<li class=\"done\">读取本地来源边界</li><li class=\"active\">建立只读索引</li>';"
+                "document.getElementById('progress-bar').style.width='62%'; true"
+            )
+            capture("gate3-03-cleaning")
+            js(
+                "document.getElementById('screen-cleaning').classList.add('hidden');"
+                "document.getElementById('screen-main').classList.remove('hidden'); true"
+            )
             js("document.getElementById('task-input').value='Keep standalone task'; true")
-            js("document.getElementById('btn-open-target').click(); true")
+            assert js(
+                "!document.getElementById('btn-compat-target-nav').classList.contains('hidden')"
+            )
+            js("document.getElementById('btn-compat-target-nav').click(); true")
             wait_js(
                 "!document.getElementById('screen-target').classList.contains('hidden')",
                 10,
                 "target_screen",
             )
+            assert js(
+                "(() => {"
+                "const bar=document.querySelector('#screen-target > .product-plan-bar');"
+                "const brand=bar.querySelector('.product-plan-brand').getBoundingClientRect();"
+                "const delivery=bar.querySelector('.product-delivery-switch').getBoundingClientRect();"
+                "const tools=bar.querySelector('.product-plan-tools').getBoundingClientRect();"
+                "const rect=bar.getBoundingClientRect();"
+                "const background=getComputedStyle(bar).backgroundColor;"
+                "return Math.round(rect.height)===72 && Math.round(brand.left)===24 && "
+                "brand.right<delivery.left && delivery.right<tools.left && "
+                "background.includes('242, 245, 243') && "
+                "bar.scrollWidth===bar.clientWidth;"
+                "})()"
+            )
+            capture("gate3-04-target-select")
+            capture("gate3-05-target-select-1100", 1100, 720)
+            wait_js(
+                "(() => {"
+                "const bar=document.querySelector('#screen-target > .product-plan-bar');"
+                "const brand=bar.querySelector('.product-plan-brand').getBoundingClientRect();"
+                "const rect=bar.getBoundingClientRect();"
+                "return Math.round(rect.height)===72 && Math.round(brand.left)===18 && "
+                "bar.scrollWidth===bar.clientWidth && "
+                "document.documentElement.scrollWidth===window.innerWidth;"
+                "})()",
+                3,
+                "target_shell_1100",
+            )
+            window.resize(1440, 900)
+            pump(0.15)
             js("document.getElementById('btn-select-target').click(); true")
             wait_js(
                 "document.getElementById('target-selected-name').textContent.includes('target-site')",
@@ -707,11 +783,19 @@ def test_static_web_target_review_ui_never_writes_or_calls_confirm_service(
             )
             js("document.getElementById('btn-analyze-target').click(); true")
             wait_js(
-                "document.getElementById('target-analysis-status').textContent.includes("
-                "'frontend_contract_rejected')",
+                "(() => {"
+                "const node=document.getElementById('target-analysis-status');"
+                "const text=node&&node.textContent||'';"
+                "return node.classList.contains('is-error') && "
+                "!!node.querySelector('.target-status-reason') && "
+                "!!node.querySelector('.target-status-recovery') && "
+                "!text.includes('frontend_contract_rejected') && "
+                "(text.includes('前端契约') || text.includes('frontend contract'));"
+                "})()",
                 10,
                 "malformed_profile_rejected",
             )
+            capture("gate3-06-target-rejected")
             assert str(target) not in str(js("document.body.textContent"))
             js("document.getElementById('btn-analyze-target').click(); true")
             wait_js(
@@ -720,10 +804,16 @@ def test_static_web_target_review_ui_never_writes_or_calls_confirm_service(
                 "target_profile",
             )
             wait_js(
+                "document.getElementById('screen-target').getAttribute('data-target-stage') === 'compose'",
+                10,
+                "target_stage_compose",
+            )
+            wait_js(
                 "!!document.querySelector('#target-capsule-cards input[type=checkbox]')",
                 10,
                 "target_capsule",
             )
+            capture("gate3-07-target-compose")
             js(
                 "(() => {"
                 "const checkbox=document.querySelector('#target-capsule-cards input[type=checkbox]');"
@@ -752,7 +842,7 @@ def test_static_web_target_review_ui_never_writes_or_calls_confirm_service(
             assert len(service.calls) == 3
             pump(0.2)
             assert js(
-                "document.getElementById('target-review').classList.contains('hidden')"
+                "document.getElementById('target-review').hasAttribute('hidden')"
             )
             js(
                 "(() => {"
@@ -763,12 +853,14 @@ def test_static_web_target_review_ui_never_writes_or_calls_confirm_service(
                 "return true;})()"
             )
             wait_js(
-                "!document.getElementById('target-review').classList.contains('hidden') && "
+                "document.getElementById('screen-target').getAttribute('data-target-stage') === 'review' && "
+                "!document.getElementById('target-review').hasAttribute('hidden') && "
                 "document.getElementById('target-file-diffs').textContent.includes('Existing target') && "
                 "document.getElementById('target-evidence-summary').textContent.trim().length > 0",
                 10,
                 "patch_review",
             )
+            capture("gate3-08-target-review")
             assert "never render this field" not in str(
                 js("document.getElementById('target-review').textContent")
             )
@@ -777,13 +869,19 @@ def test_static_web_target_review_ui_never_writes_or_calls_confirm_service(
             assert js(
                 "document.getElementById('screen-target').classList.contains('developer-mode')"
             )
+            capture("gate3-09-target-review-evidence")
             calls_before_confirm = len(service.calls)
             js("document.getElementById('btn-confirm-target-patch').click(); true")
             wait_js(
+                "document.getElementById('screen-target').getAttribute('data-target-stage') === 'confirmed' && "
                 "document.getElementById('target-confirmation-receipt').textContent.trim().length > 0",
                 10,
                 "confirmation_receipt",
             )
+            capture("gate3-10-target-confirmed")
+            js("document.getElementById('btn-target-lang').click(); true")
+            capture("gate3-11-target-confirmed-en")
+            js("document.getElementById('btn-target-lang').click(); true")
             pump(0.2)
             assert len(service.calls) == calls_before_confirm == 4
             assert [name for name, _payload in service.calls] == [
@@ -794,9 +892,9 @@ def test_static_web_target_review_ui_never_writes_or_calls_confirm_service(
             ]
             js("document.getElementById('btn-target-back').click(); true")
             wait_js(
-                "!document.getElementById('screen-main').classList.contains('hidden')",
+                "!document.getElementById('screen-product-plan').classList.contains('hidden')",
                 10,
-                "standalone_screen",
+                "product_screen",
             )
             assert js("document.getElementById('task-input').value") == (
                 "Keep standalone task"
@@ -1013,12 +1111,21 @@ def test_capsule_warehouse_read_only_scene_with_real_service(
         (2, "interaction", "gamma_interaction", "gamma_interaction"),
         (2, "computation", "gamma_computation", "gamma_computation"),
     ):
+        payload = None
+        if suffix == "alpha_presentation":
+            payload = successful_payload
+        elif kind == "computation":
+            payload = _capsule_payload(kind)
+            payload["input_contract"]["properties"]["unit_price"] = {  # type: ignore[index]
+                "type": "integer",
+                "minimum": 1,
+            }
         capsule_id, version_id = _seed_capsule(
             store,
             kind,
             capability_key=capability_key,
             suffix=suffix,
-            payload=successful_payload if suffix == "alpha_presentation" else None,
+            payload=payload,
         )
         capsule_rows.append((capsule_id, version_id, project_index))
     projection_variants.update(
@@ -1149,11 +1256,28 @@ def test_capsule_warehouse_read_only_scene_with_real_service(
                     str(js("JSON.stringify(window.ReweavePrototype.getState().warehouse)"))
                 )
 
+            screenshot_root = os.environ.get("REWEAVE_GATE2_SCREENSHOT_DIR", "").strip()
+
+            def capture(name: str, width: int = 1440, height: int = 900) -> None:
+                if not screenshot_root:
+                    return
+                destination = Path(screenshot_root)
+                destination.mkdir(parents=True, exist_ok=True)
+                window.resize(width, height)
+                pump(0.25)
+                assert window.grab().save(str(destination / f"{name}.png"))
+
             wait_js(
                 "document.readyState === 'complete' && !!window.reweaveBridge && "
-                "!document.getElementById('screen-main').classList.contains('hidden')",
+                "!document.getElementById('screen-product-plan').classList.contains('hidden')",
                 30,
-                "desktop main screen",
+                "default product screen",
+            )
+            js("document.getElementById('btn-product-plan-back').click(); true")
+            wait_js(
+                "!document.getElementById('screen-main').classList.contains('hidden')",
+                10,
+                "compatibility tools",
             )
             bridge_calls: list[str] = []
             projection_bridge_payloads: list[dict[str, object]] = []
@@ -1176,37 +1300,53 @@ def test_capsule_warehouse_read_only_scene_with_real_service(
             usage_before = _usage_state(store)
             products_before = _tree_state(state_dir / "products")
 
-            js("document.getElementById('btn-capsule-warehouse').click(); true")
+            js(
+                "document.getElementById('btn-capsule-warehouse').focus(); "
+                "document.getElementById('btn-capsule-warehouse').click(); true"
+            )
             wait_js(
                 "window.ReweavePrototype.getState().warehouse.source_group_count === 5 && "
                 "!window.ReweavePrototype.getState().warehouse.source_relations_loading && "
-                "document.querySelectorAll('#warehouse-scene-nodes [data-project-key]').length === 5",
+                "document.querySelectorAll('#warehouse-scene-world [data-project-key]').length === 5",
                 30,
                 "source project overview",
             )
             assert warehouse_state()["view"] == "overview"
+            assert "canvas" not in warehouse_state()
             assert projection_bridge_payloads == []
-            assert js("document.querySelectorAll('#warehouse-scene-links line').length") == 0
-            overview_positions = json.loads(
+            assert js("document.getElementById('warehouse-scene-links') === null")
+            assert js("document.querySelectorAll('#warehouse-scene-nodes [data-project-key]').length") == 3
+            assert js("document.querySelectorAll('#warehouse-unresolved-nodes [data-project-key]').length") == 2
+            assert js("!document.getElementById('warehouse-unresolved-shelf').classList.contains('hidden')")
+            assert js(
+                "getComputedStyle(document.getElementById('warehouse-scene-canvas')).overflowY === 'visible' && "
+                "document.querySelectorAll('.warehouse-source-toggle').length === 3 && "
+                "document.querySelectorAll('.warehouse-source-accordion.is-open').length === 0 && "
+                "document.querySelectorAll('.warehouse-capsule-rack-grid:not([hidden])').length === 0"
+            )
+            overview_keys = json.loads(
                 str(
                     js(
                         "JSON.stringify(Array.from(document.querySelectorAll("
-                        "'#warehouse-scene-nodes [data-project-key]')).map(function (node) { "
-                        "return [node.dataset.projectKey, node.style.left, node.style.top]; }))"
+                        "'#warehouse-scene-world [data-project-key]')).map(function (node) { "
+                        "return node.dataset.projectKey; }))"
                     )
                 )
             )
-            assert len(overview_positions) == 5
-            assert len({(row[1], row[2]) for row in overview_positions}) == 5
-            overview_text = str(js("document.getElementById('warehouse-scene-nodes').textContent"))
+            assert len(overview_keys) == len(set(overview_keys)) == 5
+            overview_text = str(js("document.getElementById('warehouse-scene-world').textContent"))
             for expected_label in (
                 "Readonly source A",
                 "Readonly source B",
                 "Readonly source C",
-                "Versionless formal source",
-                "Display-only source",
+                "Missing Version Capability",
+                "Missing Identity Capability",
             ):
                 assert expected_label in overview_text
+            capture("dev-fixture-01-source-accordion")
+            capture("dev-fixture-02-source-accordion-1100", 1100, 720)
+            window.resize(1440, 900)
+            pump(0.15)
 
             window.activateWindow()
             view.setFocus()
@@ -1221,26 +1361,23 @@ def test_capsule_warehouse_read_only_scene_with_real_service(
             QTest.keyClick(key_target, Qt.Key.Key_Return)
             wait_js(
                 "window.ReweavePrototype.getState().warehouse.view === 'project' && "
-                "document.querySelectorAll('#warehouse-scene-nodes [data-capsule-id]').length === 2",
+                "document.querySelectorAll('.warehouse-source-accordion.is-open').length === 1 && "
+                "document.querySelectorAll('.warehouse-capsule-rack-grid:not([hidden]) "
+                "[data-capsule-id]').length === 2",
                 10,
-                "project capsule constellation",
+                "project capsule rack",
             )
-            assert js("document.querySelectorAll('#warehouse-scene-links line').length") == 2
             formal_project_state = warehouse_state()
             assert formal_project_state["project_id"] == project_rows[0][2]
             assert projection_bridge_payloads == []
-            assert not js("!!document.querySelector('.warehouse-node.is-center .warehouse-node-note')")
-
-            js("document.getElementById('btn-warehouse-zoom-in').click(); true")
             assert js(
-                "(() => { const canvas = document.getElementById('warehouse-scene-canvas'); "
-                "canvas.focus(); return document.activeElement === canvas; })()"
+                "document.querySelector('.warehouse-source-toggle.is-open').textContent.includes("
+                + json.dumps("Readonly source A")
+                + ") && "
+                "document.querySelectorAll('.warehouse-capsule-rack-grid:not([hidden]) "
+                ".warehouse-capability-lane').length === 3"
             )
-            QTest.keyClick(key_target, Qt.Key.Key_Right)
-            pump()
-            project_view = warehouse_state()
-            assert project_view["canvas"]["scale"] > 1
-            assert project_view["canvas"]["x"] < 0
+            capture("dev-fixture-03-independent-capsule-rack")
 
             selected_id = capsule_rows[0][0]
             assert js(
@@ -1248,7 +1385,54 @@ def test_capsule_warehouse_read_only_scene_with_real_service(
                 "[data-capsule-id=" + json.dumps(selected_id) + "]'); "
                 "node.focus(); return document.activeElement === node; })()"
             )
-            QTest.keyClick(key_target, Qt.Key.Key_Return)
+            assert js(
+                "(() => { const node = document.querySelector('#warehouse-scene-nodes "
+                "[data-capsule-id=" + json.dumps(selected_id) + "]'); "
+                "const unit = node.closest('.warehouse-capsule-unit'); "
+                "return node.getAttribute('aria-expanded') === 'false' && "
+                "unit.querySelector('.warehouse-capsule-contract').hidden && "
+                "unit.querySelector('.warehouse-source-slot').dataset.evidenceThread === 'verified' && "
+                "!!unit.querySelector('.warehouse-source-path'); })()"
+            )
+            js(
+                "document.querySelector('#warehouse-scene-nodes [data-capsule-id="
+                + json.dumps(selected_id)
+                + "]').click(); true"
+            )
+            wait_js(
+                "window.ReweavePrototype.getState().warehouse.view === 'project' && "
+                "window.ReweavePrototype.getState().warehouse.capsule_id === "
+                + json.dumps(selected_id),
+                10,
+                "formal capsule contract",
+            )
+            contract_dom = json.loads(
+                str(
+                    js(
+                        "JSON.stringify((() => { const node = document.querySelector("
+                        "'#warehouse-scene-nodes [data-capsule-id="
+                        + json.dumps(selected_id)
+                        + "]'); const unit = node && node.closest('.warehouse-capsule-unit'); "
+                        "const panel = unit && unit.querySelector('.warehouse-capsule-contract'); "
+                        "return { unit_open: !!unit && unit.classList.contains('is-open'), "
+                        "panel_hidden: !panel || panel.hidden, panel_text: panel ? panel.textContent : '' }; })())"
+                    )
+                )
+            )
+            assert contract_dom["unit_open"] is True
+            assert contract_dom["panel_hidden"] is False
+            assert projection_bridge_payloads == []
+            assert "render" in contract_dom["panel_text"]
+            assert "total" in contract_dom["panel_text"]
+            assert "unit_price=10" not in contract_dom["panel_text"]
+            capture("dev-fixture-04-formal-contract")
+            js(
+                "(() => { const unit = document.querySelector('#warehouse-scene-world [data-capsule-id="
+                + json.dumps(selected_id)
+                + "]').closest('.warehouse-capsule-unit'); "
+                "const path = unit.querySelector('.warehouse-source-path'); "
+                "path.focus(); path.click(); return true; })()"
+            )
             wait_js(
                 "window.ReweavePrototype.getState().warehouse.view === 'code' && "
                 "window.ReweavePrototype.getState().warehouse.verified_core_code === true",
@@ -1273,6 +1457,7 @@ def test_capsule_warehouse_read_only_scene_with_real_service(
                 "!document.body.textContent.includes(" + json.dumps(snippet_code_canary) + ") && "
                 "!document.body.textContent.includes(" + json.dumps(helper_code_canary) + ")"
             )
+            capture("dev-fixture-05-code")
 
             js("document.getElementById('warehouse-code-developer-mode').click(); true")
             developer_state = warehouse_state()
@@ -1309,6 +1494,7 @@ def test_capsule_warehouse_read_only_scene_with_real_service(
                 "!document.body.textContent.includes(" + json.dumps(snippet_code_canary) + ") && "
                 "!document.body.textContent.includes(" + json.dumps(helper_code_canary) + ")"
             )
+            capture("dev-fixture-06-code-evidence")
 
             js("document.getElementById('btn-warehouse-code-zoom-in').click(); true")
             assert warehouse_state()["code_scale"] > 1
@@ -1318,13 +1504,15 @@ def test_capsule_warehouse_read_only_scene_with_real_service(
                 10,
                 "return to project",
             )
-            restored_project = warehouse_state()
-            assert restored_project["canvas"] == project_view["canvas"]
             wait_js(
-                "document.activeElement && document.activeElement.dataset.capsuleId === "
-                + json.dumps(selected_id),
+                "document.activeElement && document.activeElement.dataset.nodeKey === "
+                + json.dumps("path:" + selected_id)
+                + " && !document.querySelector('#warehouse-scene-world [data-capsule-id="
+                + json.dumps(selected_id)
+                + "]').closest('.warehouse-capsule-unit')"
+                ".querySelector('.warehouse-capsule-contract').hidden",
                 10,
-                "capsule focus restored",
+                "contract and path focus restored",
             )
 
             js("document.getElementById('btn-warehouse-scene-back').click(); true")
@@ -1333,17 +1521,46 @@ def test_capsule_warehouse_read_only_scene_with_real_service(
                 10,
                 "return to overview",
             )
-            overview_before_search = warehouse_state()
-            restored_positions = json.loads(
+            restored_keys = json.loads(
                 str(
                     js(
                         "JSON.stringify(Array.from(document.querySelectorAll("
-                        "'#warehouse-scene-nodes [data-project-key]')).map(function (node) { "
-                        "return [node.dataset.projectKey, node.style.left, node.style.top]; }))"
+                        "'#warehouse-scene-world [data-project-key]')).map(function (node) { "
+                        "return node.dataset.projectKey; }))"
                     )
                 )
             )
-            assert restored_positions == overview_positions
+            assert restored_keys == overview_keys
+            no_result_before = warehouse_state()
+            no_result_nodes = js(
+                "JSON.stringify(Array.from(document.querySelectorAll("
+                "'#warehouse-scene-world [data-node-key]')).map(function (node) { "
+                "return node.dataset.nodeKey; }))"
+            )
+            js(
+                "(() => { const input = document.getElementById('warehouse-scene-query'); "
+                "input.value = 'definitely-no-formal-source'; "
+                "input.dispatchEvent(new Event('input', {bubbles:true})); "
+                "input.dispatchEvent(new KeyboardEvent('keydown', {key:'Enter', bubbles:true})); "
+                "return true; })()"
+            )
+            assert warehouse_state()["search_match_count"] == 0
+            assert warehouse_state()["view"] == no_result_before["view"]
+            assert js(
+                "JSON.stringify(Array.from(document.querySelectorAll("
+                "'#warehouse-scene-world [data-node-key]')).map(function (node) { "
+                "return node.dataset.nodeKey; }))"
+            ) == no_result_nodes
+            assert js(
+                "document.getElementById('warehouse-search-status').textContent.includes("
+                + json.dumps("当前来源项目和焦点保持不变")
+                + ")"
+            )
+            capture("dev-fixture-07-search-no-result")
+            js(
+                "(() => { const input = document.getElementById('warehouse-scene-query'); "
+                "input.value = ''; input.dispatchEvent(new Event('input', {bubbles:true})); return true; })()"
+            )
             js(
                 "(() => { const input = document.getElementById('warehouse-scene-query'); "
                 "input.value = 'Readonly source B'; input.dispatchEvent(new Event('input', {bubbles:true})); "
@@ -1358,7 +1575,6 @@ def test_capsule_warehouse_read_only_scene_with_real_service(
                 "(() => { const input = document.getElementById('warehouse-scene-query'); "
                 "input.value = ''; input.dispatchEvent(new Event('input', {bubbles:true})); return true; })()"
             )
-            assert warehouse_state()["canvas"] == overview_before_search["canvas"]
 
             js(
                 "(() => { const input = document.getElementById('warehouse-scene-query'); "
@@ -1376,7 +1592,6 @@ def test_capsule_warehouse_read_only_scene_with_real_service(
                 "input.value = ''; input.dispatchEvent(new Event('input', {bubbles:true})); return true; })()"
             )
             assert warehouse_state()["view"] == "overview"
-            assert warehouse_state()["canvas"] == overview_before_search["canvas"]
 
             def assert_failed_projection(
                 project_label: str,
@@ -1405,6 +1620,42 @@ def test_capsule_warehouse_read_only_scene_with_real_service(
                     "node.click(); return true; })()"
                 )
                 wait_js(
+                    "window.ReweavePrototype.getState().warehouse.view === 'project' && "
+                    "window.ReweavePrototype.getState().warehouse.capsule_id === "
+                    + json.dumps(capsule_id),
+                    10,
+                    variant + " contract",
+                )
+                assert len(projection_bridge_payloads) == before_calls
+                contract_text = str(
+                    js(
+                        "document.querySelector('#warehouse-scene-world [data-capsule-id="
+                        + json.dumps(capsule_id)
+                        + "]').closest('.warehouse-capsule-unit')"
+                        ".querySelector('.warehouse-capsule-contract').textContent"
+                    )
+                )
+                if "interaction" in capsule_id:
+                    assert "mount" in contract_text
+                    assert "calculate_requested(quantity)" in contract_text
+                elif "computation" in capsule_id:
+                    assert "compute" in contract_text
+                    assert "quantity" in contract_text
+                    assert "unit_price" in contract_text
+                    assert "total" in contract_text
+                else:
+                    assert "render" in contract_text
+                    assert "total" in contract_text
+                assert "unit_price=10" not in contract_text
+                assert "10 元" not in contract_text
+                assert js(
+                    "(() => { const unit = document.querySelector('#warehouse-scene-world [data-capsule-id="
+                    + json.dumps(capsule_id)
+                    + "]').closest('.warehouse-capsule-unit'); "
+                    "const path = unit.querySelector('.warehouse-source-path'); "
+                    "path.focus(); path.click(); return true; })()"
+                )
+                wait_js(
                     "window.ReweavePrototype.getState().warehouse.view === 'code' && "
                     "window.ReweavePrototype.getState().warehouse.capsule_id === "
                     + json.dumps(capsule_id),
@@ -1421,6 +1672,11 @@ def test_capsule_warehouse_read_only_scene_with_real_service(
                 pump(0.15)
                 failed_state = warehouse_state()
                 assert failed_state["verified_core_code"] is False
+                assert js(
+                    "document.getElementById('warehouse-evidence-validation').textContent === "
+                    + json.dumps("证据不可用")
+                    + " && document.getElementById('warehouse-code-proof').classList.contains('is-error')"
+                )
                 assert projection_bridge_payloads[-1] == {
                     "capsule_id": capsule_id,
                     "version_id": version_id,
@@ -1472,130 +1728,75 @@ def test_capsule_warehouse_read_only_scene_with_real_service(
 
             fallback_projection_calls = len(projection_bridge_payloads)
             assert js(
-                "(() => { const node = Array.from(document.querySelectorAll("
-                "'#warehouse-scene-nodes [data-project-key]')).find(function (item) { "
-                "return item.textContent.includes('Versionless formal source'); }); "
-                "node.click(); return true; })()"
+                "(() => { const entry = Array.from(document.querySelectorAll("
+                "'#warehouse-unresolved-nodes .warehouse-unresolved-entry')).find(function (item) { "
+                "return item.textContent.includes('Missing Version Capability'); }); "
+                "const capsule = entry && entry.querySelector('[data-capsule-id]'); "
+                "capsule.focus(); capsule.click(); return !!capsule; })()"
             )
             wait_js(
                 "window.ReweavePrototype.getState().warehouse.view === 'project' && "
                 "window.ReweavePrototype.getState().warehouse.project_key === "
-                + json.dumps("source:formal-source-without-exact-version"),
+                + json.dumps("unresolved:" + missing_version_capsule_id),
                 10,
-                "missing exact version fallback group",
+                "missing exact version contract",
             )
             missing_version_group_state = warehouse_state()
             assert missing_version_group_state["project_id"] is None
             assert js(
-                "document.querySelector('.warehouse-node.is-center .warehouse-node-note').textContent === "
-                + json.dumps("来源证据不足")
-            )
-            assert js("document.querySelectorAll('#warehouse-scene-links line').length") == 0
-            assert js("document.querySelectorAll('#warehouse-scene-nodes [data-capsule-id]').length") == 1
-            js(
-                "document.querySelector('#warehouse-scene-nodes [data-capsule-id]').click(); true"
-            )
-            wait_js(
-                "window.ReweavePrototype.getState().warehouse.view === 'code'",
-                10,
-                "missing exact version code page",
+                "(() => { const unit = document.querySelector('#warehouse-scene-world [data-capsule-id="
+                + json.dumps(missing_version_capsule_id)
+                + "]').closest('.warehouse-capsule-unit'); return "
+                "unit.textContent.includes('缺少当前精确版本的项目来源关系') && "
+                "unit.querySelector('.warehouse-source-path') === null && "
+                "unit.querySelector('.warehouse-source-slot').dataset.evidenceThread === 'error' && "
+                "!unit.querySelector('.warehouse-capsule-contract').hidden; })()"
             )
             assert warehouse_state()["capsule_id"] == missing_version_capsule_id
             assert warehouse_state()["verified_core_code"] is False
             assert len(projection_bridge_payloads) == fallback_projection_calls
-            assert js(
-                "document.getElementById('warehouse-core-code').classList.contains('hidden') && "
-                "!document.getElementById('warehouse-core-code-empty').classList.contains('hidden')"
-            )
-            js(
-                "(() => { const toggle = document.getElementById('warehouse-code-developer-mode'); "
-                "if (!toggle.checked) toggle.click(); return true; })()"
-            )
-            missing_version_evidence = json.loads(
-                str(js("document.getElementById('warehouse-developer-evidence').textContent"))
-            )
-            assert missing_version_evidence["version"] == {}
-            assert missing_version_evidence["source"]["project_id"] is None
-            assert (
-                missing_version_evidence["source"]["source_identity_status"]
-                == "missing_exact_version_source_relation"
-            )
-            assert missing_version_evidence["source"]["relationships"] == []
-            assert missing_version_evidence["core_code_projection"] is None
-            assert len(projection_bridge_payloads) == fallback_projection_calls
-            js("document.getElementById('btn-warehouse-scene-back').click(); true")
-            wait_js(
-                "window.ReweavePrototype.getState().warehouse.view === 'project'",
-                10,
-                "return from missing exact version code",
-            )
             js("document.getElementById('btn-warehouse-scene-back').click(); true")
             wait_js(
                 "window.ReweavePrototype.getState().warehouse.view === 'overview'",
                 10,
-                "return from missing exact version group",
+                "return from missing exact version contract",
             )
 
             assert js(
-                "(() => { const node = Array.from(document.querySelectorAll("
-                "'#warehouse-scene-nodes [data-project-key]')).find(function (item) { "
-                "return item.textContent.includes('Display-only source'); }); "
-                "node.click(); return true; })()"
+                "(() => { const entry = Array.from(document.querySelectorAll("
+                "'#warehouse-unresolved-nodes .warehouse-unresolved-entry')).find(function (item) { "
+                "return item.textContent.includes('Missing Identity Capability'); }); "
+                "const capsule = entry && entry.querySelector('[data-capsule-id]'); "
+                "capsule.focus(); capsule.click(); return !!capsule; })()"
             )
             wait_js(
                 "window.ReweavePrototype.getState().warehouse.view === 'project' && "
-                "window.ReweavePrototype.getState().warehouse.project_key.startsWith('label:')",
+                "window.ReweavePrototype.getState().warehouse.project_key === "
+                + json.dumps("unresolved:" + missing_identity_capsule_id),
                 10,
-                "missing formal source identity group",
+                "missing formal source identity contract",
             )
             missing_identity_group_state = warehouse_state()
             assert missing_identity_group_state["project_id"] is None
-            assert js("document.querySelectorAll('#warehouse-scene-links line').length") == 0
             assert js(
-                "document.querySelector('.warehouse-node.is-center .warehouse-node-note').textContent === "
-                + json.dumps("来源证据不足")
+                "(() => { const unit = document.querySelector('#warehouse-scene-world [data-capsule-id="
+                + json.dumps(missing_identity_capsule_id)
+                + "]').closest('.warehouse-capsule-unit'); return "
+                "unit.textContent.includes('缺少当前精确版本的项目来源关系') && "
+                "unit.querySelector('.warehouse-source-path') === null && "
+                "!unit.querySelector('.warehouse-capsule-contract').hidden; })()"
             )
-            js(
-                "document.querySelector('#warehouse-scene-nodes [data-capsule-id]').click(); true"
-            )
-            wait_js(
-                "window.ReweavePrototype.getState().warehouse.view === 'code'",
-                10,
-                "missing formal source identity code page",
-            )
-            js(
-                "(() => { const toggle = document.getElementById('warehouse-code-developer-mode'); "
-                "if (!toggle.checked) toggle.click(); return true; })()"
-            )
-            missing_identity_evidence = json.loads(
-                str(js("document.getElementById('warehouse-developer-evidence').textContent"))
-            )
-            assert missing_identity_evidence["source"]["project_id"] is None
-            assert (
-                missing_identity_evidence["source"]["source_identity_status"]
-                == "missing_formal_source_identity"
-            )
-            assert missing_identity_evidence["source"]["relationships"] == []
-            assert missing_identity_evidence["core_code_projection"] is None
             assert warehouse_state()["verified_core_code"] is False
             assert len(projection_bridge_payloads) == fallback_projection_calls
             js("document.getElementById('btn-warehouse-scene-back').click(); true")
             wait_js(
-                "window.ReweavePrototype.getState().warehouse.view === 'project'",
-                10,
-                "return from missing formal source identity code",
-            )
-            js("document.getElementById('btn-warehouse-scene-back').click(); true")
-            wait_js(
                 "window.ReweavePrototype.getState().warehouse.view === 'overview'",
                 10,
-                "return from missing formal source identity group",
+                "return from missing formal source identity contract",
             )
 
-            js("document.getElementById('btn-warehouse-zoom-in').click(); true")
-            assert warehouse_state()["canvas"]["scale"] > 1
-            js("document.getElementById('btn-warehouse-zoom-reset').click(); true")
-            assert warehouse_state()["canvas"] == {"scale": 1, "x": 0, "y": 0}
+            assert js("document.getElementById('btn-warehouse-zoom-in') === null")
+            assert js("document.getElementById('btn-warehouse-zoom-reset') === null")
             js("document.getElementById('btn-warehouse-scene-back').click(); true")
             wait_js(
                 "!document.getElementById('screen-main').classList.contains('hidden') && "
@@ -1613,6 +1814,232 @@ def test_capsule_warehouse_read_only_scene_with_real_service(
             assert warehouse_table_state() == tables_before
             assert _usage_state(store) == usage_before
             assert _tree_state(state_dir / "products") == products_before
+            js("document.getElementById('btn-capsule-warehouse').click(); true")
+            wait_js(
+                "window.ReweavePrototype.getState().warehouse.view === 'overview' && "
+                "!document.getElementById('screen-capsule-warehouse').classList.contains('hidden')",
+                10,
+                "source rack before intake",
+            )
+            js(
+                "(() => { const rack = document.getElementById('warehouse-scene-canvas'); "
+                "rack.scrollTop = rack.scrollHeight; "
+                "window.scrollTo(0, document.documentElement.scrollHeight); return true; })()"
+            )
+            capture("dev-fixture-08-insufficient-source-shelf")
+            js(
+                "document.getElementById('btn-open-capsule-ingestion').focus(); "
+                "document.getElementById('btn-open-capsule-ingestion').click(); true"
+            )
+            wait_js(
+                "!document.getElementById('screen-capsule-ingestion').classList.contains('hidden') && "
+                "document.querySelector('[data-ingestion-panel=\"source\"]').classList.contains('is-active') && "
+                "document.getElementById('screen-capsule-ingestion').scrollTop === 0 && "
+                "window.scrollY === 0",
+                10,
+                "source intake",
+            )
+            assert js(
+                "document.getElementById('capsule-ingestion-specimen').classList.contains('is-empty') && "
+                "document.getElementById('ingestion-tab-source').getAttribute('aria-selected') === 'true' && "
+                "!document.getElementById('ingestion-panel-source').hidden"
+            )
+            QTest.keyClick(key_target, Qt.Key.Key_Right)
+            wait_js(
+                "document.getElementById('ingestion-tab-supervision').getAttribute('aria-selected') === 'true' && "
+                "!document.getElementById('ingestion-panel-supervision').hidden && "
+                "document.getElementById('ingestion-panel-source').hidden",
+                10,
+                "intake tab arrow navigation",
+            )
+            for station in ("supervision", "review", "formal", "source"):
+                js(
+                    "document.querySelector('[data-ingestion-station="
+                    + json.dumps(station)
+                    + "]').click(); true"
+                )
+                wait_js(
+                    "document.querySelectorAll('[data-ingestion-panel].is-active').length === 1 && "
+                    "document.querySelector('[data-ingestion-panel="
+                    + json.dumps(station)
+                    + "]').classList.contains('is-active') && "
+                    "document.querySelector('[data-ingestion-station="
+                    + json.dumps(station)
+                    + "]').getAttribute('aria-selected') === 'true' && "
+                    "!document.querySelector('[data-ingestion-panel="
+                    + json.dumps(station)
+                    + "]').hidden && "
+                    "document.activeElement.dataset.ingestionStation === "
+                    + json.dumps(station),
+                    10,
+                    station + " intake station",
+                )
+            js(
+                "document.querySelector('[data-ingestion-station=\"formal\"]').click();"
+                "document.querySelector('#warehouse-capability-groups details').open=true;"
+                "document.querySelector('.warehouse-capsule-seal.is-management').click();true"
+            )
+            wait_js(
+                "document.querySelector('.warehouse-capsule-seal.is-management')"
+                ".getAttribute('aria-expanded') === 'true' && "
+                "document.querySelector('.ingestion-formal-detail').dataset.loaded === 'true' && "
+                "!document.querySelector('.ingestion-formal-detail').hidden",
+                10,
+                "formal capability read-only detail",
+            )
+            assert js(
+                "document.querySelector('.ingestion-formal-detail').textContent.includes('入口') && "
+                "!document.querySelector('.ingestion-formal-detail').textContent.includes('unit_price=10')"
+            )
+            js("document.querySelector('[data-ingestion-station=\"source\"]').click();true")
+            pump(1)
+            capture("dev-fixture-09-source-intake")
+            js("document.getElementById('btn-ingestion-back').click(); true")
+            wait_js(
+                "!document.getElementById('screen-capsule-warehouse').classList.contains('hidden') && "
+                "window.ReweavePrototype.getState().warehouse.view === 'overview' && "
+                "document.activeElement === document.getElementById('btn-open-capsule-ingestion')",
+                10,
+                "return from empty-specimen intake",
+            )
+            assert js(
+                "(() => { const node = Array.from(document.querySelectorAll("
+                "'#warehouse-scene-nodes [data-project-key]')).find(item => "
+                "item.textContent.includes('Readonly source A')); node.click(); return true; })()"
+            )
+            wait_js(
+                "window.ReweavePrototype.getState().warehouse.view === 'project'",
+                10,
+                "specimen source project",
+            )
+            js(
+                "document.querySelector('#warehouse-scene-nodes [data-capsule-id="
+                + json.dumps(selected_id)
+                + "]').click(); true"
+            )
+            wait_js(
+                "window.ReweavePrototype.getState().warehouse.view === 'project' && "
+                "window.ReweavePrototype.getState().warehouse.capsule_id === "
+                + json.dumps(selected_id),
+                10,
+                "specimen capsule contract",
+            )
+            js(
+                "(() => { const unit = document.querySelector('#warehouse-scene-world [data-capsule-id="
+                + json.dumps(selected_id)
+                + "]').closest('.warehouse-capsule-unit'); "
+                "unit.querySelector('.warehouse-source-path').click(); return true; })()"
+            )
+            wait_js(
+                "window.ReweavePrototype.getState().warehouse.view === 'code' && "
+                "window.ReweavePrototype.getState().warehouse.verified_core_code === true",
+                10,
+                "specimen capsule code",
+            )
+            js(
+                "document.getElementById('btn-open-capsule-ingestion').focus(); "
+                "document.getElementById('btn-open-capsule-ingestion').click(); true"
+            )
+            wait_js(
+                "!document.getElementById('capsule-ingestion-specimen').classList.contains('is-empty') && "
+                "document.getElementById('ingestion-specimen-name').textContent.includes('Readonly source A') && "
+                "document.getElementById('ingestion-specimen-presentation').textContent === '1'",
+                10,
+                "source specimen carried from code",
+            )
+            for station in ("supervision", "review", "formal", "source"):
+                js(
+                    "document.querySelector('[data-ingestion-station="
+                    + json.dumps(station)
+                    + "]').click(); true"
+                )
+                assert js(
+                    "document.getElementById('ingestion-specimen-name').textContent.includes("
+                    + json.dumps("Readonly source A")
+                    + ")"
+                )
+            capture("dev-fixture-10-source-context-intake")
+            js("document.getElementById('btn-ingestion-back').click(); true")
+            wait_js(
+                "window.ReweavePrototype.getState().warehouse.view === 'code' && "
+                "document.activeElement === document.getElementById('btn-open-capsule-ingestion')",
+                10,
+                "return from source specimen intake",
+            )
+            assert _tree_state(sources_root) == source_before
+            assert _tree_state(untouched_target) == target_before
+            assert store.current_revision() == revision_before
+            assert warehouse_table_state() == tables_before
+            assert _usage_state(store) == usage_before
+            assert _tree_state(state_dir / "products") == products_before
+
+            full_initial_state = service.get_initial_state
+
+            def single_source_initial_state() -> dict[str, object]:
+                result = full_initial_state()
+                allowed = {capsule_rows[0][0], capsule_rows[1][0]}
+                result["warehouseCapsules"] = [
+                    capsule
+                    for capsule in result["warehouseCapsules"]
+                    if capsule.get("capsule_id") in allowed
+                ]
+                return result
+
+            service.get_initial_state = single_source_initial_state
+            js(
+                "document.getElementById('btn-open-capsule-ingestion').click();"
+                "document.getElementById('btn-supervision-model-refresh').click(); true"
+            )
+            wait_js(
+                "window.ReweavePrototype.getState().warehouse.source_group_count === 1",
+                10,
+                "single source refresh",
+            )
+            js("document.getElementById('btn-ingestion-back').click(); true")
+            wait_js(
+                "window.ReweavePrototype.getState().warehouse.view === 'code'",
+                10,
+                "return to code after single source refresh",
+            )
+            for expected_view in ("project", "overview"):
+                js("document.getElementById('btn-warehouse-scene-back').click(); true")
+                wait_js(
+                    "window.ReweavePrototype.getState().warehouse.view === "
+                    + json.dumps(expected_view),
+                    10,
+                    "return through " + expected_view,
+                )
+            js("document.getElementById('btn-warehouse-scene-back').click(); true")
+            wait_js(
+                "!document.getElementById('screen-main').classList.contains('hidden')",
+                10,
+                "leave single source warehouse",
+            )
+            js("document.getElementById('btn-capsule-warehouse').click(); true")
+            wait_js(
+                "window.ReweavePrototype.getState().warehouse.view === 'project' && "
+                "document.querySelectorAll('.warehouse-source-accordion.is-open').length === 1",
+                10,
+                "single source auto expanded",
+            )
+            capture("dev-fixture-11-single-source-auto-expanded")
+            js("document.querySelector('.warehouse-source-toggle.is-open').click(); true")
+            wait_js(
+                "window.ReweavePrototype.getState().warehouse.view === 'overview'",
+                10,
+                "single source user collapse",
+            )
+            js("document.getElementById('btn-warehouse-lang').click(); true")
+            assert warehouse_state()["view"] == "overview"
+            assert js(
+                "document.querySelectorAll('.warehouse-source-accordion.is-open').length === 0"
+            )
+            assert _tree_state(sources_root) == source_before
+            assert _tree_state(untouched_target) == target_before
+            assert store.current_revision() == revision_before
+            assert warehouse_table_state() == tables_before
+            assert _usage_state(store) == usage_before
+            assert _tree_state(state_dir / "products") == products_before
     finally:
         if window is not None:
             window.close()
@@ -1620,6 +2047,1409 @@ def test_capsule_warehouse_read_only_scene_with_real_service(
             pump()
             QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
             app.processEvents()
+
+
+def _run_product_capability_gap_qweb_case(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    time_fixture: bool,
+    enum_fixture: bool = False,
+    replan_fixture: bool = False,
+    multi_field_replan: bool = False,
+    start_error_code: str | None = None,
+    preauthorized: bool = False,
+) -> None:
+    pytest.importorskip("PySide6.QtWebEngineCore")
+    if sys.platform.startswith("linux") and not (
+        os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")
+    ):
+        pytest.skip("A desktop GUI session is required")
+
+    import copy
+
+    from PySide6.QtCore import QCoreApplication, QEvent
+    from PySide6.QtWebEngineCore import QWebEngineProfile
+
+    from pimos_lite import desktop_reweave_static as desktop
+    from pimos_lite.reweave_app_service import ReweaveAppService
+    from pimos_lite.reweave_capsule_store import CapsuleWarehouseStore
+    from tests.test_reweave_phase5_generation import _NoLegacyEngine
+
+    plan_token = "plan_token_" + "7" * 48
+    plan_digest = "8" * 64
+    projection_digest = "9" * 64
+    if enum_fixture:
+        screenshot_prefix = "capability-gap-finite-enum"
+        product_name = "确定性测试夹具：有限枚举能力准备"
+        goal = "DETERMINISTIC_TEST_FIXTURE_NOT_FORMAL_WAREHOUSE_STATE"
+        summary = "缺少一个确定性的有限枚举状态分类。"
+        gap_title = "有限状态分类"
+        gap_reason = "正式测试目录只有输入与展示能力。"
+        capability_key = "workflow_state_classification"
+        capability_group_display_name = "工作流状态分类"
+        input_properties = {
+            "important": {"type": "boolean"},
+            "urgent": {"type": "boolean"},
+        }
+        output_properties = {
+            "priority": {
+                "type": "string",
+                "min_length": 4,
+                "max_length": 8,
+                "enum": ["delegate", "do_now", "drop", "schedule"],
+            }
+        }
+        adapter_contract_version = "computation_adapter.v4"
+        result_field = "priority"
+        passthrough_fields = []
+        warehouse_revision = 67
+        published_role_order = []
+    elif multi_field_replan:
+        replan_fixture = True
+        screenshot_prefix = "capability-gap-rectangle-replan"
+        product_name = "矩形面积能力准备"
+        goal = "创建一个本地矩形面积计算器。"
+        summary = "缺少一个确定性的整数面积计算。"
+        gap_title = "矩形面积计算"
+        gap_reason = "正式能力原先无法计算矩形面积。"
+        capability_key = "rectangle_area_calculation"
+        capability_group_display_name = "矩形面积计算"
+        input_properties = {
+            "height": {"type": "integer", "minimum": 1, "maximum": 1000},
+            "width": {"type": "integer", "minimum": 1, "maximum": 1000},
+        }
+        output_properties = {
+            "area": {"type": "integer", "minimum": 1, "maximum": 1000000}
+        }
+        adapter_contract_version = "computation_adapter.v2"
+        result_field = "area"
+        passthrough_fields = []
+        warehouse_revision = 63
+        published_role_order = [
+            "rectangle_dimensions_input",
+            "rectangle_area",
+            "rectangle_area_result",
+        ]
+    elif replan_fixture:
+        screenshot_prefix = "capability-gap-year-replan"
+        product_name = "年数换算能力准备"
+        goal = "创建一个本地年数换算工具。"
+        summary = "缺少一个确定性的整数年数换算。"
+        gap_title = "年数转换为月数"
+        gap_reason = "正式能力原先无法把年数转换为月数。"
+        capability_key = "year_month_conversion"
+        capability_group_display_name = "年数换算为月数"
+        input_properties = {
+            "years": {"type": "integer", "minimum": 0, "maximum": 100}
+        }
+        output_properties = {
+            "months": {"type": "integer", "minimum": 0, "maximum": 1200}
+        }
+        adapter_contract_version = "computation_adapter.v2"
+        result_field = "months"
+        passthrough_fields = []
+        warehouse_revision = 55
+        published_role_order = [
+            "years_input",
+            "years_to_months",
+            "months_result",
+        ]
+    elif time_fixture:
+        screenshot_prefix = "capability-gap-time"
+        product_name = "确定性测试夹具：时间换算能力准备"
+        goal = "确定性测试夹具：补齐整数小时到分钟的换算能力。"
+        summary = "缺少一个确定性的整数时间换算。"
+        gap_title = "小时转换为分钟"
+        gap_reason = "正式能力无法把小时转换为分钟。"
+        capability_key = "time_unit_conversion"
+        capability_group_display_name = "时间单位换算"
+        input_properties = {
+            "hours": {"type": "integer", "minimum": 0, "maximum": 8760}
+        }
+        output_properties = {
+            "minutes": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 525600,
+            }
+        }
+        adapter_contract_version = "computation_adapter.v2"
+        result_field = "minutes"
+        passthrough_fields = []
+        warehouse_revision = 42
+        published_role_order = [
+            "hours_input",
+            "hours_to_minutes",
+            "minutes_to_seconds",
+            "seconds_result",
+        ]
+    else:
+        screenshot_prefix = "capability-gap"
+        product_name = "报价规则能力准备"
+        goal = "创建一个缺少报价规则的本地报价工具。"
+        summary = "缺少一个确定性的报价规则计算。"
+        gap_title = "报价规则计算"
+        gap_reason = "正式能力无法把数量转换为完整报价输入。"
+        capability_key = "quote_calculation"
+        capability_group_display_name = "参数化报价结果"
+        input_properties = {
+            "quantity": {"type": "integer", "minimum": 1, "maximum": 10}
+        }
+        output_properties = {
+            "quantity": {"type": "integer", "minimum": 1, "maximum": 10},
+            "unit_price": {
+                "type": "integer",
+                "minimum": 0,
+                "maximum": 1000,
+            },
+        }
+        adapter_contract_version = "computation_adapter.v3"
+        result_field = "unit_price"
+        passthrough_fields = ["quantity"]
+        warehouse_revision = 41
+        published_role_order = [
+            "parameterized_quote_input",
+            "quantity_discount_policy",
+            "parameterized_quote_total",
+            "parameterized_quote_result",
+        ]
+    gap_id = "gap_" + "a" * 20
+    plan = {
+        "schema_version": "product_plan.v2",
+        "product_name": product_name,
+        "canonical_digest": plan_digest,
+        "sections": [
+            {
+                "section_id": "frontend",
+                "applicability": "not_applicable",
+                "summary": "沿用现有输入与展示能力。",
+                "work_items": [],
+                "gaps": [],
+            },
+            {
+                "section_id": "backend",
+                "applicability": "applicable",
+                "summary": summary,
+                    "work_items": [],
+                    "gaps": [
+                        {
+                            "gap_id": gap_id,
+                        "title": gap_title,
+                        "reason": gap_reason,
+                        "requirement_ids": ["requirement_" + "b" * 20],
+                    }
+                ],
+            },
+            {
+                "section_id": "data",
+                "applicability": "not_applicable",
+                "summary": "不需要独立数据层。",
+                "work_items": [],
+                "gaps": [],
+            },
+            {
+                "section_id": "infrastructure",
+                "applicability": "not_applicable",
+                "summary": "不需要独立基础设施层。",
+                "work_items": [],
+                "gaps": [],
+            },
+        ],
+    }
+    projection = {
+        "projection_digest": projection_digest,
+        "capability_key": capability_key,
+        "capability_group_display_name": capability_group_display_name,
+        "capability_kind": "computation",
+        "slot": "before_existing_computation",
+        "input_contract": {
+            "schema": "data_contract.v1",
+            "type": "object",
+            "properties": input_properties,
+            "required": list(input_properties),
+            "additional_properties": False,
+        },
+        "output_contract": {
+            "schema": "data_contract.v1",
+            "type": "object",
+            "properties": output_properties,
+            "required": list(output_properties),
+            "additional_properties": False,
+        },
+        "adapter_contract_version": adapter_contract_version,
+        "result_field": result_field,
+        "passthrough_fields": passthrough_fields,
+        "warehouse_revision": warehouse_revision,
+        "catalog_digest": "c" * 64,
+    }
+    if enum_fixture:
+        projection.update(
+            schema_version="capability_gap_projection.v2",
+            proof_schema="source_graph_proof.v2",
+            result_enum=["delegate", "do_now", "drop", "schedule"],
+        )
+
+    class Planner:
+        def __init__(self) -> None:
+            self.decisions: list[dict[str, object]] = []
+            self.ambiguous = False
+            self.stale = False
+            self.authorization: dict[str, object] | None = None
+            self.prepare_calls = 0
+            self.replan_calls = 0
+            self.replan_status = "available"
+            self.successor_token = "plan_token_" + "6" * 48
+            self.source_run: dict[str, object] | None = None
+            self.review_outcome: dict[str, object] | None = None
+
+        def _workspace(self) -> dict[str, object]:
+            current = copy.deepcopy(self.decisions[-1]) if self.decisions else None
+            return {
+                "plan_token": plan_token,
+                "goal": goal,
+                "status": "plan_review",
+                "question_set": None,
+                "plan": copy.deepcopy(plan),
+                "plan_diff": None,
+                "confirmation": None,
+                "capability_gaps": [
+                    {
+                        **copy.deepcopy(plan["sections"][1]["gaps"][0]),
+                        "status": (
+                            "capability_gap_boundary_ambiguous"
+                            if self.ambiguous
+                            else (
+                                "capability_gap_projection_stale"
+                                if self.stale or replan_fixture
+                                else "available"
+                            )
+                        ),
+                        "projection": (
+                            None if self.ambiguous else copy.deepcopy(projection)
+                        ),
+                        "decision_history": copy.deepcopy(self.decisions),
+                        "current_decision": current,
+                        "source_proposal_authorization": copy.deepcopy(
+                            self.authorization
+                        ),
+                        "source_proposal_request": (
+                            {
+                                "request_digest": "e" * 64,
+                                "prompt_version": (
+                                    "capability_source_proposal_prompt.v4"
+                                    if enum_fixture
+                                    else "capability_source_proposal_prompt.v1"
+                                ),
+                                "output_protocol_version": (
+                                    "capability_source_proposal.v2"
+                                    if enum_fixture
+                                    else "capability_source_proposal.v1"
+                                ),
+                                "status": "waiting_model_authorization",
+                            }
+                            if self.authorization is not None
+                            else None
+                        ),
+                        "source_proposal_run": (
+                            {
+                                **copy.deepcopy(self.source_run),
+                                "review_outcome": copy.deepcopy(
+                                    self.review_outcome
+                                ),
+                            }
+                            if self.source_run is not None
+                            else None
+                        ),
+                    }
+                ],
+                "capability_replan": (
+                    {
+                        "schema_version": "capability_replan_handoff.v1",
+                        "status": self.replan_status,
+                        "source_gap_id": gap_id,
+                        "projection_digest": projection_digest,
+                        "role_order": published_role_order,
+                    }
+                    if replan_fixture
+                    or (
+                        self.review_outcome is not None
+                        and self.review_outcome.get("status") == "published"
+                    )
+                    else None
+                ),
+            }
+
+        def _successor_workspace(self) -> dict[str, object]:
+            if multi_field_replan:
+                return {
+                    "plan_token": self.successor_token,
+                    "goal": goal,
+                    "status": "plan_review",
+                    "question_set": None,
+                    "plan": {
+                        **copy.deepcopy(plan),
+                        "canonical_digest": "6" * 64,
+                        "sections": [
+                            {
+                                "section_id": "frontend",
+                                "applicability": "applicable",
+                                "summary": "矩形尺寸输入与面积结果。",
+                                "gaps": [],
+                                "work_items": [
+                                    {
+                                        "work_item_id": "work_item_dimensions",
+                                        "title": "rectangle_dimensions_input",
+                                        "description": "接收整数宽度和高度。",
+                                        "requirement_ids": ["requirement_rectangle"],
+                                        "depends_on": [],
+                                        "delivery_wave": 1,
+                                        "acceptance_intent": "验证唯一面积计算事件。",
+                                        "capsule_bindings": [
+                                            {
+                                                "capsule_id": "capsule_dimensions",
+                                                "version_id": "version_dimensions",
+                                                "canonical_hash": "1" * 64,
+                                                "display_name": "矩形尺寸输入",
+                                                "capability_kind": "interaction",
+                                            }
+                                        ],
+                                    },
+                                    {
+                                        "work_item_id": "work_item_result",
+                                        "title": "rectangle_area_result",
+                                        "description": "只展示最终面积。",
+                                        "requirement_ids": ["requirement_rectangle"],
+                                        "depends_on": ["work_item_area"],
+                                        "delivery_wave": 3,
+                                        "acceptance_intent": "验证最终面积展示。",
+                                        "capsule_bindings": [
+                                            {
+                                                "capsule_id": "capsule_result",
+                                                "version_id": "version_result",
+                                                "canonical_hash": "3" * 64,
+                                                "display_name": "矩形面积结果",
+                                                "capability_kind": "presentation",
+                                            }
+                                        ],
+                                    },
+                                ],
+                            },
+                            {
+                                "section_id": "backend",
+                                "applicability": "applicable",
+                                "summary": "宽度乘以高度的确定性计算。",
+                                "gaps": [],
+                                "work_items": [
+                                    {
+                                        "work_item_id": "work_item_area",
+                                        "title": "rectangle_area",
+                                        "description": "计算矩形面积。",
+                                        "requirement_ids": ["requirement_rectangle"],
+                                        "depends_on": ["work_item_dimensions"],
+                                        "delivery_wave": 2,
+                                        "acceptance_intent": "验证整数乘法。",
+                                        "capsule_bindings": [
+                                            {
+                                                "capsule_id": "capsule_area",
+                                                "version_id": "version_area",
+                                                "canonical_hash": "2" * 64,
+                                                "display_name": "矩形面积计算",
+                                                "capability_kind": "computation",
+                                            }
+                                        ],
+                                    }
+                                ],
+                            },
+                            {
+                                "section_id": "data",
+                                "applicability": "not_applicable",
+                                "summary": "不需要独立数据层。",
+                                "gaps": [],
+                                "work_items": [],
+                            },
+                            {
+                                "section_id": "infrastructure",
+                                "applicability": "not_applicable",
+                                "summary": "不需要独立基础设施层。",
+                                "gaps": [],
+                                "work_items": [],
+                            },
+                        ],
+                    },
+                    "plan_diff": None,
+                    "confirmation": None,
+                    "capability_gaps": [],
+                    "capability_replan": {
+                        "schema_version": "capability_replan_handoff.v1",
+                        "status": "started",
+                        "source_gap_id": gap_id,
+                        "successor_plan_token": self.successor_token,
+                        "handoff_digest": "5" * 64,
+                        "role_order": published_role_order,
+                        "acceptance_suggestions": [
+                            {
+                                "input": {"height": 1, "width": 1},
+                                "expected_output": {"area": 1},
+                            },
+                            {
+                                "input": {"height": 8, "width": 12},
+                                "expected_output": {"area": 96},
+                            },
+                            {
+                                "input": {"height": 1000, "width": 1000},
+                                "expected_output": {"area": 1000000},
+                            },
+                        ],
+                    },
+                }
+            successor_plan = copy.deepcopy(plan)
+            successor_plan["canonical_digest"] = "6" * 64
+            successor_plan["sections"][1]["gaps"] = []
+            successor_plan["sections"][0]["applicability"] = "applicable"
+            successor_plan["sections"][0]["summary"] = "年数输入与月数结果。"
+            successor_plan["sections"][1]["summary"] = "年数到月数的确定性换算。"
+            successor_plan["sections"][0]["work_items"] = [
+                {
+                    "work_item_id": "work_item_years_input",
+                    "title": "years_input",
+                    "description": "接收整数年数。",
+                    "requirement_ids": ["requirement_year_conversion"],
+                    "depends_on": [],
+                    "delivery_wave": 1,
+                    "acceptance_intent": "验证唯一换算事件。",
+                    "capsule_bindings": [
+                        {
+                            "capsule_id": "capsule_years_input",
+                            "version_id": "version_years_input",
+                            "canonical_hash": "1" * 64,
+                            "display_name": "年数输入",
+                            "capability_kind": "interaction",
+                        }
+                    ],
+                },
+                {
+                    "work_item_id": "work_item_months_result",
+                    "title": "months_result",
+                    "description": "只展示最终月数。",
+                    "requirement_ids": ["requirement_year_conversion"],
+                    "depends_on": ["work_item_years_to_months"],
+                    "delivery_wave": 3,
+                    "acceptance_intent": "验证最终月数展示。",
+                    "capsule_bindings": [
+                        {
+                            "capsule_id": "capsule_months_result",
+                            "version_id": "version_months_result",
+                            "canonical_hash": "3" * 64,
+                            "display_name": "月数结果",
+                            "capability_kind": "presentation",
+                        }
+                    ],
+                },
+            ]
+            successor_plan["sections"][1]["work_items"] = [
+                {
+                    "work_item_id": "work_item_years_to_months",
+                    "title": "years_to_months",
+                    "description": "将年数乘以 12 转换为月数。",
+                    "requirement_ids": ["requirement_year_conversion"],
+                    "depends_on": ["work_item_years_input"],
+                    "delivery_wave": 2,
+                    "acceptance_intent": "验证整数年数换算。",
+                    "capsule_bindings": [
+                        {
+                            "capsule_id": "capsule_years_to_months",
+                            "version_id": "version_years_to_months",
+                            "canonical_hash": "2" * 64,
+                            "display_name": "年数转月数",
+                            "capability_kind": "computation",
+                        }
+                    ],
+                }
+            ]
+            return {
+                "plan_token": self.successor_token,
+                "goal": goal,
+                "status": "plan_review",
+                "question_set": None,
+                "plan": successor_plan,
+                "plan_diff": None,
+                "confirmation": None,
+                "capability_gaps": [],
+                "capability_replan": {
+                    "schema_version": "capability_replan_handoff.v1",
+                    "status": "started",
+                    "source_gap_id": gap_id,
+                    "successor_plan_token": self.successor_token,
+                    "handoff_digest": "5" * 64,
+                    "role_order": [
+                        "years_input",
+                        "years_to_months",
+                        "months_result",
+                    ],
+                    "acceptance_suggestions": [
+                        {
+                            "input": {"years": 1},
+                            "expected_output": {"months": 12},
+                        },
+                        {
+                            "input": {"years": 2},
+                            "expected_output": {"months": 24},
+                        },
+                        {
+                            "input": {"years": 10},
+                            "expected_output": {"months": 120},
+                        },
+                    ],
+                },
+            }
+
+        def initial_state(self):
+            return {
+                "ok": True,
+                "data": {
+                    "schema_version": "product_planning_state.v1",
+                    "available": True,
+                    "selected_model": {
+                        "name": "fixture",
+                        "digest": "d" * 64,
+                        "parameter_count": 1,
+                        "parameter_size": "1B",
+                    },
+                    "workspaces": [
+                        {
+                            "plan_token": plan_token,
+                            "display_name": plan["product_name"],
+                            "status": "plan_review",
+                            "updated_at": "2026-08-03T00:00:00Z",
+                            "plan_version": 1,
+                            "confirmed": False,
+                        }
+                    ],
+                    "candidate_generation_available": False,
+                    "product_generation_performed": False,
+                },
+            }
+
+        def get(self, *_args):
+            return {"ok": True, "data": self._workspace()}
+
+        def _workspace_by_token(self, _token):
+            return {"plan": copy.deepcopy(plan)}
+
+        @staticmethod
+        def _read_capability_replan_handoff(_workspace):
+            return None
+
+        def start_capability_replan(self, *_args, **_kwargs):
+            self.replan_calls += 1
+            return {"ok": True, "data": self._successor_workspace()}
+
+        def record_capability_gap_decision(
+            self,
+            _token,
+            _plan_digest,
+            _projection_digest,
+            previous_digest,
+            decision,
+            behavior,
+            reason,
+            acceptance_cases,
+            _catalog,
+        ):
+            expected = (
+                self.decisions[-1]["canonical_digest"]
+                if self.decisions
+                else None
+            )
+            assert previous_digest == expected
+            row = {
+                "sequence": len(self.decisions) + 1,
+                "decision": decision,
+                "behavior_intent": behavior,
+                "reason": reason,
+                "acceptance_cases": copy.deepcopy(acceptance_cases),
+                "canonical_digest": str(len(self.decisions) + 1) * 64,
+            }
+            self.decisions.append(row)
+            return {"ok": True, "data": self._workspace()}
+
+        def prepare_capability_source_proposal(
+            self,
+            _token,
+            _plan_digest,
+            _projection_digest,
+            decision_digest,
+            _catalog,
+        ):
+            assert self.decisions[-1]["canonical_digest"] == decision_digest
+            self.prepare_calls += 1
+            self.authorization = {
+                "schema_version": (
+                    "capability_source_proposal_authorization.v2"
+                    if enum_fixture
+                    else "capability_source_proposal_authorization.v1"
+                ),
+                "authorization_digest": "f" * 64,
+                "locked_at": "2026-08-05T00:00:00.000Z",
+                "status": "locked",
+            }
+            return {"ok": True, "data": self._workspace()}
+
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("REWEAVE_STATE_DIR", str(state_dir))
+    store = CapsuleWarehouseStore(state_dir / "capsule_warehouse.sqlite3")
+    planner = Planner()
+    if preauthorized:
+        planner.decisions = [
+            {
+                "sequence": 1,
+                "decision": "authorize",
+                "behavior_intent": "执行冻结的整数计算。",
+                "reason": None,
+                "acceptance_cases": [
+                    {
+                        "input": {"quantity": 5},
+                        "expected_output": {
+                            "quantity": 5,
+                            "unit_price": 80,
+                        },
+                    }
+                ],
+                "canonical_digest": "1" * 64,
+            }
+        ]
+        planner.authorization = {
+            "authorization_digest": "f" * 64,
+            "locked_at": "2026-08-05T00:00:00.000Z",
+            "status": "locked",
+        }
+    service = ReweaveAppService(_NoLegacyEngine(), capsule_store=store)
+    service._product_planner = planner
+    if replan_fixture:
+        capsule_details = (
+            {
+            "capsule_dimensions": {
+                "version_id": "version_dimensions",
+                "output_contract_json": {
+                    "schema": "event_outputs.v1",
+                    "events": {
+                        "area_requested": {
+                            "schema": "data_contract.v1",
+                            "type": "object",
+                            "properties": copy.deepcopy(input_properties),
+                            "required": ["height", "width"],
+                            "additional_properties": False,
+                        }
+                    },
+                },
+            },
+            "capsule_area": {
+                "version_id": "version_area",
+                "input_contract_json": {
+                    "schema": "data_contract.v1",
+                    "type": "object",
+                    "properties": copy.deepcopy(input_properties),
+                    "required": ["height", "width"],
+                    "additional_properties": False,
+                },
+                "output_contract_json": {
+                    "schema": "data_contract.v1",
+                    "type": "object",
+                    "properties": copy.deepcopy(output_properties),
+                    "required": ["area"],
+                    "additional_properties": False,
+                },
+            },
+            }
+            if multi_field_replan
+            else {
+                "capsule_years_input": {
+                    "version_id": "version_years_input",
+                    "output_contract_json": {
+                        "schema": "event_outputs.v1",
+                        "events": {
+                            "conversion_requested": {
+                                "schema": "data_contract.v1",
+                                "type": "object",
+                                "properties": copy.deepcopy(input_properties),
+                                "required": ["years"],
+                                "additional_properties": False,
+                            }
+                        },
+                    },
+                },
+                "capsule_years_to_months": {
+                    "version_id": "version_years_to_months",
+                    "input_contract_json": {
+                        "schema": "data_contract.v1",
+                        "type": "object",
+                        "properties": copy.deepcopy(input_properties),
+                        "required": ["years"],
+                        "additional_properties": False,
+                    },
+                    "output_contract_json": {
+                        "schema": "data_contract.v1",
+                        "type": "object",
+                        "properties": copy.deepcopy(output_properties),
+                        "required": ["months"],
+                        "additional_properties": False,
+                    },
+                },
+            }
+        )
+        service.get_capsule_detail = lambda payload: {
+            "ok": True,
+            "data": {
+                "versions": [
+                    copy.deepcopy(capsule_details[payload["capsule_id"]])
+                ]
+            },
+        }
+    review_id = "review_" + "4" * 32
+    decoy_review_id = "review_" + "5" * 32
+    start_calls: list[dict[str, object]] = []
+
+    def start_source_proposal(payload):
+        start_calls.append(copy.deepcopy(payload))
+        assert set(payload) == {
+            "plan_token",
+            "plan_digest",
+            "projection_digest",
+            "authorization_digest",
+        }
+        if start_error_code:
+            return {
+                "ok": False,
+                "error": {"code": start_error_code},
+            }
+        planner.source_run = {
+            "schema": "capability_source_proposal_run.v1",
+            "run_id": "run_" + "3" * 32,
+            "status": "review_required",
+            "stage": "admission",
+            "review_id": review_id,
+        }
+        return {
+            "ok": True,
+            "run_id": planner.source_run["run_id"],
+            "status": "queued",
+        }
+
+    def get_source_run(payload):
+        if (
+            planner.source_run is None
+            or payload.get("run_id") != planner.source_run["run_id"]
+        ):
+            return {
+                "ok": False,
+                "error": {"code": "intake_run_not_found"},
+            }
+        return {"ok": True, "data": copy.deepcopy(planner.source_run)}
+
+    def review_item(current_review_id):
+        return {
+            "review_id": current_review_id,
+            "candidate_status": "review_required",
+            "display_name": (
+                gap_title if current_review_id == review_id else "其他待复核能力"
+            ),
+            "capability_kind": "computation",
+            "allowed_decisions": ["publish_general", "reject"],
+            "candidate": {
+                "candidate_origin": "deterministic_computation_adapter",
+                "adapter_contract_version": adapter_contract_version,
+                "resume_contract": (
+                    "resubmit_ephemeral_capture.v2"
+                    if adapter_contract_version == "computation_adapter.v3"
+                    else "resubmit_ephemeral_capture.v1"
+                ),
+                "frozen_review_admission": {
+                    "schema": "frozen_stage3_review_admission.v2",
+                    "projection_digest": projection_digest,
+                    "authorized_capability_key": capability_key,
+                },
+            },
+        }
+
+    def decide_source_review(payload):
+        assert payload["review_id"] == review_id
+        if payload["decision"] == "publish_general":
+            assert payload["capability_key"] == capability_key
+            assert payload["display_name"] == capability_group_display_name
+            assert payload["role_key"] == (
+                "hours_to_minutes"
+                if time_fixture
+                else "quantity_discount_policy"
+            )
+            assert payload["variant_key"] == "default"
+            planner.review_outcome = {
+                "status": "published",
+                "review_id": review_id,
+                "capsule_id": "capsule_" + "6" * 20,
+                "version_id": "version_" + "7" * 20,
+                "canonical_hash": "8" * 64,
+            }
+        else:
+            assert payload == {
+                "review_id": review_id,
+                "decision": "reject",
+            }
+            planner.review_outcome = {
+                "status": "rejected",
+                "review_id": review_id,
+            }
+        return {"ok": True, "data": copy.deepcopy(planner.review_outcome)}
+
+    service.start_product_capability_source_proposal = start_source_proposal
+    service.get_intake_run = get_source_run
+    service.list_review_items = lambda _payload=None: {
+        "ok": True,
+        "data": {
+            "items": [
+                review_item(decoy_review_id),
+                review_item(review_id),
+            ]
+        },
+    }
+    service.list_capability_groups = lambda _payload=None: {
+        "ok": True,
+        "data": {
+            "groups": [
+                {
+                    "capability_key": capability_key,
+                    "display_name": capability_group_display_name,
+                    "capsules": [],
+                }
+            ]
+        },
+    }
+    service.list_backups = lambda _payload=None: {
+        "ok": True,
+        "data": {"backups": []},
+    }
+    service.list_supervision_models = lambda _payload=None: {
+        "ok": True,
+        "data": {"models": []},
+    }
+    service.decide_review_item = decide_source_review
+    service._capability_source_proposal_review_outcome = (
+        lambda current_review_id: copy.deepcopy(
+            planner.review_outcome
+            or {
+                "status": "review_required",
+                "review_id": current_review_id,
+            }
+        )
+    )
+    if replan_fixture:
+        service._resolve_product_capability_replan = (
+            lambda *_args: (
+                {"publication_revision": 57},
+                {"members": []},
+                copy.deepcopy(projection),
+            )
+        )
+    qt_parts = desktop.import_qt_webengine()
+    QApplication = qt_parts[0]
+    app = QApplication.instance() or QApplication(sys.argv)
+    app.setQuitOnLastWindowClosed(False)
+    profile = QWebEngineProfile.defaultProfile()
+    profile.setCachePath(str(tmp_path / "qweb-cache"))
+    profile.setPersistentStoragePath(str(tmp_path / "qweb-storage"))
+    window = None
+
+    def pump(seconds: float = 0.03) -> None:
+        deadline = time.monotonic() + seconds
+        while time.monotonic() < deadline:
+            app.processEvents()
+            time.sleep(0.005)
+
+    try:
+        with patch.object(desktop, "ReweaveAppService", return_value=service):
+            window, bridge = desktop.create_reweave_window()
+            window._reweave_bridge = bridge
+            page = window.centralWidget().page()
+            window.resize(1100, 720)
+            window.move(-10000, -10000)
+            window.show()
+
+            def js(expression: str, timeout: float = 20) -> object:
+                result: list[object] = []
+                page.runJavaScript(expression, result.append)
+                deadline = time.monotonic() + timeout
+                while not result and time.monotonic() < deadline:
+                    pump()
+                if not result:
+                    raise TimeoutError("javascript_callback_timeout")
+                return result[0]
+
+            def wait_js(expression: str, label: str) -> object:
+                deadline = time.monotonic() + 20
+                while time.monotonic() < deadline:
+                    result = js(expression)
+                    if result:
+                        return result
+                    pump(0.08)
+                raise TimeoutError(label)
+
+            wait_js(
+                "window.ReweavePrototype.getState().productPlan.view === 'review'",
+                "gap plan review",
+            )
+            assert js(
+                "window.ReweavePrototype.getState().productPlan.capability_gap_count"
+            ) == 1
+            assert js(
+                "document.getElementById('btn-confirm-and-generate').disabled"
+            ) is True
+            assert js(
+                "document.querySelector('.product-acceptance').classList.contains('hidden')"
+            ) is True
+            js(
+                "document.querySelector('[data-section-index=\"1\"]').click(); true"
+            )
+            wait_js(
+                "document.querySelectorAll('.product-capability-gap').length === 1",
+                "inline gap",
+            )
+            if replan_fixture:
+                wait_js(
+                    "!!document.querySelector("
+                    "'[data-capability-replan-status=\"available\"] "
+                    "[data-action=\"start-capability-replan\"]')",
+                    "published capability replan action",
+                )
+                assert js(
+                    "document.querySelector("
+                    "'[data-capability-replan-status=\"available\"]'"
+                    ").textContent.includes("
+                    + (
+                        "'rectangle_dimensions_input → rectangle_area → "
+                        "rectangle_area_result')"
+                        if multi_field_replan
+                        else "'years_input → years_to_months → months_result')"
+                    )
+                ) is True
+                assert window.centralWidget().grab().save(
+                    str(tmp_path / f"{screenshot_prefix}-available-1100x720.png")
+                )
+                js(
+                    "document.querySelector("
+                    "'[data-action=\"start-capability-replan\"]'"
+                    ").click(); true"
+                )
+                wait_js(
+                    "window.ReweavePrototype.getState().productPlan.view === 'review' "
+                    "&& window.ReweavePrototype.getState().productPlan.capability_gap_count === 0",
+                    "replanned workspace review",
+                )
+                wait_js(
+                    "document.querySelectorAll("
+                    "'#product-acceptance-cases .product-acceptance-row'"
+                    ").length === 3",
+                    "replan acceptance suggestions",
+                )
+                assert js(
+                    "JSON.stringify(Array.from(document.querySelectorAll("
+                    "'#product-acceptance-cases input'"
+                    ")).map(node=>node.value))"
+                ) == (
+                    '["1","1","1","8","12","96","1000","1000","1000000"]'
+                    if multi_field_replan
+                    else '["1","12","2","24","10","120"]'
+                )
+                assert js(
+                    "window.ReweavePrototype.getState().productPlan."
+                    "acceptance_supported"
+                ) is True
+                assert js(
+                    "document.getElementById('btn-confirm-and-generate').disabled"
+                ) is False
+                assert planner.replan_calls == 1
+                assert js(
+                    "window.ReweavePrototype.getState().productPlan.has_plan"
+                ) is True
+                assert window.centralWidget().grab().save(
+                    str(tmp_path / f"{screenshot_prefix}-review-1100x720.png")
+                )
+                planner.replan_status = "capability_replan_handoff_conflict"
+                window.centralWidget().reload()
+                pump(0.8)
+                wait_js(
+                    "!!window.ReweavePrototype && "
+                    "window.ReweavePrototype.getState().productPlan.view === 'review'",
+                    "reloaded replan conflict",
+                )
+                js(
+                    "document.querySelector('[data-section-index=\"1\"]').click(); true"
+                )
+                wait_js(
+                    "!!document.querySelector("
+                    "'[data-capability-replan-status="
+                    "\"capability_replan_handoff_conflict\"]'"
+                    ")",
+                    "replan conflict failed closed",
+                )
+                assert js(
+                    "document.querySelectorAll("
+                    "'[data-action=\"start-capability-replan\"]'"
+                    ").length"
+                ) == 0
+                return
+            if enum_fixture:
+                assert js(
+                    "document.querySelectorAll("
+                    "'.product-gap-case select').length"
+                ) == 3
+                assert js(
+                    "document.querySelectorAll("
+                    "'.product-gap-case input').length"
+                ) == 0
+                assert js(
+                    "document.getElementById('screen-product-plan')"
+                    ".textContent.includes("
+                    "'DETERMINISTIC_TEST_FIXTURE_NOT_FORMAL_WAREHOUSE_STATE'"
+                    ")"
+                ) is True
+                js(
+                    "(() => {"
+                    "const behavior=document.querySelector("
+                    "'.product-gap-field textarea');"
+                    "behavior.value='根据两个布尔条件返回有限状态。';"
+                    "behavior.dispatchEvent(new Event('input',{bubbles:true}));"
+                    "const fields=document.querySelectorAll("
+                    "'.product-gap-case select');"
+                    "fields[0].value='true';"
+                    "fields[1].value='true';"
+                    "fields[2].value='do_now';"
+                    "fields.forEach(node=>node.dispatchEvent("
+                    "new Event('input',{bubbles:true})));"
+                    "const button=document.querySelector("
+                    "'.product-gap-actions .btn-primary');"
+                    "button.focus();button.click();return true;})()"
+                )
+            elif preauthorized:
+                js(
+                    "document.querySelector("
+                    "'[data-action=\"start-capability-source-proposal\"]'"
+                    ").click(); true"
+                )
+            elif time_fixture:
+                assert js(
+                    "document.querySelectorAll('.product-gap-case input[type=number]').length"
+                ) == 2
+                js(
+                    "(() => {for(let i=0;i<2;i++){"
+                    "Array.from(document.querySelectorAll('button.product-plan-text-action'))"
+                    ".find(node=>node.textContent.includes('添加验收例')).click();"
+                    "} return true;})()"
+                )
+                wait_js(
+                    "document.querySelectorAll('.product-gap-case input[type=number]').length === 6",
+                    "three time acceptance cases",
+                )
+                js(
+                    "(() => {"
+                    "const behavior=document.querySelector('.product-gap-field textarea');"
+                    "behavior.value='将整数小时转换为分钟。';"
+                    "behavior.dispatchEvent(new Event('input',{bubbles:true}));"
+                    "const values=['1','60','2','120','24','1440'];"
+                    "document.querySelectorAll('.product-gap-case input').forEach((field,index)=>{"
+                    "field.value=values[index];"
+                    "field.dispatchEvent(new Event('input',{bubbles:true}));"
+                    "});"
+                    "document.querySelector('.product-gap-actions .btn-primary').click();"
+                    "return true;})()"
+                )
+            else:
+                assert js(
+                    "document.querySelectorAll('.product-gap-case input[type=number]').length"
+                ) == 3
+                js(
+                    "(() => {"
+                    "const behavior=document.querySelector('.product-gap-field textarea');"
+                    "behavior.value='按数量计算折扣单价，并保留数量。';"
+                    "behavior.dispatchEvent(new Event('input',{bubbles:true}));"
+                    "const fields=document.querySelectorAll('.product-gap-case input');"
+                    "fields[0].value='5';fields[0].dispatchEvent(new Event('input',{bubbles:true}));"
+                    "fields[2].value='80';fields[2].dispatchEvent(new Event('input',{bubbles:true}));"
+                    "document.querySelector('.product-gap-actions .btn-primary').click();"
+                    "return true;})()"
+                )
+            if start_error_code:
+                wait_js(
+                    "!!document.querySelector("
+                    f"'[data-source-proposal-error-code=\"{start_error_code}\"]'"
+                    ")",
+                    "structured source proposal start error",
+                )
+                assert js(
+                    "document.querySelector("
+                    f"'[data-source-proposal-error-code=\"{start_error_code}\"]'"
+                    ").textContent.includes("
+                    f"'{start_error_code}'"
+                    ")"
+                ) is True
+                assert len(start_calls) == 1
+                assert planner.source_run is None
+                assert planner.prepare_calls == (0 if preauthorized else 1)
+                assert js(
+                    "document.getElementById('screen-product-plan')"
+                    ".classList.contains('hidden')"
+                ) is False
+                return
+            wait_js(
+                "!!document.getElementById("
+                f"'target-review-summary-{review_id}'"
+                ")",
+                "exact frozen review",
+            )
+            assert js(
+                "document.getElementById('screen-capsule-ingestion')"
+                ".classList.contains('hidden')"
+            ) is False
+            if enum_fixture:
+                assert planner.decisions[-1]["acceptance_cases"] == [
+                    {
+                        "input": {"important": True, "urgent": True},
+                        "expected_output": {"priority": "do_now"},
+                    }
+                ]
+                assert planner.authorization["schema_version"] == (
+                    "capability_source_proposal_authorization.v2"
+                )
+            elif time_fixture:
+                assert planner.decisions[-1]["acceptance_cases"] == [
+                    {"input": {"hours": 1}, "expected_output": {"minutes": 60}},
+                    {
+                        "input": {"hours": 2},
+                        "expected_output": {"minutes": 120},
+                    },
+                    {
+                        "input": {"hours": 24},
+                        "expected_output": {"minutes": 1440},
+                    },
+                ]
+            else:
+                assert planner.decisions[-1]["acceptance_cases"] == [
+                    {
+                        "input": {"quantity": 5},
+                        "expected_output": {
+                            "quantity": 5,
+                            "unit_price": 80,
+                        },
+                    }
+                ]
+            assert planner.prepare_calls == 1
+            assert planner.source_run["status"] == "review_required"
+            wait_js(
+                "document.querySelectorAll('#warehouse-review-items details').length === 1",
+                "only target review",
+            )
+            assert js(
+                "document.getElementById("
+                f"'target-review-summary-{review_id}'"
+                ").parentElement.open"
+            ) is True
+            assert js(
+                "document.getElementById("
+                f"'target-review-summary-{decoy_review_id}'"
+                ") === null"
+            ) is True
+            assert js(
+                "document.querySelector('input[name=capability_key]').readOnly"
+            ) is True
+            assert js(
+                "document.querySelector('input[name=display_name]').readOnly"
+            ) is True
+            assert js(
+                "document.querySelector('input[name=role_key]').value"
+            ) == ""
+            assert js(
+                "document.querySelector('input[name=variant_key]').value"
+            ) == "default"
+            review_screenshot = (
+                tmp_path / f"{screenshot_prefix}-review-1100x720.png"
+            )
+            assert window.centralWidget().grab().save(str(review_screenshot))
+            if enum_fixture and os.environ.get("REWEAVE_ENUM_GAP_SCREENSHOT"):
+                shutil.copy2(
+                    review_screenshot,
+                    os.environ["REWEAVE_ENUM_GAP_SCREENSHOT"],
+                )
+            if time_fixture:
+                js(
+                    "(() => {"
+                    "const role=document.querySelector('input[name=role_key]');"
+                    "role.value='hours_to_minutes';"
+                    "role.dispatchEvent(new Event('input',{bubbles:true}));"
+                    "const select=document.querySelector("
+                    "'.warehouse-review-decision select');"
+                    "select.value='publish_general';"
+                    "select.dispatchEvent(new Event('change',{bubbles:true}));"
+                    "document.querySelector("
+                    "'.warehouse-review-decision button').click();"
+                    "return true;})()"
+                )
+                wait_js(
+                    "document.getElementById('screen-product-plan')"
+                    ".classList.contains('hidden') === false",
+                    "published review returned to plan",
+                )
+                wait_js(
+                    "!!document.querySelector("
+                    "'[data-capability-replan-status=\"available\"] "
+                    "[data-action=\"start-capability-replan\"]')",
+                    "published capability requires explicit replan",
+                )
+                assert planner.review_outcome["status"] == "published"
+                assert window.centralWidget().grab().save(
+                    str(
+                        tmp_path
+                        / f"{screenshot_prefix}-published-1100x720.png"
+                    )
+                )
+            else:
+                js(
+                    "(() => {"
+                    "const select=document.querySelector("
+                    "'.warehouse-review-decision select');"
+                    "select.value='reject';"
+                    "select.dispatchEvent(new Event('change',{bubbles:true}));"
+                    "document.querySelector("
+                    "'.warehouse-review-decision button').click();"
+                    "return true;})()"
+                )
+                wait_js(
+                    "document.getElementById('screen-product-plan')"
+                    ".classList.contains('hidden') === false",
+                    "rejected review returned to plan",
+                )
+                wait_js(
+                    "!!document.querySelector('.product-gap-status.is-error')",
+                    "rejected source proposal shown",
+                )
+                assert js(
+                    "document.querySelectorAll("
+                    "'[data-action=\"start-capability-replan\"]'"
+                    ").length"
+                ) == 0
+                assert planner.review_outcome["status"] == "rejected"
+                assert window.centralWidget().grab().save(
+                    str(
+                        tmp_path
+                        / f"{screenshot_prefix}-rejected-1100x720.png"
+                    )
+                )
+
+            planner.source_run = None
+            planner.authorization = None
+            planner.review_outcome = None
+            planner.decisions = []
+            planner.ambiguous = True
+            window.centralWidget().reload()
+            pump(0.8)
+            wait_js(
+                "!!window.ReweavePrototype && "
+                "window.ReweavePrototype.getState().productPlan.view === 'review' && "
+                "document.querySelector('.product-plan-section-button[data-section-index=\"1\"]') !== null",
+                "reloaded review",
+            )
+            js(
+                "document.querySelector('[data-section-index=\"1\"]').click(); true"
+            )
+            wait_js(
+                "!!document.querySelector('.product-gap-status.is-error') && "
+                "document.querySelector('.product-gap-status.is-error').textContent.includes('多个合法')",
+                "ambiguous failed closed",
+            )
+            pump(0.1)
+            assert window.centralWidget().grab().save(
+                str(tmp_path / f"{screenshot_prefix}-ambiguous-1100x720.png")
+            )
+            assert js(
+                "document.querySelectorAll('.product-gap-actions').length"
+            ) == 0
+    finally:
+        if window is not None:
+            window._reweave_close_service()
+            window.close()
+            window.deleteLater()
+            pump()
+            QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+            app.processEvents()
+
+
+def test_product_capability_gap_decisions_render_and_fail_closed(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _run_product_capability_gap_qweb_case(
+        tmp_path,
+        monkeypatch,
+        time_fixture=False,
+    )
+
+
+def test_time_conversion_capability_gap_fixture_renders_and_fails_closed(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _run_product_capability_gap_qweb_case(
+        tmp_path,
+        monkeypatch,
+        time_fixture=True,
+    )
+
+
+def test_finite_enum_capability_gap_runs_once_to_exact_review(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _run_product_capability_gap_qweb_case(
+        tmp_path,
+        monkeypatch,
+        time_fixture=False,
+        enum_fixture=True,
+    )
+
+
+def test_capability_source_proposal_start_error_is_preserved(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _run_product_capability_gap_qweb_case(
+        tmp_path,
+        monkeypatch,
+        time_fixture=False,
+        start_error_code="capability_source_proposal_run_stale",
+        preauthorized=True,
+    )
+
+
+def test_published_capability_replan_handoff_runs_once_and_opens_review(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _run_product_capability_gap_qweb_case(
+        tmp_path,
+        monkeypatch,
+        time_fixture=False,
+        replan_fixture=True,
+    )
+
+
+def test_multi_field_candidate_acceptance_renders_all_contract_fields(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    _run_product_capability_gap_qweb_case(
+        tmp_path,
+        monkeypatch,
+        time_fixture=False,
+        multi_field_replan=True,
+    )
 
 
 def test_product_flow_builds_previews_exports_and_restores_real_candidate(
@@ -1723,35 +3553,73 @@ def test_product_flow_builds_previews_exports_and_restores_real_candidate(
         capsules,
         service._product_planning_catalog()["warehouse_revision"],
     )
+    original_items = [
+        copy.deepcopy(section["work_items"][0]) for section in plan["sections"]
+    ]
+    plan["schema_version"] = "product_plan.v2"
+    plan["planning_rules_version"] = "reweave_product_planning_rules.v4"
+    plan["prompt_version"] = "reweave_product_planning_prompt.v7"
+    plan["sections"] = [
+        {
+            "section_id": "frontend",
+            "applicability": "applicable",
+            "summary": "前端交互与报价结果",
+            "work_items": [original_items[0]],
+            "gaps": [],
+        },
+        {
+            "section_id": "backend",
+            "applicability": "applicable",
+            "summary": "本地输入、计算与运行验证",
+            "work_items": original_items[1:],
+            "gaps": [],
+        },
+        {
+            "section_id": "data",
+            "applicability": "not_applicable",
+            "summary": "本产品不需要独立数据层。",
+            "work_items": [],
+            "gaps": [],
+        },
+        {
+            "section_id": "infrastructure",
+            "applicability": "not_applicable",
+            "summary": "本产品不需要独立基础设施层。",
+            "work_items": [],
+            "gaps": [],
+        },
+    ]
     plan["goal"] = goal
     plan["goal_digest"] = canonical_digest(goal)
     for requirement in plan["requirements"]:
         requirement["source_digest"] = plan["goal_digest"]
     _refresh(plan, base_confirmation)
     question_set = {
-        "schema_version": "product_plan_question_set.v1",
-        "purpose": "initial",
+        "schema_version": "product_plan_question_set.v3",
+        "purpose": "capability_gap_target",
+        "warehouse_revision": 71,
+        "catalog_digest": "d" * 64,
         "questions": [
             {
-                "question_id": "question_local_runtime",
-                "prompt": "是否保持完全本地运行？",
+                "question_id": "question_capability_gap_target",
+                "prompt": "请选择本次要完成的业务能力。",
                 "options": [
                     {
-                        "option_id": "option_local_only",
-                        "label": "完全本地",
-                        "impact": "不使用登录、数据库、网络或后台服务。",
-                        "recommended": True,
-                        "forms_gap": False,
+                        "option_id": "option_workflow_classification",
+                        "label": "工作流状态分类",
+                        "impact": "输入重要与紧急条件；输出处理优先级；缺少一个计算能力。",
+                        "recommended": False,
+                        "forms_gap": True,
                     },
                     {
-                        "option_id": "option_networked",
-                        "label": "允许联网",
-                        "impact": "这会扩大当前产品范围。",
+                        "option_id": "option_prism_volume",
+                        "label": "长方体体积计算",
+                        "impact": "输入长宽高；输出体积；缺少一个计算能力。",
                         "recommended": False,
                         "forms_gap": True,
                     },
                 ],
-                "allow_custom": True,
+                "allow_custom": False,
             }
         ],
     }
@@ -1766,6 +3634,7 @@ def test_product_flow_builds_previews_exports_and_restores_real_candidate(
             acceptance_confirmation: dict | None = None,
         ) -> None:
             self.status = status
+            self.selected_model: dict[str, object] | None = None
             self.confirmation = copy.deepcopy(confirmation)
             self.acceptance_confirmation = copy.deepcopy(
                 acceptance_confirmation
@@ -1808,12 +3677,7 @@ def test_product_flow_builds_previews_exports_and_restores_real_candidate(
                 "data": {
                     "schema_version": "product_planning_state.v1",
                     "available": True,
-                    "selected_model": {
-                        "name": "protocol-fixture",
-                        "digest": "e" * 64,
-                        "parameter_count": 1,
-                        "parameter_size": "1B",
-                    },
+                    "selected_model": copy.deepcopy(self.selected_model),
                     "workspaces": workspaces,
                     "candidate_generation_available": True,
                     "product_generation_performed": False,
@@ -1851,9 +3715,9 @@ def test_product_flow_builds_previews_exports_and_restores_real_candidate(
             assert digest == question_set["digest"]
             assert answers == [
                 {
-                    "question_id": "question_local_runtime",
+                    "question_id": "question_capability_gap_target",
                     "source": "option",
-                    "value": "option_local_only",
+                    "value": "option_workflow_classification",
                 }
             ]
             if phase_callback:
@@ -1967,6 +3831,51 @@ def test_product_flow_builds_previews_exports_and_restores_real_candidate(
 
     planner = DesktopPlanner()
     service._product_planner = planner
+    planning_model = {
+        "name": "protocol-fixture",
+        "digest": "e" * 64,
+        "parameter_count": 1,
+        "parameter_size": "1B",
+        "eligible_small_model": True,
+        "eligibility_reason": "eligible",
+    }
+    planning_model_calls: list[tuple[str, dict[str, object]]] = []
+    original_get_product_plan_run = service.get_product_plan_run
+
+    def list_planning_models(payload: dict[str, object]) -> dict[str, object]:
+        assert payload == {}
+        planning_model_calls.append(("list_product_planning_models", payload))
+        return {"ok": True, "run_id": "product_plan_models_fixture"}
+
+    def select_planning_model(payload: dict[str, object]) -> dict[str, object]:
+        assert payload == {
+            "name": planning_model["name"],
+            "digest": planning_model["digest"],
+        }
+        planning_model_calls.append(("select_product_planning_model", payload))
+        planner.selected_model = copy.deepcopy(planning_model)
+        return {"ok": True, "run_id": "product_plan_select_fixture"}
+
+    def get_product_plan_run(payload: dict[str, object]) -> dict[str, object]:
+        run_id = str(payload.get("run_id") or "")
+        if run_id == "product_plan_models_fixture":
+            data = {"models": [copy.deepcopy(planning_model)]}
+        elif run_id == "product_plan_select_fixture":
+            data = {"model": copy.deepcopy(planning_model)}
+        else:
+            return original_get_product_plan_run(payload)
+        return {
+            "ok": True,
+            "data": {
+                "run_id": run_id,
+                "status": "completed",
+                "data": {"ok": True, "data": data},
+            },
+        }
+
+    service.list_product_planning_models = list_planning_models
+    service.select_product_planning_model = select_planning_model
+    service.get_product_plan_run = get_product_plan_run
     warehouse_before = _store_snapshot(store)
     source_before = _tree_state(source_root)
     target_before = _tree_state(target_root)
@@ -2048,9 +3957,9 @@ def test_product_flow_builds_previews_exports_and_restores_real_candidate(
 
             wait_js(
                 "document.readyState === 'complete' && !!window.reweaveBridge && "
-                "!document.getElementById('screen-main').classList.contains('hidden')",
+                "!document.getElementById('screen-product-plan').classList.contains('hidden')",
                 30,
-                "desktop main screen",
+                "default product screen",
             )
             bridge_calls: list[str] = []
             original_call = bridge._phase4_call
@@ -2066,7 +3975,7 @@ def test_product_flow_builds_previews_exports_and_restores_real_candidate(
                     str(
                         js(
                             "JSON.stringify((() => {"
-                            "const bar=document.querySelector('.product-plan-bar').getBoundingClientRect();"
+                                            "const bar=document.querySelector('#screen-product-plan > .product-plan-bar').getBoundingClientRect();"
                             "const stage=document.getElementById('product-plan-stage').getBoundingClientRect();"
                             "const back=document.getElementById('btn-product-plan-back').getBoundingClientRect();"
                             "return {scroll_x:window.scrollX,scroll_y:window.scrollY,"
@@ -2087,11 +3996,6 @@ def test_product_flow_builds_previews_exports_and_restores_real_candidate(
                 assert frame["stage_top"] >= frame["bar_bottom"], frame
                 assert frame["viewport_height"] >= 720, frame
 
-            assert (
-                js("document.getElementById('btn-open-product-plan').disabled")
-                is False
-            ), js("JSON.stringify(window.ReweavePrototype.getState())")
-            js("document.getElementById('btn-open-product-plan').click(); true")
             wait_js(
                 "window.ReweavePrototype.getState().productPlan.active === true && "
                 "window.ReweavePrototype.getState().productPlan.view === 'compose'",
@@ -2101,11 +4005,46 @@ def test_product_flow_builds_previews_exports_and_restores_real_candidate(
             assert_product_frame()
             assert (
                 js("document.getElementById('btn-submit-product-goal').disabled")
-                is False
+                is True
+            )
+            js("document.getElementById('btn-product-planner-configure').click(); true")
+            wait_js(
+                "document.getElementById('product-planner-select').options.length === 2",
+                10,
+                "planning model list",
+            )
+            js(
+                "(() => {"
+                "const select=document.getElementById('product-planner-select');"
+                "select.value='0';"
+                "select.dispatchEvent(new Event('change',{bubbles:true}));"
+                "document.getElementById('btn-product-planner-use').click();"
+                "return true;"
+                "})()"
+            )
+            wait_js(
+                "window.ReweavePrototype.getState().productPlan.planning_model_selected === true",
+                10,
+                "planning model selected",
+            )
+            assert planning_model_calls == [
+                ("list_product_planning_models", {}),
+                (
+                    "select_product_planning_model",
+                    {
+                        "name": planning_model["name"],
+                        "digest": planning_model["digest"],
+                    },
+                ),
+            ]
+            assert (
+                js("document.getElementById('btn-submit-product-goal').disabled")
+                is True
             )
             js(
                 "(() => { const input = document.getElementById('product-plan-goal'); "
                 f"input.value = {json.dumps(goal)}; "
+                "input.dispatchEvent(new Event('input',{bubbles:true})); "
                 "document.getElementById('btn-submit-product-goal').click(); return true; })()"
             )
             wait_js(
@@ -2143,6 +4082,39 @@ def test_product_flow_builds_previews_exports_and_restores_real_candidate(
             assert_product_frame()
             assert "start_product_plan" in bridge_calls
             assert "get_product_plan_run" in bridge_calls
+            assert js(
+                "document.querySelectorAll('#product-plan-question-form input[type=radio]').length"
+            ) == 2
+            assert js(
+                "document.querySelectorAll('.product-question-custom').length"
+            ) == 0
+            assert set(
+                json.loads(
+                    str(
+                        js(
+                            "JSON.stringify(Array.from(document.querySelectorAll("
+                            "'#product-plan-question-form strong')).map(node=>node.textContent))"
+                        )
+                    )
+                )
+            ) == {"工作流状态分类", "长方体体积计算"}
+            assert js(
+                "document.getElementById('product-plan-status').getAttribute('aria-live')"
+            ) == "polite"
+            js(
+                "document.querySelector('#product-plan-question-form input[type=radio]').focus(); true"
+            )
+            assert js(
+                "document.activeElement === document.querySelector("
+                "'#product-plan-question-form input[type=radio]')"
+            )
+            if os.environ.get("REWEAVE_MULTI_GAP_QUESTION_ONLY") == "1":
+                assert not {
+                    "confirm_product_plan",
+                    "generate_product_candidate",
+                    "save_product_candidate",
+                }.intersection(bridge_calls)
+                return
             js(
                 "document.querySelector('#product-plan-question-form input[type=radio]').click(); "
                 "document.getElementById('btn-submit-product-answers').click(); true"
@@ -2154,9 +4126,64 @@ def test_product_flow_builds_previews_exports_and_restores_real_candidate(
                 "plan and acceptance shape",
             )
             assert js("document.querySelectorAll('.product-plan-section').length") == 4
-            assert js("document.querySelectorAll('.product-plan-work-item').length") == 4
+            assert js("document.querySelectorAll('.product-plan-work-item').length") == 0
+            assert js(
+                "Array.from(document.querySelectorAll('.product-plan-section-summary'))"
+                ".filter(node=>node.textContent.includes('不需要独立')).length"
+            ) == 2
+            assert js(
+                "document.querySelectorAll('.product-plan-section-button[data-section-index]').length"
+            ) == 2
             assert js("document.getElementById('product-review-title').textContent") == (
                 "本地报价产品"
+            )
+            js("document.querySelector('.product-plan-section-button').click(); true")
+            wait_js(
+                "window.ReweavePrototype.getState().productPlan.section_open === true && "
+                "document.querySelectorAll('.product-plan-work-item').length === 1",
+                10,
+                "plan section detail",
+            )
+            assert js(
+                "!!document.querySelector('.product-plan-capability-link "
+                ".product-plan-text-action')"
+            )
+            source_button_id = str(
+                js(
+                    "document.querySelector('.product-plan-capability-link "
+                    ".product-plan-text-action').id"
+                )
+            )
+            js(
+                "document.getElementById(" + json.dumps(source_button_id) + ").focus(); "
+                "document.getElementById(" + json.dumps(source_button_id) + ").click(); true"
+            )
+            wait_js(
+                "!document.getElementById('screen-capsule-warehouse').classList.contains('hidden') && "
+                "window.ReweavePrototype.getState().warehouse.plan_context_status === 'planContextMissing'",
+                30,
+                "exact plan binding fails closed without one source",
+            )
+            assert js(
+                "document.getElementById('warehouse-context-status').textContent.includes("
+                + json.dumps("未选择近似版本")
+                + ")"
+            )
+            js("document.getElementById('btn-warehouse-scene-back').click(); true")
+            wait_js(
+                "!document.getElementById('screen-product-plan').classList.contains('hidden') && "
+                "window.ReweavePrototype.getState().productPlan.section_open === true && "
+                "document.activeElement && document.activeElement.id === "
+                + json.dumps(source_button_id),
+                10,
+                "plan section and source focus restored",
+            )
+            js("document.getElementById('btn-product-plan-section-back').click(); true")
+            wait_js(
+                "window.ReweavePrototype.getState().productPlan.view === 'review' && "
+                "document.querySelectorAll('.product-plan-section').length === 4",
+                10,
+                "plan overview restored",
             )
             js(
                 "document.getElementById('btn-add-product-acceptance-case').click(); "
@@ -2386,9 +4413,6 @@ def test_product_flow_builds_previews_exports_and_restores_real_candidate(
                 pump(0.08)
             else:
                 raise TimeoutError("restarted desktop did not load")
-            restarted_js(
-                "document.getElementById('btn-open-product-plan').click(); true"
-            )
             deadline = time.monotonic() + 90
             while time.monotonic() < deadline:
                 if restarted_js(
@@ -2428,6 +4452,18 @@ def test_product_flow_builds_previews_exports_and_restores_real_candidate(
         if restarted_service is not None:
             restarted_service.close()
         service.close()
+
+
+def test_multi_gap_question_ui_stops_before_plan_or_candidate(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("REWEAVE_PRODUCT_FLOW_CHILD", "1")
+    monkeypatch.setenv("REWEAVE_MULTI_GAP_QUESTION_ONLY", "1")
+    test_product_flow_builds_previews_exports_and_restores_real_candidate(
+        tmp_path,
+        monkeypatch,
+    )
 
 
 def test_static_web_target_review_ui_with_real_service(
@@ -2657,7 +4693,7 @@ def test_static_web_target_review_ui_with_real_service(
 
             wait_js(
                 "document.readyState === 'complete' && !!window.reweaveBridge && "
-                "!document.getElementById('screen-main').classList.contains('hidden')",
+                "!document.getElementById('screen-product-plan').classList.contains('hidden')",
                 30,
                 "desktop_bridge",
             )
@@ -2724,7 +4760,8 @@ def test_static_web_target_review_ui_with_real_service(
             )
             js("document.getElementById('btn-generate-target-patch').click(); true")
             wait_js(
-                "!document.getElementById('target-review').classList.contains('hidden') && "
+                "document.getElementById('screen-target').getAttribute('data-target-stage') === 'review' && "
+                "!document.getElementById('target-review').hasAttribute('hidden') && "
                 "document.getElementById('target-file-diffs').textContent.trim().length > 0 && "
                 "document.getElementById('target-evidence-summary').textContent.trim().length > 0",
                 60,
@@ -2780,6 +4817,7 @@ def test_static_web_target_review_ui_with_real_service(
             )
             js("document.getElementById('btn-confirm-target-patch').click(); true")
             wait_js(
+                "document.getElementById('screen-target').getAttribute('data-target-stage') === 'confirmed' && "
                 "document.getElementById('target-confirmation-receipt').textContent.trim().length > 0",
                 10,
                 "confirmation_receipt",
@@ -2806,6 +4844,8 @@ def test_static_web_target_review_ui_with_real_service(
                 "patchReady": True,
                 "planId": patch_data["plan_id"],
                 "confirmed": True,
+                "stage": "confirmed",
+                "developerMode": True,
             }
             dom_probe = json.loads(
                 str(
@@ -3219,7 +5259,8 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
             js("document.getElementById('btn-open-capsule-ingestion').click(); true")
             assert js(
                 "!document.getElementById('warehouse-developer-mode').checked && "
-                "!document.getElementById('capsule-warehouse-popover').classList.contains('developer-mode')"
+                "!document.getElementById('capsule-warehouse-popover').classList.contains('developer-mode') && "
+                "document.getElementById('capsule-ingestion-specimen').classList.contains('is-empty')"
             )
             assert js(
                 "document.getElementById('capsule-warehouse-popover').title.length > 0 && "
@@ -3287,7 +5328,8 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
                 is True
             )
             wait_js(
-                "Array.from(document.querySelectorAll('#warehouse-projects .warehouse-row button'))"
+                "Array.from(document.querySelectorAll("
+                "'#warehouse-projects [data-action=\"refresh-project\"]'))"
                 ".some(button => !button.disabled)",
                 30,
                 "confirmed project",
@@ -3297,7 +5339,9 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
                 js(
                     """(() => {
                       const button = Array.from(
-                        document.querySelectorAll('#warehouse-projects .warehouse-row button')
+                        document.querySelectorAll(
+                          '#warehouse-projects [data-action="refresh-project"]'
+                        )
                       ).find(item => !item.disabled);
                       if (!button) return false;
                       button.click();
@@ -3325,8 +5369,8 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
             }
             wait_js(
                 "Array.from(document.querySelectorAll('#warehouse-review-items .warehouse-review'))"
-                ".some(item => Array.from(item.querySelectorAll('button')).some("
-                "button => button.dataset.decision === 'publish_general'))",
+                ".some(item => Array.from(item.querySelectorAll('select option')).some("
+                "option => option.value === 'publish_general'))",
                 30,
                 "publishable review action",
             )
@@ -3342,8 +5386,8 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
                         """(() => {
                           const row = Array.from(
                             document.querySelectorAll('#warehouse-review-items .warehouse-review')
-                          ).find(item => Array.from(item.querySelectorAll('button')).some(
-                            button => button.dataset.decision === 'publish_general'
+                          ).find(item => Array.from(item.querySelectorAll('select option')).some(
+                            option => option.value === 'publish_general'
                           ));
                           return row ? row.querySelector('p.warehouse-meta').textContent : '';
                         })()"""
@@ -3364,8 +5408,8 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
                           const values = %s;
                           const row = Array.from(
                             document.querySelectorAll('#warehouse-review-items .warehouse-review')
-                          ).find(item => Array.from(item.querySelectorAll('button')).some(
-                            button => button.dataset.decision === 'publish_general'
+                          ).find(item => Array.from(item.querySelectorAll('select option')).some(
+                            option => option.value === 'publish_general'
                           ));
                           if (!row) return false;
                           for (const [name, value] of Object.entries(values)) {
@@ -3374,9 +5418,12 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
                             input.value = value;
                             input.dispatchEvent(new Event('input', {bubbles:true}));
                           }
-                          Array.from(row.querySelectorAll('button')).find(
-                            button => button.dataset.decision === 'publish_general'
-                          ).click();
+                          const decision = row.querySelector('.warehouse-review-decision select');
+                          const submit = row.querySelector('.warehouse-review-decision button');
+                          if (!decision || !submit) return false;
+                          decision.value = 'publish_general';
+                          decision.dispatchEvent(new Event('change', {bubbles:true}));
+                          submit.click();
                           return true;
                         })()"""
                         % values
@@ -3667,7 +5714,8 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
             assert manifest["product_id"] in historical_text
             assert "historical_version_unavailable_after_restore" in historical_text
             assert record["manifest_digest"] in historical_text
-            assert restore_run["data"]["pre_restore_backup_path"] in historical_text
+            assert restore_run["data"]["pre_restore_backup_path"] not in historical_text
+            assert "恢复前备份: 可用" in historical_text
             print(
                 json.dumps(
                     {

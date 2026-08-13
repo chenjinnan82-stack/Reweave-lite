@@ -1403,6 +1403,113 @@ export function compute(input) {
         )
         self.assertEqual(interaction_row["candidate_status"], "rejected")
 
+    def test_presentation_finite_string_enum_guard_is_extracted(self) -> None:
+        self._write_complete_project(self.source)
+        (self.source / "presentation.js").write_text(
+            """export function render(root, input) {
+  if (!input || typeof input !== "object" || Object.keys(input).length !== 1) {
+    return {ok: false, error: {code: "INVALID_INPUT", field: null, details: {}}};
+  }
+  if (
+    typeof input.priority !== "string"
+    || !["schedule", "drop", "delegate", "do_now"].includes(input.priority)
+  ) {
+    return {ok: false, error: {code: "INVALID_PRIORITY", field: "priority", details: {}}};
+  }
+  const title = root.querySelector("#title");
+  title.textContent = input.priority;
+}
+""",
+            encoding="utf-8",
+        )
+        project = self._bind_discover_confirm(self.source)
+
+        result = self.intake.run_intake(project["project_id"])
+
+        row = next(
+            item
+            for item in self._review_rows(result["run_id"])
+            if item["source_relpath"] == "presentation.js"
+        )
+        self.assertEqual(row["candidate_status"], "extracted")
+        contract = json.loads(row["sanitized_candidate_json"])["input_contract"]
+        self.assertEqual(
+            contract["properties"]["priority"],
+            {
+                "type": "string",
+                "min_length": 4,
+                "max_length": 8,
+                "enum": ["delegate", "do_now", "drop", "schedule"],
+            },
+        )
+
+    def test_presentation_finite_string_enum_guard_fails_closed(self) -> None:
+        too_many = ", ".join(json.dumps(f"value_{index}") for index in range(101))
+        guards = {
+            "variable": (
+                'const allowed = ["delegate", "do_now", "drop", "schedule"];\n'
+                "  if (typeof input.priority !== \"string\" "
+                "|| !allowed.includes(input.priority))"
+            ),
+            "empty": (
+                "if (typeof input.priority !== \"string\" "
+                "|| ![].includes(input.priority))"
+            ),
+            "duplicate": (
+                "if (typeof input.priority !== \"string\" "
+                "|| ![\"delegate\", \"delegate\"].includes(input.priority))"
+            ),
+            "non_string": (
+                "if (typeof input.priority !== \"string\" "
+                "|| ![\"delegate\", 1].includes(input.priority))"
+            ),
+            "spread": (
+                "if (typeof input.priority !== \"string\" "
+                "|| ![...['delegate']].includes(input.priority))"
+            ),
+            "invalid_utf8": (
+                "if (typeof input.priority !== \"string\" "
+                '|| !["\\ud800"].includes(input.priority))'
+            ),
+            "too_many": (
+                "if (typeof input.priority !== \"string\" "
+                f"|| ![{too_many}].includes(input.priority))"
+            ),
+        }
+        for label, guard in guards.items():
+            with self.subTest(label=label):
+                source = self.root / f"enum-{label}"
+                source.mkdir()
+                self._write_complete_project(source)
+                (source / "presentation.js").write_text(
+                    f"""export function render(root, input) {{
+  if (!input || typeof input !== "object" || Object.keys(input).length !== 1) {{
+    return {{ok: false, error: {{code: "INVALID_INPUT", field: null, details: {{}}}}}};
+  }}
+  {guard} {{
+    return {{ok: false, error: {{code: "INVALID_PRIORITY", field: "priority", details: {{}}}}}};
+  }}
+  const title = root.querySelector("#title");
+  title.textContent = input.priority;
+}}
+""",
+                    encoding="utf-8",
+                )
+                project = self._bind_discover_confirm(source)
+
+                result = self.intake.run_intake(project["project_id"])
+
+                row = next(
+                    item
+                    for item in self._review_rows(result["run_id"])
+                    if item["source_relpath"] == "presentation.js"
+                )
+                self.assertEqual(row["candidate_status"], "rejected")
+                self.assertIn(
+                    "ambiguous_data_contract_v1",
+                    row["redaction_summary_json"],
+                )
+
     def test_html_number_attributes_do_not_define_emit_contract(self) -> None:
         self._write_complete_project(self.source)
         interaction = self.source / "interaction.js"

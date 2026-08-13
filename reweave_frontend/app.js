@@ -31,22 +31,33 @@
     runs: {},
     errorKey: "",
   };
+  var ingestionNavigation = {
+    returnScene: "product",
+    station: "source",
+    focusId: "",
+    specimen: null,
+    productReview: null,
+  };
 
   var STR = {
     zh: {
       privacy: "本地运行，数据不会离开此设备。",
       history: "本次会话",
       artifacts: "构建资料",
-      welcomeKicker: "来源箱 · 当前运行状态 · 构建资料",
-      welcomeTagline: "绑定一个旧项目文件夹，将其整理为可复用胶囊。",
-      welcomePhilosophy: "不是复制，是消化后再织。",
-      sourceBox: "来源箱",
-      bindSourceBox: "绑定来源箱",
-      sourceBoxNote: "选择一个旧项目文件夹，整理为胶囊。",
+      welcomeKicker: "本地初始化 · 来源项目",
+      welcomeTagline: "选择一个本地项目文件夹，完成只读来源绑定。",
+      welcomePhilosophy: "这里只建立来源，不会发布或晋升胶囊。",
+      sourceBox: "本地来源",
+      bindSourceBox: "选择项目文件夹",
+      sourceBoxNote: "扫描只读，不写入所选项目。",
       sourceBoxReadOnlyNote: "本地绑定、只读扫描，不写入源项目。",
       sourceBoxBindingDisabled: "来源箱绑定尚未开放。",
       viewCurrentRuntime: "查看当前运行状态",
-      cleaningRuntime: "正在载入运行状态与构建资料",
+      cleaningRuntime: "正在进行受控本地初始化",
+      compatibilityTools: "兼容工具",
+      quickCompose: "快速组合",
+      compatibilityDisclaimer: "不经过正式计划确认，不构成独立产品交付。",
+      compatibilityTitle: "兼容工具 / 快速组合",
       capsules: "胶囊",
       taskPlaceholder: "描述你想从旧项目重新织出的页面或工具…",
       taskPackPlaceholder: "描述你想生成的小项目包…",
@@ -157,59 +168,144 @@
       copied: "已复制",
       enrichedContentPreview: "使用补充内容预览",
       capsuleWarehouse: "胶囊仓库",
-      warehouseReadOnly: "只读胶囊仓库",
+      warehouseReadOnly: "只读正式来源",
       back: "返回",
+      backToContext: "返回原位置",
       searchWarehouse: "搜索来源项目或胶囊",
-      canvasZoom: "画布缩放",
       codeZoom: "代码字号",
       zoomOut: "缩小",
       zoomIn: "放大",
-      resetView: "复位",
       resetCodeSize: "复位代码字号",
       sourceProjectOverview: "来源项目总览",
-      warehouseCanvasHelp: "胶囊仓库画布。方向键平移，加减键缩放，回车打开聚焦节点。",
+      formalSourceCount: "{count} 个正式来源",
+      warehouseRackHelp: "胶囊仓库来源项目列表。使用 Tab 浏览，回车打开当前项目或胶囊。",
+      warehouseEvidenceRail: "正式来源证据路径",
+      exactVersion: "精确版本",
       noFormalCapsules: "暂无可浏览的正式胶囊。",
       warehouseLoadingRelations: "正在读取正式胶囊的来源关系……",
       noFormalSourceIdentity: "正式胶囊尚未提供可展示的来源项目身份。",
       insufficientSourceEvidence: "来源证据不足",
+      sourceEvidenceShelf: "来源证据不足",
+      unwovenSources: "未织入",
+      sourceEvidenceShelfCopy: "这些正式胶囊尚不能唯一归入一个精确来源项目。",
       noVerifiedCoreCode: "暂无经验证的核心代码",
       warehouseManagement: "入库管理",
+      warehouseLegend: "胶囊库能力图例",
+      sourceProject: "来源项目",
+      presentationCapability: "展示",
+      interactionCapability: "交互",
+      computationCapability: "计算",
+      formalCapsuleCount: "{count} 个正式胶囊",
+      sourceVerifiedShort: "来源已证明",
+      searchResultCount: "{count} 个结果",
+      searchNoResults: "没有结果；当前来源项目和焦点保持不变。",
+      sourceFactVerified: "正式版本 · active · 精确来源已证明 · 验证通过",
+      sourceFactInsufficient: "正式版本 · 来源证据不足",
+      multipleExactSources: "存在多个精确项目来源，无法唯一归入一个来源项目。",
+      missingExactSource: "缺少当前精确版本的项目来源关系。",
+      missingFormalSource: "缺少可验证的正式项目来源身份。",
+      planContextResolved: "已按计划中的精确胶囊、版本与摘要定位。",
+      planContextMissing: "计划绑定无法唯一解析到正式来源；未选择近似版本。",
+      validationPassedShort: "验证通过",
+      validationIncompleteShort: "验证不足",
+      emptyCapabilityLane: "暂无正式{kind}胶囊",
+      formalContract: "正式契约",
+      contractStatus: "契约状态",
+      contractUnavailable: "当前精确版本的契约不可用。",
+      contractEntrypoint: "入口",
+      contractReceives: "接收",
+      contractProduces: "产生",
+      contractNoInput: "无输入",
+      contractNoOutput: "无输出",
+      viewVerifiedCodePath: "查看经验证代码：{path}",
+      focusSpoolForEvidence: "聚焦线轴以抽取证据",
+      showValidationEvidence: "显示验证证据",
+      validationEvidence: "验证证据",
+      rawEvidence: "原始证据 JSON",
+      evidenceIdentity: "正式身份与能力",
+      evidenceSource: "精确项目来源",
+      evidenceContracts: "输入、输出、错误与运行契约",
+      evidenceValidation: "验证与验收范围",
+      evidenceEntry: "入口模块",
+      evidenceAvailable: "验证通过",
+      evidenceUnavailable: "证据不可用",
       warehousePurpose: "管理只读来源、提取候选、人工复核并发布正式胶囊。",
       developerMode: "开发者模式",
       developerModeHelp: "显示输入类型、枚举、复核 ID、备份和任务等开发信息。",
+      formalSourceIntake: "来源入库",
+      sourceIntakeReview: "来源入库与复核",
+      intakeSourceContextLabel: "来源上下文",
+      intakeSpecimenLabel: "当前检验标本",
+      intakeSpecimenEmpty: "选择一个来源项目开始检验",
+      intakeSpecimenSelected: "已选择检验对象；尚未改变正式状态",
+      productReviewContext: "产品能力待复核",
+      productReviewExact: "仅显示从当前产品任务接纳的指定待复核项",
+      inspectSource: "检验此来源",
+      showManagementAdvanced: "显示管理高级选项",
+      intakeWorkstations: "来源入库工作站",
+      sourceStation: "来源",
+      supervisionStation: "监督",
+      reviewStation: "待复核",
+      formalStation: "正式能力",
+      currentWorkstation: "当前工作站",
+      supervisionRoleBoundary: "胶囊监督模型与产品规划模型是两个独立角色；这里不会自动选择模型。",
+      managementAdvanced: "管理高级选项",
       deliveryMode: "交付模式",
+      buildProduct: "构建产品",
       standaloneProduct: "独立产品",
       targetIntegration: "目标接入",
-      targetReadOnly: "目标只读 · 仅审查 Patch",
-      targetKicker: "STATIC WEB · REVIEW-ONLY PATCH",
+      targetReadOnly: "目标只读 · 仅审阅改动",
+      targetKicker: "静态站点 · 只读改动审阅",
       targetTitle: "把正式胶囊接入现有站点",
       targetSubtitle: "分析一个明确的 HTML 入口，逐文件审查改动，再确认结果。Reweave 不写入目标项目。",
       zeroTargetWrites: "目标写入：0",
       chooseTarget: "选择目标",
-      selectTargetFolder: "选择 Static Web 文件夹",
+      selectTargetFolder: "选择静态站点文件夹",
       noTargetSelected: "尚未选择目标",
       targetSelected: "已选择：{name}",
       targetEntry: "HTML 入口",
-      analyzeTarget: "分析目标",
+      analyzeTarget: "只读分析目标",
       targetAnalyzing: "正在只读分析目标……",
       targetProfileReady: "目标画像已就绪，来源快照未变化。",
       targetProfileRejected: "目标分析被拒绝：{code}",
+      targetAnalysisError_entry_not_found: "找不到所选 HTML 入口。",
+      targetAnalysisRecovery_entry_not_found: "请确认相对路径存在于目标文件夹内，然后再次只读分析。",
+      targetAnalysisError_frontend_contract_rejected: "目标画像未通过前端契约校验。",
+      targetAnalysisRecovery_frontend_contract_rejected: "请重新选择目标文件夹或检查 HTML 入口后重试。",
+      targetAnalysisError_invalid_response: "目标分析返回了无效响应。",
+      targetAnalysisRecovery_invalid_response: "请重新选择目标并再次只读分析。",
+      targetAnalysisRecoveryGeneric: "请修正目标选择或 HTML 入口后重试只读分析。",
+      targetPatchError_frontend_contract_rejected: "改动结果未通过前端契约校验。",
+      targetPatchRecovery_frontend_contract_rejected: "请调整任务或正式胶囊选择后重新生成审阅改动。",
+      targetPatchError_invalid_response: "改动生成返回了无效响应。",
+      targetPatchRecovery_invalid_response: "请检查任务与胶囊选择后重新生成。",
+      targetPatchRecoveryGeneric: "请调整任务或正式胶囊后重新生成审阅改动。",
       targetEntryRequired: "请填写目标根内的 HTML 相对路径。",
-      composePatch: "组合 Patch",
+      targetSelectSummary: "入口 {entry} · 已完成只读分析",
+      targetEntryPendingSummary: "入口 {entry} · 等待只读分析",
+      composePatch: "组合改动",
+      targetStageSelect: "选择目标",
+      targetStageCompose: "组合审阅改动",
+      targetStageReview: "审阅改动",
+      targetStageConfirmed: "确认回执",
+      targetComposeSummary: "{count} 个正式胶囊 · {task}",
+      targetComposeSummaryOne: "1 个正式胶囊 · {task}",
+      targetConfirmedTitle: "已确认审阅回执",
+      showTechnicalEvidence: "显示技术证据",
+      developerEvidence: "技术证据",
       targetTask: "希望加入什么？",
       targetTaskPlaceholder: "例如：加入报价计算器",
       chooseCapsules: "选择正式胶囊",
       targetNoCapsules: "暂无可生成的正式胶囊。",
       targetCapsuleRequired: "请选择 1–3 个同一能力的正式胶囊，并包含展示或交互角色。",
       targetTaskRequired: "请描述本次目标接入任务。",
-      generateReviewPatch: "生成可审查 Patch",
-      targetPatchGenerating: "正在生成 review-only Patch……",
-      targetPatchReady: "Patch 已就绪；请审查全部文件和验证证据。",
-      targetPatchRejected: "Patch 生成被拒绝：{code}",
-      reviewPatch: "审查 Patch",
-      developerEvidence: "开发者证据",
+      generateReviewPatch: "生成审阅改动",
+      targetPatchGenerating: "正在生成只读审阅改动……",
+      targetPatchReady: "改动已就绪；请审查全部文件和验证证据。",
+      targetPatchRejected: "改动生成被拒绝：{code}",
+      reviewPatch: "审查改动",
       confirmPatchBoundary: "确认只记录你已审查此结果，不会 apply、写入或 commit。",
-      confirmPatch: "确认已审查 Patch",
+      confirmPatch: "确认已审阅改动",
       targetConfirmed: "已确认 {plan}；目标写入仍为 0。",
       targetFileCount: "文件：{count}",
       targetResourceCount: "资源：{count}",
@@ -393,6 +489,7 @@
       renameCapabilityPrompt: "输入新的能力展示名称",
       manifestDigest: "Manifest 摘要",
       preRestoreBackup: "恢复前备份",
+      backupAvailable: "可用",
       backupUnavailable: "不可用",
       disableCapsule: "停用",
       enableCapsule: "启用",
@@ -430,16 +527,20 @@
       privacy: "All local. Nothing leaves your machine.",
       history: "Session history",
       artifacts: "Build notes",
-      welcomeKicker: "Source Box · Current Runtime · Build notes",
-      welcomeTagline: "Bind an old project folder and clean it into reusable capsules.",
-      welcomePhilosophy: "Digest first, then reweave.",
-      sourceBox: "Source Box",
-      bindSourceBox: "Bind Source Box",
-      sourceBoxNote: "Choose an old project folder to clean into capsules.",
+      welcomeKicker: "Local initialization · Source project",
+      welcomeTagline: "Choose a local project folder and bind it as a read-only source.",
+      welcomePhilosophy: "This establishes provenance only; it does not publish or promote capsules.",
+      sourceBox: "Local source",
+      bindSourceBox: "Choose project folder",
+      sourceBoxNote: "The scan is read-only and never writes the selected project.",
       sourceBoxReadOnlyNote: "Bind locally, scan read-only, no source writes.",
       sourceBoxBindingDisabled: "Source Box binding is not enabled.",
       viewCurrentRuntime: "View Current Runtime",
-      cleaningRuntime: "Loading runtime and build notes",
+      cleaningRuntime: "Running controlled local initialization",
+      compatibilityTools: "Compatibility tools",
+      quickCompose: "Quick compose",
+      compatibilityDisclaimer: "Does not pass formal plan confirmation and is not a standalone product delivery.",
+      compatibilityTitle: "Compatibility tools / Quick compose",
       capsules: "Capsules",
       taskPlaceholder: "Describe the tool or page to reweave...",
       taskPackPlaceholder: "Describe a small project pack...",
@@ -550,27 +651,90 @@
       copied: "Copied",
       enrichedContentPreview: "Use enriched content preview",
       capsuleWarehouse: "Capsule Warehouse",
-      warehouseReadOnly: "READ-ONLY WAREHOUSE",
+      warehouseReadOnly: "READ-ONLY FORMAL SOURCES",
       back: "Back",
+      backToContext: "Back to context",
       searchWarehouse: "Search source projects or capsules",
-      canvasZoom: "Canvas zoom",
       codeZoom: "Code size",
       zoomOut: "Zoom out",
       zoomIn: "Zoom in",
-      resetView: "Reset",
       resetCodeSize: "Reset code size",
       sourceProjectOverview: "Source project overview",
-      warehouseCanvasHelp: "Capsule Warehouse canvas. Use arrow keys to pan, plus or minus to zoom, and Enter to open a focused node.",
+      formalSourceCount: "{count} formal sources",
+      warehouseRackHelp: "Capsule Warehouse source projects. Use Tab to browse and Enter to open the current project or capsule.",
+      warehouseEvidenceRail: "Formal source evidence path",
+      exactVersion: "Exact version",
       noFormalCapsules: "No formal capsules are available to browse.",
       warehouseLoadingRelations: "Loading formal capsule source relationships…",
       noFormalSourceIdentity: "Formal capsules do not provide a displayable source project identity.",
       insufficientSourceEvidence: "Insufficient source evidence",
+      sourceEvidenceShelf: "Source evidence insufficient",
+      unwovenSources: "Unwoven",
+      sourceEvidenceShelfCopy: "These formal capsules cannot yet be assigned to one exact source project.",
       noVerifiedCoreCode: "No verified core code is available.",
       warehouseManagement: "Ingestion management",
+      warehouseLegend: "Capsule library capability legend",
+      sourceProject: "Source project",
+      presentationCapability: "Presentation",
+      interactionCapability: "Interaction",
+      computationCapability: "Computation",
+      formalCapsuleCount: "{count} formal capsules",
+      sourceVerifiedShort: "Source proven",
+      searchResultCount: "{count} results",
+      searchNoResults: "No results; the current source projects and focus are unchanged.",
+      sourceFactVerified: "Formal version · active · exact source proven · validation passed",
+      sourceFactInsufficient: "Formal version · insufficient source evidence",
+      multipleExactSources: "Multiple exact project sources prevent a unique source assignment.",
+      missingExactSource: "The current exact version has no project source relationship.",
+      missingFormalSource: "No verifiable formal project source identity is available.",
+      planContextResolved: "Located by the plan's exact capsule, version, and digest.",
+      planContextMissing: "The plan binding does not resolve to one formal source; no approximate version was selected.",
+      validationPassedShort: "Validation passed",
+      validationIncompleteShort: "Validation incomplete",
+      emptyCapabilityLane: "No formal {kind} capsules",
+      formalContract: "Formal contract",
+      contractStatus: "Contract status",
+      contractUnavailable: "The exact version contract is unavailable.",
+      contractEntrypoint: "Entrypoint",
+      contractReceives: "Receives",
+      contractProduces: "Produces",
+      contractNoInput: "No input",
+      contractNoOutput: "No output",
+      viewVerifiedCodePath: "View verified code: {path}",
+      focusSpoolForEvidence: "Focus a spool to extract evidence",
+      showValidationEvidence: "Show validation evidence",
+      validationEvidence: "Validation evidence",
+      rawEvidence: "Raw evidence JSON",
+      evidenceIdentity: "Formal identity and capability",
+      evidenceSource: "Exact project source",
+      evidenceContracts: "Input, output, error, and runtime contracts",
+      evidenceValidation: "Validation and acceptance scope",
+      evidenceEntry: "Entry module",
+      evidenceAvailable: "Validation passed",
+      evidenceUnavailable: "Evidence unavailable",
       warehousePurpose: "Manage read-only sources, capture candidates, review them, and publish formal capsules.",
       developerMode: "Developer mode",
       developerModeHelp: "Show input types, enums, review IDs, backups, and task diagnostics.",
+      formalSourceIntake: "Source intake",
+      sourceIntakeReview: "Source intake and review",
+      intakeSourceContextLabel: "Source context",
+      intakeSpecimenLabel: "Current inspection specimen",
+      intakeSpecimenEmpty: "Choose a source project to begin inspection",
+      intakeSpecimenSelected: "Inspection target selected; formal state is unchanged",
+      productReviewContext: "Product capability review",
+      productReviewExact: "Showing only the review admitted from this product task",
+      inspectSource: "Inspect this source",
+      showManagementAdvanced: "Show management advanced options",
+      intakeWorkstations: "Source intake workstations",
+      sourceStation: "Sources",
+      supervisionStation: "Supervision",
+      reviewStation: "To review",
+      formalStation: "Formal capabilities",
+      currentWorkstation: "Current workstation",
+      supervisionRoleBoundary: "Capsule supervision and product planning are separate roles; no model is selected automatically here.",
+      managementAdvanced: "Management advanced options",
       deliveryMode: "Delivery mode",
+      buildProduct: "Build product",
       standaloneProduct: "Standalone product",
       targetIntegration: "Target integration",
       targetReadOnly: "Target read-only · Review-only Patch",
@@ -583,12 +747,35 @@
       noTargetSelected: "No target selected",
       targetSelected: "Selected: {name}",
       targetEntry: "HTML entry",
-      analyzeTarget: "Analyze target",
+      analyzeTarget: "Analyze target read-only",
       targetAnalyzing: "Analyzing the target read-only…",
       targetProfileReady: "Target profile ready; the source snapshot is unchanged.",
       targetProfileRejected: "Target analysis rejected: {code}",
+      targetAnalysisError_entry_not_found: "The selected HTML entry was not found.",
+      targetAnalysisRecovery_entry_not_found: "Confirm the relative path exists in the target folder, then analyze read-only again.",
+      targetAnalysisError_frontend_contract_rejected: "The target profile failed the frontend contract checks.",
+      targetAnalysisRecovery_frontend_contract_rejected: "Reselect the target folder or check the HTML entry, then retry.",
+      targetAnalysisError_invalid_response: "Target analysis returned an invalid response.",
+      targetAnalysisRecovery_invalid_response: "Reselect the target and analyze read-only again.",
+      targetAnalysisRecoveryGeneric: "Fix the target selection or HTML entry, then retry read-only analysis.",
+      targetPatchError_frontend_contract_rejected: "The Patch failed the frontend contract checks.",
+      targetPatchRecovery_frontend_contract_rejected: "Adjust the task or formal capsule selection, then generate the review Patch again.",
+      targetPatchError_invalid_response: "Patch generation returned an invalid response.",
+      targetPatchRecovery_invalid_response: "Check the task and capsule selection, then generate again.",
+      targetPatchRecoveryGeneric: "Adjust the task or formal capsules, then generate the review Patch again.",
       targetEntryRequired: "Enter an HTML path relative to the target root.",
+      targetSelectSummary: "Entry {entry} · read-only analysis complete",
+      targetEntryPendingSummary: "Entry {entry} · waiting for read-only analysis",
       composePatch: "Compose Patch",
+      targetStageSelect: "Select target",
+      targetStageCompose: "Compose review Patch",
+      targetStageReview: "Review Patch",
+      targetStageConfirmed: "Review receipt",
+      targetComposeSummary: "{count} formal capsules · {task}",
+      targetComposeSummaryOne: "1 formal capsule · {task}",
+      targetConfirmedTitle: "Patch review confirmed",
+      showTechnicalEvidence: "Show technical evidence",
+      developerEvidence: "Technical evidence",
       targetTask: "What should be added?",
       targetTaskPlaceholder: "For example: add a quote calculator",
       chooseCapsules: "Choose formal capsules",
@@ -600,7 +787,6 @@
       targetPatchReady: "Patch ready; review every file and all validation evidence.",
       targetPatchRejected: "Patch generation rejected: {code}",
       reviewPatch: "Review Patch",
-      developerEvidence: "Developer evidence",
       confirmPatchBoundary: "Confirmation records that you reviewed this result. It does not apply, write, or commit anything.",
       confirmPatch: "Confirm reviewed Patch",
       targetConfirmed: "Confirmed {plan}; target writes remain 0.",
@@ -786,6 +972,7 @@
       renameCapabilityPrompt: "Enter a new capability display name",
       manifestDigest: "Manifest digest",
       preRestoreBackup: "Pre-restore backup",
+      backupAvailable: "Available",
       backupUnavailable: "Unavailable",
       disableCapsule: "Disable",
       enableCapsule: "Enable",
@@ -886,22 +1073,44 @@
         return managementPayload(result);
       });
     },
-    openManagement: function () {
-      togglePopover("capsule-warehouse");
-      if (!ingestionManagement.loaded && !ingestionManagement.loading) refreshIngestionManagement();
+    openManagement: function (specimenContext) {
+      openIngestionScene("warehouse", specimenContext || null);
     },
+    getLocale: function () {
+      return locale;
+    },
+    targetAvailable: function () {
+      var button = $("btn-open-target");
+      return !!(button && !button.disabled && !button.classList.contains("hidden"));
+    },
+    openProduct: function () {
+      productPlanScene.open();
+    },
+    openTarget: function () {
+      var button = $("btn-open-target");
+      if (button && !button.disabled) button.click();
+    },
+    openCompatibility: function () {
+      var button = $("btn-product-plan-back");
+      if (button) button.click();
+      else {
+        showScreen("screen-main");
+        syncAppState();
+      }
+    },
+    toggleLocale: toggleLocale,
     capsuleReader: capsuleReader,
     t: t,
     showScreen: showScreen,
     syncAppState: syncAppState,
+    transition: runSceneThreadTransition,
   });
   var productPlanScene = window.ReweaveProductPlanScene.create({
-    canPlanProduct: function () {
+    canOpenProduct: function () {
       return !!(
         desktopShellState &&
         desktopShellState.canPlanProduct === true &&
-        desktopShellState.productPlanning &&
-        desktopShellState.productPlanning.selected_model
+        desktopShellState.productPlanning
       );
     },
     getLocale: function () {
@@ -910,11 +1119,22 @@
     getPlanningState: function () {
       return desktopShellState && desktopShellState.productPlanning;
     },
+    setSelectedPlanningModel: function (model) {
+      if (!desktopShellState || !desktopShellState.productPlanning) return;
+      desktopShellState.productPlanning.selected_model = model;
+    },
     call: function (method, payload) {
       return bridgeCall(method, JSON.stringify(payload || {})).then(function (raw) {
         return parseBridgeJson(raw);
       });
     },
+    openWarehouse: function (context) {
+      capsuleWarehouseScene.open(context || null);
+    },
+    openIngestion: function (context) {
+      openIngestionScene("product", context || null);
+    },
+    toggleLocale: toggleLocale,
     showScreen: showScreen,
   });
   var targetIntegration = window.ReweaveTargetWorkflow.create({
@@ -935,6 +1155,19 @@
     },
     showScreen: showScreen,
     syncAppState: syncAppState,
+    openProduct: function () {
+      productPlanScene.open();
+    },
+    openWarehouse: function (context) {
+      capsuleWarehouseScene.open(context || null);
+    },
+    openIngestion: function () {
+      openIngestionScene("product", null);
+    },
+    openCompatTools: function () {
+      showScreen("screen-main");
+      syncAppState();
+    },
     toggleLocale: toggleLocale,
   });
 
@@ -1602,6 +1835,219 @@
     if (popover) popover.classList.toggle("developer-mode", ingestionManagement.developerMode === true);
   }
 
+  function syncIngestionSpecimen() {
+    var specimen = ingestionNavigation.specimen;
+    var productReview = ingestionNavigation.productReview;
+    var reviewItem = productReview
+      ? ingestionManagement.reviewItems.find(function (item) {
+          return String(item.review_id || "") === productReview.review_id;
+        })
+      : null;
+    var reviewCandidate =
+      reviewItem && reviewItem.candidate &&
+      typeof reviewItem.candidate === "object"
+        ? reviewItem.candidate
+        : {};
+    var surface = $("capsule-ingestion-specimen");
+    var name = $("ingestion-specimen-name");
+    var context = $("ingestion-specimen-context");
+    if (!surface || !name || !context) return;
+    surface.classList.toggle("is-empty", !specimen && !productReview);
+    surface.classList.toggle(
+      "is-exact",
+      !!productReview || !!(specimen && specimen.exact_source)
+    );
+    surface.dataset.capabilityKind = productReview
+      ? String(reviewItem && (
+          reviewItem.capability_kind ||
+          reviewCandidate.capability_kind
+        ) || "")
+      : specimen
+        ? String(specimen.capability_kind || "")
+        : "";
+    name.textContent = productReview
+      ? String(
+          reviewItem && (
+            reviewItem.display_name ||
+            reviewItem.suggested_name
+          ) || t("productReviewContext")
+        )
+      : specimen
+        ? String(specimen.display_name || t("sourceProject"))
+        : t("intakeSpecimenEmpty");
+    var kindKey = specimen && {
+      presentation: "presentationCapability",
+      interaction: "interactionCapability",
+      computation: "computationCapability",
+    }[String(specimen.capability_kind || "")];
+    var version = specimen ? String(specimen.version_id || "") : "";
+    context.textContent = productReview
+      ? t("productReviewExact")
+      : !specimen
+      ? ""
+      : specimen.capsule_name
+        ? [
+          kindKey ? t(kindKey) : "",
+          String(specimen.capsule_name),
+          version.length > 18 ? version.slice(0, 15) + "…" : version,
+        ].filter(Boolean).join(" · ")
+        : specimen.exact_source
+          ? formatText("formalCapsuleCount", { count: Number(specimen.formal_capsule_count || 0) })
+          : t("intakeSpecimenSelected");
+    ["presentation", "interaction", "computation"].forEach(function (kind) {
+      var value = $("ingestion-specimen-" + kind);
+      var counts = specimen && specimen.capsule_counts;
+      if (value) {
+        value.textContent = productReview
+          ? surface.dataset.capabilityKind === kind ? "1" : "—"
+          : counts && Number.isFinite(Number(counts[kind]))
+            ? String(Number(counts[kind]))
+            : "—";
+      }
+    });
+    document.querySelectorAll("[data-specimen-project-id]").forEach(function (button) {
+      button.setAttribute(
+        "aria-pressed",
+        specimen && specimen.project_id &&
+          String(specimen.project_id) === String(button.dataset.specimenProjectId || "")
+          ? "true"
+          : "false"
+      );
+    });
+  }
+
+  function syncIngestionStation() {
+    var station = ingestionNavigation.station;
+    document.querySelectorAll("[data-ingestion-station]").forEach(function (button) {
+      var active = button.dataset.ingestionStation === station;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-selected", active ? "true" : "false");
+      button.setAttribute("tabindex", active ? "0" : "-1");
+    });
+    document.querySelectorAll("[data-ingestion-panel]").forEach(function (panel) {
+      var active = panel.dataset.ingestionPanel === station;
+      panel.classList.toggle("is-active", active);
+      panel.hidden = !active;
+    });
+    var sourceCount = $("ingestion-source-count");
+    var formalCount = $("ingestion-formal-count");
+    var supervisionStatus = $("ingestion-supervision-status");
+    if (sourceCount) sourceCount.textContent = String(ingestionManagement.projects.length);
+    if (formalCount) formalCount.textContent = String(ingestionManagement.capabilityGroups.length);
+    if (supervisionStatus) supervisionStatus.textContent = ingestionManagement.selectedModel ? "✓" : "—";
+    syncIngestionSpecimen();
+  }
+
+  function syncFormalNavigation() {
+    var targetEntry = $("btn-open-target");
+    var targetAvailable = !!(
+      targetEntry &&
+      !targetEntry.disabled &&
+      !targetEntry.classList.contains("hidden")
+    );
+    document.querySelectorAll("[data-formal-target-nav]").forEach(function (button) {
+      button.classList.toggle("hidden", !targetAvailable);
+      button.disabled = !targetAvailable;
+      button.setAttribute("aria-disabled", targetAvailable ? "false" : "true");
+    });
+    document.querySelectorAll(".reweave-workspace-bar .btn-lang").forEach(function (button) {
+        button.textContent = locale === "zh" ? "中·EN" : "EN·中";
+    });
+  }
+
+  function runSceneThreadTransition(kind) {
+    var line = $("scene-thread-transition");
+    if (!line) return;
+    line.dataset.kind = kind || "warehouse";
+    line.classList.remove("is-active");
+    void line.offsetWidth;
+    line.classList.add("is-active");
+    window.setTimeout(function () { line.classList.remove("is-active"); }, 220);
+  }
+
+  function openIngestionScene(fromScene, specimenContext) {
+    var active = document.activeElement;
+    ingestionNavigation.returnScene = fromScene || "product";
+    ingestionNavigation.focusId = active && active.id ? active.id : "";
+    var productReview =
+      ingestionNavigation.returnScene === "product" &&
+      specimenContext &&
+      specimenContext.station === "review" &&
+      typeof specimenContext.review_id === "string"
+        ? {
+            review_id: specimenContext.review_id,
+            plan_token: String(specimenContext.plan_token || ""),
+            projection_digest: String(
+              specimenContext.projection_digest || ""
+            ),
+            return_focus_id: String(
+              specimenContext.return_focus_id || ""
+            ),
+          }
+        : null;
+    ingestionNavigation.productReview = productReview;
+    ingestionNavigation.station = productReview ? "review" : "source";
+    ingestionNavigation.specimen = !productReview &&
+      specimenContext && typeof specimenContext === "object"
+      ? {
+        project_id: specimenContext.project_id || null,
+        project_key: String(specimenContext.project_key || ""),
+        display_name: String(specimenContext.display_name || ""),
+        exact_source: specimenContext.exact_source === true,
+        formal_capsule_count: Number(specimenContext.formal_capsule_count || 0),
+        capsule_counts: specimenContext.capsule_counts || null,
+        capsule_id: specimenContext.capsule_id || null,
+        capsule_name: specimenContext.capsule_name || null,
+        capability_kind: specimenContext.capability_kind || null,
+        version_id: specimenContext.version_id || null,
+        canonical_hash: specimenContext.canonical_hash || null,
+      }
+      : null;
+    if (ingestionNavigation.returnScene === "warehouse") capsuleWarehouseScene.suspend();
+    runSceneThreadTransition("ingestion");
+    showScreen("screen-capsule-ingestion");
+    var ingestionScreen = $("screen-capsule-ingestion");
+    if (ingestionScreen) ingestionScreen.scrollTop = 0;
+    window.scrollTo(0, 0);
+    syncIngestionStation();
+    syncFormalNavigation();
+    if (!ingestionManagement.loaded && !ingestionManagement.loading) {
+      refreshIngestionManagement();
+    } else {
+      renderIngestionManagement();
+    }
+    window.setTimeout(function () {
+      var current = document.querySelector("[data-ingestion-station].is-active");
+      if (current) current.focus({ preventScroll: true });
+    }, 0);
+  }
+
+  function closeIngestionScene() {
+    var productReview = ingestionNavigation.productReview;
+    if (ingestionNavigation.returnScene === "warehouse") {
+      capsuleWarehouseScene.resume();
+    } else {
+      showScreen("screen-product-plan");
+      if (productReview && productReview.plan_token) {
+        productPlanScene.refreshCurrentWorkspace({
+          focusId:
+            productReview.return_focus_id ||
+            ingestionNavigation.focusId,
+        });
+      } else {
+        productPlanScene.resume();
+      }
+    }
+    ingestionNavigation.productReview = null;
+    window.setTimeout(function () {
+      var target =
+        !productReview && ingestionNavigation.focusId
+          ? $(ingestionNavigation.focusId)
+          : null;
+      if (target) target.focus();
+    }, 0);
+  }
+
   function reviewStatusLabel(status) {
     var key = {
       waiting_user: "reviewStatusWaitingUser",
@@ -1643,6 +2089,34 @@
       .replace(/_+/g, "_");
     if (!/^[a-z_][a-z0-9_]*$/.test(text)) return fallback;
     return text;
+  }
+
+  function looksPrivateManagementValue(value) {
+    var text = String(value || "").trim();
+    return (
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(text) ||
+      /^\//.test(text) ||
+      /^[a-zA-Z]:[\\/]/.test(text) ||
+      /^\\\\/.test(text) ||
+      /^file:\/\//i.test(text) ||
+      /^~[\\/]/.test(text)
+    );
+  }
+
+  function managementFingerprint(value) {
+    var hash = 2166136261;
+    var input = String(value || "");
+    for (var index = 0; index < input.length; index += 1) {
+      hash ^= input.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return ("000000" + (hash >>> 0).toString(16)).slice(-6);
+  }
+
+  function managementDisplayLabel(value, identity, fallbackKey) {
+    var label = String(value || "").trim();
+    if (label && label !== "." && !looksPrivateManagementValue(label)) return label;
+    return t(fallbackKey) + " · " + managementFingerprint(identity || label || fallbackKey);
   }
 
   function reviewIdentityDefaults(item, candidate, reviewName) {
@@ -2214,7 +2688,11 @@
       ingestionManagement.sourceRoots.forEach(function (root) {
         var option = document.createElement("option");
         option.value = String(root.root_id || "");
-        option.textContent = String(root.label || root.root_id || "source root");
+        option.textContent = managementDisplayLabel(
+          root.label,
+          root.root_id,
+          "javascriptSourceRoot"
+        );
         rootSelect.appendChild(option);
       });
       var rootLabel = document.createElement("label");
@@ -2290,7 +2768,11 @@
         input.value = String(project.project_id || project.id || "");
         input.title = t("confirmProjects");
         label.appendChild(input);
-        label.appendChild(document.createTextNode(" " + String(project.display_name || project.name || project.root_relpath || input.value)));
+        label.appendChild(document.createTextNode(" " + managementDisplayLabel(
+          project.display_name || project.name || project.root_relpath,
+          input.value,
+          "sourceProjects"
+        )));
         projectConfig.appendChild(label);
         var brandEditor = createBrandEditor(project);
         brandEditor.element.classList.add("warehouse-developer-only");
@@ -2336,11 +2818,40 @@
       var sourceType = project.source_type === "javascript_computation_source"
         ? t("javascriptSourceType")
         : (project.source_type === "static_web" ? t("staticWebSourceType") : t("unknownSourceType"));
-      var sourceRelpath = String(project.project_relpath || project.root_relpath || ".");
-      var projectName = String(project.display_name || project.name || project.project_key || sourceRelpath || project.project_id || "project");
+      var rawSourceRelpath = String(project.project_relpath || project.root_relpath || ".");
+      var sourceRelpath = looksPrivateManagementValue(rawSourceRelpath) ? "" : rawSourceRelpath;
+      var projectName = managementDisplayLabel(
+        project.display_name || project.name || project.project_key || sourceRelpath,
+        project.project_id,
+        "sourceProjects"
+      );
       text.textContent = projectName + " · " + sourceType;
-      text.title = [projectName, sourceType, sourceRelpath, String(projectStatus)].join(" · ");
+      text.title = [projectName, sourceType, sourceRelpath, String(projectStatus)].filter(Boolean).join(" · ");
       row.appendChild(text);
+      var inspect = document.createElement("button");
+      inspect.type = "button";
+      inspect.className = "btn-ghost warehouse-specimen-select";
+      inspect.textContent = t("inspectSource");
+      inspect.dataset.specimenProjectId = String(project.project_id || "");
+      inspect.setAttribute("aria-pressed", "false");
+      inspect.disabled = !project.project_id;
+      inspect.addEventListener("click", function () {
+        ingestionNavigation.specimen = {
+          project_id: project.project_id || null,
+          project_key: String(project.project_key || ""),
+          display_name: projectName,
+          exact_source: false,
+          formal_capsule_count: 0,
+          capsule_counts: null,
+          capsule_id: null,
+          capsule_name: null,
+          capability_kind: null,
+          version_id: null,
+          canonical_hash: null,
+        };
+        syncIngestionSpecimen();
+      });
+      row.appendChild(inspect);
       var projectMeta = document.createElement("span");
       projectMeta.className = "warehouse-meta warehouse-developer-only";
       projectMeta.textContent = " · " + sourceRelpath + " · " + String(projectStatus);
@@ -2476,24 +2987,72 @@
     return payload;
   }
 
+  function productReviewBinding(item, candidate) {
+    var context = ingestionNavigation.productReview;
+    var receipt = candidate && candidate.frozen_review_admission;
+    if (
+      !context ||
+      String(item.review_id || "") !== context.review_id ||
+      !receipt ||
+      receipt.schema !== "frozen_stage3_review_admission.v2" ||
+      String(receipt.projection_digest || "") !==
+        context.projection_digest
+    ) {
+      return null;
+    }
+    var capabilityKey = String(
+      receipt.authorized_capability_key || ""
+    );
+    var group = ingestionManagement.capabilityGroups.find(function (item) {
+      return String(item.capability_key || "") === capabilityKey;
+    });
+    if (!capabilityKey || !group) return null;
+    return {
+      capability_key: capabilityKey,
+      role_key: "",
+      variant_key: "default",
+      display_name: String(group.display_name || ""),
+    };
+  }
+
   function renderManagementReviews() {
     var container = $("warehouse-review-items");
     var count = $("warehouse-review-count");
     if (!container || !count) return;
-    count.textContent = String(ingestionManagement.reviewItems.length);
+    var productContext = ingestionNavigation.productReview;
+    var reviewItems = ingestionManagement.reviewItems;
+    if (productContext) {
+      reviewItems = reviewItems.filter(function (item) {
+        return String(item.review_id || "") === productContext.review_id;
+      });
+    }
+    count.textContent = String(reviewItems.length);
     container.innerHTML = "";
-    if (!ingestionManagement.reviewItems.length) {
-      emptyManagementList(container, "noReviews");
+    if (!reviewItems.length) {
+      if (productContext) {
+        var missing = document.createElement("p");
+        missing.className = "warehouse-status is-error";
+        missing.setAttribute("role", "status");
+        missing.dataset.errorCode = "target_review_missing";
+        missing.textContent = "target_review_missing";
+        container.appendChild(missing);
+      } else {
+        emptyManagementList(container, "noReviews");
+      }
       return;
     }
-    ingestionManagement.reviewItems.forEach(function (item) {
+    reviewItems.forEach(function (item) {
       var candidate = item.candidate && typeof item.candidate === "object" ? item.candidate : {};
+      var productIdentity = productReviewBinding(item, candidate);
       var adapterContractExpired = item.adapter_contract_version_expired === true;
       var reviewContext = ingestionManagement.captureReviewContext[String(item.review_id || "")] || {};
       var details = document.createElement("details");
       details.className = "warehouse-review";
       details.title = t("reviewItems");
       var summary = document.createElement("summary");
+      if (productContext) {
+        summary.id = "target-review-summary-" + String(item.review_id || "");
+      }
       var reviewName = reviewContext.offer_name || item.display_name || item.suggested_name || candidate.suggested_display_name || t("captureReview");
       var hasServerDecisions = Array.isArray(item.allowed_decisions) && item.allowed_decisions.length > 0;
       var reviewState = adapterContractExpired
@@ -2508,6 +3067,7 @@
       reviewId.textContent = " · " + String(item.review_id || "");
       summary.appendChild(reviewId);
       details.appendChild(summary);
+      details.open = !!productContext;
       var meta = document.createElement("p");
       meta.className = "warehouse-meta warehouse-developer-only";
       meta.textContent = [item.capability_kind || candidate.capability_kind, item.reason_code || item.error_code].filter(Boolean).join(" · ");
@@ -2533,6 +3093,13 @@
       var decisions = adapterContractExpired ? [] :
         (Array.isArray(item.allowed_decisions) ? item.allowed_decisions :
           (Array.isArray(item.decisions) ? item.decisions : []));
+      if (productContext) {
+        decisions = productIdentity
+          ? decisions.filter(function (decision) {
+              return decision === "publish_general" || decision === "reject";
+            })
+          : [];
+      }
       if (!adapterContractExpired && !decisions.length && item.candidate_status === "waiting_user") {
         var codes = item.redaction && Array.isArray(item.redaction.codes) ? item.redaction.codes : [];
         var stage3Code = candidate.stage3_failure && candidate.stage3_failure.error_code;
@@ -2556,7 +3123,9 @@
       var controls = {};
       var identityDecisions = ["publish_general", "publish_brand_limited", "create_variant", "semantic_split"];
       if (decisions.some(function (decision) { return identityDecisions.indexOf(decision) >= 0; })) {
-        var identityDefaults = reviewIdentityDefaults(item, candidate, reviewName);
+        var identityDefaults =
+          productIdentity ||
+          reviewIdentityDefaults(item, candidate, reviewName);
         var identityFields = document.createElement("div");
         identityFields.className = "warehouse-actions";
         ["capability_key", "role_key", "variant_key", "display_name"].forEach(function (name) {
@@ -2584,6 +3153,13 @@
           input.spellcheck = false;
           if (name !== "display_name") input.pattern = "[a-z_][a-z0-9_]*";
           input.value = String(identityDefaults[name] || "");
+          if (
+            productIdentity &&
+            (name === "capability_key" || name === "display_name")
+          ) {
+            input.readOnly = true;
+            input.setAttribute("aria-readonly", "true");
+          }
           if (name === "display_name") input.maxLength = 200;
           controls[name] = input;
           label.appendChild(input);
@@ -2635,19 +3211,35 @@
         details.appendChild(label);
       });
       var actions = document.createElement("div");
-      actions.className = "warehouse-actions";
+      actions.className = "warehouse-actions warehouse-review-decision";
+      var decisionSelect = document.createElement("select");
+      decisionSelect.setAttribute("aria-label", t("reviewItems"));
+      var decisionEmpty = document.createElement("option");
+      decisionEmpty.value = "";
+      decisionEmpty.textContent = t("reviewItems");
+      decisionSelect.appendChild(decisionEmpty);
       decisions.forEach(function (decision) {
         var copy = reviewDecisionCopy(decision);
-        var button = controlHelp(document.createElement("button"), copy ? copy[1] : "reviewItems");
-        button.type = "button";
-        button.className = "btn-ghost";
-        button.dataset.decision = String(decision);
-        button.textContent = copy ? t(copy[0]) : String(decision);
-        if (!copy) button.classList.add("warehouse-developer-only");
-        button.addEventListener("click", function () {
-          var decisionPayload = managementReviewDecisionPayload(item.review_id, decision, controls);
-          if (!decisionPayload) return;
-          bridgeCall("decide_review_item", JSON.stringify(decisionPayload)).then(function (raw) {
+        var option = document.createElement("option");
+        option.value = String(decision);
+        option.textContent = copy ? t(copy[0]) : String(decision);
+        decisionSelect.appendChild(option);
+      });
+      var submitDecision = document.createElement("button");
+      submitDecision.type = "button";
+      submitDecision.className = "btn-primary";
+      submitDecision.textContent = t("save");
+      submitDecision.disabled = true;
+      decisionSelect.addEventListener("change", function () {
+        submitDecision.disabled = !decisionSelect.value;
+        submitDecision.dataset.decision = decisionSelect.value;
+      });
+      submitDecision.addEventListener("click", function () {
+        var decision = String(decisionSelect.value || "");
+        if (!decision) return;
+        var decisionPayload = managementReviewDecisionPayload(item.review_id, decision, controls);
+        if (!decisionPayload) return;
+        bridgeCall("decide_review_item", JSON.stringify(decisionPayload)).then(function (raw) {
             var result = parseBridgeJson(raw);
             var decided = managementPayload(result);
             if (!decided) {
@@ -2685,19 +3277,103 @@
               });
               return;
             }
+            if (productContext) {
+              closeIngestionScene();
+              return;
+            }
             if (!trackManagementRuns(result, function () {
               setManagementStatus("decisionSaved");
             })) {
               setManagementStatus("decisionSaved");
               refreshIngestionManagement();
             }
-          });
         });
-        actions.appendChild(button);
       });
+      actions.appendChild(decisionSelect);
+      actions.appendChild(submitDecision);
       details.appendChild(actions);
+      if (productContext && !productIdentity) {
+        var invalid = document.createElement("p");
+        invalid.className = "warehouse-status is-error";
+        invalid.dataset.errorCode = "target_review_binding_invalid";
+        invalid.textContent = "target_review_binding_invalid";
+        details.appendChild(invalid);
+      }
       container.appendChild(details);
     });
+    if (productContext) {
+      window.setTimeout(function () {
+        var summary = $(
+          "target-review-summary-" + productContext.review_id
+        );
+        if (summary) summary.focus({ preventScroll: true });
+      }, 0);
+    }
+  }
+
+  function managementJson(value) {
+    if (value && typeof value === "object" && !Array.isArray(value)) return value;
+    if (typeof value !== "string" || !value.trim()) return {};
+    try {
+      var parsed = JSON.parse(value);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    } catch (_error) {
+      return {};
+    }
+  }
+
+  function managementFields(contract) {
+    var properties = managementJson(contract).properties;
+    return properties && typeof properties === "object" && !Array.isArray(properties)
+      ? Object.keys(properties).sort()
+      : [];
+  }
+
+  function managementContractSummary(kind, version) {
+    var activation = managementJson(version.activation_json || version.activation);
+    var input = managementJson(version.input_contract_json || version.input_contract);
+    var output = managementJson(version.output_contract_json || version.output_contract);
+    var parts = [t("contractEntrypoint") + ": " + String(activation.entrypoint || "—")];
+    if (kind === "interaction") {
+      var events = managementJson(output.events);
+      var names = Object.keys(events).sort().map(function (name) {
+        return name + "(" + managementFields(events[name]).join(", ") + ")";
+      });
+      parts.push(t("contractProduces") + ": " + (names.length ? names.join(" · ") : t("contractNoOutput")));
+      return parts.join(" · ");
+    }
+    var inputs = managementFields(input);
+    var outputs = managementFields(output);
+    parts.push(t("contractReceives") + ": " + (inputs.length ? inputs.join(", ") : t("contractNoInput")));
+    parts.push(t("contractProduces") + ": " + (outputs.length ? outputs.join(", ") : t("contractNoOutput")));
+    return parts.join(" · ");
+  }
+
+  function renderFormalCapsuleDetail(panel, capsule, detail) {
+    panel.replaceChildren();
+    var detailCapsule = detail.capsule || detail;
+    var versions = Array.isArray(detail.versions) ? detail.versions : [];
+    var currentVersionId = String(detailCapsule.current_version_id || capsule.version_id || "");
+    var version = versions.find(function (item) {
+      return String(item.version_id || "") === currentVersionId;
+    }) || versions[0] || {};
+    var identity = document.createElement("p");
+    identity.className = "ingestion-formal-identity";
+    identity.textContent = [
+      String(detailCapsule.capability_kind || capsule.capability_kind || ""),
+      version.version_number != null ? "v" + String(version.version_number) : "",
+      String(version.version_id || currentVersionId || ""),
+      String(detailCapsule.status || capsule.status || ""),
+    ].filter(Boolean).join(" · ");
+    panel.appendChild(identity);
+    var contract = document.createElement("p");
+    contract.className = "ingestion-formal-contract";
+    contract.textContent = managementContractSummary(
+      String(detailCapsule.capability_kind || capsule.capability_kind || ""),
+      version
+    );
+    panel.appendChild(contract);
+    panel.dataset.loaded = "true";
   }
 
   function renderManagementGroups() {
@@ -2744,37 +3420,89 @@
       details.appendChild(rename);
       var capsules = Array.isArray(group.capsules) ? group.capsules : (Array.isArray(group.roles) ? group.roles : []);
       capsules.forEach(function (capsule) {
-        var row = document.createElement("div");
-        row.className = "warehouse-row";
-        var label = document.createElement("span");
-        label.textContent = [capsule.role_key, capsule.variant_key, capsule.capability_kind, capsule.status].filter(Boolean).join(" · ");
-        row.appendChild(label);
-        if (capsule.capsule_id) {
-          var view = document.createElement("button");
-          view.type = "button";
-          view.className = "btn-ghost";
-          view.textContent = t("viewDetails");
-          view.title = t("viewDetailsHelp");
-          view.addEventListener("click", function () {
-            bridgeCall("get_capsule_detail", JSON.stringify({ capsule_id: capsule.capsule_id })).then(function (raw) {
-              var result = parseBridgeJson(raw);
-              var detail = managementPayload(result);
-              if (!detail) {
-                setManagementStatus(managementError(result));
-                return;
-              }
-              var detailCapsule = detail.capsule || detail;
-              var latestVersion = Array.isArray(detail.versions) && detail.versions.length ? detail.versions[0] : {};
-              label.textContent = [
-                detailCapsule.role_key || capsule.role_key,
-                detailCapsule.variant_key || capsule.variant_key,
-                detailCapsule.capability_kind || capsule.capability_kind,
-                detailCapsule.status || capsule.status,
-                latestVersion.version_number != null ? "v" + latestVersion.version_number : "",
-              ].filter(Boolean).join(" · ");
-            });
+        var unit = document.createElement("article");
+        unit.className = "ingestion-formal-capsule";
+        unit.dataset.capsuleId = String(capsule.capsule_id || "");
+        var panelId = "ingestion-formal-detail-" + String(capsule.capsule_id || "").replace(/[^a-zA-Z0-9_-]/g, "_");
+        var seal = document.createElement("button");
+        seal.type = "button";
+        seal.className = "warehouse-capsule-seal is-management";
+        seal.setAttribute("aria-expanded", "false");
+        seal.setAttribute("aria-controls", panelId);
+        var kind = String(capsule.capability_kind || "");
+        var kindSide = document.createElement("span");
+        kindSide.className = "warehouse-capsule-kind";
+        var mark = document.createElement("i");
+        mark.className = "warehouse-capsule-core is-" + kind;
+        mark.setAttribute("aria-hidden", "true");
+        kindSide.appendChild(mark);
+        var kindText = document.createElement("span");
+        kindText.textContent = t({
+          presentation: "presentationCapability",
+          interaction: "interactionCapability",
+          computation: "computationCapability",
+        }[kind] || kind);
+        kindSide.appendChild(kindText);
+        seal.appendChild(kindSide);
+        var capsuleIdentity = document.createElement("span");
+        capsuleIdentity.className = "warehouse-capsule-identity";
+        var capsuleName = document.createElement("strong");
+        capsuleName.textContent = String(group.display_name || group.capability_key || "capability");
+        capsuleIdentity.appendChild(capsuleName);
+        var capsuleMeta = document.createElement("p");
+        capsuleMeta.textContent = [
+          capsule.role_key,
+          capsule.variant_key,
+          capsule.status,
+          t("exactVersion") + " —",
+        ].filter(Boolean).join(" · ");
+        capsuleIdentity.appendChild(capsuleMeta);
+        seal.appendChild(capsuleIdentity);
+        unit.appendChild(seal);
+        var panel = document.createElement("section");
+        panel.id = panelId;
+        panel.className = "ingestion-formal-detail";
+        panel.hidden = true;
+        unit.appendChild(panel);
+        seal.addEventListener("click", function () {
+          var open = seal.getAttribute("aria-expanded") === "true";
+          container.querySelectorAll(".warehouse-capsule-seal.is-management").forEach(function (item) {
+            item.setAttribute("aria-expanded", "false");
           });
-          row.appendChild(view);
+          container.querySelectorAll(".ingestion-formal-detail").forEach(function (item) {
+            item.hidden = true;
+          });
+          if (open) return;
+          seal.setAttribute("aria-expanded", "true");
+          panel.hidden = false;
+          if (panel.dataset.loaded === "true") return;
+          panel.textContent = t("warehouseLoadingRelations");
+          bridgeCall("get_capsule_detail", JSON.stringify({ capsule_id: capsule.capsule_id })).then(function (raw) {
+            var result = parseBridgeJson(raw);
+            var detail = managementPayload(result);
+            if (!detail) {
+              panel.textContent = t("contractUnavailable");
+              setManagementStatus(managementError(result));
+              return;
+            }
+            renderFormalCapsuleDetail(panel, capsule, detail);
+            var detailCapsule = detail.capsule || detail;
+            var versions = Array.isArray(detail.versions) ? detail.versions : [];
+            var latestVersion = versions.find(function (item) {
+              return String(item.version_id || "") === String(detailCapsule.current_version_id || "");
+            }) || versions[0] || {};
+            capsuleMeta.textContent = [
+              capsule.role_key,
+              capsule.variant_key,
+              latestVersion.version_number != null ? "v" + latestVersion.version_number : "",
+              latestVersion.version_id ? String(latestVersion.version_id).slice(0, 15) + "…" : "",
+              detailCapsule.status || capsule.status,
+            ].filter(Boolean).join(" · ");
+          });
+        });
+        var actions = document.createElement("div");
+        actions.className = "ingestion-formal-actions";
+        if (capsule.capsule_id) {
           var statusButton = document.createElement("button");
           statusButton.type = "button";
           statusButton.className = "btn-ghost";
@@ -2788,9 +3516,10 @@
               else refreshIngestionManagement();
             });
           });
-          row.appendChild(statusButton);
+          actions.appendChild(statusButton);
         }
-        details.appendChild(row);
+        unit.appendChild(actions);
+        details.appendChild(unit);
       });
       container.appendChild(details);
     });
@@ -2813,7 +3542,6 @@
       t("legacyWarehouse"),
       legacy.status,
       String(legacy.recognizableEntries || 0),
-      legacy.path,
     ].filter(Boolean).join(" · ");
     container.appendChild(summary);
     var aliases = Array.isArray(legacy.aliases) ? legacy.aliases : [];
@@ -2954,7 +3682,7 @@
       backup.className = "warehouse-meta";
       backup.textContent =
         t("preRestoreBackup") + ": " +
-        String(product.pre_restore_backup_path || t("backupUnavailable"));
+        (product.pre_restore_backup_path ? t("backupAvailable") : t("backupUnavailable"));
       details.appendChild(backup);
       container.appendChild(details);
     });
@@ -3001,6 +3729,7 @@
     renderManagementLegacy();
     renderManagementBackups();
     renderManagementRuns();
+    syncIngestionStation();
     setManagementStatus(ingestionManagement.errorKey);
   }
 
@@ -3149,6 +3878,62 @@
   }
 
   function bindIngestionManagementEvents() {
+    document.querySelectorAll("[data-ingestion-station]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        ingestionNavigation.station = String(button.dataset.ingestionStation || "source");
+        syncIngestionStation();
+        window.requestAnimationFrame(function () {
+          window.scrollTo(0, 0);
+          button.focus({ preventScroll: true });
+        });
+      });
+      button.addEventListener("keydown", function (event) {
+        if (["ArrowLeft", "ArrowRight", "Home", "End"].indexOf(event.key) < 0) return;
+        event.preventDefault();
+        var tabs = Array.prototype.slice.call(document.querySelectorAll("[data-ingestion-station]"));
+        var index = tabs.indexOf(button);
+        if (event.key === "Home") index = 0;
+        else if (event.key === "End") index = tabs.length - 1;
+        else if (event.key === "ArrowLeft") index = (index - 1 + tabs.length) % tabs.length;
+        else index = (index + 1) % tabs.length;
+        var next = tabs[index];
+        ingestionNavigation.station = String(next.dataset.ingestionStation || "source");
+        syncIngestionStation();
+        next.focus({ preventScroll: true });
+      });
+    });
+    var ingestionBack = $("btn-ingestion-back");
+    if (ingestionBack) ingestionBack.addEventListener("click", closeIngestionScene);
+    var ingestionProduct = $("btn-ingestion-product-nav");
+    if (ingestionProduct) ingestionProduct.addEventListener("click", function () {
+      productPlanScene.open();
+    });
+    var ingestionTarget = $("btn-ingestion-target-nav");
+    if (ingestionTarget) ingestionTarget.addEventListener("click", function () {
+      var targetEntry = $("btn-open-target");
+      if (targetEntry && !targetEntry.disabled) targetEntry.click();
+    });
+    var ingestionWarehouse = $("btn-ingestion-warehouse-nav");
+    if (ingestionWarehouse) ingestionWarehouse.addEventListener("click", function () {
+      if (ingestionNavigation.returnScene === "warehouse") {
+        capsuleWarehouseScene.resume();
+        return;
+      }
+      var productWarehouse = $("btn-product-open-warehouse");
+      if (productWarehouse) productWarehouse.click();
+      else capsuleWarehouseScene.open(null);
+    });
+    var ingestionCompatibility = $("btn-ingestion-compat-nav");
+    if (ingestionCompatibility) ingestionCompatibility.addEventListener("click", function () {
+      var productBack = $("btn-product-plan-back");
+      if (productBack) productBack.click();
+      else {
+        showScreen("screen-main");
+        syncAppState();
+      }
+    });
+    var ingestionLanguage = $("btn-ingestion-lang");
+    if (ingestionLanguage) ingestionLanguage.addEventListener("click", toggleLocale);
     var developerMode = $("warehouse-developer-mode");
     if (developerMode) developerMode.addEventListener("change", function () {
       ingestionManagement.developerMode = developerMode.checked === true;
@@ -3751,7 +4536,7 @@
           li.classList.add("done");
         });
         setTimeout(function () {
-          initMain();
+          initMain({ compatibility: true });
           var needsStore = (data.sourceBoxes || []).some(function (source) {
             return source.draft_status === "drafted" && source.warehouse_status !== "promoted";
           });
@@ -3956,7 +4741,7 @@
     if (id === "screen-main" && productPlanScene.consumeWarehouseReturn()) {
       id = "screen-product-plan";
     }
-    ["screen-welcome", "screen-cleaning", "screen-main", "screen-product-plan", "screen-capsule-warehouse", "screen-target"].forEach(function (sid) {
+    ["screen-welcome", "screen-cleaning", "screen-main", "screen-product-plan", "screen-capsule-warehouse", "screen-capsule-ingestion", "screen-target"].forEach(function (sid) {
       $(sid).classList.toggle("hidden", sid !== id);
     });
   }
@@ -4073,9 +4858,9 @@
     var input = $("task-input");
     if (input) input.placeholder = t("taskPlaceholder");
     var langBtn = $("btn-lang");
-    if (langBtn) langBtn.textContent = locale === "zh" ? "中 / EN" : "EN / 中";
+    if (langBtn) langBtn.textContent = locale === "zh" ? "中·EN" : "EN·中";
     var wl = $("btn-welcome-lang");
-    if (wl) wl.textContent = locale === "zh" ? "中 / EN" : "EN / 中";
+    if (wl) wl.textContent = locale === "zh" ? "中·EN" : "EN·中";
     if (els.usedCapsuleDock && usedCapsuleIds.length === 0) {
       els.usedCapsuleDock.innerHTML =
         '<span class="used-placeholder">' + escapeHtml(t("usedPlaceholder")) + "</span>";
@@ -4101,9 +4886,13 @@
       if (selected) showCapsuleReader(selected);
     }
     applyLumoLiteRuntimeView();
+    if (data && !isLumoLiteReadOnly()) {
+      syncGeneratedPackageView();
+    }
     capsuleWarehouseScene.sync();
     productPlanScene.sync();
     targetIntegration.sync();
+    syncFormalNavigation();
   }
 
   function toggleLocale() {
@@ -4135,7 +4924,7 @@
     var vr = $("btn-view-runtime");
     if (vr) {
       vr.addEventListener("click", function () {
-        initMain();
+        initMain({ compatibility: true });
       });
     }
     var wl = $("btn-welcome-lang");
@@ -4167,13 +4956,16 @@
       if (index <= steps.length) {
         setTimeout(tick, 650);
       } else {
-        setTimeout(initMain, 400);
+        setTimeout(function () {
+          initMain({ compatibility: true });
+        }, 400);
       }
     }
     tick();
   }
 
-  function initMain() {
+  function initMain(options) {
+    options = options || {};
     showScreen("screen-main");
     cacheElements();
     usedCapsuleIds = [];
@@ -4194,6 +4986,13 @@
     capsuleWarehouseScene.sync();
     productPlanScene.sync();
     targetIntegration.sync();
+    if (
+      options.compatibility !== true &&
+      desktopShellState &&
+      desktopShellState.canPlanProduct === true
+    ) {
+      productPlanScene.open();
+    }
   }
 
   function cacheElements() {
@@ -4588,6 +5387,7 @@
   }
 
   function syncGeneratedPackageView() {
+    if (!data) return;
     if (data.generatedPackage) {
       renderGeneratedPackage(!!lastPreviewPath);
       return;
@@ -5035,6 +5835,26 @@
     productPlanScene.bind();
     targetIntegration.bind();
 
+    var compatTargetNav = $("btn-compat-target-nav");
+    if (compatTargetNav) {
+      compatTargetNav.addEventListener("click", function () {
+        var targetEntry = $("btn-open-target");
+        if (targetEntry && !targetEntry.disabled) targetEntry.click();
+      });
+    }
+    var compatWarehouseNav = $("btn-compat-warehouse-nav");
+    if (compatWarehouseNav) {
+      compatWarehouseNav.addEventListener("click", function () {
+        capsuleWarehouseScene.open(null);
+      });
+    }
+    var compatIngestionNav = $("btn-compat-ingestion-nav");
+    if (compatIngestionNav) {
+      compatIngestionNav.addEventListener("click", function () {
+        openIngestionScene("product", null);
+      });
+    }
+
     $("btn-generate").addEventListener("click", runGenerate);
     var enrichedCheckbox = $("use-enriched-content");
     if (enrichedCheckbox) {
@@ -5161,7 +5981,6 @@
     var historyOpen = !els.historyPopover.classList.contains("hidden");
     var sourcesOpen = !els.sourcesPopover.classList.contains("hidden");
     var artifactsOpen = els.lumoArtifactsPopover && !els.lumoArtifactsPopover.classList.contains("hidden");
-    var warehouseOpen = els.capsuleWarehousePopover && !els.capsuleWarehousePopover.classList.contains("hidden");
     if (els.reader && !els.reader.classList.contains("hidden")) hideCapsuleReader();
     closeAllPopovers();
     if (which === "history" && !historyOpen) {
@@ -5176,11 +5995,6 @@
       openLumoArtifactsPopover();
       els.backdrop.classList.remove("hidden");
       if (els.btnLumoArtifacts) els.btnLumoArtifacts.setAttribute("aria-expanded", "true");
-    } else if (which === "capsule-warehouse" && !warehouseOpen) {
-      els.capsuleWarehousePopover.classList.remove("hidden");
-      els.backdrop.classList.remove("hidden");
-      var ingestionEntry = $("btn-open-capsule-ingestion");
-      if (ingestionEntry) ingestionEntry.setAttribute("aria-expanded", "true");
     }
   }
 
@@ -5188,13 +6002,10 @@
     els.historyPopover.classList.add("hidden");
     els.sourcesPopover.classList.add("hidden");
     if (els.lumoArtifactsPopover) els.lumoArtifactsPopover.classList.add("hidden");
-    if (els.capsuleWarehousePopover) els.capsuleWarehousePopover.classList.add("hidden");
     els.backdrop.classList.add("hidden");
     $("btn-history").setAttribute("aria-expanded", "false");
     $("btn-sources").setAttribute("aria-expanded", "false");
     if (els.btnLumoArtifacts) els.btnLumoArtifacts.setAttribute("aria-expanded", "false");
-    var ingestionEntry = $("btn-open-capsule-ingestion");
-    if (ingestionEntry) ingestionEntry.setAttribute("aria-expanded", "false");
   }
 
   function ensureCapsuleElement(id) {
@@ -5507,11 +6318,12 @@
       applyLocale();
       initDesktopBridge(function () {
         var params = new URLSearchParams(window.location.search);
+        var compatibility = params.get("main") === "1";
         var skipWelcome =
-          params.get("main") === "1" ||
+          compatibility ||
           !!(desktopShellState && desktopShellState.skipWelcome && !isLumoLiteReadOnly());
         if (skipWelcome) {
-          initMain();
+          initMain({ compatibility: compatibility });
         } else {
           syncWelcomeSourceBoxMode();
         }

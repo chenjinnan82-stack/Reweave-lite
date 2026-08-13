@@ -20,6 +20,7 @@ from pimos_lite.reweave_data_contract import (
 
 PLAN_EXECUTION_VERSION = "plan_execution.v1"
 PARAMETERIZED_PLAN_EXECUTION_VERSION = "plan_execution.v2"
+MULTI_COMPUTATION_PLAN_EXECUTION_VERSION = "plan_execution.v3"
 PARAMETERIZED_EXECUTION_OFFER_VERSION = "parameterized_execution_offer.v1"
 PARAMETERIZED_EXECUTION_CONFIRMATION_VERSION = (
     "parameterized_execution_confirmation.v1"
@@ -36,6 +37,9 @@ MAX_CANDIDATE_ACCEPTANCE_BYTES = 1024 * 1024
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _PLAN_ID = re.compile(r"plan_[0-9a-f]{32}\Z")
 _SECTION_IDS = ("frontend", "backend", "data", "infrastructure")
+_SUPPORTED_PLAN_SCHEMA_VERSIONS = frozenset(
+    {"product_plan.v1", "product_plan.v2"}
+)
 MAX_PARAMETERIZED_EXECUTION_BINDINGS = 16
 
 
@@ -127,7 +131,7 @@ def _plan_parameter_context(
         raise PlanExecutionError("parameterized_execution_plan_invalid")
     canonical = {key: value for key, value in plan.items() if key != "canonical_digest"}
     if (
-        plan.get("schema_version") != "product_plan.v1"
+        plan.get("schema_version") not in _SUPPORTED_PLAN_SCHEMA_VERSIONS
         or _DIGEST.fullmatch(str(plan.get("canonical_digest"))) is None
         or plan["canonical_digest"] != canonical_digest(canonical)
         or type(plan.get("requirements")) is not list
@@ -594,7 +598,7 @@ def build_candidate_acceptance(
     )
     if (
         type(plan) is not dict
-        or plan.get("schema_version") != "product_plan.v1"
+        or plan.get("schema_version") not in _SUPPORTED_PLAN_SCHEMA_VERSIONS
         or _DIGEST.fullmatch(str(plan.get("canonical_digest"))) is None
         or plan.get("canonical_digest") != canonical_digest(plan_body)
         or type(plan.get("requirements")) is not list
@@ -958,6 +962,163 @@ def _topological_order(items: dict[str, dict[str, Any]]) -> list[str]:
     return visited
 
 
+def _depends_on_transitively(
+    work_items: dict[str, dict[str, Any]],
+    work_item_id: str,
+    dependency_id: str,
+) -> bool:
+    pending = list(work_items[work_item_id]["depends_on"])
+    visited: set[str] = set()
+    while pending:
+        current = pending.pop()
+        if current == dependency_id:
+            return True
+        if current in visited:
+            continue
+        visited.add(current)
+        pending.extend(work_items[current]["depends_on"])
+    return False
+
+
+def _compile_multi_computation_connections(
+    selected: list[dict[str, Any]],
+    work_items: dict[str, dict[str, Any]],
+    bindings_by_work: dict[str, list[dict[str, Any]]],
+    unit_ids: dict[str, str],
+) -> tuple[list[dict[str, Any]], str]:
+    by_pair = {
+        (capsule["capsule_id"], capsule["version_id"]): capsule
+        for capsule in selected
+    }
+    work_by_pair: dict[tuple[str, str], list[str]] = {
+        pair: [] for pair in by_pair
+    }
+    for work_id in sorted(bindings_by_work):
+        for capsule in bindings_by_work[work_id]:
+            pair = (capsule["capsule_id"], capsule["version_id"])
+            if pair in work_by_pair and work_id not in work_by_pair[pair]:
+                work_by_pair[pair].append(work_id)
+
+    computations = sorted(
+        (
+            capsule
+            for capsule in selected
+            if capsule["capability_kind"] == "computation"
+        ),
+        key=lambda capsule: (capsule["capsule_id"], capsule["version_id"]),
+    )
+    if len(computations) != 2 or any(
+        len(work_by_pair[(capsule["capsule_id"], capsule["version_id"])]) != 1
+        for capsule in computations
+    ):
+        raise PlanExecutionError("plan_execution_connection_binding_ambiguous")
+    left, right = computations
+    left_work = work_by_pair[(left["capsule_id"], left["version_id"])][0]
+    right_work = work_by_pair[(right["capsule_id"], right["version_id"])][0]
+    left_before_right = _depends_on_transitively(
+        work_items, right_work, left_work
+    )
+    right_before_left = _depends_on_transitively(
+        work_items, left_work, right_work
+    )
+    if left_before_right == right_before_left:
+        raise PlanExecutionError("plan_execution_connection_order_ambiguous")
+    first, first_work, terminal, terminal_work = (
+        (left, left_work, right, right_work)
+        if left_before_right
+        else (right, right_work, left, left_work)
+    )
+    if not contracts_compatible(
+        first["output_contract"], terminal["input_contract"]
+    ):
+        raise PlanExecutionError("plan_execution_connection_contract_incompatible")
+
+    presentation = next(
+        capsule
+        for capsule in selected
+        if capsule["capability_kind"] == "presentation"
+    )
+    presentation_works = [
+        work_id
+        for work_id in work_by_pair[
+            (presentation["capsule_id"], presentation["version_id"])
+        ]
+        if _depends_on_transitively(work_items, work_id, terminal_work)
+    ]
+    if len(presentation_works) != 1 or not contracts_compatible(
+        terminal["output_contract"], presentation["input_contract"]
+    ):
+        raise PlanExecutionError("plan_execution_connection_target_ambiguous")
+
+    ordered_edges: list[
+        tuple[dict[str, Any], str, str, dict[str, Any], str]
+    ] = []
+    interaction = next(
+        (
+            capsule
+            for capsule in selected
+            if capsule["capability_kind"] == "interaction"
+        ),
+        None,
+    )
+    if interaction is not None:
+        events = interaction["output_contract"].get("events")
+        interaction_works = [
+            work_id
+            for work_id in work_by_pair[
+                (interaction["capsule_id"], interaction["version_id"])
+            ]
+            if _depends_on_transitively(work_items, first_work, work_id)
+        ]
+        matches = [
+            name
+            for name, contract in events.items()
+            if contracts_compatible(contract, first["input_contract"])
+        ] if type(events) is dict else []
+        if len(interaction_works) != 1 or len(matches) != 1:
+            raise PlanExecutionError("plan_execution_connection_source_ambiguous")
+        ordered_edges.append(
+            (
+                interaction,
+                interaction_works[0],
+                matches[0],
+                first,
+                first_work,
+            )
+        )
+    ordered_edges.extend(
+        [
+            (first, first_work, "value", terminal, terminal_work),
+            (
+                terminal,
+                terminal_work,
+                "value",
+                presentation,
+                presentation_works[0],
+            ),
+        ]
+    )
+
+    connections: list[dict[str, Any]] = []
+    for source, source_work, output, target, target_work in ordered_edges:
+        body = {
+            "source_capsule_id": source["capsule_id"],
+            "source_version_id": source["version_id"],
+            "source_canonical_hash": source["canonical_hash"],
+            "source_execution_unit_id": unit_ids[source_work],
+            "source_output": output,
+            "target_capsule_id": target["capsule_id"],
+            "target_version_id": target["version_id"],
+            "target_canonical_hash": target["canonical_hash"],
+            "target_execution_unit_id": unit_ids[target_work],
+            "target_input": "$",
+        }
+        connections.append(
+            {**body, "connection_digest": canonical_digest(body)}
+        )
+    return connections, canonical_digest(connections)
+
+
 def compile_plan_execution(
     plan: dict[str, Any],
     confirmation: dict[str, Any],
@@ -1004,6 +1165,24 @@ def compile_parameterized_plan_execution(
     )
 
 
+def compile_multi_computation_plan_execution(
+    plan: dict[str, Any],
+    confirmation: dict[str, Any],
+    capsules: list[dict[str, Any]],
+    *,
+    verified_page_contracts: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Compile one confirmed, uniquely ordered two-computation serial product."""
+    return _compile_plan_execution(
+        plan,
+        confirmation,
+        capsules,
+        execution_version=MULTI_COMPUTATION_PLAN_EXECUTION_VERSION,
+        parameter_binding=None,
+        verified_page_contracts=verified_page_contracts,
+    )
+
+
 def _compile_plan_execution(
     plan: dict[str, Any],
     confirmation: dict[str, Any],
@@ -1015,6 +1194,9 @@ def _compile_plan_execution(
 ) -> dict[str, Any]:
     """Shared exact compiler; the parameter-free branch preserves v1 bytes."""
 
+    multi_computation = (
+        execution_version == MULTI_COMPUTATION_PLAN_EXECUTION_VERSION
+    )
     plan_keys = {
         "schema_version", "plan_id", "plan_version", "parent_plan_digest",
         "product_name", "goal", "goal_digest", "language", "requirements",
@@ -1025,7 +1207,7 @@ def _compile_plan_execution(
     plan = _exact(plan, plan_keys, "plan_execution_plan_invalid")
     canonical_plan = {key: value for key, value in plan.items() if key != "canonical_digest"}
     if (
-        plan["schema_version"] != "product_plan.v1"
+        plan["schema_version"] not in _SUPPORTED_PLAN_SCHEMA_VERSIONS
         or _PLAN_ID.fullmatch(str(plan["plan_id"])) is None
         or type(plan["plan_version"]) is not int
         or plan["plan_version"] < 1
@@ -1178,12 +1360,33 @@ def _compile_plan_execution(
     for section in sections:
         row = _exact(
             section,
-            {"section_id", "summary", "work_items", "gaps"},
+            (
+                {"section_id", "summary", "work_items", "gaps"}
+                if plan["schema_version"] == "product_plan.v1"
+                else {
+                    "section_id",
+                    "applicability",
+                    "summary",
+                    "work_items",
+                    "gaps",
+                }
+            ),
             "plan_execution_section_invalid",
         )
+        if type(row["summary"]) is not str or not row["summary"]:
+            raise PlanExecutionError("plan_execution_section_invalid")
         if (
-            type(row["summary"]) is not str
-            or not row["summary"]
+            plan["schema_version"] == "product_plan.v2"
+            and row["applicability"] == "not_applicable"
+        ):
+            if row["work_items"] or row["gaps"]:
+                raise PlanExecutionError("plan_execution_section_invalid")
+            continue
+        if (
+            (
+                plan["schema_version"] == "product_plan.v2"
+                and row["applicability"] != "applicable"
+            )
             or row["gaps"] != []
             or type(row["work_items"]) is not list
             or not row["work_items"]
@@ -1299,14 +1502,25 @@ def _compile_plan_execution(
     )
     capability_keys = {capsule["capability_key"] for capsule in selected}
     capability_kinds = [capsule["capability_kind"] for capsule in selected]
-    if not 1 <= len(selected) <= 3:
-        raise PlanExecutionError("plan_execution_capsule_count_invalid")
     if len(capability_keys) != 1:
         raise PlanExecutionError("plan_execution_capability_group_mismatch")
-    if len(capability_kinds) != len(set(capability_kinds)):
-        raise PlanExecutionError("plan_execution_capability_kind_duplicate")
-    if not ({"presentation", "interaction"} & set(capability_kinds)):
-        raise PlanExecutionError("plan_execution_dom_capsule_required")
+    if multi_computation:
+        if (
+            not 3 <= len(selected) <= 4
+            or capability_kinds.count("presentation") != 1
+            or capability_kinds.count("interaction") > 1
+            or capability_kinds.count("computation") != 2
+        ):
+            raise PlanExecutionError(
+                "plan_execution_multi_computation_shape_invalid"
+            )
+    else:
+        if not 1 <= len(selected) <= 3:
+            raise PlanExecutionError("plan_execution_capsule_count_invalid")
+        if len(capability_kinds) != len(set(capability_kinds)):
+            raise PlanExecutionError("plan_execution_capability_kind_duplicate")
+        if not ({"presentation", "interaction"} & set(capability_kinds)):
+            raise PlanExecutionError("plan_execution_dom_capsule_required")
     try:
         page_contract.validate_formal_page_contract(
             selected,
@@ -1349,6 +1563,15 @@ def _compile_plan_execution(
         )[:24]
         for work_id in sorted(work_items)
     }
+    connections: list[dict[str, Any]] | None = None
+    connection_digest: str | None = None
+    if multi_computation:
+        connections, connection_digest = _compile_multi_computation_connections(
+            selected,
+            work_items,
+            bindings_by_work,
+            unit_ids,
+        )
     units = []
     for sequence, work_id in enumerate(work_order, start=1):
         item = work_items[work_id]
@@ -1393,6 +1616,8 @@ def _compile_plan_execution(
         composition_facts["parameter_binding_digest"] = parameter_binding[
             "canonical_digest"
         ]
+    if connections is not None:
+        composition_facts["connection_digest"] = connection_digest
     composition_key = canonical_digest(composition_facts)
     execution = {
         "schema_version": execution_version,
@@ -1415,6 +1640,11 @@ def _compile_plan_execution(
         execution["composer_request"]["parameter_binding_digest"] = (
             parameter_binding["canonical_digest"]
         )
+    if connections is not None:
+        execution["connections"] = connections
+        execution["connection_digest"] = connection_digest
+        execution["composer_request"]["connections"] = connections
+        execution["composer_request"]["connection_digest"] = connection_digest
     execution["execution_digest"] = canonical_digest(execution)
     return execution
 
@@ -1426,6 +1656,7 @@ __all__ = [
     "CANDIDATE_ACCEPTANCE_WORKER_VERSION",
     "MAX_CANDIDATE_ACCEPTANCE_CASES",
     "MAX_PARAMETERIZED_EXECUTION_BINDINGS",
+    "MULTI_COMPUTATION_PLAN_EXECUTION_VERSION",
     "PLAN_EXECUTION_VERSION",
     "PARAMETERIZED_EXECUTION_BINDING_VERSION",
     "PARAMETERIZED_EXECUTION_CONFIRMATION_VERSION",
@@ -1441,6 +1672,7 @@ __all__ = [
     "canonical_digest",
     "compile_plan_execution",
     "compile_parameterized_plan_execution",
+    "compile_multi_computation_plan_execution",
     "evaluate_candidate_acceptance",
     "validate_candidate_acceptance_confirmation",
     "validate_parameterized_execution_binding",
