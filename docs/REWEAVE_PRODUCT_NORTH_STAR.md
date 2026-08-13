@@ -2,7 +2,7 @@
 
 文档性质：长期产品方向与演进指引
 
-更新时间：2026-08-13
+更新时间：2026-08-14
 
 ## 1. 文档定位
 
@@ -168,8 +168,8 @@ flowchart LR
 
 ### 5.3 当前正式版本摘要
 
-- 规划：`product_plan.v2`、`product_workspace.v9`、`reweave_product_planning_rules.v9`、
-  `reweave_product_planning_prompt.v12`。
+- 规划：`product_plan.v2`、`product_workspace.v10`、`reweave_product_planning_rules.v10`、
+  `reweave_product_planning_prompt.v13`。
 - 完整组合选择：`product_composition_offer.v1`；模型只选择完整 offer，确定性核心展开成员与依赖。
 - 执行：单 computation 使用 `plan_execution.v1`；双 computation 使用 `plan_execution.v3`。
 - 唯一 Composer 产品线：
@@ -239,12 +239,16 @@ LEVEL_THREE_FINITE_ENUM_STANDALONE_DELIVERY=PASS
 
 整体保持 `PARTIAL`，剩余原因只包括：
 
-- planning experience 与 validation experience 已有包含首个非数值任务的非正式、只读、脱敏导出基线；
-  任务分布广度仍不足，也没有正式记录或检索能力。
+- planning experience 与 validation experience 已具备项目内、默认脱敏的不可变里程碑记录和确定性检索；
+  它们仍是非正式派生事实，当前任务分布广度仍不足。
 - presentation/interaction 等非纯 computation 能力准备以及部分正式接纳仍需人工审计编排。
 - 尚未证明覆盖更广的缺口位置和真实任务分布。
 
 当前不建设训练平台，不进行在线自训练，也不把 Candidate 或导出产品自动晋升为胶囊。
+
+新建 v10 workspace 默认冻结并使用同项目、同模型 digest 的最多三条安全案例，且只注入 composition selection。
+历史 v5–v9 workspace 和已有 v10 workspace 保存的启用值不重算；冻结 A/B 只授权这一窄默认值，不构成模型资格、
+训练授权或广泛任务分布证明。
 
 在独立正式能力组上的复现已经证明同一有界结构可重复交付。随后，第一条非数值 boolean 输入到有限字符串枚举输出的
 真实链又贯通了有限多 gap 用户选择、源码提案、capture/adapter v4、正式发布、固定模型重新规划、
@@ -343,6 +347,18 @@ Candidate 仍是审阅候选，不等于 products 晋升或完整产品版本历
      `bdbd181c33f2ed1b31c972991882db3cf4d192569092138a7d29e973cd9debe8`；
      Candidate、导出和离线运行不调用模型。视觉确认只作为用户审阅回执。
 
+8. **项目内 experience 记录、检索与 Planner 注入**
+   - 代码身份：`project_experience_record.v1`、`product_experience_query.v1`、
+     `product_workspace.v10`、`reweave_product_planning_rules.v10`、
+     `reweave_product_planning_prompt.v13`；`ProductPlanner.record_product_experience()`、
+     `ProductPlanner.retrieve_product_experience()`。
+   - 冻结记录：`planner-experience-prospective-four-task-ab-evaluation-v1-01`，
+     checksum manifest digest
+     `1c4b99e10a0ff1306e78422964235e4a0aa9a8617f1627c45d77b5cfa50cf9b2`。
+   - 模型身份：A/B 使用 `qwen3:14b-q4_K_M` /
+     `bdbd181c33f2ed1b31c972991882db3cf4d192569092138a7d29e973cd9debe8`；
+     结果只授权新 v10 workspace 默认启用，不构成模型资格、训练授权或广泛任务分布证明。
+
 ### 5.5 当前尚不存在的能力
 
 - 面向任意项目和框架的完整目标画像与 Target Adapter。
@@ -351,7 +367,7 @@ Candidate 仍是审阅候选，不等于 products 晋升或完整产品版本历
 - 正式 products 晋升与完整产品版本历史。
 - fan-out、fan-in、Data、跨能力组和通用多 capability 组合。
 - 覆盖非纯 computation 能力准备与更广缺口形状、无需人工审计编排的完整等级三体验。
-- 规划经验与验证经验的正式记录和检索产品；当前只有非正式、只读、脱敏导出基线。
+- 跨项目原始经验共享、向量检索、独立 RAG 服务或训练数据平台。
 
 ## 6. 当前总路线图
 
@@ -376,13 +392,18 @@ Candidate 仍是审阅候选，不等于 products 晋升或完整产品版本历
 当前全局产品主线固定为：
 
 ```text
-继续补齐等级三普通用户流程
-→ 建立 planning / validation experience 的正式记录、脱敏导出与检索
-→ 根据冻结任务分布下的真实指标决定下一次能力扩展
+封板当前项目内 experience 记录与 Planner 注入
+→ 使用真实新任务自然观察规划、拒绝、人工纠正和 experience 回退
+→ 达到 10 个真实新任务或封板后 30 天时复盘，以先到者为准
 ```
 
 独立产品交付继续保持有界能力，目标接入分支保持 review-only。React/Vite 与 Node 仅是目标接入分支在用户
-重新授权后的内部顺序，不与当前全局主线并行启动。
+重新授权后的内部顺序，不与当前全局主线并行启动。复盘前不扩展检索结构，不建设向量数据库、RAG 服务、
+训练平台、LoRA 或更多检索抽象。
+
+真实任务不暗中运行 control。出现疑似 experience 回退时，先冻结目标、catalog、query、cases 和 treatment 请求，
+只标记为 `experience-associated`；经用户单独授权后才运行一次关闭 experience 的精确 control 复放。只有 control
+正确而原 treatment 错误时，才记为 `experience-caused regression` 并进入独立复核门，默认值不自动改变。
 
 ## 7. 计划成功原则
 
@@ -403,6 +424,7 @@ Candidate 仍是审阅候选，不等于 products 晋升或完整产品版本历
 - 正确规划率与无解时正确拒绝率。
 - capability gap 准确率与 source proposal 门禁通过率。
 - 正式能力后续复用率与平均人工纠正次数。
+- experience 注入后的正确规划率、无匹配时正确拒绝率和可归因回退数。
 - 强模型升级调用率与单次交付总成本。
 - 相对直接让同一模型生成产品的成功率和成本优势。
 
@@ -416,6 +438,7 @@ Candidate 仍是审阅候选，不等于 products 晋升或完整产品版本历
 - source proposal 只能在用户授权后写隔离目录，并重新进入唯一 Intake 与 Stage 3。
 - 能力增长是内部机制，不是第三种产品交付模式。
 - 不提前建设插件平台、训练平台、CAS、OCI、MCP/WIT 分发或大型多工作区 UI。
+- 不在真实指标证明现有确定性检索不足前建设向量数据库、RAG 服务或更多检索抽象。
 - 目标接入只读分析并生成可审查 Patch；未来应用验证只能先在隔离副本进行。
 - `Static Web → React + Vite → Node` 只属于目标接入分支；继续该分支必须获得用户新的明确授权。
 
@@ -427,8 +450,9 @@ Candidate 仍是审阅候选，不等于 products 晋升或完整产品版本历
 4. SQLite 正式胶囊仓库、Capsule IR、Composer 产品线和 Stage 3 继续保持唯一。
 5. 模型选择完整 offer 或生成隔离 source proposal，确定性核心和用户继续掌握正式事实与发布权。
 6. Reweave 通过正式能力、契约、组合规则、经验和验证器共同增长；训练只是后期可选优化。
-7. 当前优先继续补齐等级三普通用户流程，并把 planning / validation experience 从非正式、脱敏导出推进到
-   正式记录与检索；之后按冻结任务分布下的真实指标选择能力扩展。
+7. 项目内 planning / validation experience 已完成非正式、默认脱敏的不可变记录与确定性检索，并只向新 v10
+   workspace 的 composition selection 注入最多三条同项目、同模型 digest 案例；当前优先封板后用真实新任务观察，
+   再按指标决定是否需要任何扩展。
 
 ## 10. 文档维护规则
 

@@ -31,7 +31,7 @@ flowchart LR
   P["Product goal"] --> Q["Explicit local <=15B planning-model selection and probe"]
   Q --> F
   F --> R["product_plan.v2 review and confirmation"]
-  R --> S["Application-state product_workspace.v9"]
+  R --> S["Application-state product_workspace.v10"]
   R --> T["plan_execution.v1 or v3 with exact connections"]
   T --> G
   G --> U["isolated product_candidate.v2"]
@@ -64,12 +64,21 @@ raw prompt, raw model response, capsule source, product source, or candidate
 files. Isolated candidate files live under the separate application-state
 `product_candidates` area; that area is not a formal product store.
 
-Current workspaces use `product_workspace.v9`,
-`reweave_product_planning_rules.v9`, and
-`reweave_product_planning_prompt.v12`; current plans use `product_plan.v2`.
+Current workspaces use `product_workspace.v10`,
+`reweave_product_planning_rules.v10`, and
+`reweave_product_planning_prompt.v13`; current plans use `product_plan.v2`.
 Historical plan, workspace, prompt, execution, Candidate, manifest, and export
 artifacts remain pinned to their own exact versions and are not migrated or
 recomputed.
+
+The sibling application-state `product_experience` area stores non-formal,
+project-scoped derived facts. It uses a private immutable project scope and
+immutable milestone records for confirmed plans, terminal Candidates, and
+terminal exports. Records are redacted by construction: they retain goal and
+evidence digests, safe capability projections, exact planning-model identity,
+and structured outcomes, but not raw goals, prompts, model responses, source,
+private contracts, absolute paths, or credentials. This area is not SQLite, a
+second Store, a formal catalog, or training data authority.
 
 ## Shared Core
 
@@ -172,8 +181,8 @@ for both roles.
 ## Product Planning and Isolated Delivery (Not v0.3.0)
 
 The desktop's single product-goal input now creates `product_plan.v2` inside
-`product_workspace.v9` using `reweave_product_planning_rules.v9` and
-`reweave_product_planning_prompt.v12`. The first use of an exact local Ollama
+`product_workspace.v10` using `reweave_product_planning_rules.v10` and
+`reweave_product_planning_prompt.v13`. The first use of an exact local Ollama
 name and digest requires explicit selection,
 Ollama metadata proof of at most 15B actual parameters, and a strict Schema
 probe. There is no automatic download, first-model selection, cloud call, model
@@ -206,6 +215,18 @@ two or three produce `product_plan_question_set.v3`, and the user's
 `product_capability_gap_target_selection.v1` binds one exact candidate digest.
 Zero or more than three fail closed. The subsequent locked Blueprint may only
 describe that gap; it cannot choose or alter its formal identity.
+
+Before the first model request, a v10 workspace deterministically retrieves at
+most three related records from the same project scope and exact model digest,
+then freezes `product_experience_query.v1` beside that workspace. The query is
+immutable for the workspace even when later records are added. Only the
+composition-selection request receives the redacted case projections; outline
+and locked Blueprint receive none. Cases are explicitly non-formal advice and
+cannot create or alter offers, gaps, members, identities, dependencies, or
+wiring. A frozen paired A/B gate authorized default injection only for newly
+created v10 workspaces. Historical v5-v9 workspaces and an existing v10
+workspace's saved enablement value are never recomputed. The A/B result is not
+model qualification, training authorization, or broad task-distribution proof.
 
 The planning backend supports explanation, controlled `plan_diff` review,
 confirmation, and history recovery. Confirmation writes only a structured plan
@@ -317,10 +338,11 @@ Level 3 as a general product capability remains `PARTIAL`. The supported unique
 pure-computation gap, plus a user-selected candidate from a bounded two- or
 three-candidate set, can now reach formal Review through the ordinary-user
 desktop path. Presentation/interaction source preparation and some formal
-admission paths still require separate gates and manual audit orchestration;
-only a non-formal read-only redacted planning/validation experience baseline
-exists, with no formal record or retrieval product; and the path has not been
-proven across every supported gap position or a broad task distribution.
+admission paths still require separate gates and manual audit orchestration.
+Project-local planning/validation experience now has immutable, redacted
+milestone records and deterministic retrieval, but remains non-formal derived
+evidence and has not been proven across every supported gap position or a broad
+task distribution.
 
 The repeated standalone result remains a `review_ready` Candidate delivery. It
 does not create a promoted formal product or immutable product-version history.
@@ -442,6 +464,12 @@ command.
 - Exact Candidate, Composer v6, offline-runtime, export-safety, and auxiliary
   visual-confirmation facts for the first non-numeric delivery are recorded in
   [REWEAVE_PLAN_TO_EXECUTION_V1_ACCEPTANCE.json](reports/REWEAVE_PLAN_TO_EXECUTION_V1_ACCEPTANCE.json).
+- Project-local experience injection and its narrow enablement decision are
+  frozen in `planner-experience-prospective-four-task-ab-evaluation-v1-01`
+  (checksum manifest digest
+  `1c4b99e10a0ff1306e78422964235e4a0aa9a8617f1627c45d77b5cfa50cf9b2`).
+  The detailed task matrix remains in that audit rather than this architecture
+  document.
 
 The earlier desktop acceptance intentionally froze the Plan 3 service contract
 behind a strict protocol substitute. The later real E2E record closes the
@@ -467,8 +495,8 @@ The current architecture does not provide:
 - a general ordinary-user Level-3 desktop path proven across presentation,
   interaction, broader supported computation-gap positions, and a broad task
   distribution without manual audit orchestration;
-- formal planning/validation experience records or retrieval; the existing
-  derived redacted export is a non-formal read-only baseline only;
+- cross-project raw-experience sharing, vector retrieval, an independent RAG
+  service, or any elevation of derived experience into formal catalog facts;
 - any training platform, online learning, LoRA, or distillation path;
 - a general Target Adapter, cross-project compatibility planner, or complete
   Project IR;

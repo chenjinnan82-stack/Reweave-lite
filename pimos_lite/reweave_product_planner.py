@@ -34,6 +34,17 @@ from pimos_lite.reweave_data_contract import (
     data_contract_accepts,
     normalize_capsule_contracts,
 )
+from pimos_lite.reweave_experience import (
+    PROJECT_EXPERIENCE_MILESTONES,
+    ExperienceError,
+    build_product_experience_model_cases,
+    build_product_experience_query,
+    build_project_experience_record,
+    build_project_experience_scope,
+    validate_product_experience_query,
+    validate_project_experience_record,
+    validate_project_experience_scope,
+)
 from pimos_lite.reweave_plan_execution import (
     CANDIDATE_ACCEPTANCE_CONFIRMATION_VERSION,
     MAX_CANDIDATE_ACCEPTANCE_CASES,
@@ -52,13 +63,15 @@ LEGACY_LOCKED_BLUEPRINT_WORKSPACE_SCHEMA_VERSION = "product_workspace.v5"
 PREVIOUS_LOCKED_BLUEPRINT_WORKSPACE_SCHEMA_VERSION = "product_workspace.v6"
 PREVIOUS_GAP_WORKSPACE_SCHEMA_VERSION = "product_workspace.v7"
 PREVIOUS_TARGET_SELECTION_WORKSPACE_SCHEMA_VERSION = "product_workspace.v8"
-WORKSPACE_SCHEMA_VERSION = "product_workspace.v9"
+PREVIOUS_REQUIREMENT_COVERAGE_WORKSPACE_SCHEMA_VERSION = "product_workspace.v9"
+WORKSPACE_SCHEMA_VERSION = "product_workspace.v10"
 LOCKED_BLUEPRINT_WORKSPACE_SCHEMA_VERSIONS = frozenset(
     {
         LEGACY_LOCKED_BLUEPRINT_WORKSPACE_SCHEMA_VERSION,
         PREVIOUS_LOCKED_BLUEPRINT_WORKSPACE_SCHEMA_VERSION,
         PREVIOUS_GAP_WORKSPACE_SCHEMA_VERSION,
         PREVIOUS_TARGET_SELECTION_WORKSPACE_SCHEMA_VERSION,
+        PREVIOUS_REQUIREMENT_COVERAGE_WORKSPACE_SCHEMA_VERSION,
         WORKSPACE_SCHEMA_VERSION,
     }
 )
@@ -66,15 +79,18 @@ GAP_WORKSPACE_SCHEMA_VERSIONS = frozenset(
     {
         PREVIOUS_GAP_WORKSPACE_SCHEMA_VERSION,
         PREVIOUS_TARGET_SELECTION_WORKSPACE_SCHEMA_VERSION,
+        PREVIOUS_REQUIREMENT_COVERAGE_WORKSPACE_SCHEMA_VERSION,
         WORKSPACE_SCHEMA_VERSION,
     }
 )
 TARGET_SELECTION_WORKSPACE_SCHEMA_VERSIONS = frozenset(
     {
         PREVIOUS_TARGET_SELECTION_WORKSPACE_SCHEMA_VERSION,
+        PREVIOUS_REQUIREMENT_COVERAGE_WORKSPACE_SCHEMA_VERSION,
         WORKSPACE_SCHEMA_VERSION,
     }
 )
+EXPERIENCE_WORKSPACE_SCHEMA_VERSIONS = frozenset({WORKSPACE_SCHEMA_VERSION})
 MODEL_SELECTION_SCHEMA_VERSION = "product_planning_model_selection.v1"
 SECTION_DRAFT_SCHEMA_VERSION = "product_plan_section_draft.v2"
 SECTION_CHECKPOINT_SCHEMA_VERSION = "product_plan_section_checkpoint.v2"
@@ -89,7 +105,10 @@ PREVIOUS_GAP_PLANNING_RULES_VERSION = "reweave_product_planning_rules.v7"
 PREVIOUS_TARGET_SELECTION_PLANNING_RULES_VERSION = (
     "reweave_product_planning_rules.v8"
 )
-PLANNING_RULES_VERSION = "reweave_product_planning_rules.v9"
+PREVIOUS_REQUIREMENT_COVERAGE_PLANNING_RULES_VERSION = (
+    "reweave_product_planning_rules.v9"
+)
+PLANNING_RULES_VERSION = "reweave_product_planning_rules.v10"
 SUPPORTED_PLANNING_RULES_VERSIONS = frozenset(
     {
         LEGACY_PLANNING_RULES_VERSION,
@@ -99,6 +118,7 @@ SUPPORTED_PLANNING_RULES_VERSIONS = frozenset(
         PREVIOUS_LOCKED_BLUEPRINT_PLANNING_RULES_VERSION,
         PREVIOUS_GAP_PLANNING_RULES_VERSION,
         PREVIOUS_TARGET_SELECTION_PLANNING_RULES_VERSION,
+        PREVIOUS_REQUIREMENT_COVERAGE_PLANNING_RULES_VERSION,
         PLANNING_RULES_VERSION,
     }
 )
@@ -109,7 +129,10 @@ DIRECT_BLUEPRINT_PROMPT_VERSION = "reweave_product_planning_prompt.v8"
 LEGACY_LOCKED_BLUEPRINT_PROMPT_VERSION = "reweave_product_planning_prompt.v9"
 PREVIOUS_LOCKED_BLUEPRINT_PROMPT_VERSION = "reweave_product_planning_prompt.v10"
 PREVIOUS_GAP_PLANNING_PROMPT_VERSION = "reweave_product_planning_prompt.v11"
-PLANNING_PROMPT_VERSION = "reweave_product_planning_prompt.v12"
+PREVIOUS_REQUIREMENT_COVERAGE_PROMPT_VERSION = (
+    "reweave_product_planning_prompt.v12"
+)
+PLANNING_PROMPT_VERSION = "reweave_product_planning_prompt.v13"
 ACTION_SUGGESTION_PROMPT_VERSION = "product_plan_action_suggestion_prompt.v1"
 ACTION_SUGGESTION_SCHEMA_VERSION = "product_plan_action_suggestion.v1"
 REVISION_PROMPT_VERSIONS = {
@@ -156,6 +179,7 @@ MAX_FEEDBACK_CHARS = 2_000
 CATALOG_BATCH_SIZE = 16
 HTTP_TIMEOUT_SECONDS = 45
 FORMAL_MODEL_TIMEOUT_SECONDS = 180
+EXPERIENCE_INJECTION_DEFAULT = True
 CAPABILITY_GAP_PROJECTION_VERSION = "capability_gap_projection.v1"
 CAPABILITY_GAP_PROJECTION_V2 = "capability_gap_projection.v2"
 CAPABILITY_GAP_DECISION_VERSION = "capability_gap_decision.v1"
@@ -583,7 +607,11 @@ def _structured_output_schema(
                             if (
                                 selection_locked
                                 and selection_options
-                                and prompt_version == PLANNING_PROMPT_VERSION
+                                and prompt_version
+                                in {
+                                    PREVIOUS_REQUIREMENT_COVERAGE_PROMPT_VERSION,
+                                    PLANNING_PROMPT_VERSION,
+                                }
                             )
                             else {"maxItems": 64}
                         )
@@ -1064,7 +1092,14 @@ class ProductPlanner:
         self,
         state_root: str | Path,
         ollama_base_url: str = "http://127.0.0.1:11434",
+        *,
+        experience_injection_enabled: bool | None = None,
     ) -> None:
+        if (
+            experience_injection_enabled is not None
+            and type(experience_injection_enabled) is not bool
+        ):
+            raise TypeError("experience_injection_enabled must be bool or None")
         root = Path(os.path.abspath(os.path.expanduser(str(state_root))))
         # macOS exposes /var and /tmp as stable system aliases into /private.
         # Normalize only those platform aliases; all user-controlled components
@@ -1080,6 +1115,11 @@ class ProductPlanner:
             break
         self.root = root
         self.base_url = _loopback_base(ollama_base_url)
+        self._experience_injection_enabled = (
+            EXPERIENCE_INJECTION_DEFAULT
+            if experience_injection_enabled is None
+            else experience_injection_enabled
+        )
         self._lock = threading.RLock()
         self._action_suggestions: dict[str, dict[str, Any]] = {}
 
@@ -2867,6 +2907,77 @@ class ProductPlanner:
             self._save_workspace(confirmed_workspace)
         return _ok(self._workspace_projection(confirmed_workspace))
 
+    def record_product_experience(
+        self,
+        plan_token: str,
+        catalog: dict[str, Any],
+        milestone: str,
+        *,
+        candidate: dict[str, Any] | None = None,
+        export_status: str | None = None,
+    ) -> dict[str, Any] | None:
+        if milestone not in PROJECT_EXPERIENCE_MILESTONES:
+            raise ProductPlanningError("project_experience_milestone_invalid")
+        with self._lock:
+            workspace = self._workspace_by_token(plan_token)
+            scope = self._project_experience_scope()
+            try:
+                record = build_project_experience_record(
+                    workspace=workspace,
+                    catalog=catalog,
+                    project_scope_digest=scope["canonical_digest"],
+                    milestone=milestone,
+                    candidate=candidate,
+                    export_status=export_status,
+                )
+            except ExperienceError as exc:
+                if str(exc) == "project_experience_failure_unattributed":
+                    return None
+                raise ProductPlanningError(str(exc)) from exc
+            path = (
+                self._project_experience_root()
+                / "records"
+                / workspace["workspace_id"]
+                / f"{milestone}.json"
+            )
+            if path.exists() or path.is_symlink():
+                try:
+                    existing = validate_project_experience_record(
+                        self._read_json(path)
+                    )
+                except ExperienceError as exc:
+                    raise ProductPlanningError(
+                        "project_experience_record_invalid"
+                    ) from exc
+                if existing != record:
+                    raise ProductPlanningError(
+                        "project_experience_record_conflict"
+                    )
+                return existing
+            self._write_immutable(path, record)
+            return record
+
+    def retrieve_product_experience(
+        self,
+        plan_token: str,
+        limit: int = 3,
+    ) -> dict[str, Any]:
+        with self._lock:
+            workspace = self._workspace_by_token(plan_token)
+            scope = self._project_experience_scope()
+            records = self._project_experience_records(
+                scope["canonical_digest"]
+            )
+            try:
+                return build_product_experience_query(
+                    workspace=workspace,
+                    project_scope_digest=scope["canonical_digest"],
+                    records_with_workspaces=records,
+                    limit=limit,
+                )
+            except ExperienceError as exc:
+                raise ProductPlanningError(str(exc)) from exc
+
     @_public_call
     def confirm_candidate_acceptance(
         self,
@@ -3437,10 +3548,20 @@ class ProductPlanner:
             )
         elif call_type == "composition_selection":
             locked_selection = request_value.get("selection_locked") is True
+            experience_rules = (
+                " Experience cases are non-formal advisory history only. Current goal, "
+                "current complete offers, and deterministic rules remain authoritative. "
+                "Never use a case to create a gap, member, identity, dependency, or "
+                "wiring; treat an attributed failure as negative evidence."
+                if prompt_version == PLANNING_PROMPT_VERSION
+                else ""
+            )
             prompt = (
                 "You are Reweave's local product planning role. REQUEST_JSON contains "
                 "the product goal, confirmed answers, requirements outline, safe complete "
-                "composition offers, and selection rules. Return exactly one JSON object "
+                "composition offers, and selection rules."
+                + experience_rules
+                + " Return exactly one JSON object "
                 "that matches the supplied response schema. "
                 + (
                     "Select the one supplied capability_key; the deterministic core has "
@@ -3460,6 +3581,7 @@ class ProductPlanner:
             and prompt_version
             in {
                 PREVIOUS_GAP_PLANNING_PROMPT_VERSION,
+                PREVIOUS_REQUIREMENT_COVERAGE_PROMPT_VERSION,
                 PLANNING_PROMPT_VERSION,
             }
         ):
@@ -3479,7 +3601,11 @@ class ProductPlanner:
         elif (
             call_type == "product_blueprint"
             and request_value.get("selection_locked") is True
-            and prompt_version == PLANNING_PROMPT_VERSION
+            and prompt_version
+            in {
+                PREVIOUS_REQUIREMENT_COVERAGE_PROMPT_VERSION,
+                PLANNING_PROMPT_VERSION,
+            }
         ):
             prompt = (
                 "You are Reweave's local product planning role. REQUEST_JSON contains "
@@ -3738,6 +3864,8 @@ class ProductPlanner:
             "composition_selection": None,
             "composition_selection_input_digest": None,
             "composition_selection_response_digest": None,
+            "experience_query_digest": None,
+            "experience_injection_enabled": self._experience_injection_enabled,
             "capability_gap_target_selection": None,
             "blueprint": None,
             "blueprint_input_digest": None,
@@ -4233,6 +4361,238 @@ class ProductPlanner:
                 continue
         return result
 
+    def _project_experience_root(self) -> Path:
+        return self.root.parent / "product_experience"
+
+    def _project_experience_scope(self) -> dict[str, Any]:
+        root = self._project_experience_root()
+        self._ensure_directory(root)
+        self._ensure_directory(root / "records")
+        allowed = {"project_scope.json", "records"}
+        if {path.name for path in root.iterdir()} - allowed:
+            raise ProductPlanningError("project_experience_scope_invalid")
+        path = root / "project_scope.json"
+        if path.exists() or path.is_symlink():
+            try:
+                return validate_project_experience_scope(
+                    self._read_json(path)
+                )
+            except ExperienceError as exc:
+                raise ProductPlanningError(
+                    "project_experience_scope_invalid"
+                ) from exc
+        scope = build_project_experience_scope(
+            f"project_scope_{uuid.uuid4().hex}",
+            _now(),
+        )
+        self._write_immutable(path, scope)
+        return scope
+
+    def _project_experience_workspace(
+        self,
+        workspace_id: str,
+    ) -> dict[str, Any]:
+        path = self._workspace_dir(workspace_id) / "workspace.json"
+        workspace = self._read_json(path)
+        self._validate_workspace(
+            workspace,
+            expected_workspace_id=workspace_id,
+        )
+        if workspace.get("status") != "confirmed":
+            raise ProductPlanningError(
+                "project_experience_record_binding_invalid"
+            )
+        self._validate_confirmed_snapshot(workspace)
+        return workspace
+
+    def _project_experience_records(
+        self,
+        project_scope_digest: str,
+    ) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+        root = self._project_experience_root() / "records"
+        self._assert_no_symlink_components(root)
+        if root.is_symlink() or not root.is_dir():
+            raise ProductPlanningError("project_experience_record_invalid")
+        result: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for directory in sorted(root.iterdir(), key=lambda item: item.name):
+            if (
+                _WORKSPACE_ID.fullmatch(directory.name) is None
+                or directory.is_symlink()
+                or not directory.is_dir()
+            ):
+                raise ProductPlanningError(
+                    "project_experience_record_invalid"
+                )
+            seen: set[str] = set()
+            for path in sorted(directory.iterdir(), key=lambda item: item.name):
+                milestone = path.stem
+                if (
+                    path.suffix != ".json"
+                    or milestone not in PROJECT_EXPERIENCE_MILESTONES
+                    or milestone in seen
+                    or path.is_symlink()
+                    or not path.is_file()
+                ):
+                    raise ProductPlanningError(
+                        "project_experience_record_invalid"
+                    )
+                seen.add(milestone)
+                try:
+                    record = validate_project_experience_record(
+                        self._read_json(path)
+                    )
+                except ExperienceError as exc:
+                    raise ProductPlanningError(
+                        "project_experience_record_invalid"
+                    ) from exc
+                if (
+                    record["source_workspace_id"] != directory.name
+                    or record["project_scope_digest"]
+                    != project_scope_digest
+                ):
+                    raise ProductPlanningError(
+                        "project_experience_record_binding_invalid"
+                    )
+                result.append(
+                    (
+                        record,
+                        self._project_experience_workspace(directory.name),
+                    )
+                )
+            if not seen:
+                raise ProductPlanningError(
+                    "project_experience_record_invalid"
+                )
+        return result
+
+    def _product_experience_query_path(
+        self,
+        workspace: dict[str, Any],
+    ) -> Path:
+        return self._workspace_dir(workspace["workspace_id"]) / (
+            "experience_query.json"
+        )
+
+    def _validate_frozen_product_experience_query(
+        self,
+        workspace: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        if workspace["schema_version"] not in EXPERIENCE_WORKSPACE_SCHEMA_VERSIONS:
+            return None
+        digest = workspace["experience_query_digest"]
+        if digest is None:
+            return None
+        try:
+            query = validate_product_experience_query(
+                self._read_json(
+                    self._product_experience_query_path(workspace)
+                )
+            )
+        except (ExperienceError, ProductPlanningError) as exc:
+            raise ProductPlanningError(
+                "project_experience_query_invalid"
+            ) from exc
+        if (
+            query["canonical_digest"] != digest
+            or query["query_goal_digest"] != workspace["goal_digest"]
+            or query["exact_model_name"] != workspace["model"]["name"]
+            or query["exact_model_digest"] != workspace["model"]["digest"]
+        ):
+            raise ProductPlanningError("project_experience_query_invalid")
+        return query
+
+    def _verify_frozen_product_experience_query(
+        self,
+        workspace: dict[str, Any],
+        query: dict[str, Any],
+    ) -> None:
+        scope = self._project_experience_scope()
+        if query["project_scope_digest"] != scope["canonical_digest"]:
+            raise ProductPlanningError("project_experience_scope_mismatch")
+        records = self._project_experience_records(
+            scope["canonical_digest"]
+        )
+        by_digest: dict[str, dict[str, Any]] = {}
+        for record, _historical_workspace in records:
+            if record["record_digest"] in by_digest:
+                raise ProductPlanningError(
+                    "project_experience_record_invalid"
+                )
+            by_digest[record["record_digest"]] = record
+        for item in query["cases"]:
+            record = by_digest.get(item["record_digest"])
+            if (
+                record is None
+                or record["source_workspace_id"] == workspace["workspace_id"]
+                or record["milestone"] != item["milestone"]
+                or record["safe_case"] != item["safe_case"]
+                or record["exact_model_name"] != workspace["model"]["name"]
+                or record["exact_model_digest"]
+                != workspace["model"]["digest"]
+            ):
+                raise ProductPlanningError(
+                    "project_experience_record_binding_invalid"
+                )
+
+    def _freeze_product_experience_query(
+        self,
+        workspace: dict[str, Any],
+    ) -> dict[str, Any]:
+        if workspace["schema_version"] not in EXPERIENCE_WORKSPACE_SCHEMA_VERSIONS:
+            raise ProductPlanningError("project_experience_query_invalid")
+        query = self._validate_frozen_product_experience_query(workspace)
+        if query is None:
+            scope = self._project_experience_scope()
+            records = self._project_experience_records(
+                scope["canonical_digest"]
+            )
+            try:
+                query = build_product_experience_query(
+                    workspace=workspace,
+                    project_scope_digest=scope["canonical_digest"],
+                    records_with_workspaces=records,
+                    limit=3,
+                )
+            except ExperienceError as exc:
+                raise ProductPlanningError(str(exc)) from exc
+            path = self._product_experience_query_path(workspace)
+            if path.exists() or path.is_symlink():
+                try:
+                    existing = validate_product_experience_query(
+                        self._read_json(path)
+                    )
+                except (ExperienceError, ProductPlanningError) as exc:
+                    raise ProductPlanningError(
+                        "project_experience_query_invalid"
+                    ) from exc
+                if existing != query:
+                    raise ProductPlanningError(
+                        "project_experience_query_conflict"
+                    )
+            else:
+                self._write_immutable(path, query)
+            workspace["experience_query_digest"] = query[
+                "canonical_digest"
+            ]
+            workspace["updated_at"] = _now()
+            self._save_workspace(workspace)
+        self._verify_frozen_product_experience_query(workspace, query)
+        return query
+
+    def _workspace_experience_cases(
+        self,
+        workspace: dict[str, Any],
+    ) -> list[dict[str, Any]]:
+        if workspace["schema_version"] not in EXPERIENCE_WORKSPACE_SCHEMA_VERSIONS:
+            return []
+        query = self._freeze_product_experience_query(workspace)
+        if workspace["experience_injection_enabled"] is not True:
+            return []
+        try:
+            return build_product_experience_model_cases(query)
+        except ExperienceError as exc:
+            raise ProductPlanningError(str(exc)) from exc
+
     def _validate_workspace(
         self,
         workspace: Any,
@@ -4287,6 +4647,13 @@ class ProductPlanner:
                 )
             if schema_version in TARGET_SELECTION_WORKSPACE_SCHEMA_VERSIONS:
                 required.add("capability_gap_target_selection")
+            if schema_version in EXPERIENCE_WORKSPACE_SCHEMA_VERSIONS:
+                required.update(
+                    {
+                        "experience_query_digest",
+                        "experience_injection_enabled",
+                    }
+                )
         if (
             type(workspace) is not dict
             or set(workspace) != required
@@ -4298,6 +4665,7 @@ class ProductPlanner:
                 PREVIOUS_LOCKED_BLUEPRINT_WORKSPACE_SCHEMA_VERSION,
                 PREVIOUS_GAP_WORKSPACE_SCHEMA_VERSION,
                 PREVIOUS_TARGET_SELECTION_WORKSPACE_SCHEMA_VERSION,
+                PREVIOUS_REQUIREMENT_COVERAGE_WORKSPACE_SCHEMA_VERSION,
                 WORKSPACE_SCHEMA_VERSION,
             }
             or _WORKSPACE_ID.fullmatch(str(workspace["workspace_id"])) is None
@@ -4345,6 +4713,23 @@ class ProductPlanner:
             or (
                 workspace["failure_code"] is not None
                 and type(workspace["failure_code"]) is not str
+            )
+            or (
+                schema_version in EXPERIENCE_WORKSPACE_SCHEMA_VERSIONS
+                and (
+                    type(workspace["experience_injection_enabled"]) is not bool
+                    or (
+                        workspace["experience_query_digest"] is not None
+                        and _DIGEST.fullmatch(
+                            str(workspace["experience_query_digest"])
+                        )
+                        is None
+                    )
+                    or (
+                        workspace["experience_query_digest"] is None
+                        and workspace["model_calls"]
+                    )
+                )
             )
         ):
             raise ProductPlanningError("product_workspace_corrupt")
@@ -4410,6 +4795,8 @@ class ProductPlanner:
             raise ProductPlanningError("product_workspace_corrupt")
         self._validate_stored_question_set(workspace["current_question_set"])
         self._validate_stored_answers(workspace["answers"])
+        if schema_version in EXPERIENCE_WORKSPACE_SCHEMA_VERSIONS:
+            self._validate_frozen_product_experience_query(workspace)
         if schema_version in TARGET_SELECTION_WORKSPACE_SCHEMA_VERSIONS:
             self._validate_capability_gap_target_selection(
                 workspace["capability_gap_target_selection"]
@@ -4579,6 +4966,7 @@ class ProductPlanner:
                         PREVIOUS_LOCKED_BLUEPRINT_WORKSPACE_SCHEMA_VERSION,
                         PREVIOUS_GAP_WORKSPACE_SCHEMA_VERSION,
                         PREVIOUS_TARGET_SELECTION_WORKSPACE_SCHEMA_VERSION,
+                        PREVIOUS_REQUIREMENT_COVERAGE_WORKSPACE_SCHEMA_VERSION,
                         WORKSPACE_SCHEMA_VERSION,
                     }
                     and plan["schema_version"] != PLAN_SCHEMA_VERSION
@@ -8454,6 +8842,11 @@ class ProductPlanner:
             == PREVIOUS_TARGET_SELECTION_WORKSPACE_SCHEMA_VERSION
         ):
             return PREVIOUS_TARGET_SELECTION_PLANNING_RULES_VERSION
+        if (
+            workspace["schema_version"]
+            == PREVIOUS_REQUIREMENT_COVERAGE_WORKSPACE_SCHEMA_VERSION
+        ):
+            return PREVIOUS_REQUIREMENT_COVERAGE_PLANNING_RULES_VERSION
         blueprint = workspace.get("blueprint")
         if (
             type(blueprint) is dict
@@ -8483,6 +8876,11 @@ class ProductPlanner:
             return PREVIOUS_GAP_PLANNING_PROMPT_VERSION
         if (
             workspace["schema_version"]
+            == PREVIOUS_REQUIREMENT_COVERAGE_WORKSPACE_SCHEMA_VERSION
+        ):
+            return PREVIOUS_REQUIREMENT_COVERAGE_PROMPT_VERSION
+        if (
+            workspace["schema_version"]
             == DIRECT_BLUEPRINT_WORKSPACE_SCHEMA_VERSION
         ):
             blueprint = workspace.get("blueprint")
@@ -8508,6 +8906,8 @@ class ProductPlanner:
         cancel_check: Callable[[], bool] | None,
         phase_callback: Callable[[str], None] | None,
     ) -> dict[str, Any]:
+        if workspace["schema_version"] in EXPERIENCE_WORKSPACE_SCHEMA_VERSIONS:
+            self._freeze_product_experience_query(workspace)
         workspace["status"] = "planning"
         workspace["failure_code"] = None
         outline = workspace.get("outline")
@@ -10680,39 +11080,53 @@ class ProductPlanner:
         outline: dict[str, Any],
         composition_offers: list[dict[str, Any]],
     ) -> str:
-        return _digest(
-            {
-                "schema_version": "product_composition_selection_input.v1",
-                "goal_digest": workspace["goal_digest"],
-                "planning_answers": self._planning_answers(workspace),
-                "model": workspace["model"],
-                "planning_rules_version": self._workspace_rules_version(workspace),
-                "prompt_version": self._workspace_prompt_version(workspace),
-                "outline": outline,
-                "outline_response_digest": workspace["outline_response_digest"],
-                "composition_offers": sorted(
-                    composition_offers,
-                    key=lambda offer: offer["offer_ref"],
-                ),
-            }
-        )
+        body = {
+            "schema_version": (
+                "product_composition_selection_input.v2"
+                if workspace["schema_version"]
+                in EXPERIENCE_WORKSPACE_SCHEMA_VERSIONS
+                else "product_composition_selection_input.v1"
+            ),
+            "goal_digest": workspace["goal_digest"],
+            "planning_answers": self._planning_answers(workspace),
+            "model": workspace["model"],
+            "planning_rules_version": self._workspace_rules_version(workspace),
+            "prompt_version": self._workspace_prompt_version(workspace),
+            "outline": outline,
+            "outline_response_digest": workspace["outline_response_digest"],
+            "composition_offers": sorted(
+                composition_offers,
+                key=lambda offer: offer["offer_ref"],
+            ),
+        }
+        if workspace["schema_version"] in EXPERIENCE_WORKSPACE_SCHEMA_VERSIONS:
+            body.update(
+                {
+                    "experience_query_digest": workspace[
+                        "experience_query_digest"
+                    ],
+                    "experience_injection_enabled": workspace[
+                        "experience_injection_enabled"
+                    ],
+                    "experience_cases": self._workspace_experience_cases(
+                        workspace
+                    ),
+                }
+            )
+        return _digest(body)
 
-    def _composition_selection_call(
-        self,
-        model: dict[str, Any],
+    @staticmethod
+    def _composition_selection_request(
         goal: str,
         outline: dict[str, Any],
         answers: list[dict[str, Any]],
         composition_offers: list[dict[str, Any]],
-        cancel_check: Callable[[], bool] | None,
         *,
-        selection_locked: bool = False,
-    ) -> tuple[dict[str, str], dict[str, Any]]:
-        if selection_locked and len(composition_offers) != 1:
-            raise ProductPlanningError(
-                "product_plan_composition_selection_ambiguous"
-            )
-        request = {
+        selection_locked: bool,
+        prompt_version: str,
+        experience_cases: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        request: dict[str, Any] = {
             "goal": goal,
             "prior_answers": answers,
             "outline": outline,
@@ -10736,13 +11150,45 @@ class ProductPlanner:
                 ),
             },
         }
+        if prompt_version == PLANNING_PROMPT_VERSION:
+            request["experience_cases"] = copy.deepcopy(experience_cases)
         if selection_locked:
             request["selection_locked"] = True
+        return request
+
+    def _composition_selection_call(
+        self,
+        model: dict[str, Any],
+        goal: str,
+        outline: dict[str, Any],
+        answers: list[dict[str, Any]],
+        composition_offers: list[dict[str, Any]],
+        cancel_check: Callable[[], bool] | None,
+        *,
+        selection_locked: bool = False,
+        prompt_version: str | None = None,
+        experience_cases: list[dict[str, Any]] | None = None,
+    ) -> tuple[dict[str, str], dict[str, Any]]:
+        if selection_locked and len(composition_offers) != 1:
+            raise ProductPlanningError(
+                "product_plan_composition_selection_ambiguous"
+            )
+        prompt_version = prompt_version or PLANNING_PROMPT_VERSION
+        request = self._composition_selection_request(
+            goal,
+            outline,
+            answers,
+            composition_offers,
+            selection_locked=selection_locked,
+            prompt_version=prompt_version,
+            experience_cases=experience_cases or [],
+        )
         result, evidence = self._generate_json(
             model,
             "composition_selection",
             request,
             cancel_check,
+            prompt_version=prompt_version,
         )
         selection = self._validate_composition_selection(result)
         evidence["structured_response_digest"] = _digest(selection)
@@ -10801,22 +11247,23 @@ class ProductPlanner:
         selected_offer: dict[str, Any] | None,
         capability_gap_lock: dict[str, Any] | None = None,
     ) -> str:
+        input_schema = "product_plan_blueprint_input.v3"
+        if workspace["schema_version"] == PREVIOUS_GAP_WORKSPACE_SCHEMA_VERSION:
+            input_schema = "product_plan_blueprint_input.v4"
+        elif (
+            workspace["schema_version"]
+            == PREVIOUS_TARGET_SELECTION_WORKSPACE_SCHEMA_VERSION
+        ):
+            input_schema = "product_plan_blueprint_input.v5"
+        elif (
+            workspace["schema_version"]
+            == PREVIOUS_REQUIREMENT_COVERAGE_WORKSPACE_SCHEMA_VERSION
+        ):
+            input_schema = "product_plan_blueprint_input.v6"
+        elif workspace["schema_version"] == WORKSPACE_SCHEMA_VERSION:
+            input_schema = "product_plan_blueprint_input.v7"
         body = {
-            "schema_version": (
-                "product_plan_blueprint_input.v6"
-                if workspace["schema_version"] == WORKSPACE_SCHEMA_VERSION
-                else (
-                    "product_plan_blueprint_input.v5"
-                    if workspace["schema_version"]
-                    == PREVIOUS_TARGET_SELECTION_WORKSPACE_SCHEMA_VERSION
-                    else (
-                        "product_plan_blueprint_input.v4"
-                        if workspace["schema_version"]
-                        == PREVIOUS_GAP_WORKSPACE_SCHEMA_VERSION
-                        else "product_plan_blueprint_input.v3"
-                    )
-                )
-            ),
+            "schema_version": input_schema,
             "goal_digest": workspace["goal_digest"],
             "planning_answers": self._planning_answers(workspace),
             "model": workspace["model"],
@@ -10873,7 +11320,11 @@ class ProductPlanner:
         current_locked_offer_protocol = (
             selection_locked
             and selected_offer is not None
-            and prompt_version == PLANNING_PROMPT_VERSION
+            and prompt_version
+            in {
+                PREVIOUS_REQUIREMENT_COVERAGE_PROMPT_VERSION,
+                PLANNING_PROMPT_VERSION,
+            }
         )
         assignments: dict[str, dict[str, Any]] = {}
         gaps: list[dict[str, Any]] = []
@@ -11169,6 +11620,7 @@ class ProductPlanner:
         capability_gap_lock: dict[str, Any] | None = None
         if not direct_blueprint_workspace:
             selection = workspace["composition_selection"]
+            experience_cases = self._workspace_experience_cases(workspace)
             selection_input_digest = self._composition_selection_input_digest(
                 workspace,
                 outline,
@@ -11188,6 +11640,8 @@ class ProductPlanner:
                     composition_offers,
                     cancel_check,
                     selection_locked=replan_handoff is not None,
+                    prompt_version=self._workspace_prompt_version(workspace),
+                    experience_cases=experience_cases,
                 )
                 workspace["model_calls"].append(evidence)
                 workspace["composition_selection"] = copy.deepcopy(selection)
@@ -11829,6 +12283,10 @@ class ProductPlanner:
                     (
                         PREVIOUS_TARGET_SELECTION_PLANNING_RULES_VERSION,
                         PREVIOUS_GAP_PLANNING_PROMPT_VERSION,
+                    ),
+                    (
+                        PREVIOUS_REQUIREMENT_COVERAGE_PLANNING_RULES_VERSION,
+                        PREVIOUS_REQUIREMENT_COVERAGE_PROMPT_VERSION,
                     ),
                     (PLANNING_RULES_VERSION, PLANNING_PROMPT_VERSION),
                 }

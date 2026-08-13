@@ -3736,6 +3736,9 @@ def test_product_flow_builds_previews_exports_and_restores_real_candidate(
                 }
             return {"ok": True, "data": self._projection()}
 
+        def record_product_experience(self, *_args, **_kwargs):
+            return None
+
         def confirm(
             self,
             token,

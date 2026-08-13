@@ -4162,14 +4162,25 @@ class ReweaveAppService:
                     or stored.get("status") not in {"plan_review", "confirmed"}
                     or stored.get("plan_diff") is not None
                 ):
-                    return self._product_planner.confirm(
+                    catalog = self._product_planning_catalog()
+                    result = self._product_planner.confirm(
                         request["plan_token"],
                         request["plan_digest"],
                         request["reviewed_plan"],
-                        self._product_planning_catalog(),
+                        catalog,
                         None,
                         request.get("parameter_confirmation"),
                     )
+                    if (
+                        result.get("ok") is True
+                        and result.get("data", {}).get("status") == "confirmed"
+                    ):
+                        self._record_product_experience(
+                            request["plan_token"],
+                            "plan_confirmed",
+                            catalog=catalog,
+                        )
+                    return result
                 capsule_ids = sorted(
                     {
                         str(binding["capsule_id"])
@@ -4199,16 +4210,64 @@ class ReweaveAppService:
                         }
                         for capsule in loaded
                     ]
-                return self._product_planner.confirm(
+                catalog = self._product_planning_catalog()
+                result = self._product_planner.confirm(
                     request["plan_token"],
                     request["plan_digest"],
                     request["reviewed_plan"],
-                    self._product_planning_catalog(),
+                    catalog,
                     parameter_capsules,
                     request.get("parameter_confirmation"),
                 )
-        except (CapsuleStoreError, OSError, ProductGenerationError, ValueError) as exc:
+                if (
+                    result.get("ok") is True
+                    and result.get("data", {}).get("status") == "confirmed"
+                ):
+                    self._record_product_experience(
+                        request["plan_token"],
+                        "plan_confirmed",
+                        catalog=catalog,
+                    )
+                return result
+        except (
+            CapsuleStoreError,
+            OSError,
+            ProductGenerationError,
+            ProductPlanningError,
+            ValueError,
+        ) as exc:
             return self._exception_error(exc, "product_plan_confirmation_failed")
+
+    def _record_product_experience(
+        self,
+        plan_token: str,
+        milestone: str,
+        *,
+        catalog: dict[str, Any] | None = None,
+        candidate: dict[str, Any] | None = None,
+        export_status: str | None = None,
+    ) -> dict[str, Any] | None:
+        try:
+            return self._product_planner.record_product_experience(
+                plan_token,
+                catalog or self._product_planning_catalog(),
+                milestone,
+                candidate=candidate,
+                export_status=export_status,
+            )
+        except ProductPlanningError as exc:
+            raise ProductGenerationError(exc.code) from exc
+
+    def retrieve_product_experience(
+        self,
+        plan_token: str,
+        limit: int = 3,
+    ) -> dict[str, Any]:
+        with self._capsule_operation_lock:
+            return self._product_planner.retrieve_product_experience(
+                plan_token,
+                limit,
+            )
 
     def record_product_capability_gap_decision(
         self,
@@ -6018,6 +6077,11 @@ class ReweaveAppService:
                 raise ProductGenerationError(
                     "candidate_acceptance_contract_conflict"
                 )
+            self._record_product_experience(
+                plan_token,
+                "candidate_terminal",
+                candidate=existing,
+            )
             return self._candidate_projection(existing)
         try:
             composition = compose_capsule_product(
@@ -6423,6 +6487,11 @@ class ReweaveAppService:
                 finally:
                     os.close(descriptor)
             persisted = self._read_candidate_record_path(final)
+            self._record_product_experience(
+                plan_token,
+                "candidate_terminal",
+                candidate=persisted,
+            )
             return self._candidate_projection(persisted)
         except (OSError, sqlite3.Error) as exc:
             raise ProductGenerationError("product_candidate_write_failed") from exc
@@ -6688,6 +6757,12 @@ class ReweaveAppService:
             )
 
             def result(status: str) -> dict[str, Any]:
+                self._record_product_experience(
+                    request["plan_token"],
+                    "export_terminal",
+                    candidate=record,
+                    export_status=status,
+                )
                 return self._ok(
                     {
                         "schema_version": "product_candidate_export.v1",

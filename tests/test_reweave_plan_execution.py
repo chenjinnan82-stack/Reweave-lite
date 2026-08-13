@@ -201,6 +201,7 @@ class _ConfirmedPlanner:
         )
         self.handoff_token = "handoff_token_" + "1" * 48
         self.handoff: dict | None = None
+        self.experience_records: list[tuple] = []
 
     def get(
         self,
@@ -234,6 +235,10 @@ class _ConfirmedPlanner:
                 )
             },
         }
+
+    def record_product_experience(self, *args, **kwargs) -> dict:
+        self.experience_records.append((args, kwargs))
+        return {"recorded": True}
 
     def confirm_candidate_acceptance(
         self,
@@ -1369,6 +1374,10 @@ process.stdout.write(JSON.stringify({result, rendered: totalNode.textContent}));
         self.assertEqual(
             candidate["composer_version"],
             ADAPTER_V3_FORMAL_PRODUCT_COMPOSER_VERSION,
+        )
+        self.assertEqual(
+            self.service._product_planner.experience_records[-1][0][2],
+            "candidate_terminal",
         )
 
     def test_product_plan_v2_compiles_without_changing_execution_contract(
@@ -3627,6 +3636,13 @@ process.stdout.write(JSON.stringify({result, rendered: totalNode.textContent}));
         repeated = self.service.export_product_candidate(payload)
         self.assertTrue(repeated["ok"], repeated)
         self.assertEqual(repeated["data"]["status"], "already_saved")
+        self.assertEqual(
+            [
+                args[2]
+                for args, _kwargs in planner.experience_records[-2:]
+            ],
+            ["export_terminal", "export_terminal"],
+        )
 
         restarted = ReweaveAppService(
             _NoLegacyEngine(),

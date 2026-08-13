@@ -346,6 +346,8 @@ class ReweaveAppServiceTest(unittest.TestCase):
                 self.plan: dict = {}
                 self.status = "plan_review"
                 self.confirmation = None
+                self.experience_records: list[tuple] = []
+                self.retrieval_calls: list[tuple] = []
 
             def confirm(self, *args):
                 self.calls.append(args)
@@ -354,7 +356,18 @@ class ReweaveAppServiceTest(unittest.TestCase):
                         "ok": False,
                         "error": {"code": "product_plan_confirmation_stale"},
                     }
-                return {"ok": True, "data": {"forwarded": True}}
+                return {
+                    "ok": True,
+                    "data": {"forwarded": True, "status": "confirmed"},
+                }
+
+            def record_product_experience(self, *args, **kwargs):
+                self.experience_records.append((args, kwargs))
+                return {"recorded": True}
+
+            def retrieve_product_experience(self, *args):
+                self.retrieval_calls.append(args)
+                return {"schema_version": "product_experience_query.v1"}
 
             def get(self, *args):
                 self.get_calls.append(args)
@@ -411,6 +424,15 @@ class ReweaveAppServiceTest(unittest.TestCase):
             "reviewed_plan": reviewed_plan,
         }
         self.assertTrue(service.confirm_product_plan(base)["ok"])
+        self.assertEqual(
+            planner.experience_records[-1][0][2],
+            "plan_confirmed",
+        )
+        self.assertEqual(
+            service.retrieve_product_experience("plan_token_public", 2),
+            {"schema_version": "product_experience_query.v1"},
+        )
+        self.assertEqual(planner.retrieval_calls, [("plan_token_public", 2)])
         self.assertIsNone(planner.calls[-1][5])
         self.assertEqual(
             planner.calls[-1][4],

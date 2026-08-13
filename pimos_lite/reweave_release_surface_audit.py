@@ -25,6 +25,7 @@ REQUIRED_SURFACE_FILES = (
     "pimos_lite/reweave_capsule_stage3.py",
     "pimos_lite/reweave_capsule_worker.py",
     "pimos_lite/reweave_data_contract.py",
+    "pimos_lite/reweave_experience.py",
     "pimos_lite/reweave_process_environment.py",
     "pimos_lite/reweave_javascript_source.py",
     "pimos_lite/reweave_static_web_target.py",
@@ -256,6 +257,8 @@ def _role(relative: str) -> str:
         return "read_only_source_intake"
     if relative == "pimos_lite/reweave_static_web_target.py":
         return "static_web_target_planner"
+    if relative == "pimos_lite/reweave_experience.py":
+        return "project_local_experience"
     if relative.startswith("scripts/analyze_reweave") or relative.endswith(
         "validate_reweave_compute.mjs"
     ):

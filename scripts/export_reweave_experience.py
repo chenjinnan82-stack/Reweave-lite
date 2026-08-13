@@ -4,124 +4,47 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
-import math
 import os
 import re
 import stat
+import sys
 import uuid
 from pathlib import Path, PurePosixPath
 from typing import Any, Callable
 
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
-NOT_RECORDED = "NOT_RECORDED"
-AUTHORITY = "non_formal_derived_experience"
-REDACTION_POLICY_VERSION = "reweave_experience_redaction.v1"
-DERIVATION_RULE_VERSION = "reweave_experience_derivation.v1"
-LABEL_RULE_VERSION = "reweave_experience_task_label_rules.v1"
+from pimos_lite import reweave_experience as experience_core
+
+NOT_RECORDED = experience_core.NOT_RECORDED
+AUTHORITY = experience_core.AUTHORITY
+REDACTION_POLICY_VERSION = experience_core.REDACTION_POLICY_VERSION
+DERIVATION_RULE_VERSION = experience_core.DERIVATION_RULE_VERSION
+LABEL_RULE_VERSION = experience_core.LABEL_RULE_VERSION
 SHA256 = re.compile(r"[0-9a-f]{64}\Z")
 SAFE_ID = re.compile(r"[a-z][a-z0-9_-]{0,95}\Z")
-SAFE_VERSION = re.compile(r"[A-Za-z][A-Za-z0-9_.:-]{0,127}\Z")
-SAFE_OFFER_REF = re.compile(r"offer_[0-9a-f]{24}\Z")
 WINDOWS_DRIVE = re.compile(r"[A-Za-z]:[\\/]")
 
-PLANNING_FIELDS = (
-    "goal_safe_projection",
-    "frozen_catalog_digest",
-    "composition_offer_digest",
-    "exact_model_name",
-    "exact_model_digest",
-    "model_selection",
-    "user_decision",
-    "plan_digest",
-    "execution_digest",
-    "connection_digest",
-    "candidate_result",
-    "delivery_result",
-    "correction_count",
-    "failure_attribution",
-)
-VALIDATION_FIELDS = (
-    "gap_digest",
-    "projection_digest",
-    "decision_digest",
-    "authorization_digest",
-    "source_proposal_digest",
-    "intake_result",
-    "security_result",
-    "runtime_result",
-    "supervision_result",
-    "admission_result",
-    "publication_result",
-    "rule_version_identities",
-    "candidate_result",
-    "export_result",
-    "visual_result",
-    "failure_attribution",
-    "regression_evidence",
-)
-RATE_METRICS = (
-    "legal_offer_coverage_rate",
-    "correct_planning_rate",
-    "correct_rejection_rate",
-    "capability_gap_accuracy",
-    "source_proposal_gate_pass_rate",
-    "formal_capsule_reuse_rate",
-    "strong_model_upgrade_rate",
-    "standalone_delivery_success_rate",
-)
-AVERAGE_METRICS = (
-    "average_human_corrections",
-    "average_model_calls_per_delivery",
-    "recorded_delivery_cost",
-)
-
-
-class ExperienceExportError(ValueError):
-    pass
+PLANNING_FIELDS = experience_core.PLANNING_FIELDS
+VALIDATION_FIELDS = experience_core.VALIDATION_FIELDS
+RATE_METRICS = experience_core.RATE_METRICS
+AVERAGE_METRICS = experience_core.AVERAGE_METRICS
+ExperienceExportError = experience_core.ExperienceError
 
 
 def canonical_bytes(value: Any) -> bytes:
-    return (
-        json.dumps(
-            value,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        )
-        + "\n"
-    ).encode("utf-8")
+    return experience_core.canonical_bytes(value)
 
 
 def sha256_bytes(value: bytes) -> str:
-    return hashlib.sha256(value).hexdigest()
-
-
-def _strict_object(pairs: list[tuple[str, Any]]) -> dict[str, Any]:
-    result: dict[str, Any] = {}
-    for key, value in pairs:
-        if key in result:
-            raise ExperienceExportError("duplicate_json_key")
-        result[key] = value
-    return result
+    return experience_core.sha256_bytes(value)
 
 
 def strict_json_bytes(raw: bytes, *, name: str) -> Any:
-    try:
-        text = raw.decode("utf-8")
-        return json.loads(
-            text,
-            object_pairs_hook=_strict_object,
-            parse_constant=lambda _value: (_ for _ in ()).throw(
-                ExperienceExportError("non_finite_json_number")
-            ),
-        )
-    except ExperienceExportError:
-        raise
-    except (UnicodeError, json.JSONDecodeError) as exc:
-        raise ExperienceExportError(f"invalid_json:{name}") from exc
+    return experience_core.strict_json_bytes(raw, name=name)
 
 
 def load_json(path: Path) -> Any:
@@ -151,24 +74,6 @@ def _safe_id(value: Any, code: str) -> str:
     if type(value) is not str or SAFE_ID.fullmatch(value) is None:
         raise ExperienceExportError(code)
     return value
-
-
-def _safe_version(value: Any, code: str) -> str:
-    if type(value) is not str or SAFE_VERSION.fullmatch(value) is None:
-        raise ExperienceExportError(code)
-    return value
-
-
-def _enum_or_not(value: Any, allowed: set[str], code: str) -> str:
-    if value == NOT_RECORDED:
-        return value
-    if type(value) is not str or value not in allowed:
-        raise ExperienceExportError(code)
-    return value
-
-
-def _digest_or_not(value: Any, code: str) -> str:
-    return value if value == NOT_RECORDED else _digest(value, code)
 
 
 def _safe_model_name(value: Any) -> str:
@@ -290,197 +195,12 @@ def _load_evidence_index(
     return index, values, references
 
 
-def _failure_attribution(value: Any) -> Any:
-    if value == NOT_RECORDED:
-        return value
-    row = _exact_dict(
-        value,
-        {"status", "code", "rule_version", "evidence_digest"},
-        "invalid_failure_attribution",
-    )
-    if row["status"] != "RECORDED":
-        raise ExperienceExportError("invalid_failure_attribution")
-    return {
-        "status": "RECORDED",
-        "code": _safe_id(row["code"], "invalid_failure_attribution"),
-        "rule_version": _safe_version(
-            row["rule_version"], "invalid_failure_attribution"
-        ),
-        "evidence_digest": _digest(
-            row["evidence_digest"], "invalid_failure_attribution"
-        ),
-    }
-
-
-def _model_selection(value: Any) -> Any:
-    if value == NOT_RECORDED:
-        return value
-    if type(value) is str:
-        if SAFE_OFFER_REF.fullmatch(value) is None:
-            raise ExperienceExportError("invalid_model_selection")
-        return value
-    row = _exact_dict(
-        value,
-        {"status", "offer_ref"},
-        "invalid_model_selection",
-    )
-    status = _enum_or_not(
-        row["status"],
-        {"selected", "no_match", "rejected", "invalid_output"},
-        "invalid_model_selection",
-    )
-    offer_ref = row["offer_ref"]
-    if status == "selected":
-        if type(offer_ref) is not str or SAFE_OFFER_REF.fullmatch(offer_ref) is None:
-            raise ExperienceExportError("invalid_model_selection")
-    elif offer_ref != NOT_RECORDED:
-        raise ExperienceExportError("invalid_model_selection")
-    return {"status": status, "offer_ref": offer_ref}
-
-
-def _rule_identities(value: Any) -> Any:
-    if value == NOT_RECORDED:
-        return value
-    if type(value) is not list or not value:
-        raise ExperienceExportError("invalid_rule_version_identities")
-    rows = []
-    for raw in value:
-        row = _exact_dict(
-            raw,
-            {"name", "version", "digest"},
-            "invalid_rule_version_identities",
-        )
-        rows.append(
-            {
-                "name": _safe_id(row["name"], "invalid_rule_version_identities"),
-                "version": _safe_version(
-                    row["version"], "invalid_rule_version_identities"
-                ),
-                "digest": _digest(
-                    row["digest"], "invalid_rule_version_identities"
-                ),
-            }
-        )
-    rows.sort(key=lambda item: (item["name"], item["version"], item["digest"]))
-    if len({canonical_bytes(row) for row in rows}) != len(rows):
-        raise ExperienceExportError("invalid_rule_version_identities")
-    return rows
-
-
-def _regression_evidence(value: Any) -> Any:
-    if value == NOT_RECORDED:
-        return value
-    if type(value) is not list or not value:
-        raise ExperienceExportError("invalid_regression_evidence")
-    rows = []
-    for raw in value:
-        row = _exact_dict(
-            raw,
-            {"evidence_digest", "rule_version"},
-            "invalid_regression_evidence",
-        )
-        rows.append(
-            {
-                "evidence_digest": _digest(
-                    row["evidence_digest"], "invalid_regression_evidence"
-                ),
-                "rule_version": _safe_version(
-                    row["rule_version"], "invalid_regression_evidence"
-                ),
-            }
-        )
-    rows.sort(key=lambda item: (item["rule_version"], item["evidence_digest"]))
-    if len({canonical_bytes(row) for row in rows}) != len(rows):
-        raise ExperienceExportError("invalid_regression_evidence")
-    return rows
-
-
 def _planning_value(field: str, value: Any) -> Any:
-    if field == "goal_safe_projection":
-        if value == NOT_RECORDED:
-            return value
-        row = _exact_dict(
-            value,
-            {"canonical_value_sha256"},
-            "invalid_goal_safe_projection",
-        )
-        return {
-            "canonical_value_sha256": _digest(
-                row["canonical_value_sha256"],
-                "invalid_goal_safe_projection",
-            )
-        }
-    if field in {
-        "frozen_catalog_digest",
-        "composition_offer_digest",
-        "exact_model_digest",
-        "plan_digest",
-        "execution_digest",
-        "connection_digest",
-    }:
-        return _digest_or_not(value, f"invalid_{field}")
-    if field == "exact_model_name":
-        return value if value == NOT_RECORDED else _safe_model_name(value)
-    if field == "model_selection":
-        return _model_selection(value)
-    if field == "user_decision":
-        return _enum_or_not(
-            value,
-            {"confirmed", "rejected", "deferred", "corrected"},
-            "invalid_user_decision",
-        )
-    if field == "candidate_result":
-        return _enum_or_not(
-            value,
-            {"review_ready", "rejected", "failed", "not_generated"},
-            "invalid_candidate_result",
-        )
-    if field == "delivery_result":
-        return _enum_or_not(
-            value,
-            {"passed", "failed", "not_attempted"},
-            "invalid_delivery_result",
-        )
-    if field == "correction_count":
-        if value == NOT_RECORDED:
-            return value
-        if type(value) is not int or value < 0:
-            raise ExperienceExportError("invalid_correction_count")
-        return value
-    if field == "failure_attribution":
-        return _failure_attribution(value)
-    raise ExperienceExportError("unknown_record_field")
+    return experience_core.normalize_planning_experience_value(field, value)
 
 
 def _validation_value(field: str, value: Any) -> Any:
-    if field in {
-        "gap_digest",
-        "projection_digest",
-        "decision_digest",
-        "authorization_digest",
-        "source_proposal_digest",
-    }:
-        return _digest_or_not(value, f"invalid_{field}")
-    enums = {
-        "intake_result": {"passed", "failed", "rejected", "not_run"},
-        "security_result": {"passed", "failed", "rejected", "not_run"},
-        "runtime_result": {"passed", "failed", "not_run"},
-        "supervision_result": {"approve", "reject", "failed", "not_run"},
-        "admission_result": {"review_required", "failed", "not_run"},
-        "publication_result": {"published", "rejected", "failed", "not_run"},
-        "candidate_result": {"review_ready", "rejected", "failed", "not_generated"},
-        "export_result": {"passed", "failed", "not_run"},
-        "visual_result": {"passed", "failed", "deferred", "not_run"},
-    }
-    if field in enums:
-        return _enum_or_not(value, enums[field], f"invalid_{field}")
-    if field == "rule_version_identities":
-        return _rule_identities(value)
-    if field == "failure_attribution":
-        return _failure_attribution(value)
-    if field == "regression_evidence":
-        return _regression_evidence(value)
-    raise ExperienceExportError("unknown_record_field")
+    return experience_core.normalize_validation_experience_value(field, value)
 
 
 def derive_records(index_path: Path) -> list[dict[str, Any]]:
@@ -569,61 +289,11 @@ def validate_experience_record(
     expected_schema: str,
     expected_sha256: str,
 ) -> dict[str, Any]:
-    _digest(expected_sha256, "invalid_experience_file_digest")
-    if sha256_bytes(raw) != expected_sha256:
-        raise ExperienceExportError("experience_file_digest_mismatch")
-    value = strict_json_bytes(raw, name="experience.json")
-    allowed = PLANNING_FIELDS if expected_schema == "planning_experience.v1" else VALIDATION_FIELDS
-    required = {
-        "schema",
-        "authority",
-        "redaction_policy_version",
-        "derivation_rule_version",
-        "record_id",
-        "project_scope_digest",
-        *allowed,
-        "source_evidence_references",
-        "canonical_digest",
-    }
-    row = _exact_dict(value, required, "invalid_experience_record")
-    digest = row["canonical_digest"]
-    body = {key: item for key, item in row.items() if key != "canonical_digest"}
-    if (
-        row["schema"] != expected_schema
-        or row["authority"] != AUTHORITY
-        or row["redaction_policy_version"] != REDACTION_POLICY_VERSION
-        or row["derivation_rule_version"] != DERIVATION_RULE_VERSION
-        or _safe_id(row["record_id"], "invalid_experience_record") != row["record_id"]
-        or _digest(row["project_scope_digest"], "invalid_experience_record")
-        != row["project_scope_digest"]
-        or _digest(digest, "invalid_experience_record") != digest
-        or digest != sha256_bytes(canonical_bytes(body))
-    ):
-        raise ExperienceExportError("invalid_experience_record")
-    validator = _planning_value if expected_schema == "planning_experience.v1" else _validation_value
-    for field in allowed:
-        validator(field, row[field])
-    refs = row["source_evidence_references"]
-    if type(refs) is not list:
-        raise ExperienceExportError("invalid_experience_record")
-    normalized_refs = []
-    for ref in refs:
-        item = _exact_dict(
-            ref,
-            {"evidence_id", "sha256"},
-            "invalid_experience_record",
-        )
-        normalized_refs.append(
-            {
-                "evidence_id": _safe_id(
-                    item["evidence_id"], "invalid_experience_record"
-                ),
-                "sha256": _digest(item["sha256"], "invalid_experience_record"),
-            }
-        )
-    if refs != sorted(normalized_refs, key=lambda item: item["evidence_id"]):
-        raise ExperienceExportError("invalid_experience_record")
-    return row
+    return experience_core.validate_experience_record(
+        raw,
+        expected_schema,
+        expected_sha256,
+    )
 
 
 def validate_experience_file(
@@ -767,74 +437,7 @@ def validate_task_label(
     raw: bytes,
     expected_sha256: str,
 ) -> dict[str, Any]:
-    _digest(expected_sha256, "invalid_task_label_digest")
-    if sha256_bytes(raw) != expected_sha256:
-        raise ExperienceExportError("task_label_file_digest_mismatch")
-    row = _exact_dict(
-        strict_json_bytes(raw, name="task-label.json"),
-        {
-            "schema",
-            "authority",
-            "task_id",
-            "project_scope_digest",
-            "planning_experience_sha256",
-            "validation_experience_sha256",
-            "fixed_model",
-            "label_rule_version",
-            "attribution_status",
-            "metrics",
-            "canonical_digest",
-        },
-        "invalid_task_label",
-    )
-    model = _exact_dict(
-        row["fixed_model"],
-        {"name", "digest"},
-        "invalid_task_label",
-    )
-    metrics = row["metrics"]
-    if type(metrics) is not dict or set(metrics) - set(RATE_METRICS + AVERAGE_METRICS):
-        raise ExperienceExportError("invalid_task_label")
-    normalized_metrics: dict[str, Any] = {}
-    for name in RATE_METRICS:
-        value = metrics.get(name, NOT_RECORDED)
-        if value != NOT_RECORDED and type(value) is not bool:
-            raise ExperienceExportError(f"invalid_rate_metric:{name}")
-        normalized_metrics[name] = value
-    for name in AVERAGE_METRICS:
-        value = metrics.get(name, NOT_RECORDED)
-        if value != NOT_RECORDED and (
-            type(value) not in {int, float}
-            or not math.isfinite(value)
-            or value < 0
-        ):
-            raise ExperienceExportError(f"invalid_average_metric:{name}")
-        normalized_metrics[name] = value
-    body = {key: value for key, value in row.items() if key != "canonical_digest"}
-    if (
-        row["schema"] != "reweave_experience_task_label.v1"
-        or row["authority"] != AUTHORITY
-        or _safe_id(row["task_id"], "invalid_task_label") != row["task_id"]
-        or _digest(row["project_scope_digest"], "invalid_task_label")
-        != row["project_scope_digest"]
-        or _digest(row["planning_experience_sha256"], "invalid_task_label")
-        != row["planning_experience_sha256"]
-        or _digest(row["validation_experience_sha256"], "invalid_task_label")
-        != row["validation_experience_sha256"]
-        or _safe_model_name(model["name"]) != model["name"]
-        or _digest(model["digest"], "invalid_task_label") != model["digest"]
-        or row["label_rule_version"] != LABEL_RULE_VERSION
-        or row["attribution_status"] not in {"RECORDED", NOT_RECORDED}
-        or row["metrics"] != {
-            name: normalized_metrics[name]
-            for name in RATE_METRICS + AVERAGE_METRICS
-        }
-        or _digest(row["canonical_digest"], "invalid_task_label")
-        != row["canonical_digest"]
-        or row["canonical_digest"] != sha256_bytes(canonical_bytes(body))
-    ):
-        raise ExperienceExportError("invalid_task_label")
-    return row
+    return experience_core.validate_task_label(raw, expected_sha256)
 
 
 def _read_task_label(

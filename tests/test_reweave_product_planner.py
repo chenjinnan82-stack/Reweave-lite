@@ -46,8 +46,12 @@ class StubPlanner(ProductPlanner):
         *,
         counts: dict[str, int | None] | None = None,
         model_infos: dict[str, dict[str, object]] | None = None,
+        experience_injection_enabled: bool | None = None,
     ) -> None:
-        super().__init__(root)
+        super().__init__(
+            root,
+            experience_injection_enabled=experience_injection_enabled,
+        )
         self.counts = counts or {
             "small:1.5b": 1_543_714_304,
             "large:7b": 7_615_616_512,
@@ -959,6 +963,8 @@ def use_legacy_workspace(planner: StubPlanner) -> None:
         workspace.pop("composition_selection")
         workspace.pop("composition_selection_input_digest")
         workspace.pop("composition_selection_response_digest")
+        workspace.pop("experience_query_digest")
+        workspace.pop("experience_injection_enabled")
         workspace.pop("blueprint")
         workspace.pop("blueprint_input_digest")
         workspace.pop("blueprint_response_digest")
@@ -3214,7 +3220,9 @@ def test_composition_selection_is_example_free_and_resolves_exact_offer(
     assert "oneOf" not in json.dumps(schema, sort_keys=True)
 
     workspace = {
-        "schema_version": product_planner_module.WORKSPACE_SCHEMA_VERSION,
+        "schema_version": (
+            product_planner_module.PREVIOUS_REQUIREMENT_COVERAGE_WORKSPACE_SCHEMA_VERSION
+        ),
         "goal_digest": "a" * 64,
         "answers": [],
         "model": {
@@ -3667,7 +3675,7 @@ def test_product_plan_v2_blueprint_binds_each_role_once_and_derives_topology(
     assert plan["prompt_version"] == product_planner_module.PLANNING_PROMPT_VERSION
     assert sum(path == "/api/generate" for path, _ in planner.requests) - calls_before == 3
     workspace = planner._workspace_by_token(result["data"]["plan_token"])
-    assert workspace["schema_version"] == "product_workspace.v9"
+    assert workspace["schema_version"] == "product_workspace.v10"
     assert "section_checkpoints" not in workspace
     assert workspace["composition_selection"] == {
         "schema_version": "product_composition_selection.v1",
@@ -3738,6 +3746,281 @@ def test_product_plan_v2_blueprint_binds_each_role_once_and_derives_topology(
     assert recovered["data"]["plan"] == plan
 
 
+def test_v10_freezes_query_before_calls_and_injects_only_selection(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "state" / "product_workspaces"
+    assert StubPlanner(root)._experience_injection_enabled is True
+    catalog_value = multi_computation_catalog()
+    historical = StubPlanner(root)
+    select_small(historical)
+    queue_blueprint_time_plan(historical)
+    started = historical.start("创建本地时间换算工具。", catalog_value)
+    historical_plan = started["data"]["plan"]
+    historical.confirm(
+        started["data"]["plan_token"],
+        historical_plan["canonical_digest"],
+        historical_plan,
+        catalog_value,
+    )
+    historical.record_product_experience(
+        started["data"]["plan_token"],
+        catalog_value,
+        "plan_confirmed",
+    )
+
+    control = StubPlanner(
+        root,
+        experience_injection_enabled=False,
+    )
+    queue_blueprint_time_plan(control)
+    frozen_before_generate = {"value": False}
+    original_freeze = control._freeze_product_experience_query
+
+    def freeze(workspace):
+        query = original_freeze(workspace)
+        frozen_before_generate["value"] = True
+        return query
+
+    control._freeze_product_experience_query = freeze  # type: ignore[method-assign]
+    original_generate = control._generate_json
+
+    def generate(model, call_type, request_value, cancel_check=None, **kwargs):
+        assert frozen_before_generate["value"] is True
+        return original_generate(
+            model,
+            call_type,
+            request_value,
+            cancel_check,
+            **kwargs,
+        )
+
+    control._generate_json = generate  # type: ignore[method-assign]
+    control_result = control.start(
+        "创建本地小时到秒的时间换算工具。",
+        catalog_value,
+    )
+    assert control_result["ok"] is True
+    control_workspace = control._workspace_by_token(
+        control_result["data"]["plan_token"]
+    )
+    assert control_workspace["schema_version"] == "product_workspace.v10"
+    assert control_workspace["experience_injection_enabled"] is False
+    query_path = (
+        control.root
+        / control_workspace["workspace_id"]
+        / "experience_query.json"
+    )
+    frozen_query_bytes = query_path.read_bytes()
+    frozen_query = json.loads(frozen_query_bytes)
+    assert frozen_query["cases"]
+    assert control_workspace["experience_query_digest"] == frozen_query[
+        "canonical_digest"
+    ]
+    assert query_path.stat().st_mode & 0o777 == 0o600
+
+    def selection_payload(planner: StubPlanner) -> dict[str, object]:
+        return next(
+            payload
+            for path, payload in planner.requests
+            if path == "/api/generate"
+            and payload["format"]["properties"]["schema_version"]["enum"]
+            == ["product_composition_selection.v1"]
+        )
+
+    control_payload = selection_payload(control)
+    control_request = json.loads(
+        control_payload["prompt"].split("\nREQUEST_JSON:\n", 1)[1]
+    )
+    assert control_request["experience_cases"] == []
+    assert sum(
+        '"experience_cases"' in payload["prompt"]
+        for path, payload in control.requests
+        if path == "/api/generate"
+    ) == 1
+
+    treatment = StubPlanner(
+        root,
+        experience_injection_enabled=True,
+    )
+    queue_blueprint_time_plan(treatment)
+    treatment_result = treatment.start(
+        "创建本地时间单位换算产品。",
+        catalog_value,
+    )
+    assert treatment_result["ok"] is True
+    treatment_workspace = treatment._workspace_by_token(
+        treatment_result["data"]["plan_token"]
+    )
+    assert treatment_workspace["experience_injection_enabled"] is True
+    treatment_payload = selection_payload(treatment)
+    treatment_request = json.loads(
+        treatment_payload["prompt"].split("\nREQUEST_JSON:\n", 1)[1]
+    )
+    assert treatment_request["experience_cases"]
+    serialized = json.dumps(
+        treatment_request["experience_cases"],
+        ensure_ascii=False,
+    )
+    for forbidden in (
+        "record_digest",
+        "project_scope",
+        "source_workspace",
+        "exact_model",
+        "capsule_id",
+        "version_id",
+        "canonical_hash",
+    ):
+        assert forbidden not in serialized
+
+    cases = treatment_request["experience_cases"]
+    offers = control_request["composition_offers"]
+    common = {
+        "goal": "same goal",
+        "outline": time_outline(),
+        "answers": [],
+        "composition_offers": offers,
+        "selection_locked": False,
+        "prompt_version": product_planner_module.PLANNING_PROMPT_VERSION,
+    }
+    without_cases = control._composition_selection_request(
+        experience_cases=[],
+        **common,
+    )
+    with_cases = control._composition_selection_request(
+        experience_cases=cases,
+        **common,
+    )
+    assert {
+        key: value
+        for key, value in without_cases.items()
+        if key != "experience_cases"
+    } == {
+        key: value
+        for key, value in with_cases.items()
+        if key != "experience_cases"
+    }
+    assert (
+        control_payload["prompt"].split("REQUEST_JSON:", 1)[0]
+        == treatment_payload["prompt"].split("REQUEST_JSON:", 1)[0]
+    )
+
+    extra = StubPlanner(root)
+    queue_blueprint_time_plan(extra)
+    extra_result = extra.start("创建时间长度转换产品。", catalog_value)
+    extra_plan = extra_result["data"]["plan"]
+    extra.confirm(
+        extra_result["data"]["plan_token"],
+        extra_plan["canonical_digest"],
+        extra_plan,
+        catalog_value,
+    )
+    extra.record_product_experience(
+        extra_result["data"]["plan_token"],
+        catalog_value,
+        "plan_confirmed",
+    )
+    assert (
+        control._freeze_product_experience_query(control_workspace)
+        == frozen_query
+    )
+    assert query_path.read_bytes() == frozen_query_bytes
+
+
+def test_v10_referenced_record_tamper_fails_before_generate(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "state" / "product_workspaces"
+    catalog_value = multi_computation_catalog()
+    historical = StubPlanner(root)
+    select_small(historical)
+    queue_blueprint_time_plan(historical)
+    started = historical.start("创建本地时间换算工具。", catalog_value)
+    plan = started["data"]["plan"]
+    historical.confirm(
+        started["data"]["plan_token"],
+        plan["canonical_digest"],
+        plan,
+        catalog_value,
+    )
+    record = historical.record_product_experience(
+        started["data"]["plan_token"],
+        catalog_value,
+        "plan_confirmed",
+    )
+    assert record is not None
+
+    planner = StubPlanner(root)
+    model = planner._selected_model(check_current=False)
+    workspace = planner._new_workspace(
+        "创建本地小时换算工具。",
+        model,
+    )
+    planner._save_workspace(workspace)
+    query = planner._freeze_product_experience_query(workspace)
+    assert query["cases"]
+    workspace["status"] = "interrupted"
+    planner._save_workspace(workspace)
+
+    record_path = (
+        root.parent
+        / "product_experience"
+        / "records"
+        / record["source_workspace_id"]
+        / "plan_confirmed.json"
+    )
+    tampered = json.loads(record_path.read_text())
+    tampered["safe_case"]["members"][0]["display_name"] = "tampered"
+    record_path.write_bytes(
+        product_planner_module._canonical_bytes(tampered)
+    )
+    generate_before = sum(
+        path == "/api/generate" for path, _payload in planner.requests
+    )
+    result = planner.start(
+        workspace["goal"],
+        catalog_value,
+        resume_plan_token=workspace["plan_token"],
+    )
+    assert result["error"]["code"] == "project_experience_record_invalid"
+    assert sum(
+        path == "/api/generate" for path, _payload in planner.requests
+    ) == generate_before
+
+
+def test_v10_frozen_query_tamper_fails_before_generate(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "state" / "product_workspaces"
+    planner = StubPlanner(root)
+    select_small(planner)
+    workspace = planner._new_workspace(
+        "创建本地时间换算工具。",
+        planner._selected_model(check_current=False),
+    )
+    planner._save_workspace(workspace)
+    planner._freeze_product_experience_query(workspace)
+    workspace["status"] = "interrupted"
+    planner._save_workspace(workspace)
+
+    query_path = (
+        root / workspace["workspace_id"] / "experience_query.json"
+    )
+    query = json.loads(query_path.read_text())
+    query["query_goal_digest"] = "0" * 64
+    query_path.write_bytes(product_planner_module._canonical_bytes(query))
+
+    generate_before = sum(
+        path == "/api/generate" for path, _payload in planner.requests
+    )
+    with pytest.raises(ProductPlanningError) as captured:
+        planner._freeze_product_experience_query(workspace)
+    assert str(captured.value) == "project_experience_query_invalid"
+    assert sum(
+        path == "/api/generate" for path, _payload in planner.requests
+    ) == generate_before
+
+
 @pytest.mark.parametrize(
     ("workspace_version", "rules_version", "prompt_version"),
     [
@@ -3760,6 +4043,11 @@ def test_product_plan_v2_blueprint_binds_each_role_once_and_derives_topology(
             product_planner_module.PREVIOUS_TARGET_SELECTION_WORKSPACE_SCHEMA_VERSION,
             product_planner_module.PREVIOUS_TARGET_SELECTION_PLANNING_RULES_VERSION,
             product_planner_module.PREVIOUS_GAP_PLANNING_PROMPT_VERSION,
+        ),
+        (
+            product_planner_module.PREVIOUS_REQUIREMENT_COVERAGE_WORKSPACE_SCHEMA_VERSION,
+            product_planner_module.PREVIOUS_REQUIREMENT_COVERAGE_PLANNING_RULES_VERSION,
+            product_planner_module.PREVIOUS_REQUIREMENT_COVERAGE_PROMPT_VERSION,
         ),
     ],
 )
@@ -3795,6 +4083,8 @@ def test_historical_locked_blueprint_workspace_remains_recoverable(
     offers = planner._composition_offers(candidate_map)
 
     workspace["schema_version"] = workspace_version
+    workspace.pop("experience_query_digest")
+    workspace.pop("experience_injection_enabled")
     if (
         workspace_version
         not in product_planner_module.TARGET_SELECTION_WORKSPACE_SCHEMA_VERSIONS
@@ -3873,6 +4163,8 @@ def test_product_workspace_v4_direct_blueprint_remains_recoverable(
     workspace.pop("composition_selection")
     workspace.pop("composition_selection_input_digest")
     workspace.pop("composition_selection_response_digest")
+    workspace.pop("experience_query_digest")
+    workspace.pop("experience_injection_enabled")
     workspace["model_calls"] = [
         call
         for call in workspace["model_calls"]
@@ -4106,9 +4398,9 @@ def test_locked_blueprint_requires_product_constraints_on_an_assignment(
     plan = result["data"]["plan"]
     assert plan["schema_version"] == "product_plan.v2"
     assert plan["planning_rules_version"] == (
-        "reweave_product_planning_rules.v9"
+        "reweave_product_planning_rules.v10"
     )
-    assert plan["prompt_version"] == "reweave_product_planning_prompt.v12"
+    assert plan["prompt_version"] == "reweave_product_planning_prompt.v13"
     assert all(not section["gaps"] for section in plan["sections"])
     items = {
         item["title"]: item
@@ -7670,7 +7962,7 @@ def test_multiple_deterministic_gaps_require_one_safe_user_selection(
     workspace = planner._workspace_by_token(
         started["data"]["plan_token"]
     )
-    assert workspace["schema_version"] == "product_workspace.v9"
+    assert workspace["schema_version"] == "product_workspace.v10"
     assert [call["call_type"] for call in workspace["model_calls"]] == [
         "requirements_outline",
         "composition_selection",
@@ -7951,7 +8243,7 @@ def test_unique_gap_is_locked_before_blueprint_and_model_only_describes_it(
         plan["requirements"][0]["requirement_id"]
     ]
     workspace = planner._workspace_by_token(created["data"]["plan_token"])
-    assert workspace["schema_version"] == "product_workspace.v9"
+    assert workspace["schema_version"] == "product_workspace.v10"
     assert workspace["blueprint_input_digest"] == (
         planner._selected_blueprint_input_digest(
             workspace,
@@ -7971,10 +8263,10 @@ def test_unique_gap_is_locked_before_blueprint_and_model_only_describes_it(
         )
     )
     assert workspace["plan"]["planning_rules_version"] == (
-        "reweave_product_planning_rules.v9"
+        "reweave_product_planning_rules.v10"
     )
     assert workspace["plan"]["prompt_version"] == (
-        "reweave_product_planning_prompt.v12"
+        "reweave_product_planning_prompt.v13"
     )
 
     invalid = time_gap_blueprint()
