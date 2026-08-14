@@ -294,11 +294,11 @@ def benchmark_index(
                 {
                     "task_id": task_id,
                     "planning": {
-                        "path": str(planning.relative_to(tmp_path)),
+                        "path": planning.relative_to(tmp_path).as_posix(),
                         "sha256": planning_sha,
                     },
                     "validation": {
-                        "path": str(validation.relative_to(tmp_path)),
+                        "path": validation.relative_to(tmp_path).as_posix(),
                         "sha256": validation_sha,
                     },
                     "label": {"path": label_name, "sha256": label_sha},

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import copy
 import json
+import os
 import stat
 from pathlib import Path
 
@@ -103,11 +104,12 @@ def test_project_experience_milestones_are_redacted_immutable_and_recoverable(
         "export_terminal.json",
         "plan_confirmed.json",
     ]
-    assert stat.S_IMODE(experience_root.stat().st_mode) == 0o700
-    assert all(
-        stat.S_IMODE(path.stat().st_mode) == 0o600
-        for path in record_dir.iterdir()
-    )
+    if os.name == "posix":
+        assert stat.S_IMODE(experience_root.stat().st_mode) == 0o700
+        assert all(
+            stat.S_IMODE(path.stat().st_mode) == 0o600
+            for path in record_dir.iterdir()
+        )
     raw = b"".join(path.read_bytes() for path in record_dir.iterdir())
     assert workspace["goal"].encode() not in raw
     for forbidden in (b"/Users/", b"REQUEST_JSON", b"prompt", b"source code"):
@@ -289,7 +291,7 @@ def test_unattributed_failure_is_not_recorded_and_tampering_fails_closed(
         / workspace["workspace_id"]
         / "plan_confirmed.json"
     )
-    row = json.loads(path.read_text())
+    row = json.loads(path.read_text(encoding="utf-8"))
     row["safe_case"]["members"][0]["display_name"] = "tampered"
     path.write_bytes(canonical_bytes(row))
     with pytest.raises(

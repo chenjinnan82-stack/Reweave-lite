@@ -2276,8 +2276,9 @@ def test_model_metadata_gate_is_exact_and_selection_is_private(tmp_path: Path) -
     assert selected["ok"] is True
     assert selected["data"]["model"]["parameter_count"] == 7_615_616_512
     selection = planner.root / "model_selection.json"
-    assert stat_mode(selection) == 0o600
-    assert stat_mode(planner.root) == 0o700
+    if os.name == "posix":
+        assert stat_mode(selection) == 0o600
+        assert stat_mode(planner.root) == 0o700
     persisted = selection.read_text(encoding="utf-8")
     assert '"prompt":' not in persisted
     assert '"response":' not in persisted
@@ -3058,7 +3059,8 @@ def test_real_plan_has_four_sections_twelve_items_and_exact_allowlist_binding(
     )
 
     stored = next(planner.root.glob("workspace_*/workspace.json"))
-    assert stat_mode(stored) == 0o600
+    if os.name == "posix":
+        assert stat_mode(stored) == 0o600
     raw = stored.read_text(encoding="utf-8")
     assert "raw prompt" not in raw
     assert "raw response" not in raw
@@ -3817,7 +3819,8 @@ def test_v10_freezes_query_before_calls_and_injects_only_selection(
     assert control_workspace["experience_query_digest"] == frozen_query[
         "canonical_digest"
     ]
-    assert query_path.stat().st_mode & 0o777 == 0o600
+    if os.name == "posix":
+        assert query_path.stat().st_mode & 0o777 == 0o600
 
     def selection_payload(planner: StubPlanner) -> dict[str, object]:
         return next(
@@ -3969,7 +3972,7 @@ def test_v10_referenced_record_tamper_fails_before_generate(
         / record["source_workspace_id"]
         / "plan_confirmed.json"
     )
-    tampered = json.loads(record_path.read_text())
+    tampered = json.loads(record_path.read_text(encoding="utf-8"))
     tampered["safe_case"]["members"][0]["display_name"] = "tampered"
     record_path.write_bytes(
         product_planner_module._canonical_bytes(tampered)
@@ -5832,7 +5835,8 @@ def test_parameter_offer_precedes_atomic_confirmation_and_cannot_be_rewritten(
         )
     )
     assert len(handoff_files) == 1
-    assert handoff_files[0].stat().st_mode & 0o777 == 0o600
+    if os.name == "posix":
+        assert handoff_files[0].stat().st_mode & 0o777 == 0o600
     assert handoff_token not in handoff_files[0].read_text(encoding="utf-8")
     resolved_handoff = StubPlanner(root).resolve_agent_handoff(handoff_token)
     assert resolved_handoff["ok"] is True
