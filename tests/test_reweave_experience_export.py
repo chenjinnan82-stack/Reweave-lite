@@ -345,7 +345,8 @@ def test_deterministic_strict_redacted_export(tmp_path):
     assert b"prompt" not in output.lower()
     assert b"source_text" not in output.lower()
     assert str(tmp_path).encode() not in output
-    assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in first)
+    if os.name == "posix":
+        assert all(stat.S_IMODE(path.stat().st_mode) == 0o600 for path in first)
 
 
 @pytest.mark.parametrize(
@@ -581,7 +582,8 @@ def test_scorecard_is_order_invariant_and_written_0600(tmp_path):
     write_json(reversed_path, value)
     assert canonical(original) == canonical(exporter.build_scorecard(reversed_path))
     output = exporter.write_scorecard(benchmark, tmp_path / "scorecard")
-    assert stat.S_IMODE(output.stat().st_mode) == 0o600
+    if os.name == "posix":
+        assert stat.S_IMODE(output.stat().st_mode) == 0o600
     assert output.read_bytes() == canonical(original)
 
 

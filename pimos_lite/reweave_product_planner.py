@@ -2574,7 +2574,10 @@ class ProductPlanner:
                 if (
                     stat.S_ISLNK(metadata.st_mode)
                     or not stat.S_ISREG(metadata.st_mode)
-                    or stat.S_IMODE(metadata.st_mode) & 0o077
+                    or (
+                        os.name == "posix"
+                        and stat.S_IMODE(metadata.st_mode) & 0o077
+                    )
                     or existing != data
                 ):
                     raise ProductPlanningError(
@@ -2596,20 +2599,22 @@ class ProductPlanner:
                             if written <= 0:
                                 raise OSError("source_write_incomplete")
                             view = view[written:]
-                        os.fchmod(descriptor, 0o600)
+                        if os.name == "posix":
+                            os.fchmod(descriptor, 0o600)
                         os.fsync(descriptor)
                     finally:
                         os.close(descriptor)
-                    directory_fd = os.open(
-                        source_dir,
-                        os.O_RDONLY
-                        | getattr(os, "O_DIRECTORY", 0)
-                        | getattr(os, "O_NOFOLLOW", 0),
-                    )
-                    try:
-                        os.fsync(directory_fd)
-                    finally:
-                        os.close(directory_fd)
+                    if os.name == "posix":
+                        directory_fd = os.open(
+                            source_dir,
+                            os.O_RDONLY
+                            | getattr(os, "O_DIRECTORY", 0)
+                            | getattr(os, "O_NOFOLLOW", 0),
+                        )
+                        try:
+                            os.fsync(directory_fd)
+                        finally:
+                            os.close(directory_fd)
                 except OSError as exc:
                     raise ProductPlanningError(
                         "product_planning_state_unavailable"
@@ -6015,7 +6020,8 @@ class ProductPlanner:
                     raise ProductPlanningError("product_workspace_symlink_forbidden")
             else:
                 path.mkdir(parents=True, mode=0o700)
-            os.chmod(path, 0o700)
+            if os.name == "posix":
+                os.chmod(path, 0o700)
         except ProductPlanningError:
             raise
         except OSError as exc:
@@ -6042,7 +6048,10 @@ class ProductPlanner:
             metadata = path.lstat()
             if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
                 raise ProductPlanningError("product_workspace_symlink_forbidden")
-            if stat.S_IMODE(metadata.st_mode) & 0o077:
+            if (
+                os.name == "posix"
+                and stat.S_IMODE(metadata.st_mode) & 0o077
+            ):
                 raise ProductPlanningError("product_workspace_permissions_invalid")
             if metadata.st_size > MAX_WORKSPACE_BYTES:
                 raise ProductPlanningError("product_workspace_too_large")
@@ -6094,17 +6103,18 @@ class ProductPlanner:
                 handle.flush()
                 os.fsync(handle.fileno())
             os.replace(temporary, path)
-            os.chmod(path, 0o600)
-            directory_fd = os.open(
-                path.parent,
-                os.O_RDONLY
-                | getattr(os, "O_DIRECTORY", 0)
-                | getattr(os, "O_NOFOLLOW", 0),
-            )
-            try:
-                os.fsync(directory_fd)
-            finally:
-                os.close(directory_fd)
+            if os.name == "posix":
+                os.chmod(path, 0o600)
+                directory_fd = os.open(
+                    path.parent,
+                    os.O_RDONLY
+                    | getattr(os, "O_DIRECTORY", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
+                )
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
         except ProductPlanningError:
             raise
         except OSError as exc:

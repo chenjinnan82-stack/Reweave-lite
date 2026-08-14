@@ -355,7 +355,8 @@ def _write_temp_file(path: Path, data: bytes) -> None:
         except OSError:
             pass
         raise
-    os.chmod(path, 0o600, follow_symlinks=False)
+    if os.name == "posix":
+        os.chmod(path, 0o600, follow_symlinks=False)
 
 
 def _atomic_write_collection(output_dir: Path, files: dict[str, bytes]) -> list[Path]:
@@ -381,11 +382,12 @@ def _atomic_write_collection(output_dir: Path, files: dict[str, bytes]) -> list[
                 raise ExperienceExportError("output_conflict")
             os.rename(temp, target)
             final.append(target)
-        descriptor = os.open(root, os.O_RDONLY)
-        try:
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
+        if os.name == "posix":
+            descriptor = os.open(root, os.O_RDONLY)
+            try:
+                os.fsync(descriptor)
+            finally:
+                os.close(descriptor)
         return final
     except BaseException as exc:
         for path in temporary + final:
