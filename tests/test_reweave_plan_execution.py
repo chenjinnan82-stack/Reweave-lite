@@ -740,6 +740,11 @@ class PlanExecutionV1Test(unittest.TestCase):
         self.environment.stop()
         self.temporary.cleanup()
 
+    @unittest.skipUnless(
+        Path(".venv-reweave/bin/python").is_file()
+        or Path(".venv-reweave/Scripts/python.exe").is_file(),
+        "PySide worker environment is required",
+    )
     def test_composed_runtime_requires_exactly_one_non_nested_main(self) -> None:
         runtime_root = self.root / "document-landmarks"
         runtime_root.mkdir()
@@ -2942,10 +2947,16 @@ process.stdout.write(JSON.stringify({result, rendered: totalNode.textContent}));
                 "stdout": json.dumps(result, separators=(",", ":")),
             },
         )()
-        with patch(
-            "pimos_lite.reweave_app_service.subprocess.run",
-            return_value=completed,
-        ) as run:
+        with (
+            patch(
+                "pimos_lite.reweave_app_service._desktop_worker_python",
+                return_value="desktop-python",
+            ),
+            patch(
+                "pimos_lite.reweave_app_service.subprocess.run",
+                return_value=completed,
+            ) as run,
+        ):
             _validate_product_acceptance(
                 self.root,
                 {
