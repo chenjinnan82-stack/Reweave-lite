@@ -45,6 +45,8 @@
       warehouseReturnScroll: 0,
       gapDrafts: {},
       acceptanceSuggestionDigest: "",
+      handoffError: "",
+      handoffMessage: "",
     };
     var bound = false;
     var els = {};
@@ -117,6 +119,20 @@
             expected: "应得到",
             addOutcome: "添加一行",
             confirmGenerate: "确认并生成",
+            confirmAgent: "确认并交给 Agent",
+            handoffTitle: "交给开发 Agent",
+            handoffActive: "此计划已授权给 Agent，Reweave 不会自动生成候选。",
+            handoffCopied: "完整绑定请求已复制一次。",
+            handoffWarning: "只可写入 Reweave 梭子的 stdin，不要粘贴到聊天 Prompt。",
+            handoffRevoke: "撤销 Agent 授权",
+            handoffRevoked: "Agent 授权已撤销。下一步仍需由你明确选择。",
+            handoffReissue: "重新签发",
+            handoffDirect: "由 Reweave 继续生成",
+            handoffStale: "计划或正式能力事实已变化；旧授权不可继续使用。",
+            handoffConflict: "Agent 授权记录不一致，系统已失败关闭。",
+            handoffClipboardFailed: "agent_handoff_clipboard_failed",
+            handoffIssueFailed: "agent_handoff_create_failed",
+            handoffRevokeFailed: "agent_handoff_revoke_failed",
             parameterCopy: "还需确认一个不会由页面或模型改写的固定值。",
             candidateReady: "产品候选已通过运行与关键结果验证。",
             preview: "预览产品",
@@ -263,6 +279,20 @@
             expected: "Should produce",
             addOutcome: "Add outcome",
             confirmGenerate: "Confirm and generate",
+            confirmAgent: "Confirm and hand to Agent",
+            handoffTitle: "Hand off to a developer Agent",
+            handoffActive: "This plan is authorized for an Agent. Reweave will not start a candidate automatically.",
+            handoffCopied: "The complete bind request was copied once.",
+            handoffWarning: "Write it only to the Reweave shuttle stdin. Never paste it into a chat prompt.",
+            handoffRevoke: "Revoke Agent authorization",
+            handoffRevoked: "Agent authorization is revoked. Choose the next delivery path explicitly.",
+            handoffReissue: "Issue again",
+            handoffDirect: "Continue in Reweave",
+            handoffStale: "The plan or formal capability facts changed; the old authorization cannot be used.",
+            handoffConflict: "Agent authorization records conflict. Reweave failed closed.",
+            handoffClipboardFailed: "agent_handoff_clipboard_failed",
+            handoffIssueFailed: "agent_handoff_create_failed",
+            handoffRevokeFailed: "agent_handoff_revoke_failed",
             parameterCopy: "Confirm one fixed value that neither the page nor the model can change.",
             candidateReady: "The product candidate passed runtime and key-outcome validation.",
             preview: "Preview product",
@@ -1200,20 +1230,24 @@
     }
 
     function updateReviewAction() {
-      var button = $("btn-confirm-and-generate");
-      if (!button) return;
       var hasGaps = planGaps().length > 0;
       var cases = acceptanceCases();
       var parameterReady =
         !state.parameterOffer || !!parameterConfirmation();
-      button.disabled = hasGaps || !cases || !parameterReady;
-      button.title = button.disabled
-        ? hasGaps
-          ? copy().gapBlockGenerate
-          : state.acceptanceShape
-          ? copy().reviewError
-          : copy().unsupported
-        : "";
+      ["btn-confirm-and-generate", "btn-confirm-and-agent"].forEach(function (
+        id
+      ) {
+        var button = $(id);
+        if (!button) return;
+        button.disabled = hasGaps || !cases || !parameterReady;
+        button.title = button.disabled
+          ? hasGaps
+            ? copy().gapBlockGenerate
+            : state.acceptanceShape
+            ? copy().reviewError
+            : copy().unsupported
+          : "";
+      });
       if (els.acceptance) {
         els.acceptance.classList.toggle("hidden", hasGaps);
       }
@@ -1991,6 +2025,7 @@
       ) {
         current = 1;
       }
+      if (state.view === "handoff") current = 2;
       if (state.view === "candidate") current = 3;
       var saved =
         state.view === "candidate" &&
@@ -2035,6 +2070,52 @@
           : "Binary file";
     }
 
+    function agentHandoff() {
+      var value = state.workspace && state.workspace.agent_handoff;
+      return value && value.schema_version === "agent_handoff_status.v1"
+        ? value
+        : {
+            schema_version: "agent_handoff_status.v1",
+            status: "none",
+            created_at: null,
+            revoked_at: null,
+          };
+    }
+
+    function renderAgentHandoff() {
+      var c = copy();
+      var status = agentHandoff().status;
+      setText("product-agent-handoff-title", c.handoffTitle);
+      setText("product-agent-handoff-warning", c.handoffWarning);
+      setText(
+        "product-agent-handoff-status",
+        state.handoffMessage ||
+          (status === "active"
+            ? c.handoffActive
+            : status === "revoked"
+            ? c.handoffRevoked
+            : status === "stale"
+            ? c.handoffStale
+            : c.handoffConflict)
+      );
+      var error = $("product-agent-handoff-error");
+      if (error) {
+        error.classList.toggle("hidden", !state.handoffError);
+        error.textContent = state.handoffError;
+      }
+      var reissue = $("btn-reissue-agent-handoff");
+      var direct = $("btn-direct-after-handoff");
+      var revoke = $("btn-revoke-agent-handoff");
+      if (reissue) reissue.classList.toggle("hidden", status !== "revoked");
+      if (direct) direct.classList.toggle("hidden", status !== "revoked");
+      if (revoke) {
+        revoke.classList.toggle(
+          "hidden",
+          !["active", "stale", "conflict"].includes(status)
+        );
+      }
+    }
+
     function render() {
       var c = copy();
       setText("btn-open-product-plan", c.entry);
@@ -2065,6 +2146,10 @@
       setText("product-acceptance-copy", c.outcomesCopy);
       setText("btn-add-product-acceptance-case", c.addOutcome);
       setText("btn-confirm-and-generate", c.confirmGenerate);
+      setText("btn-confirm-and-agent", c.confirmAgent);
+      setText("btn-reissue-agent-handoff", c.handoffReissue);
+      setText("btn-direct-after-handoff", c.handoffDirect);
+      setText("btn-revoke-agent-handoff", c.handoffRevoke);
       setText("btn-preview-product-candidate", c.preview);
       setText("btn-save-product-candidate", c.save);
       setText("product-plan-failed-title", c.failedTitle);
@@ -2094,6 +2179,7 @@
       showView("product-plan-questions", state.view === "questions");
       showView("product-plan-review", state.view === "review");
       showView("product-plan-section-review", state.view === "section");
+      showView("product-agent-handoff", state.view === "handoff");
       showView("product-candidate-review", state.view === "candidate");
       showView("product-plan-failed", state.view === "failed");
 
@@ -2103,6 +2189,7 @@
         questions: c.statusQuestions,
         review: c.statusReview,
         section: c.statusReview,
+        handoff: c.statusReview,
         candidate: c.statusCandidate,
         failed: c.statusFailed,
       }[state.view];
@@ -2111,6 +2198,7 @@
       if (state.view === "questions") renderQuestions();
       if (state.view === "review") renderPlan();
       if (state.view === "section") renderSectionDetail();
+      if (state.view === "handoff") renderAgentHandoff();
       if (state.view === "candidate") renderCandidate();
     }
 
@@ -2170,6 +2258,16 @@
         applyReplanAcceptanceSuggestions(workspace);
         prepareAcceptanceShape();
       } else if (workspace.status === "confirmed") {
+        if (
+          workspace.agent_handoff &&
+          workspace.agent_handoff.schema_version ===
+            "agent_handoff_status.v1" &&
+          workspace.agent_handoff.status !== "none"
+        ) {
+          state.view = "handoff";
+          render();
+          return;
+        }
         restoreConfirmedCandidate();
         return;
       } else if (workspace.status === "failed") {
@@ -2207,6 +2305,8 @@
       state.sectionFocusId = "";
       state.gapDrafts = {};
       state.acceptanceSuggestionDigest = "";
+      state.handoffError = "";
+      state.handoffMessage = "";
       startRun(
         "start_product_plan",
         "get_product_plan_run",
@@ -2533,11 +2633,11 @@
       });
     }
 
-    function confirmAndGenerate() {
+    function confirmPlanAndAcceptance() {
       if (planGaps().length) {
         els.reviewError.classList.remove("hidden");
         setText("product-plan-review-error", copy().gapBlockGenerate);
-        return;
+        return Promise.resolve(null);
       }
       var cases = acceptanceCases();
       if (!cases) {
@@ -2546,7 +2646,7 @@
           "product-plan-review-error",
           state.acceptanceShape ? copy().reviewError : copy().unsupported
         );
-        return;
+        return Promise.resolve(null);
       }
       els.reviewError.classList.add("hidden");
       var plan = currentPlan();
@@ -2560,13 +2660,13 @@
         if (!parameter) {
           els.reviewError.classList.remove("hidden");
           setText("product-plan-review-error", copy().reviewError);
-          return;
+          return Promise.resolve(null);
         }
         request.parameter_confirmation = parameter;
       }
       state.view = "progress";
       render();
-      call("confirm_product_plan", request)
+      return call("confirm_product_plan", request)
         .then(function (confirmed) {
           if (
             confirmed &&
@@ -2605,7 +2705,132 @@
               "candidate_acceptance_confirmation_failed"
             );
           }
-          return startCandidate(acceptance.data.canonical_digest);
+          return acceptance.data;
+        });
+    }
+
+    function confirmAndGenerate() {
+      confirmPlanAndAcceptance()
+        .then(function (acceptance) {
+          return acceptance
+            ? startCandidate(acceptance.canonical_digest)
+            : null;
+        })
+        .catch(fail);
+    }
+
+    function showAgentHandoffError(code) {
+      var value = String(code || copy().handoffIssueFailed);
+      state.handoffError = value;
+      state.handoffMessage = "";
+      var status = agentHandoff().status;
+      state.view = status === "none" ? "review" : "handoff";
+      if (state.view === "review") {
+        els.reviewError.classList.remove("hidden");
+        setText("product-plan-review-error", value);
+      }
+      render();
+      window.setTimeout(function () {
+        var target =
+          state.view === "handoff"
+            ? $("product-agent-handoff-title")
+            : $("btn-confirm-and-agent");
+        if (target) target.focus();
+      }, 0);
+    }
+
+    function refreshAgentHandoff(code) {
+      return call("get_product_plan_workspace", {
+        plan_token: state.planToken,
+      }).then(function (result) {
+        if (!result || result.ok !== true) {
+          throw errorCode(result, code);
+        }
+        if (
+          code &&
+          result.data &&
+          result.data.agent_handoff &&
+          result.data.agent_handoff.status === "none"
+        ) {
+          state.workspace = result.data;
+          state.view = "review";
+          showAgentHandoffError(code);
+          return result.data;
+        }
+        updateWorkspace(result.data);
+        if (code) showAgentHandoffError(code);
+        return result.data;
+      });
+    }
+
+    function issueAgentHandoff() {
+      state.handoffError = "";
+      state.handoffMessage = "";
+      return call("copy_local_agent_handoff_binding", {
+        plan_token: state.planToken,
+      })
+        .then(function (result) {
+          if (!result || result.ok !== true || !result.data) {
+            throw errorCode(result, copy().handoffIssueFailed);
+          }
+          var createdAt = result.data.created_at || null;
+          state.workspace.agent_handoff = {
+            schema_version: "agent_handoff_status.v1",
+            status: "active",
+            created_at: createdAt,
+            revoked_at: null,
+          };
+          state.handoffMessage = copy().handoffCopied;
+          state.view = "handoff";
+          render();
+          window.setTimeout(function () {
+            var title = $("product-agent-handoff-title");
+            if (title) title.focus();
+          }, 0);
+        })
+        .catch(function (code) {
+          return refreshAgentHandoff(String(code || "")).catch(function () {
+            showAgentHandoffError(code);
+          });
+        });
+    }
+
+    function confirmAndHandOff() {
+      confirmPlanAndAcceptance()
+        .then(function (acceptance) {
+          return acceptance ? issueAgentHandoff() : null;
+        })
+        .catch(showAgentHandoffError);
+    }
+
+    function revokeAgentHandoff() {
+      state.handoffError = "";
+      call("revoke_local_agent_handoff", {
+        plan_token: state.planToken,
+      })
+        .then(function (result) {
+          if (!result || result.ok !== true) {
+            throw errorCode(result, copy().handoffRevokeFailed);
+          }
+          return refreshAgentHandoff("");
+        })
+        .catch(showAgentHandoffError);
+    }
+
+    function startDirectAfterHandoff() {
+      state.view = "progress";
+      render();
+      call("get_confirmed_product_plan", { plan_token: state.planToken })
+        .then(function (restored) {
+          var acceptance =
+            restored &&
+            restored.ok === true &&
+            restored.data &&
+            restored.data.candidate_acceptance;
+          if (!acceptance || acceptance.confirmed !== true) {
+            throw errorCode(restored, "product_plan_workspace_failed");
+          }
+          return startCandidate(acceptance.confirmation_digest);
         })
         .catch(fail);
     }
@@ -2742,6 +2967,8 @@
               ? els.goal
               : state.view === "candidate"
               ? els.candidateTitle
+              : state.view === "handoff"
+              ? $("product-agent-handoff-title")
               : $("product-review-title");
           if (target) target.focus();
         }, 0);
@@ -2931,6 +3158,22 @@
         "click",
         confirmAndGenerate
       );
+      $("btn-confirm-and-agent").addEventListener(
+        "click",
+        confirmAndHandOff
+      );
+      $("btn-reissue-agent-handoff").addEventListener(
+        "click",
+        issueAgentHandoff
+      );
+      $("btn-direct-after-handoff").addEventListener(
+        "click",
+        startDirectAfterHandoff
+      );
+      $("btn-revoke-agent-handoff").addEventListener(
+        "click",
+        revokeAgentHandoff
+      );
       $("btn-preview-product-candidate").addEventListener(
         "click",
         previewCandidate
@@ -2990,6 +3233,7 @@
         acceptance_case_count: state.acceptanceRows.length,
         acceptance_supported: !!state.acceptanceShape,
         capability_gap_count: planGaps().length,
+        agent_handoff_status: agentHandoff().status,
         planning_model_selected: !!selectedPlanningModel(),
         section_open: state.view === "section",
         candidate_status: state.candidate ? state.candidate.status : null,

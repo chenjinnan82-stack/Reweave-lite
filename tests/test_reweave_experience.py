@@ -15,6 +15,7 @@ from pimos_lite.reweave_experience import (
     build_project_experience_record,
     canonical_bytes,
     goal_tokens,
+    normalize_planning_experience_value,
 )
 from pimos_lite.reweave_product_planner import ProductPlanningError
 from tests.test_reweave_product_planner import (
@@ -405,4 +406,45 @@ def test_project_record_rejects_unattributed_failure_in_pure_builder(
                 "status": "acceptance_failed",
                 "acceptance": {"status": "failed", "cases": []},
             },
+        )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "runner /home/alice/private/model.gguf",
+        r"runner C:\Users\alice\private\model.gguf",
+        r"runner \\server\share\private\model.gguf",
+        "runner file:///private/model.gguf",
+        "runner ~/private/model.gguf",
+    ],
+)
+def test_experience_model_name_rejects_embedded_absolute_paths(
+    value: str,
+) -> None:
+    with pytest.raises(ExperienceError, match="invalid_model_name"):
+        normalize_planning_experience_value("exact_model_name", value)
+
+
+def test_project_experience_member_rejects_embedded_absolute_path(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "state" / "product_workspaces"
+    _planner, _token, workspace = confirmed_time_workspace(
+        root,
+        "创建时间换算工具。",
+    )
+    catalog = copy.deepcopy(multi_computation_catalog())
+    catalog["capsules"][0]["display_name"] = (
+        "hours input from /home/alice/private/source.js"
+    )
+    with pytest.raises(
+        ExperienceError,
+        match="project_experience_record_invalid",
+    ):
+        build_project_experience_record(
+            workspace=workspace,
+            catalog=catalog,
+            project_scope_digest="a" * 64,
+            milestone="plan_confirmed",
         )

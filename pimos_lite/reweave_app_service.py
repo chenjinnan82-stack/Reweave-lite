@@ -270,22 +270,24 @@ def _copy_private_file(source: Path, target: Path) -> None:
                 if written <= 0:
                     raise OSError("copy_incomplete")
                 view = view[written:]
-        os.fchmod(target_descriptor, 0o600)
+        if os.name == "posix":
+            os.fchmod(target_descriptor, 0o600)
         os.fsync(target_descriptor)
     finally:
         os.close(source_descriptor)
         if target_descriptor >= 0:
             os.close(target_descriptor)
-    directory_descriptor = os.open(
-        target.parent,
-        os.O_RDONLY
-        | getattr(os, "O_DIRECTORY", 0)
-        | getattr(os, "O_NOFOLLOW", 0),
-    )
-    try:
-        os.fsync(directory_descriptor)
-    finally:
-        os.close(directory_descriptor)
+    if os.name == "posix":
+        directory_descriptor = os.open(
+            target.parent,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
 
 
 def _retired_v1_adapter_candidate(candidate: Any) -> bool:
@@ -924,15 +926,33 @@ def _read_export_file_at(
         )
         try:
             details = os.fstat(descriptor)
-            if not stat.S_ISREG(details.st_mode):
+            if (
+                not stat.S_ISREG(details.st_mode)
+                or details.st_size != metadata["size_bytes"]
+            ):
                 raise ProductGenerationError("product_candidate_invalid")
             chunks: list[bytes] = []
-            while True:
-                chunk = os.read(descriptor, 1024 * 1024)
+            remaining = metadata["size_bytes"] + 1
+            while remaining:
+                chunk = os.read(descriptor, min(1024 * 1024, remaining))
                 if not chunk:
                     break
                 chunks.append(chunk)
+                remaining -= len(chunk)
             data = b"".join(chunks)
+            final_details = os.fstat(descriptor)
+            path_details = os.stat(
+                PurePosixPath(metadata["path"]).name,
+                dir_fd=current,
+                follow_symlinks=False,
+            )
+            if (
+                final_details.st_size != metadata["size_bytes"]
+                or not stat.S_ISREG(path_details.st_mode)
+                or (final_details.st_dev, final_details.st_ino)
+                != (path_details.st_dev, path_details.st_ino)
+            ):
+                raise ProductGenerationError("product_candidate_invalid")
         finally:
             os.close(descriptor)
     except OSError as exc:
@@ -4109,7 +4129,7 @@ class ReweaveAppService:
                     capsule_ids,
                     read_only=True,
                 )
-                return self._product_planner.get(
+                projected = self._product_planner.get(
                     request["plan_token"],
                     catalog,
                     [
@@ -4128,6 +4148,58 @@ class ReweaveAppService:
                         for capsule in capsules
                     ],
                 )
+                projected_data = (
+                    projected.get("data")
+                    if type(projected) is dict
+                    and projected.get("ok") is True
+                    else None
+                )
+                handoff = (
+                    projected_data.get("agent_handoff")
+                    if type(projected_data) is dict
+                    else None
+                )
+                if (
+                    type(handoff) is dict
+                    and handoff.get("status") == "active"
+                ):
+                    try:
+                        (
+                            _workspace,
+                            exact_capsules,
+                            product_scope,
+                            page_contracts,
+                        ) = self._confirmed_candidate_context(
+                            request["plan_token"]
+                        )
+                        status = (
+                            self._product_planner.get_agent_handoff_status(
+                                request["plan_token"],
+                                self._agent_handoff_capsule_facts_digest(
+                                    exact_capsules,
+                                    product_scope,
+                                    page_contracts,
+                                ),
+                            )
+                        )
+                        if status.get("ok") is True:
+                            projected_data["agent_handoff"] = status["data"]
+                        else:
+                            projected_data["agent_handoff"] = {
+                                **handoff,
+                                "status": "conflict",
+                            }
+                    except (
+                        CapsuleStoreError,
+                        OSError,
+                        ProductGenerationError,
+                        ValueError,
+                    ):
+                        projected_data["agent_handoff"] = {
+                            **handoff,
+                            "status": "stale",
+                        }
+                return projected
         except (CapsuleStoreError, OSError, ProductGenerationError, ValueError) as exc:
             return self._exception_error(exc, "product_plan_workspace_failed")
 
@@ -4985,14 +5057,25 @@ class ReweaveAppService:
     ) -> dict[str, Any]:
         try:
             request = self._payload(payload)
-            if (
-                set(request) != {"handoff_token"}
-                or type(request["handoff_token"]) is not str
-            ):
+            by_token = (
+                set(request) == {"handoff_token"}
+                and type(request["handoff_token"]) is str
+            )
+            by_plan = (
+                set(request) == {"plan_token"}
+                and type(request["plan_token"]) is str
+            )
+            if not (by_token or by_plan):
                 return self._error("agent_handoff_request_invalid")
             with self._capsule_operation_lock:
-                return self._product_planner.revoke_agent_handoff(
-                    request["handoff_token"]
+                return (
+                    self._product_planner.revoke_agent_handoff(
+                        request["handoff_token"]
+                    )
+                    if by_token
+                    else self._product_planner.revoke_agent_handoff_for_plan(
+                        request["plan_token"]
+                    )
                 )
         except (OSError, ValueError) as exc:
             return self._exception_error(exc, "agent_handoff_revoke_failed")
@@ -6597,6 +6680,21 @@ class ReweaveAppService:
                         request["acceptance_confirmation_digest"],
                     )
                 ),
+                run_id=(
+                    "run_"
+                    + canonical_json_digest(
+                        {
+                            "schema_version": (
+                                "confirmed_product_candidate_run.v1"
+                            ),
+                            "plan_token": request["plan_token"],
+                            "plan_digest": request["plan_digest"],
+                            "acceptance_confirmation_digest": request[
+                                "acceptance_confirmation_digest"
+                            ],
+                        }
+                    )[:32]
+                ),
                 read_only_candidate=True,
             )
         except ValueError as exc:
@@ -6920,12 +7018,15 @@ class ReweaveAppService:
             )
             if metadata is None:
                 raise ProductGenerationError("product_candidate_file_not_found")
-            path = candidate_dir / "product" / PurePosixPath(logical)
-            if path.is_symlink() or not path.is_file():
-                raise ProductGenerationError("product_candidate_file_not_found")
-            data = path.read_bytes()
-            if len(data) > 1024 * 1024:
+            if metadata["size_bytes"] > 1024 * 1024:
                 raise ProductGenerationError("product_candidate_file_too_large")
+            product_descriptor, _identity_chain = _open_no_follow_directory(
+                candidate_dir / "product"
+            )
+            try:
+                data = _read_export_file_at(product_descriptor, metadata)
+            finally:
+                os.close(product_descriptor)
             if metadata["text"]:
                 content = data.decode("utf-8")
                 diff = "".join(

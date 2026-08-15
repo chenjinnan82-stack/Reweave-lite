@@ -77,17 +77,7 @@ def _safe_id(value: Any, code: str) -> str:
 
 
 def _safe_model_name(value: Any) -> str:
-    if (
-        type(value) is not str
-        or not value
-        or len(value) > 200
-        or value.startswith(("/", "\\", "~"))
-        or "/Users/" in value
-        or WINDOWS_DRIVE.match(value)
-        or value.lower().startswith("file://")
-    ):
-        raise ExperienceExportError("invalid_model_name")
-    return value
+    return experience_core.normalize_experience_model_name(value)
 
 
 def json_pointer(value: Any, pointer: str) -> Any:

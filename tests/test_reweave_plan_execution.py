@@ -209,12 +209,23 @@ class _ConfirmedPlanner:
         _catalog: dict | None = None,
         _parameter_capsules: list[dict] | None = None,
     ) -> dict:
+        handoff_status = (
+            self.handoff["status"] if self.handoff is not None else "none"
+        )
         return {
             "ok": True,
             "data": {
                 "status": "confirmed",
                 "plan": copy.deepcopy(self.plan),
                 "confirmation": copy.deepcopy(self.confirmation),
+                "agent_handoff": {
+                    "schema_version": "agent_handoff_status.v1",
+                    "status": handoff_status,
+                    "created_at": NOW if self.handoff is not None else None,
+                    "revoked_at": (
+                        NOW if handoff_status == "revoked" else None
+                    ),
+                },
             },
         }
 
@@ -270,6 +281,14 @@ class _ConfirmedPlanner:
         acceptance_confirmation_digest: str,
         capsule_facts_digest: str,
     ) -> dict:
+        if self.handoff is not None and self.handoff["status"] == "active":
+            return {
+                "ok": False,
+                "error": {
+                    "code": "agent_handoff_already_active",
+                    "message_key": "agent_handoff_already_active",
+                },
+            }
         if (
             self.acceptance_confirmation is None
             or self.acceptance_confirmation["canonical_digest"]
@@ -333,6 +352,56 @@ class _ConfirmedPlanner:
         return {
             "ok": True,
             "data": {"status": "revoked", "revoked_at": NOW},
+        }
+
+    def revoke_agent_handoff_for_plan(self, token: str) -> dict:
+        if token != "plan_token_test":
+            return {
+                "ok": False,
+                "error": {
+                    "code": "product_plan_workspace_not_found",
+                    "message_key": "product_plan_workspace_not_found",
+                },
+            }
+        if self.handoff is None:
+            return {
+                "ok": True,
+                "data": {"status": "none", "revoked_at": None},
+            }
+        self.handoff["status"] = "revoked"
+        return {
+            "ok": True,
+            "data": {"status": "revoked", "revoked_at": NOW},
+        }
+
+    def get_agent_handoff_status(
+        self,
+        token: str,
+        capsule_facts_digest: str | None = None,
+    ) -> dict:
+        if token != "plan_token_test":
+            return {
+                "ok": False,
+                "error": {
+                    "code": "product_plan_workspace_not_found",
+                    "message_key": "product_plan_workspace_not_found",
+                },
+            }
+        status = self.handoff["status"] if self.handoff is not None else "none"
+        if (
+            status == "active"
+            and capsule_facts_digest is not None
+            and capsule_facts_digest != self.handoff["capsule_facts_digest"]
+        ):
+            status = "stale"
+        return {
+            "ok": True,
+            "data": {
+                "schema_version": "agent_handoff_status.v1",
+                "status": status,
+                "created_at": NOW if self.handoff is not None else None,
+                "revoked_at": NOW if status == "revoked" else None,
+            },
         }
 
 
@@ -3035,6 +3104,36 @@ process.stdout.write(JSON.stringify({result, rendered: totalNode.textContent}));
         )
         self.assertTrue(handoff["ok"], handoff)
         handoff_token = handoff["data"]["handoff_token"]
+        duplicate_handoff = self.service.create_local_agent_handoff(
+            {"plan_token": "plan_token_test"}
+        )
+        self.assertEqual(
+            duplicate_handoff["error"]["code"],
+            "agent_handoff_already_active",
+        )
+        handoff_workspace = self.service.get_product_plan_workspace(
+            {"plan_token": "plan_token_test"}
+        )
+        self.assertTrue(handoff_workspace["ok"], handoff_workspace)
+        safe_handoff = handoff_workspace["data"]["agent_handoff"]
+        self.assertEqual(safe_handoff["status"], "active")
+        self.assertEqual(
+            set(safe_handoff),
+            {"schema_version", "status", "created_at", "revoked_at"},
+        )
+        self.assertNotIn(
+            handoff_token,
+            json.dumps(handoff_workspace, ensure_ascii=False),
+        )
+        self.assertEqual(
+            self.service.revoke_local_agent_handoff(
+                {
+                    "plan_token": "plan_token_test",
+                    "handoff_token": handoff_token,
+                }
+            )["error"]["code"],
+            "agent_handoff_request_invalid",
+        )
         before = _store_snapshot(self.store)
         source = self.root / "agent-source-sentinel"
         target = self.root / "agent-target-sentinel"
@@ -3169,6 +3268,11 @@ process.stdout.write(JSON.stringify({result, rendered: totalNode.textContent}));
                 "pimos_lite.reweave_app_service._validate_product_acceptance",
                 return_value=_acceptance_worker(),
             ),
+            patch.object(
+                self.service,
+                "_build_confirmed_product_candidate",
+                wraps=self.service._build_confirmed_product_candidate,
+            ) as build_confirmed,
         ):
             started = request(
                 "start_confirmed_product_candidate",
@@ -3177,6 +3281,22 @@ process.stdout.write(JSON.stringify({result, rendered: totalNode.textContent}));
             )
             self.assertTrue(started["ok"], started)
             run_id = started["data"]["run_id"]
+            duplicate_runs = {
+                request(
+                    "start_confirmed_product_candidate",
+                    {},
+                    f"duplicate-{index}",
+                )["data"]["run_id"]
+                for index in range(100)
+            }
+            self.assertEqual(duplicate_runs, {run_id})
+            self.assertEqual(
+                sum(
+                    task["kind"] == "product_candidate_start_confirmed"
+                    for task in self.service._management_tasks.values()
+                ),
+                1,
+            )
             for _ in range(3000):
                 task = request(
                     "get_product_candidate_run",
@@ -3237,6 +3357,8 @@ process.stdout.write(JSON.stringify({result, rendered: totalNode.textContent}));
                 repeat_task["data"]["candidate"]["candidate_token"],
                 candidate["candidate_token"],
             )
+            self.assertEqual(repeat_run, run_id)
+            self.assertEqual(build_confirmed.call_count, 1)
 
         public = json.dumps(
             {
@@ -3325,6 +3447,11 @@ process.stdout.write(JSON.stringify({result, rendered: totalNode.textContent}));
                 restored["data"]["candidate_digest"],
                 candidate["candidate_digest"],
             )
+            scoped_revoked = restarted.revoke_local_agent_handoff(
+                {"plan_token": "plan_token_test"}
+            )
+            self.assertTrue(scoped_revoked["ok"], scoped_revoked)
+            self.assertEqual(scoped_revoked["data"]["status"], "revoked")
             revoked = restarted.revoke_local_agent_handoff(
                 {"handoff_token": handoff_token}
             )
@@ -3491,6 +3618,89 @@ process.stdout.write(JSON.stringify({result, rendered: totalNode.textContent}));
                 self.assertTrue(opened["ok"], opened)
                 self.assertEqual(opened["data"]["encoding"], "utf-8")
                 self.assertIn("--- /dev/null", opened["data"]["text_diff"])
+                candidate_dir = next(
+                    (self.state / "product_candidates").glob("candidate_*")
+                )
+                product_file = candidate_dir / "product" / "index.html"
+                original_product_bytes = product_file.read_bytes()
+                original_product_mode = product_file.stat().st_mode & 0o777
+                original_read = restarted._read_candidate_record
+
+                def restore_product_file():
+                    product_file.write_bytes(original_product_bytes)
+                    if os.name == "posix":
+                        product_file.chmod(original_product_mode)
+
+                def replace_after_validation(candidate_token):
+                    restored_record = original_read(candidate_token)
+                    replacement = product_file.with_name("replacement.html")
+                    replacement.write_bytes(b"BAD")
+                    os.replace(replacement, product_file)
+                    return restored_record
+
+                with patch.object(
+                    restarted,
+                    "_read_candidate_record",
+                    side_effect=replace_after_validation,
+                ):
+                    replaced = restarted.read_product_candidate_file(
+                        {
+                            "candidate_token": candidate["candidate_token"],
+                            "relative_path": "index.html",
+                        }
+                    )
+                self.assertFalse(replaced["ok"])
+                restore_product_file()
+
+                def append_after_validation(candidate_token):
+                    restored_record = original_read(candidate_token)
+                    with product_file.open("ab") as handle:
+                        handle.write(b"BAD")
+                    return restored_record
+
+                with patch.object(
+                    restarted,
+                    "_read_candidate_record",
+                    side_effect=append_after_validation,
+                ):
+                    appended = restarted.read_product_candidate_file(
+                        {
+                            "candidate_token": candidate["candidate_token"],
+                            "relative_path": "index.html",
+                        }
+                    )
+                self.assertFalse(appended["ok"])
+                restore_product_file()
+
+                if hasattr(os, "symlink"):
+                    outside_file = self.root / "candidate-file-outside.html"
+                    outside_file.write_bytes(original_product_bytes)
+
+                    def link_after_validation(candidate_token):
+                        restored_record = original_read(candidate_token)
+                        product_file.unlink()
+                        os.symlink(outside_file, product_file)
+                        return restored_record
+
+                    try:
+                        with patch.object(
+                            restarted,
+                            "_read_candidate_record",
+                            side_effect=link_after_validation,
+                        ):
+                            linked = restarted.read_product_candidate_file(
+                                {
+                                    "candidate_token": candidate[
+                                        "candidate_token"
+                                    ],
+                                    "relative_path": "index.html",
+                                }
+                            )
+                        self.assertFalse(linked["ok"])
+                    finally:
+                        if product_file.is_symlink():
+                            product_file.unlink()
+                        restore_product_file()
                 traversal = restarted.read_product_candidate_file(
                     {
                         "candidate_token": candidate["candidate_token"],

@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import sys
 import tempfile
 from pathlib import Path, PurePosixPath
@@ -29,6 +30,25 @@ MIN_WIDTH = 1100
 MIN_HEIGHT = 720
 
 logger = logging.getLogger("reweave.desktop")
+
+
+def _copy_to_system_clipboard(value: str) -> None:
+    from PySide6.QtGui import QGuiApplication
+
+    application = QGuiApplication.instance()
+    if application is None:
+        raise RuntimeError("clipboard_application_unavailable")
+    clipboard = application.clipboard()
+    try:
+        clipboard.setText(value)
+        if clipboard.text() != value:
+            raise RuntimeError("clipboard_write_mismatch")
+    except BaseException:
+        try:
+            clipboard.clear()
+        except BaseException:
+            pass
+        raise
 
 
 def reweave_index_path() -> Path:
@@ -375,6 +395,111 @@ class ReweaveBridge:
             ) -> str:
                 return self._phase4_call(
                     "confirm_product_candidate_acceptance", payload_json
+                )
+
+            @Slot(str, result=str)
+            def copy_local_agent_handoff_binding(
+                self, payload_json: str = ""
+            ) -> str:
+                try:
+                    payload = json.loads(payload_json) if payload_json else {}
+                except json.JSONDecodeError:
+                    return self._phase4_error(
+                        "invalid_payload",
+                        "invalidPayload",
+                    )
+                if (
+                    type(payload) is not dict
+                    or set(payload) != {"plan_token"}
+                    or type(payload["plan_token"]) is not str
+                ):
+                    return self._phase4_error(
+                        "agent_handoff_request_invalid",
+                        "agent_handoff_request_invalid",
+                    )
+                method = getattr(
+                    self._engine,
+                    "create_local_agent_handoff",
+                    None,
+                )
+                revoke = getattr(
+                    self._engine,
+                    "revoke_local_agent_handoff",
+                    None,
+                )
+                if not callable(method) or not callable(revoke):
+                    return self._phase4_error(
+                        "service_unavailable",
+                        "serviceUnavailable",
+                    )
+                result = method(payload)
+                if type(result) is not dict:
+                    return self._phase4_error(
+                        "internal_error",
+                        "internalError",
+                    )
+                data = result.get("data") if type(result) is dict else None
+                token = (
+                    data.get("handoff_token")
+                    if type(data) is dict
+                    else None
+                )
+                if (
+                    result.get("ok") is not True
+                    or type(token) is not str
+                    or re.fullmatch(
+                        r"handoff_token_[0-9a-f]{48}",
+                        token,
+                    )
+                    is None
+                ):
+                    if result.get("ok") is True:
+                        try:
+                            revoke({"plan_token": payload["plan_token"]})
+                        except BaseException:
+                            pass
+                        return self._phase4_error(
+                            "internal_error",
+                            "internalError",
+                        )
+                    return json.dumps(result)
+                request_line = json.dumps(
+                    {
+                        "protocol": "reweave_agent_jsonl.v2",
+                        "id": "bind-user-handoff",
+                        "action": "bind_user_handoff",
+                        "payload": {"handoff_token": token},
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                try:
+                    _copy_to_system_clipboard(request_line)
+                except BaseException:
+                    try:
+                        revoke({"plan_token": payload["plan_token"]})
+                    except BaseException:
+                        pass
+                    return self._phase4_error(
+                        "agent_handoff_clipboard_failed",
+                        "agent_handoff_clipboard_failed",
+                    )
+                return json.dumps(
+                    {
+                        "ok": True,
+                        "data": {
+                            "status": "active",
+                            "created_at": data.get("created_at"),
+                        },
+                    }
+                )
+
+            @Slot(str, result=str)
+            def revoke_local_agent_handoff(
+                self, payload_json: str = ""
+            ) -> str:
+                return self._phase4_call(
+                    "revoke_local_agent_handoff", payload_json
                 )
 
             @Slot(str, result=str)
@@ -1356,6 +1481,7 @@ def create_reweave_window():
     settings.setAttribute(QWebEngineSettings.DnsPrefetchEnabled, False)
     settings.setAttribute(QWebEngineSettings.JavascriptEnabled, True)
     settings.setAttribute(QWebEngineSettings.JavascriptCanOpenWindows, False)
+    settings.setAttribute(QWebEngineSettings.JavascriptCanAccessClipboard, False)
 
     window.setCentralWidget(view)
     _setup_web_channel(view, bridge)

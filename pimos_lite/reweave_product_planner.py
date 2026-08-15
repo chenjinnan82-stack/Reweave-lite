@@ -17,6 +17,7 @@ import stat
 import threading
 import time
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -248,6 +249,9 @@ _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _WORKSPACE_ID = re.compile(r"workspace_[0-9a-f]{32}\Z")
 _PLAN_TOKEN = re.compile(r"plan_token_[0-9a-f]{48}\Z")
 _HANDOFF_TOKEN = re.compile(r"handoff_token_[0-9a-f]{48}\Z")
+_AGENT_HANDOFF_FILENAME = re.compile(
+    r"agent_handoff_v1_([0-9a-f]{64})\.json\Z"
+)
 _GAP_ID = re.compile(r"gap_[0-9a-f]{20}\Z")
 _GAP_DECISION_FILENAME = re.compile(
     r"decision_([0-9]{6})_([0-9a-f]{64})\.json\Z"
@@ -3050,48 +3054,70 @@ class ProductPlanner:
         acceptance_confirmation_digest: str,
         capsule_facts_digest: str,
     ) -> dict[str, Any]:
-        workspace = self._workspace_by_token(plan_token)
-        plan = workspace.get("plan")
-        confirmation = workspace.get("confirmation")
-        if (
-            workspace.get("status") != "confirmed"
-            or type(plan) is not dict
-            or type(confirmation) is not dict
-            or _DIGEST.fullmatch(acceptance_confirmation_digest) is None
-            or _DIGEST.fullmatch(capsule_facts_digest) is None
-        ):
-            raise ProductPlanningError("agent_handoff_confirmation_required")
-        acceptance_path = self._candidate_acceptance_confirmation_path(
-            workspace,
-            plan,
-        )
-        if acceptance_path.is_symlink() or not acceptance_path.is_file():
-            raise ProductPlanningError("agent_handoff_confirmation_required")
-        acceptance = self._read_json(acceptance_path)
-        self._validate_candidate_acceptance_confirmation_binding(
-            workspace,
-            acceptance,
-        )
-        if acceptance["canonical_digest"] != acceptance_confirmation_digest:
-            raise ProductPlanningError("agent_handoff_stale")
-        handoff_token = (
-            "handoff_token_" + uuid.uuid4().hex + uuid.uuid4().hex[:16]
-        )
-        token_digest = hashlib.sha256(handoff_token.encode("ascii")).hexdigest()
-        record = {
-            "schema_version": "agent_handoff.v1",
-            "token_digest": token_digest,
-            "plan_digest": plan["canonical_digest"],
-            "plan_confirmation_digest": confirmation["receipt_digest"],
-            "acceptance_confirmation_digest": acceptance_confirmation_digest,
-            "capsule_facts_digest": capsule_facts_digest,
-            "status": "active",
-            "created_at": _now(),
-            "revoked_at": None,
-        }
-        record["canonical_digest"] = _digest(record)
-        path = self._agent_handoff_path(workspace, token_digest)
-        with self._lock:
+        with self._agent_handoff_guard():
+            workspace = self._workspace_by_token(plan_token)
+            plan = workspace.get("plan")
+            confirmation = workspace.get("confirmation")
+            if (
+                workspace.get("status") != "confirmed"
+                or type(plan) is not dict
+                or type(confirmation) is not dict
+                or _DIGEST.fullmatch(acceptance_confirmation_digest) is None
+                or _DIGEST.fullmatch(capsule_facts_digest) is None
+            ):
+                raise ProductPlanningError(
+                    "agent_handoff_confirmation_required"
+                )
+            acceptance_path = self._candidate_acceptance_confirmation_path(
+                workspace,
+                plan,
+            )
+            if acceptance_path.is_symlink() or not acceptance_path.is_file():
+                raise ProductPlanningError(
+                    "agent_handoff_confirmation_required"
+                )
+            acceptance = self._read_json(acceptance_path)
+            self._validate_candidate_acceptance_confirmation_binding(
+                workspace,
+                acceptance,
+            )
+            if (
+                acceptance["canonical_digest"]
+                != acceptance_confirmation_digest
+            ):
+                raise ProductPlanningError("agent_handoff_stale")
+            records = self._agent_handoff_records(workspace)
+            active_count = sum(
+                record["status"] == "active"
+                for record, _path in records
+            )
+            if active_count > 1:
+                raise ProductPlanningError("agent_handoff_conflict")
+            if active_count == 1:
+                raise ProductPlanningError(
+                    "agent_handoff_already_active"
+                )
+            handoff_token = (
+                "handoff_token_" + uuid.uuid4().hex + uuid.uuid4().hex[:16]
+            )
+            token_digest = hashlib.sha256(
+                handoff_token.encode("ascii")
+            ).hexdigest()
+            record = {
+                "schema_version": "agent_handoff.v1",
+                "token_digest": token_digest,
+                "plan_digest": plan["canonical_digest"],
+                "plan_confirmation_digest": confirmation["receipt_digest"],
+                "acceptance_confirmation_digest": (
+                    acceptance_confirmation_digest
+                ),
+                "capsule_facts_digest": capsule_facts_digest,
+                "status": "active",
+                "created_at": _now(),
+                "revoked_at": None,
+            }
+            record["canonical_digest"] = _digest(record)
+            path = self._agent_handoff_path(workspace, token_digest)
             self._ensure_directory(path.parent)
             self._write_immutable(path, record)
         return _ok(
@@ -3104,10 +3130,25 @@ class ProductPlanner:
 
     @_public_call
     def resolve_agent_handoff(self, handoff_token: str) -> dict[str, Any]:
-        workspace, record, _path = self._find_agent_handoff(handoff_token)
-        if record["status"] == "revoked":
-            raise ProductPlanningError("agent_handoff_revoked")
-        self._validate_agent_handoff_binding(workspace, record)
+        with self._agent_handoff_guard():
+            workspace, record, _path = self._find_agent_handoff(
+                handoff_token
+            )
+            if record["status"] == "revoked":
+                raise ProductPlanningError("agent_handoff_revoked")
+            active = [
+                current
+                for current, _current_path in self._agent_handoff_records(
+                    workspace
+                )
+                if current["status"] == "active"
+            ]
+            if (
+                len(active) != 1
+                or active[0]["token_digest"] != record["token_digest"]
+            ):
+                raise ProductPlanningError("agent_handoff_conflict")
+            self._validate_agent_handoff_binding(workspace, record)
         return _ok(
             {
                 "plan_token": workspace["plan_token"],
@@ -3125,25 +3166,65 @@ class ProductPlanner:
 
     @_public_call
     def revoke_agent_handoff(self, handoff_token: str) -> dict[str, Any]:
-        _workspace, record, path = self._find_agent_handoff(handoff_token)
-        if record["status"] == "active":
-            record["status"] = "revoked"
-            record["revoked_at"] = _now()
-            record["canonical_digest"] = _digest(
-                {
-                    key: value
-                    for key, value in record.items()
-                    if key != "canonical_digest"
-                }
+        with self._agent_handoff_guard():
+            _workspace, record, path = self._find_agent_handoff(
+                handoff_token
             )
-            with self._lock:
-                self._atomic_write(path, record)
+            self._revoke_agent_handoff_record(record, path)
         return _ok(
             {
                 "status": "revoked",
                 "revoked_at": record["revoked_at"],
             }
         )
+
+    @_public_call
+    def revoke_agent_handoff_for_plan(
+        self,
+        plan_token: str,
+    ) -> dict[str, Any]:
+        with self._agent_handoff_guard():
+            workspace = self._workspace_by_token(plan_token)
+            records = self._agent_handoff_records(workspace)
+            active = [
+                (record, path)
+                for record, path in records
+                if record["status"] == "active"
+            ]
+            if len(active) > 1:
+                raise ProductPlanningError("agent_handoff_conflict")
+            if active:
+                record, path = active[0]
+                self._revoke_agent_handoff_record(record, path)
+                return _ok(
+                    {
+                        "status": "revoked",
+                        "revoked_at": record["revoked_at"],
+                    }
+                )
+            latest = self._latest_agent_handoff_record(records)
+            return _ok(
+                {
+                    "status": "revoked" if latest else "none",
+                    "revoked_at": (
+                        latest["revoked_at"] if latest else None
+                    ),
+                }
+            )
+
+    @_public_call
+    def get_agent_handoff_status(
+        self,
+        plan_token: str,
+        capsule_facts_digest: str | None = None,
+    ) -> dict[str, Any]:
+        with self._agent_handoff_guard():
+            workspace = self._workspace_by_token(plan_token)
+            view = self._agent_handoff_status_view_locked(
+                workspace,
+                capsule_facts_digest,
+            )
+        return _ok(view)
 
     @_public_call
     def get(
@@ -3937,6 +4018,7 @@ class ProductPlanner:
                 workspace,
                 catalog,
             ),
+            "agent_handoff": self._agent_handoff_status_view(workspace),
             "developer_evidence": self._developer_evidence(workspace),
         }
 
@@ -8641,6 +8723,205 @@ class ProductPlanner:
             / "confirmed"
             / f"agent_handoff_v1_{token_digest}.json"
         )
+
+    @contextmanager
+    def _agent_handoff_guard(self):
+        # ponytail: one root-wide lock is enough; split only if measured contention
+        # ever makes handoff operations a bottleneck.
+        with self._lock:
+            self._ensure_directory(self.root)
+            path = self.root / ".agent_handoff.lock"
+            self._assert_no_symlink_components(path.parent)
+            flags = (
+                os.O_RDWR
+                | os.O_CREAT
+                | getattr(os, "O_BINARY", 0)
+                | getattr(os, "O_NOFOLLOW", 0)
+            )
+            descriptor = -1
+            try:
+                descriptor = os.open(path, flags, 0o600)
+                details = os.fstat(descriptor)
+                path_details = path.lstat()
+                if (
+                    not stat.S_ISREG(details.st_mode)
+                    or stat.S_ISLNK(path_details.st_mode)
+                    or not stat.S_ISREG(path_details.st_mode)
+                    or (details.st_dev, details.st_ino)
+                    != (path_details.st_dev, path_details.st_ino)
+                ):
+                    raise ProductPlanningError("agent_handoff_conflict")
+                if os.name == "posix":
+                    os.fchmod(descriptor, 0o600)
+                    import fcntl
+
+                    fcntl.flock(descriptor, fcntl.LOCK_EX)
+                elif os.name == "nt":
+                    import msvcrt
+
+                    if details.st_size == 0:
+                        os.write(descriptor, b"\0")
+                        os.fsync(descriptor)
+                    os.lseek(descriptor, 0, os.SEEK_SET)
+                    msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
+                else:
+                    raise ProductPlanningError("agent_handoff_conflict")
+                locked_path_details = path.lstat()
+                if (
+                    stat.S_ISLNK(locked_path_details.st_mode)
+                    or not stat.S_ISREG(locked_path_details.st_mode)
+                    or (details.st_dev, details.st_ino)
+                    != (
+                        locked_path_details.st_dev,
+                        locked_path_details.st_ino,
+                    )
+                ):
+                    raise ProductPlanningError("agent_handoff_conflict")
+                try:
+                    yield
+                finally:
+                    if os.name == "posix":
+                        fcntl.flock(descriptor, fcntl.LOCK_UN)
+                    else:
+                        os.lseek(descriptor, 0, os.SEEK_SET)
+                        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+            except ProductPlanningError:
+                raise
+            except OSError as exc:
+                raise ProductPlanningError(
+                    "agent_handoff_conflict"
+                ) from exc
+            finally:
+                if descriptor >= 0:
+                    os.close(descriptor)
+
+    def _agent_handoff_records(
+        self,
+        workspace: dict[str, Any],
+    ) -> list[tuple[dict[str, Any], Path]]:
+        directory = self._workspace_dir(workspace["workspace_id"]) / "confirmed"
+        if not directory.exists() and not directory.is_symlink():
+            return []
+        self._assert_no_symlink_components(directory)
+        if directory.is_symlink() or not directory.is_dir():
+            raise ProductPlanningError("agent_handoff_conflict")
+        records: list[tuple[dict[str, Any], Path]] = []
+        try:
+            entries = sorted(directory.iterdir(), key=lambda path: path.name)
+        except OSError as exc:
+            raise ProductPlanningError("agent_handoff_conflict") from exc
+        for path in entries:
+            if not path.name.startswith("agent_handoff_v1_"):
+                continue
+            matched = _AGENT_HANDOFF_FILENAME.fullmatch(path.name)
+            if matched is None:
+                raise ProductPlanningError("agent_handoff_conflict")
+            try:
+                record = self._read_json(path)
+                self._validate_agent_handoff_record(
+                    record,
+                    matched.group(1),
+                )
+            except ProductPlanningError as exc:
+                raise ProductPlanningError(
+                    "agent_handoff_conflict"
+                ) from exc
+            records.append((record, path))
+        return records
+
+    @staticmethod
+    def _latest_agent_handoff_record(
+        records: list[tuple[dict[str, Any], Path]],
+    ) -> dict[str, Any] | None:
+        if not records:
+            return None
+        return max(
+            (record for record, _path in records),
+            key=lambda record: (
+                record["created_at"],
+                record["token_digest"],
+            ),
+        )
+
+    def _agent_handoff_status_view(
+        self,
+        workspace: dict[str, Any],
+        capsule_facts_digest: str | None = None,
+    ) -> dict[str, Any]:
+        with self._agent_handoff_guard():
+            return self._agent_handoff_status_view_locked(
+                workspace,
+                capsule_facts_digest,
+            )
+
+    def _agent_handoff_status_view_locked(
+        self,
+        workspace: dict[str, Any],
+        capsule_facts_digest: str | None = None,
+    ) -> dict[str, Any]:
+        base = {
+            "schema_version": "agent_handoff_status.v1",
+            "status": "none",
+            "created_at": None,
+            "revoked_at": None,
+        }
+        if (
+            capsule_facts_digest is not None
+            and _DIGEST.fullmatch(capsule_facts_digest) is None
+        ):
+            return {**base, "status": "conflict"}
+        try:
+            records = self._agent_handoff_records(workspace)
+        except ProductPlanningError:
+            return {**base, "status": "conflict"}
+        active = [
+            record for record, _path in records if record["status"] == "active"
+        ]
+        if len(active) > 1:
+            return {**base, "status": "conflict"}
+        record = (
+            active[0]
+            if active
+            else self._latest_agent_handoff_record(records)
+        )
+        if record is None:
+            return base
+        status = record["status"]
+        if status == "active":
+            try:
+                self._validate_agent_handoff_binding(workspace, record)
+            except ProductPlanningError:
+                status = "stale"
+            if (
+                status == "active"
+                and capsule_facts_digest is not None
+                and record["capsule_facts_digest"] != capsule_facts_digest
+            ):
+                status = "stale"
+        return {
+            **base,
+            "status": status,
+            "created_at": record["created_at"],
+            "revoked_at": record["revoked_at"],
+        }
+
+    def _revoke_agent_handoff_record(
+        self,
+        record: dict[str, Any],
+        path: Path,
+    ) -> None:
+        if record["status"] != "active":
+            return
+        record["status"] = "revoked"
+        record["revoked_at"] = _now()
+        record["canonical_digest"] = _digest(
+            {
+                key: value
+                for key, value in record.items()
+                if key != "canonical_digest"
+            }
+        )
+        self._atomic_write(path, record)
 
     def _find_agent_handoff(
         self,

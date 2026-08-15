@@ -30,6 +30,11 @@ SAFE_ID = re.compile(r"[a-z][a-z0-9_-]{0,95}\Z")
 SAFE_VERSION = re.compile(r"[A-Za-z][A-Za-z0-9_.:-]{0,127}\Z")
 SAFE_OFFER_REF = re.compile(r"offer_[0-9a-f]{24}\Z")
 WORKSPACE_ID = re.compile(r"workspace_[0-9a-f]{32}\Z")
+ABSOLUTE_PATH_FRAGMENT = re.compile(
+    r"(?:^|(?<=[^A-Za-z0-9_]))"
+    r"(?:file://|~[\\/]|[A-Za-z]:[\\/]|(?:/+|\\+)(?:$|(?=[^/\\\s])))",
+    re.IGNORECASE,
+)
 PLANNING_FIELDS = (
     "goal_safe_projection",
     "frozen_catalog_digest",
@@ -242,13 +247,14 @@ def _safe_model_name(value: Any) -> str:
         type(value) is not str
         or not value
         or len(value) > 200
-        or value.startswith(("/", "\\", "~"))
-        or "/Users/" in value
-        or value.lower().startswith("file://")
-        or re.match(r"^[A-Za-z]:[\\/]", value) is not None
+        or ABSOLUTE_PATH_FRAGMENT.search(value) is not None
     ):
         raise ExperienceError("invalid_model_name")
     return value
+
+
+def normalize_experience_model_name(value: Any) -> str:
+    return _safe_model_name(value)
 
 
 def _failure_attribution(value: Any) -> Any:
@@ -971,10 +977,7 @@ def validate_project_experience_record(value: Any) -> dict[str, Any]:
         if any(
             type(item) is not str
             or not item
-            or item.startswith(("/", "\\", "~"))
-            or "/Users/" in item
-            or item.lower().startswith("file://")
-            or re.match(r"^[A-Za-z]:[\\/]", item) is not None
+            or ABSOLUTE_PATH_FRAGMENT.search(item) is not None
             for item in current.values()
         ):
             raise ExperienceError("project_experience_record_invalid")

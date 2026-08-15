@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import os
 import re
@@ -3497,6 +3498,7 @@ def test_product_flow_builds_previews_exports_and_restores_real_candidate(
     from PySide6.QtWebEngineCore import QWebEngineProfile
 
     from pimos_lite import desktop_reweave_static as desktop
+    from pimos_lite.reweave_agent_stdio import serve_jsonl
     from pimos_lite.reweave_app_service import ReweaveAppService
     from pimos_lite.reweave_capsule_store import CapsuleWarehouseStore
     from pimos_lite.reweave_plan_execution import (
@@ -3624,6 +3626,7 @@ def test_product_flow_builds_previews_exports_and_restores_real_candidate(
         ],
     }
     question_set["digest"] = canonical_digest(question_set)
+    handoff_state: dict[str, object] = {}
 
     class DesktopPlanner:
         def __init__(
@@ -3641,6 +3644,10 @@ def test_product_flow_builds_previews_exports_and_restores_real_candidate(
             )
 
         def _projection(self) -> dict[str, object]:
+            handoff = handoff_state.get("record")
+            handoff_status = (
+                handoff["status"] if isinstance(handoff, dict) else "none"
+            )
             return {
                 "plan_token": plan_token,
                 "goal": goal,
@@ -3657,6 +3664,20 @@ def test_product_flow_builds_previews_exports_and_restores_real_candidate(
                 ),
                 "plan_diff": None,
                 "confirmation": copy.deepcopy(self.confirmation),
+                "agent_handoff": {
+                    "schema_version": "agent_handoff_status.v1",
+                    "status": handoff_status,
+                    "created_at": (
+                        handoff.get("created_at")
+                        if isinstance(handoff, dict)
+                        else None
+                    ),
+                    "revoked_at": (
+                        handoff.get("revoked_at")
+                        if isinstance(handoff, dict)
+                        else None
+                    ),
+                },
             }
 
         def initial_state(self) -> dict[str, object]:
@@ -3832,6 +3853,132 @@ def test_product_flow_builds_previews_exports_and_restores_real_candidate(
                 },
             }
 
+        def create_agent_handoff(
+            self,
+            token,
+            acceptance_confirmation_digest,
+            capsule_facts_digest,
+        ):
+            assert token == plan_token
+            current = handoff_state.get("record")
+            if isinstance(current, dict) and current["status"] == "active":
+                return {
+                    "ok": False,
+                    "error": {
+                        "code": "agent_handoff_already_active",
+                        "message_key": "agent_handoff_already_active",
+                    },
+                }
+            attempt = int(handoff_state.get("attempt", 0)) + 1
+            handoff_state["attempt"] = attempt
+            handoff_token = "handoff_token_" + format(6 + attempt, "x") * 48
+            handoff_state["token"] = handoff_token
+            handoff_state["record"] = {
+                "plan_token": plan_token,
+                "plan_digest": plan["canonical_digest"],
+                "plan_confirmation_digest": self.confirmation[
+                    "receipt_digest"
+                ],
+                "acceptance_confirmation_digest": (
+                    acceptance_confirmation_digest
+                ),
+                "capsule_facts_digest": capsule_facts_digest,
+                "status": "active",
+                "created_at": "2026-08-15T00:00:00.000Z",
+                "revoked_at": None,
+            }
+            return {
+                "ok": True,
+                "data": {
+                    "handoff_token": handoff_token,
+                    "status": "active",
+                    "created_at": "2026-08-15T00:00:00.000Z",
+                },
+            }
+
+        def resolve_agent_handoff(self, token):
+            record = handoff_state.get("record")
+            if token != handoff_state.get("token") or not isinstance(
+                record, dict
+            ):
+                return {
+                    "ok": False,
+                    "error": {
+                        "code": "agent_handoff_not_found",
+                        "message_key": "agent_handoff_not_found",
+                    },
+                }
+            if record["status"] == "revoked":
+                return {
+                    "ok": False,
+                    "error": {
+                        "code": "agent_handoff_revoked",
+                        "message_key": "agent_handoff_revoked",
+                    },
+                }
+            return {"ok": True, "data": copy.deepcopy(record)}
+
+        def get_agent_handoff_status(
+            self,
+            token,
+            capsule_facts_digest=None,
+        ):
+            assert token == plan_token
+            record = handoff_state.get("record")
+            status = record["status"] if isinstance(record, dict) else "none"
+            if (
+                status == "active"
+                and capsule_facts_digest is not None
+                and record["capsule_facts_digest"] != capsule_facts_digest
+            ):
+                status = "stale"
+            return {
+                "ok": True,
+                "data": {
+                    "schema_version": "agent_handoff_status.v1",
+                    "status": status,
+                    "created_at": (
+                        record.get("created_at")
+                        if isinstance(record, dict)
+                        else None
+                    ),
+                    "revoked_at": (
+                        record.get("revoked_at")
+                        if isinstance(record, dict)
+                        else None
+                    ),
+                },
+            }
+
+        def revoke_agent_handoff(self, token):
+            if token != handoff_state.get("token"):
+                return {
+                    "ok": False,
+                    "error": {
+                        "code": "agent_handoff_not_found",
+                        "message_key": "agent_handoff_not_found",
+                    },
+                }
+            return self.revoke_agent_handoff_for_plan(plan_token)
+
+        def revoke_agent_handoff_for_plan(self, token):
+            assert token == plan_token
+            record = handoff_state.get("record")
+            if not isinstance(record, dict):
+                return {
+                    "ok": True,
+                    "data": {"status": "none", "revoked_at": None},
+                }
+            record["status"] = "revoked"
+            record["revoked_at"] = "2026-08-15T00:01:00.000Z"
+            return {
+                "ok": True,
+                "data": {
+                    "status": "revoked",
+                    "revoked_at": record["revoked_at"],
+                },
+            }
+
     planner = DesktopPlanner()
     service._product_planner = planner
     planning_model = {
@@ -3936,6 +4083,12 @@ def test_product_flow_builds_previews_exports_and_restores_real_candidate(
             window, bridge = desktop.create_reweave_window()
             window._reweave_bridge = bridge
             page = window.centralWidget().page()
+            assert (
+                page.settings().testAttribute(
+                    qt_parts[3].JavascriptCanAccessClipboard
+                )
+                is False
+            )
             window.show()
 
             def js(expression: str, timeout: float = 20) -> object:
@@ -4206,7 +4359,16 @@ def test_product_flow_builds_previews_exports_and_restores_real_candidate(
                 "})()"
             )
             assert_product_frame()
-            js("document.getElementById('btn-confirm-and-generate').click(); true")
+            assert js(
+                "document.getElementById('btn-confirm-and-agent').disabled"
+            ) is False
+            js(
+                "document.getElementById('btn-confirm-and-agent').focus(); true"
+            )
+            assert js(
+                "document.activeElement.id === 'btn-confirm-and-agent'"
+            ) is True
+            js("document.getElementById('btn-confirm-and-agent').click(); true")
             wait_js(
                 "!document.getElementById('product-parameter-confirmation').classList.contains('hidden') "
                 "&& !!document.querySelector('#product-parameter-confirmation input')",
@@ -4216,18 +4378,103 @@ def test_product_flow_builds_previews_exports_and_restores_real_candidate(
             js(
                 "(() => { const input = document.querySelector('#product-parameter-confirmation input'); "
                 "input.value='10'; input.dispatchEvent(new Event('input',{bubbles:true})); "
-                "document.getElementById('btn-confirm-and-generate').click(); return true; })()"
+                "document.getElementById('btn-confirm-and-agent').click(); return true; })()"
             )
             wait_js(
-                "window.ReweavePrototype.getState().productPlan.candidate_status === 'review_ready'",
-                180,
-                "review-ready candidate",
+                "window.ReweavePrototype.getState().productPlan.view === 'handoff' && "
+                "window.ReweavePrototype.getState().productPlan.agent_handoff_status === 'active'",
+                30,
+                "active Agent handoff",
             )
             assert bridge_calls.count("confirm_product_plan") == 2
             assert bridge_calls.count("confirm_product_candidate_acceptance") == 1
-            assert bridge_calls.count("start_confirmed_product_candidate") == 1
+            assert handoff_state["attempt"] == 1
+            assert bridge_calls.count("start_confirmed_product_candidate") == 0
             assert bridge_calls.count("suggest_product_plan_action") == 0
             assert bridge_calls.count("generate_product") == 0
+            assert list(
+                (state_dir / "product_candidates").glob("*/candidate.json")
+            ) == []
+            clipboard_line = app.clipboard().text()
+            bind_request = json.loads(clipboard_line)
+            assert bind_request == {
+                "protocol": "reweave_agent_jsonl.v2",
+                "id": "bind-user-handoff",
+                "action": "bind_user_handoff",
+                "payload": {
+                    "handoff_token": "handoff_token_" + "7" * 48,
+                },
+            }
+            shuttle_output = io.StringIO()
+            serve_jsonl(
+                service,
+                io.StringIO(clipboard_line + "\n"),
+                shuttle_output,
+            )
+            shuttle_response = json.loads(shuttle_output.getvalue())
+            assert shuttle_response["ok"] is True
+            assert shuttle_response["data"] == {"status": "bound"}
+            app.clipboard().clear()
+            assert js("typeof window.__agentClipboard === 'undefined'") is True
+            handoff_token = bind_request["payload"]["handoff_token"]
+            public_handoff_state = str(
+                js("JSON.stringify(window.ReweavePrototype.getState())")
+            )
+            handoff_markup = str(js("document.documentElement.outerHTML"))
+            handoff_visible = str(js("document.body.innerText"))
+            assert handoff_token not in public_handoff_state
+            assert handoff_token not in handoff_markup
+            assert handoff_token not in handoff_visible
+            assert "stdin" in handoff_visible
+            screenshot_path = os.environ.get(
+                "REWEAVE_HANDOFF_SCREENSHOT_PATH"
+            )
+            if screenshot_path:
+                window.resize(1100, 720)
+                pump(0.2)
+                screenshot = window.centralWidget().grab()
+                assert screenshot.size().width() == 1100
+                assert screenshot.size().height() == 720
+                assert screenshot.save(screenshot_path)
+                window.resize(1280, 820)
+                pump(0.1)
+            js("document.getElementById('btn-revoke-agent-handoff').focus(); true")
+            assert js(
+                "document.activeElement.id === 'btn-revoke-agent-handoff'"
+            ) is True
+            js("document.getElementById('btn-revoke-agent-handoff').click(); true")
+            wait_js(
+                "window.ReweavePrototype.getState().productPlan.agent_handoff_status === 'revoked'",
+                30,
+                "revoked Agent handoff",
+            )
+            assert bridge_calls.count("revoke_local_agent_handoff") == 1
+
+            original_clipboard_copy = desktop._copy_to_system_clipboard
+
+            def fail_clipboard_copy(_value):
+                raise RuntimeError("clipboard denied")
+
+            desktop._copy_to_system_clipboard = fail_clipboard_copy
+            js("document.getElementById('btn-reissue-agent-handoff').click(); true")
+            wait_js(
+                "window.ReweavePrototype.getState().productPlan.agent_handoff_status === 'revoked' && "
+                "document.getElementById('product-agent-handoff-error').textContent === "
+                "'agent_handoff_clipboard_failed'",
+                30,
+                "clipboard failure revokes handoff",
+            )
+            desktop._copy_to_system_clipboard = original_clipboard_copy
+            assert handoff_state["attempt"] == 2
+            assert bridge_calls.count("revoke_local_agent_handoff") == 1
+            assert bridge_calls.count("start_confirmed_product_candidate") == 0
+            js("document.getElementById('btn-direct-after-handoff').click(); true")
+            wait_js(
+                "window.ReweavePrototype.getState().productPlan.candidate_status === 'review_ready'",
+                180,
+                "review-ready candidate after explicit direct choice",
+            )
+            assert bridge_calls.count("start_confirmed_product_candidate") == 1
             assert_product_frame()
             candidate_records = list(
                 (state_dir / "product_candidates").glob("*/candidate.json")
@@ -4416,6 +4663,27 @@ def test_product_flow_builds_previews_exports_and_restores_real_candidate(
                 pump(0.08)
             else:
                 raise TimeoutError("restarted desktop did not load")
+            deadline = time.monotonic() + 30
+            while time.monotonic() < deadline:
+                if restarted_js(
+                    "window.ReweavePrototype.getState().productPlan.view === 'handoff' && "
+                    "window.ReweavePrototype.getState().productPlan.agent_handoff_status === "
+                    "'revoked'"
+                ):
+                    break
+                pump(0.08)
+            else:
+                raise TimeoutError("revoked handoff did not restore")
+            assert restarted_js(
+                "window.ReweavePrototype.getState().productPlan.candidate_status === null"
+            ) is True
+            assert restarted_js(
+                "!document.getElementById('btn-direct-after-handoff').classList.contains('hidden')"
+            ) is True
+            restarted_js(
+                "document.getElementById('btn-direct-after-handoff').focus();"
+                "document.getElementById('btn-direct-after-handoff').click(); true"
+            )
             deadline = time.monotonic() + 90
             while time.monotonic() < deadline:
                 if restarted_js(
@@ -4425,7 +4693,7 @@ def test_product_flow_builds_previews_exports_and_restores_real_candidate(
                     break
                 pump(0.08)
             else:
-                raise TimeoutError("restarted candidate did not restore")
+                raise TimeoutError("explicit candidate restore failed")
             restored = restarted_service.get_product_candidate(
                 {"candidate_token": candidate_token}
             )

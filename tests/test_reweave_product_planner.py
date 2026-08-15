@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import copy
+import hashlib
 import inspect
 import json
 import os
 import shutil
+import subprocess
+import sys
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -5838,6 +5841,33 @@ def test_parameter_offer_precedes_atomic_confirmation_and_cannot_be_rewritten(
     if os.name == "posix":
         assert handoff_files[0].stat().st_mode & 0o777 == 0o600
     assert handoff_token not in handoff_files[0].read_text(encoding="utf-8")
+    handoff_status = restarted.get_agent_handoff_status(
+        token,
+        "e" * 64,
+    )
+    assert handoff_status["ok"] is True
+    assert set(handoff_status["data"]) == {
+        "schema_version",
+        "status",
+        "created_at",
+        "revoked_at",
+    }
+    assert handoff_status["data"]["status"] == "active"
+    assert "handoff_token" not in json.dumps(handoff_status)
+    assert (
+        restarted.create_agent_handoff(
+            token,
+            acceptance_confirmation["canonical_digest"],
+            "e" * 64,
+        )["error"]["code"]
+        == "agent_handoff_already_active"
+    )
+    assert (
+        restarted.get_agent_handoff_status(token, "f" * 64)["data"][
+            "status"
+        ]
+        == "stale"
+    )
     resolved_handoff = StubPlanner(root).resolve_agent_handoff(handoff_token)
     assert resolved_handoff["ok"] is True
     assert resolved_handoff["data"] == {
@@ -5864,6 +5894,120 @@ def test_parameter_offer_precedes_atomic_confirmation_and_cannot_be_rewritten(
         == "agent_handoff_revoked"
     )
     assert restarted.revoke_agent_handoff(handoff_token)["ok"] is True
+    assert restarted.revoke_agent_handoff_for_plan(token)["data"] == {
+        "status": "revoked",
+        "revoked_at": revoked["data"]["revoked_at"],
+    }
+    start_file = tmp_path / "start-handoff-processes"
+    script = (
+        "import json,sys,time\n"
+        "from pathlib import Path\n"
+        "from pimos_lite.reweave_product_planner import ProductPlanner\n"
+        "start=Path(sys.argv[5])\n"
+        "while not start.exists(): time.sleep(0.001)\n"
+        "print(json.dumps(ProductPlanner(Path(sys.argv[1])).create_agent_handoff("
+        "sys.argv[2],sys.argv[3],sys.argv[4]),sort_keys=True))\n"
+    )
+    processes = [
+        subprocess.Popen(
+            [
+                sys.executable,
+                "-c",
+                script,
+                str(root),
+                token,
+                acceptance_confirmation["canonical_digest"],
+                "e" * 64,
+                str(start_file),
+            ],
+            cwd=Path(__file__).resolve().parents[1],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+        )
+        for _index in range(2)
+    ]
+    start_file.touch()
+    concurrent = []
+    for process in processes:
+        stdout, stderr = process.communicate(timeout=20)
+        assert process.returncode == 0, stderr
+        concurrent.append(json.loads(stdout))
+    assert sum(result["ok"] is True for result in concurrent) == 1
+    assert [
+        result["error"]["code"]
+        for result in concurrent
+        if result["ok"] is False
+    ] == ["agent_handoff_already_active"]
+    lock_path = root / ".agent_handoff.lock"
+    assert lock_path.read_bytes() in {b"", b"\0"}
+    if os.name == "posix":
+        assert lock_path.stat().st_mode & 0o777 == 0o600
+    assert (
+        StubPlanner(root).get_agent_handoff_status(token, "e" * 64)[
+            "data"
+        ]["status"]
+        == "active"
+    )
+    assert restarted.revoke_agent_handoff_for_plan(token)["ok"] is True
+    assert restarted.revoke_agent_handoff_for_plan(token)["data"][
+        "status"
+    ] == "revoked"
+
+    active = restarted.create_agent_handoff(
+        token,
+        acceptance_confirmation["canonical_digest"],
+        "e" * 64,
+    )
+    assert active["ok"] is True
+    confirmed_dir = root / workspace["workspace_id"] / "confirmed"
+    active_record = next(
+        json.loads(path.read_text(encoding="utf-8"))
+        for path in confirmed_dir.glob("agent_handoff_v1_*.json")
+        if json.loads(path.read_text(encoding="utf-8"))["status"] == "active"
+    )
+    active_token = active["data"]["handoff_token"]
+    conflicting = copy.deepcopy(active_record)
+    conflicting_token = "handoff_token_" + "f" * 48
+    conflicting["token_digest"] = hashlib.sha256(
+        conflicting_token.encode("ascii")
+    ).hexdigest()
+    conflicting["canonical_digest"] = product_planner_module._digest(
+        {
+            key: value
+            for key, value in conflicting.items()
+            if key != "canonical_digest"
+        }
+    )
+    conflict_path = restarted._agent_handoff_path(
+        workspace,
+        conflicting["token_digest"],
+    )
+    restarted._atomic_write(conflict_path, conflicting)
+    assert restarted.get_agent_handoff_status(token)["data"]["status"] == "conflict"
+    assert (
+        restarted.resolve_agent_handoff(active_token)["error"]["code"]
+        == "agent_handoff_conflict"
+    )
+    assert (
+        restarted.resolve_agent_handoff(conflicting_token)["error"]["code"]
+        == "agent_handoff_conflict"
+    )
+    assert (
+        restarted.revoke_agent_handoff_for_plan(token)["error"]["code"]
+        == "agent_handoff_conflict"
+    )
+    conflict_path.unlink()
+    assert restarted.revoke_agent_handoff_for_plan(token)["ok"] is True
+
+    corrupt_path = restarted._agent_handoff_path(workspace, "d" * 64)
+    restarted._atomic_write(corrupt_path, {"bad": True})
+    assert restarted.get_agent_handoff_status(token)["data"]["status"] == "conflict"
+    assert (
+        restarted.revoke_agent_handoff_for_plan(token)["error"]["code"]
+        == "agent_handoff_conflict"
+    )
+    corrupt_path.unlink()
     tampered = copy.deepcopy(acceptance_confirmation)
     tampered["cases"][0]["expected_output"]["total"] = 31
     assert (

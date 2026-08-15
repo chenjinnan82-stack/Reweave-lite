@@ -219,6 +219,9 @@ def test_product_flow_uses_real_planning_candidate_and_native_export_actions() -
     assert 'id="product-plan-question-form"' in index
     assert 'id="product-acceptance-cases"' in index
     assert 'id="btn-confirm-and-generate"' in index
+    assert 'id="btn-confirm-and-agent"' in index
+    assert 'id="product-agent-handoff"' in index
+    assert 'id="btn-revoke-agent-handoff"' in index
     assert "rootComputations.length !== 1" in scene
     assert "terminalComputations.length !== 1" in scene
     assert "terminalComputation.version_id" in scene
@@ -227,6 +230,12 @@ def test_product_flow_uses_real_planning_candidate_and_native_export_actions() -
     assert 'id="btn-save-product-candidate"' in index
     assert "prototype-only" not in index.lower()
     assert "window.ReweaveProductPlanScene = { create: create };" in scene
+    assert "copy_local_agent_handoff_binding" in scene
+    assert "navigator.clipboard" not in scene
+    assert "handoff_token_" not in scene
+    assert '"protocol": "reweave_agent_jsonl.v2"' in desktop
+    assert '"action": "bind_user_handoff"' in desktop
+    assert "JavascriptCanAccessClipboard, False" in desktop
     assert "productPlan: productPlanScene.getState()," in app
     assert "productPlanScene.bind();" in app
     assert '"reweave_frontend/product_plan_scene.js",' in audit
@@ -243,6 +252,8 @@ def test_product_flow_uses_real_planning_candidate_and_native_export_actions() -
         "start_product_capability_source_proposal",
         "start_product_capability_replan",
         "confirm_product_candidate_acceptance",
+        "copy_local_agent_handoff_binding",
+        "revoke_local_agent_handoff",
         "get_confirmed_product_plan",
         "start_confirmed_product_candidate",
         "get_product_candidate_run",
@@ -339,6 +350,8 @@ def test_product_flow_uses_real_planning_candidate_and_native_export_actions() -
 
     for slot in (
         "confirm_product_candidate_acceptance",
+        "copy_local_agent_handoff_binding",
+        "revoke_local_agent_handoff",
         "get_confirmed_product_plan",
         "start_confirmed_product_candidate",
         "get_product_candidate_run",

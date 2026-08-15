@@ -13,6 +13,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import pimos_lite.reweave_app_service as app_service_module
 from pimos_lite.reweave_app_service import (
     APP_SERVICE_VERSION,
     CAPSULE_MANAGEMENT_ACTIONS,
@@ -20,6 +21,7 @@ from pimos_lite.reweave_app_service import (
     PUBLIC_PRODUCT_ACTIONS,
     SUPPORT_VIEWER_ACTIONS,
     ReweaveAppService,
+    _copy_private_file,
     legacy_workbench_actions,
     public_product_actions,
     release_boundary_for_action,
@@ -33,6 +35,30 @@ from pimos_lite.reweave_engine.lumo_lite import LumoLiteReweaveEngine
 
 
 class ReweaveAppServiceTest(unittest.TestCase):
+    def test_private_file_copy_skips_posix_only_calls_on_windows(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            source = root / "source.sqlite3"
+            target = root / "isolated" / "copy.sqlite3"
+            source.write_bytes(b"private-state")
+            original_fsync = os.fsync
+            with (
+                patch.object(app_service_module.os, "name", "nt"),
+                patch.object(
+                    app_service_module.os,
+                    "fchmod",
+                    side_effect=AssertionError("POSIX-only fchmod"),
+                ),
+                patch.object(
+                    app_service_module.os,
+                    "fsync",
+                    wraps=original_fsync,
+                ) as fsync,
+            ):
+                _copy_private_file(source, target)
+            self.assertEqual(target.read_bytes(), b"private-state")
+            self.assertEqual(fsync.call_count, 1)
+
     def test_get_initial_state_includes_app_service_and_engine_status(self) -> None:
         service = ReweaveAppService(engine=LocalReweaveEngine())
         state = service.get_initial_state()
@@ -1271,6 +1297,59 @@ class ReweaveAppServiceTest(unittest.TestCase):
             "agent_protocol_version_invalid",
         )
         self.assertEqual(rows[4]["error"]["code"], "agent_json_invalid")
+
+        valid_bind = json.dumps(
+            {
+                "protocol": AGENT_PROTOCOL_VERSION,
+                "id": "bind-after-errors",
+                "action": "bind_user_handoff",
+                "payload": {
+                    "handoff_token": "handoff_token_" + "1" * 48
+                },
+            }
+        ).encode("utf-8")
+
+        class BoundedBytesIO(io.BytesIO):
+            def readline(self, size=-1):
+                self.assert_size(size)
+                return super().readline(size)
+
+            @staticmethod
+            def assert_size(size):
+                if not 0 < size <= 1024 * 1024 + 1:
+                    raise AssertionError(f"unbounded_read:{size}")
+
+        binary_requests = (
+            b"x" * (1024 * 1024 + 1)
+            + b"\n"
+            + b"\xff\n"
+            + b"{not-json\n"
+            + valid_bind
+            + b"\n"
+        )
+        binary_output = io.StringIO()
+        serve_jsonl(
+            Service(),
+            BoundedBytesIO(binary_requests),
+            binary_output,
+        )
+        binary_rows = [
+            json.loads(line)
+            for line in binary_output.getvalue().splitlines()
+        ]
+        self.assertEqual(
+            [row.get("error", {}).get("code") for row in binary_rows[:3]],
+            [
+                "agent_request_too_large",
+                "agent_json_invalid",
+                "agent_json_invalid",
+            ],
+        )
+        self.assertTrue(binary_rows[3]["ok"], binary_rows[3])
+        self.assertEqual(
+            binary_rows[3]["data"],
+            {"status": "bound"},
+        )
 
 
 if __name__ == "__main__":

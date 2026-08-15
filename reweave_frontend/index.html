@@ -292,6 +292,17 @@ preview: pending</div>
         </section>
         <p id="product-plan-review-error" class="product-plan-inline-error hidden" aria-live="polite"></p>
         <button type="button" id="btn-confirm-and-generate" class="btn-primary">Confirm and generate</button>
+        <button type="button" id="btn-confirm-and-agent" class="btn-secondary">Confirm and hand to Agent</button>
+      </section>
+
+      <section id="product-agent-handoff" class="product-plan-flow hidden" aria-labelledby="product-agent-handoff-title">
+        <h1 id="product-agent-handoff-title" tabindex="-1">Agent handoff</h1>
+        <p id="product-agent-handoff-status" aria-live="polite"></p>
+        <p id="product-agent-handoff-warning"></p>
+        <p id="product-agent-handoff-error" class="product-plan-inline-error hidden" aria-live="assertive"></p>
+        <button type="button" id="btn-reissue-agent-handoff" class="btn-secondary">Issue again</button>
+        <button type="button" id="btn-direct-after-handoff" class="btn-primary">Continue in Reweave</button>
+        <button type="button" id="btn-revoke-agent-handoff" class="product-plan-text-action">Revoke authorization</button>
       </section>
 
       <section id="product-plan-section-review" class="product-plan-flow product-plan-section-review hidden" aria-labelledby="product-plan-section-title">

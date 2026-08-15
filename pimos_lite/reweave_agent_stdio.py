@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import re
 import sys
-from typing import Any, TextIO
+from typing import Any, BinaryIO, TextIO
 
 from pimos_lite.reweave_app_service import ReweaveAppService
 
@@ -395,16 +395,45 @@ def dispatch_agent_request(
 
 def serve_jsonl(
     service: ReweaveAppService,
-    input_stream: TextIO,
+    input_stream: BinaryIO | TextIO,
     output_stream: TextIO,
 ) -> None:
     session: dict[str, Any] = {}
-    for line in input_stream:
-        if not line.strip():
-            continue
-        if len(line.encode("utf-8")) > _MAX_REQUEST_BYTES:
-            response = _error(None, "agent_request_too_large")
+    while True:
+        raw = input_stream.readline(_MAX_REQUEST_BYTES + 1)
+        if raw in {b"", ""}:
+            break
+        newline = b"\n" if isinstance(raw, bytes) else "\n"
+        try:
+            encoded = (
+                raw
+                if isinstance(raw, bytes)
+                else raw.encode("utf-8", errors="strict")
+            )
+        except UnicodeError:
+            encoded = b""
+            response = _error(None, "agent_json_invalid")
         else:
+            response = None
+        if len(encoded) > _MAX_REQUEST_BYTES:
+            response = _error(None, "agent_request_too_large")
+        if response is not None and not raw.endswith(newline):
+            while True:
+                remainder = input_stream.readline(_MAX_REQUEST_BYTES + 1)
+                if remainder in {b"", ""} or remainder.endswith(newline):
+                    break
+        if response is not None:
+            line = ""
+        else:
+            try:
+                line = encoded.decode("utf-8", errors="strict")
+            except UnicodeError:
+                response = _error(None, "agent_json_invalid")
+                line = ""
+        if not line.strip():
+            if response is None:
+                continue
+        if response is None:
             try:
                 request = json.loads(
                     line,
@@ -432,7 +461,7 @@ def serve_jsonl(
 def main() -> int:
     service = ReweaveAppService()
     try:
-        serve_jsonl(service, sys.stdin, sys.stdout)
+        serve_jsonl(service, sys.stdin.buffer, sys.stdout)
     finally:
         service.close()
     return 0

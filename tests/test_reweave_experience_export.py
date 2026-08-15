@@ -661,3 +661,16 @@ def test_duplicate_json_keys_are_rejected(tmp_path):
     write_json(index_path, index)
     with pytest.raises(exporter.ExperienceExportError, match="duplicate_json_key"):
         exporter.derive_records(index_path)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "runner /home/alice/private/model.gguf",
+        r"runner C:\Users\alice\private\model.gguf",
+        r"runner \\server\share\private\model.gguf",
+    ],
+)
+def test_exporter_reuses_embedded_absolute_path_rejection(value):
+    with pytest.raises(exporter.ExperienceExportError, match="invalid_model_name"):
+        exporter._safe_model_name(value)
