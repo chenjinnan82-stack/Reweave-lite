@@ -745,6 +745,33 @@ def _validated_export_paths(files: object) -> list[str]:
 def _read_export_file(root: Path, metadata: dict[str, Any]) -> bytes:
     logical = _safe_product_relative(metadata["path"])
     path = root.joinpath(*PurePosixPath(logical).parts)
+    directories = [root]
+    current = root
+    for part in PurePosixPath(logical).parts[:-1]:
+        current /= part
+        directories.append(current)
+
+    def directory_identities() -> tuple[tuple[int, int], ...]:
+        identities: list[tuple[int, int]] = []
+        for directory in directories:
+            details = directory.lstat()
+            reparse_point = bool(
+                getattr(details, "st_file_attributes", 0)
+                & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+            )
+            if (
+                stat.S_ISLNK(details.st_mode)
+                or reparse_point
+                or not stat.S_ISDIR(details.st_mode)
+            ):
+                raise ProductGenerationError("product_candidate_invalid")
+            identities.append((details.st_dev, details.st_ino))
+        return tuple(identities)
+
+    try:
+        original_directories = directory_identities()
+    except OSError as exc:
+        raise ProductGenerationError("product_candidate_invalid") from exc
     flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
     flags |= getattr(os, "O_NOFOLLOW", 0)
     try:
@@ -753,17 +780,42 @@ def _read_export_file(root: Path, metadata: dict[str, Any]) -> bytes:
         raise ProductGenerationError("product_candidate_invalid") from exc
     try:
         details = os.fstat(descriptor)
-        if not stat.S_ISREG(details.st_mode):
+        if (
+            not stat.S_ISREG(details.st_mode)
+            or details.st_size != metadata["size_bytes"]
+        ):
             raise ProductGenerationError("product_candidate_invalid")
         chunks: list[bytes] = []
-        while True:
-            chunk = os.read(descriptor, 1024 * 1024)
+        remaining = metadata["size_bytes"] + 1
+        while remaining:
+            chunk = os.read(descriptor, min(1024 * 1024, remaining))
             if not chunk:
                 break
             chunks.append(chunk)
+            remaining -= len(chunk)
         data = b"".join(chunks)
+        final_details = os.fstat(descriptor)
+        path_details = path.lstat()
+        reparse_point = bool(
+            getattr(path_details, "st_file_attributes", 0)
+            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        )
+        if (
+            final_details.st_size != metadata["size_bytes"]
+            or stat.S_ISLNK(path_details.st_mode)
+            or reparse_point
+            or not stat.S_ISREG(path_details.st_mode)
+            or (final_details.st_dev, final_details.st_ino)
+            != (path_details.st_dev, path_details.st_ino)
+        ):
+            raise ProductGenerationError("product_candidate_invalid")
     finally:
         os.close(descriptor)
+    try:
+        if directory_identities() != original_directories:
+            raise ProductGenerationError("product_candidate_invalid")
+    except OSError as exc:
+        raise ProductGenerationError("product_candidate_invalid") from exc
     if (
         len(data) != metadata["size_bytes"]
         or hashlib.sha256(data).hexdigest() != metadata["sha256"]
@@ -777,6 +829,16 @@ def _directory_open_flags() -> int:
         os.O_RDONLY
         | getattr(os, "O_DIRECTORY", 0)
         | getattr(os, "O_NOFOLLOW", 0)
+    )
+
+
+def _descriptor_relative_reads_supported() -> bool:
+    return (
+        hasattr(os, "O_DIRECTORY")
+        and hasattr(os, "O_NOFOLLOW")
+        and os.open in getattr(os, "supports_dir_fd", set())
+        and os.stat in getattr(os, "supports_dir_fd", set())
+        and os.stat in getattr(os, "supports_follow_symlinks", set())
     )
 
 
@@ -7020,13 +7082,17 @@ class ReweaveAppService:
                 raise ProductGenerationError("product_candidate_file_not_found")
             if metadata["size_bytes"] > 1024 * 1024:
                 raise ProductGenerationError("product_candidate_file_too_large")
-            product_descriptor, _identity_chain = _open_no_follow_directory(
-                candidate_dir / "product"
-            )
-            try:
-                data = _read_export_file_at(product_descriptor, metadata)
-            finally:
-                os.close(product_descriptor)
+            product_root = candidate_dir / "product"
+            if _descriptor_relative_reads_supported():
+                product_descriptor, _identity_chain = (
+                    _open_no_follow_directory(product_root)
+                )
+                try:
+                    data = _read_export_file_at(product_descriptor, metadata)
+                finally:
+                    os.close(product_descriptor)
+            else:
+                data = _read_export_file(product_root, metadata)
             if metadata["text"]:
                 content = data.decode("utf-8")
                 diff = "".join(

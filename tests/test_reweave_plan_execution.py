@@ -3618,6 +3618,22 @@ process.stdout.write(JSON.stringify({result, rendered: totalNode.textContent}));
                 self.assertTrue(opened["ok"], opened)
                 self.assertEqual(opened["data"]["encoding"], "utf-8")
                 self.assertIn("--- /dev/null", opened["data"]["text_diff"])
+                with patch(
+                    "pimos_lite.reweave_app_service."
+                    "_descriptor_relative_reads_supported",
+                    return_value=False,
+                ):
+                    fallback_opened = restarted.read_product_candidate_file(
+                        {
+                            "candidate_token": candidate["candidate_token"],
+                            "relative_path": "index.html",
+                        }
+                    )
+                self.assertTrue(fallback_opened["ok"], fallback_opened)
+                self.assertEqual(
+                    fallback_opened["data"]["content"],
+                    opened["data"]["content"],
+                )
                 candidate_dir = next(
                     (self.state / "product_candidates").glob("candidate_*")
                 )
@@ -3638,10 +3654,17 @@ process.stdout.write(JSON.stringify({result, rendered: totalNode.textContent}));
                     os.replace(replacement, product_file)
                     return restored_record
 
-                with patch.object(
-                    restarted,
-                    "_read_candidate_record",
-                    side_effect=replace_after_validation,
+                with (
+                    patch(
+                        "pimos_lite.reweave_app_service."
+                        "_descriptor_relative_reads_supported",
+                        return_value=False,
+                    ),
+                    patch.object(
+                        restarted,
+                        "_read_candidate_record",
+                        side_effect=replace_after_validation,
+                    ),
                 ):
                     replaced = restarted.read_product_candidate_file(
                         {
@@ -3658,10 +3681,17 @@ process.stdout.write(JSON.stringify({result, rendered: totalNode.textContent}));
                         handle.write(b"BAD")
                     return restored_record
 
-                with patch.object(
-                    restarted,
-                    "_read_candidate_record",
-                    side_effect=append_after_validation,
+                with (
+                    patch(
+                        "pimos_lite.reweave_app_service."
+                        "_descriptor_relative_reads_supported",
+                        return_value=False,
+                    ),
+                    patch.object(
+                        restarted,
+                        "_read_candidate_record",
+                        side_effect=append_after_validation,
+                    ),
                 ):
                     appended = restarted.read_product_candidate_file(
                         {
@@ -3683,10 +3713,17 @@ process.stdout.write(JSON.stringify({result, rendered: totalNode.textContent}));
                         return restored_record
 
                     try:
-                        with patch.object(
-                            restarted,
-                            "_read_candidate_record",
-                            side_effect=link_after_validation,
+                        with (
+                            patch(
+                                "pimos_lite.reweave_app_service."
+                                "_descriptor_relative_reads_supported",
+                                return_value=False,
+                            ),
+                            patch.object(
+                                restarted,
+                                "_read_candidate_record",
+                                side_effect=link_after_validation,
+                            ),
                         ):
                             linked = restarted.read_product_candidate_file(
                                 {

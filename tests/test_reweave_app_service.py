@@ -48,6 +48,7 @@ class ReweaveAppServiceTest(unittest.TestCase):
                     app_service_module.os,
                     "fchmod",
                     side_effect=AssertionError("POSIX-only fchmod"),
+                    create=True,
                 ),
                 patch.object(
                     app_service_module.os,
