@@ -1012,8 +1012,6 @@
   var desktopBridge = null;
   var bridgeReady = false;
   var desktopShellState = null;
-  var scanningSourceIds = {};
-  var preparingSourceIds = {};
   var verifyingSourceIds = {};
   var previewingSourceIds = {};
   var reviewingSourceIds = {};
@@ -1180,7 +1178,7 @@
   }
 
   function hasDesktopBridge() {
-    return !!(desktopBridge && typeof desktopBridge.choose_source_folder === "function");
+    return !!(desktopBridge && typeof desktopBridge.get_initial_state === "function");
   }
 
   function desktopCapability(name) {
@@ -1250,9 +1248,8 @@
   function syncSourceControls() {
     var addSourceBtn = document.querySelector(".btn-add-source");
     if (!addSourceBtn) return;
-    var allowed = hasDesktopBridge() && desktopCapability("canChooseSourceFolder");
-    addSourceBtn.disabled = !allowed;
-    addSourceBtn.classList.toggle("hidden", !allowed);
+    addSourceBtn.disabled = true;
+    addSourceBtn.classList.add("hidden");
   }
 
   function syncWelcomeSourceBoxMode() {
@@ -1261,11 +1258,11 @@
     var runtimeBtn = $("btn-view-runtime");
     if (!bindBtn) return;
     var readOnly = hasDesktopBridge() && isLumoLiteReadOnly();
-    var canBind = !hasDesktopBridge() || desktopCapability("canChooseSourceFolder");
     bindBtn.textContent = t("bindSourceBox");
-    bindBtn.disabled = !canBind;
-    bindBtn.setAttribute("aria-disabled", canBind ? "false" : "true");
-    setOptionalTitle(bindBtn, canBind ? "" : t("sourceBoxBindingDisabled"));
+    bindBtn.disabled = true;
+    bindBtn.setAttribute("aria-disabled", "true");
+    bindBtn.classList.add("hidden");
+    setOptionalTitle(bindBtn, t("sourceBoxBindingDisabled"));
     if (note) {
       note.textContent = readOnly ? t("sourceBoxReadOnlyNote") : t("sourceBoxNote");
     }
@@ -1521,7 +1518,7 @@
     }
 
     function attach() {
-      if (window.reweaveBridge && typeof window.reweaveBridge.choose_source_folder === "function") {
+      if (window.reweaveBridge && typeof window.reweaveBridge.get_initial_state === "function") {
         desktopBridge = window.reweaveBridge;
         bridgeReady = true;
         bridgeCall("get_initial_state").then(function (raw) {
@@ -3997,43 +3994,6 @@
     });
   }
 
-  function addBoundSource(source) {
-    mergeSourceFromDesktop(source);
-    renderSources();
-  }
-
-  function handleAddSource() {
-    if (!hasDesktopBridge()) return;
-    if (!desktopCapability("canChooseSourceFolder")) {
-      if (els.reweaveResponse) els.reweaveResponse.textContent = t("runtimeReadOnlyMessage");
-      return;
-    }
-    bridgeCall("choose_source_folder").then(function (raw) {
-      var result = parseBridgeJson(raw);
-      if (!result || result.cancelled) return;
-      if (result.ok && result.source) {
-        addBoundSource(result.source);
-      }
-    });
-  }
-
-  function applyLunaReuseFromDraft(draftResult) {
-    if (!draftResult || !draftResult.draft) return;
-    var draft = draftResult.draft;
-    var sourceId = draftResult.source_id || draft.source_id;
-    if (Array.isArray(draft.capsuleSuggestions) && draft.capsuleSuggestions.length && sourceId) {
-      if (!data.lunaReuseBySource) data.lunaReuseBySource = {};
-      data.lunaReuseBySource[sourceId] = {
-        count: draft.capsuleSuggestions.length,
-        suggestions: draft.capsuleSuggestions,
-      };
-      console.log("[Reweave] Luna reuse suggestions:", draft.capsuleSuggestions.length);
-    }
-    if (Array.isArray(draft.warnings) && draft.warnings.length) {
-      console.warn("[Reweave] prepare warnings:", draft.warnings.join(", "));
-    }
-  }
-
   function applyVerificationResult(sourceId, result) {
     if (!result || !result.ok || !result.summary) return;
     if (!data.verificationBySource) data.verificationBySource = {};
@@ -4411,171 +4371,9 @@
     });
   }
 
-  function handlePrepareSource(sourceId) {
-    if (!hasDesktopBridge() || !sourceId) return;
-    if (!desktopCapability("canDraftCapsules")) return;
-    preparingSourceIds[sourceId] = true;
-    renderSources();
-    bridgeCall("draft_capsules", sourceId).then(function (raw) {
-      var draftResult = parseBridgeJson(raw);
-      if (!draftResult || !draftResult.ok) {
-        delete preparingSourceIds[sourceId];
-        if (draftResult && draftResult.source) {
-          mergeSourceFromDesktop(draftResult.source);
-        } else {
-          var idx = (data.sourceBoxes || []).findIndex(function (s) {
-            return s.id === sourceId;
-          });
-          if (idx >= 0) {
-            data.sourceBoxes[idx].draft_status = "failed";
-            data.sourceBoxes[idx].last_error = (draftResult && draftResult.error) || "draft failed";
-          }
-        }
-        renderSources();
-        return;
-      }
-      if (draftResult.source) mergeSourceFromDesktop(draftResult.source);
-      applyLunaReuseFromDraft(draftResult);
-      if (!desktopCapability("canPromoteDrafts") || isLumoLiteReadOnly()) {
-        delete preparingSourceIds[sourceId];
-        renderSources();
-        return;
-      }
-      bridgeCall("promote_source_drafts", sourceId).then(function (promoteRaw) {
-        delete preparingSourceIds[sourceId];
-        var promoteResult = parseBridgeJson(promoteRaw);
-        if (promoteResult && promoteResult.source) {
-          mergeSourceFromDesktop(promoteResult.source);
-        }
-        if (promoteResult && promoteResult.ok && Array.isArray(promoteResult.capsules)) {
-          applyWarehouseCapsules(promoteResult.capsules);
-        }
-        renderSources();
-      });
-    });
-  }
-
-  function handleStoreSource(sourceId) {
-    if (!hasDesktopBridge() || !sourceId) return;
-    if (!desktopCapability("canPromoteDrafts")) return;
-    preparingSourceIds[sourceId] = true;
-    renderSources();
-    bridgeCall("promote_source_drafts", sourceId).then(function (raw) {
-      delete preparingSourceIds[sourceId];
-      var result = parseBridgeJson(raw);
-      if (result && result.source) {
-        mergeSourceFromDesktop(result.source);
-      }
-      if (result && result.ok && Array.isArray(result.capsules)) {
-        applyWarehouseCapsules(result.capsules);
-      }
-      renderSources();
-    });
-  }
-
-  function runDesktopSourcePipeline(sourceId, onDone) {
-    if (!sourceId) {
-      if (onDone) onDone(false);
-      return;
-    }
-    bridgeCall("scan_source_box", sourceId).then(function (scanRaw) {
-      var scanResult = parseBridgeJson(scanRaw);
-      if (!scanResult || !scanResult.ok) {
-        if (onDone) onDone(false);
-        return;
-      }
-      if (scanResult.source) mergeSourceFromDesktop(scanResult.source);
-      bridgeCall("draft_capsules", sourceId).then(function (draftRaw) {
-        var draftResult = parseBridgeJson(draftRaw);
-        if (!draftResult || !draftResult.ok) {
-          if (onDone) onDone(false);
-          return;
-        }
-        if (draftResult.source) mergeSourceFromDesktop(draftResult.source);
-        applyLunaReuseFromDraft(draftResult);
-        if (!desktopCapability("canPromoteDrafts") || isLumoLiteReadOnly()) {
-          if (onDone) onDone(true);
-          return;
-        }
-        bridgeCall("promote_source_drafts", sourceId).then(function (promoteRaw) {
-          var promoteResult = parseBridgeJson(promoteRaw);
-          if (promoteResult && promoteResult.source) {
-            mergeSourceFromDesktop(promoteResult.source);
-          }
-          if (promoteResult && promoteResult.ok && Array.isArray(promoteResult.capsules)) {
-            applyWarehouseCapsules(promoteResult.capsules);
-          }
-          if (onDone) onDone(!!(promoteResult && promoteResult.ok));
-        });
-      });
-    });
-  }
-
-  function handleDesktopWelcomeIntake() {
-    if (!desktopCapability("canChooseSourceFolder")) {
-      syncWelcomeSourceBoxMode();
-      return;
-    }
-    bridgeCall("choose_source_folder").then(function (raw) {
-      var result = parseBridgeJson(raw);
-      if (!result || result.cancelled || !result.ok || !result.source) return;
-      mergeSourceFromDesktop(result.source);
-      showScreen("screen-cleaning");
-      var stepsEl = $("cleaning-steps");
-      var bar = $("progress-bar");
-      stepsEl.innerHTML = "";
-      ["Binding source folder", "Scanning structure", "Preparing capsule drafts"].forEach(function (text) {
-        var li = document.createElement("li");
-        li.textContent = text;
-        stepsEl.appendChild(li);
-      });
-      bar.style.width = "12%";
-      runDesktopSourcePipeline(result.source.id, function (ok) {
-        bar.style.width = "100%";
-        stepsEl.querySelectorAll("li").forEach(function (li) {
-          li.classList.add("done");
-        });
-        setTimeout(function () {
-          initMain({ compatibility: true });
-          var needsStore = (data.sourceBoxes || []).some(function (source) {
-            return source.draft_status === "drafted" && source.warehouse_status !== "promoted";
-          });
-          if (ok && needsStore && els.reweaveResponse) {
-            els.reweaveResponse.textContent = t("draftsReadyStore");
-          }
-        }, ok ? 320 : 480);
-      });
-    });
-  }
-
-  function handleScanSource(sourceId) {
-    if (!hasDesktopBridge() || !sourceId) return;
-    if (!desktopCapability("canScanSourceBox")) return;
-    scanningSourceIds[sourceId] = true;
-    renderSources();
-    bridgeCall("scan_source_box", sourceId).then(function (raw) {
-      delete scanningSourceIds[sourceId];
-      var result = parseBridgeJson(raw);
-      if (result && result.source) {
-        addBoundSource(result.source);
-      } else if (result && !result.ok) {
-        var idx = (data.sourceBoxes || []).findIndex(function (s) {
-          return s.id === sourceId;
-        });
-        if (idx >= 0) {
-          data.sourceBoxes[idx].scan_status = "failed";
-          data.sourceBoxes[idx].last_error = result.error || "scan failed";
-        }
-        renderSources();
-      }
-    });
-  }
-
   function sourceScanLabel(src) {
     if (sourceWorkflow.sourceScanLabel) {
       return sourceWorkflow.sourceScanLabel(src, {
-        preparing: !!preparingSourceIds[src.id],
-        scanning: !!scanningSourceIds[src.id],
         verifying: !!verifyingSourceIds[src.id],
         previewing: !!previewingSourceIds[src.id],
         reviewing: !!reviewingSourceIds[src.id],
@@ -4910,17 +4708,6 @@
     bindMainEvents();
     applyLocale();
     syncWelcomeSourceBoxMode();
-    $("btn-select-folder").addEventListener("click", function () {
-      if (hasDesktopBridge() && !desktopCapability("canChooseSourceFolder")) {
-        syncWelcomeSourceBoxMode();
-        return;
-      }
-      if (hasDesktopBridge()) {
-        handleDesktopWelcomeIntake();
-      } else {
-        startCleaning();
-      }
-    });
     var vr = $("btn-view-runtime");
     if (vr) {
       vr.addEventListener("click", function () {
@@ -5693,54 +5480,9 @@
       var right = document.createElement("span");
       right.className = "source-status";
 
-      var scan = src.scan_status || "not_scanned";
       if (hasDesktopBridge()) {
-        if (preparingSourceIds[src.id] || scanningSourceIds[src.id] || verifyingSourceIds[src.id] || previewingSourceIds[src.id] || reviewingSourceIds[src.id]) {
+        if (verifyingSourceIds[src.id] || previewingSourceIds[src.id] || reviewingSourceIds[src.id]) {
           right.textContent = sourceScanLabel(src);
-        } else if (scan === "not_scanned" && desktopCapability("canScanSourceBox")) {
-          var scanBtn = document.createElement("button");
-          scanBtn.type = "button";
-          scanBtn.className = "btn-ghost btn-source-scan";
-          scanBtn.textContent = t("scan");
-          scanBtn.addEventListener("click", function (e) {
-            e.preventDefault();
-            e.stopPropagation();
-            handleScanSource(src.id);
-          });
-          right.appendChild(scanBtn);
-        } else if (scan === "scanned" && src.warehouse_status === "promoted" && desktopCapability("canScanSourceBox")) {
-          var refreshBtn = document.createElement("button");
-          refreshBtn.type = "button";
-          refreshBtn.className = "btn-ghost btn-source-scan";
-          refreshBtn.textContent = t("refresh");
-          refreshBtn.addEventListener("click", function (e) {
-            e.preventDefault();
-            e.stopPropagation();
-            handleScanSource(src.id);
-          });
-          right.appendChild(refreshBtn);
-        } else if (src.draft_status === "drafted" && src.warehouse_status !== "promoted" && desktopCapability("canPromoteDrafts")) {
-          var storeBtn = document.createElement("button");
-          storeBtn.type = "button";
-          storeBtn.className = "btn-ghost btn-source-scan";
-          storeBtn.textContent = t("store");
-          storeBtn.addEventListener("click", function (e) {
-            e.preventDefault();
-            e.stopPropagation();
-            handleStoreSource(src.id);
-          });
-          right.appendChild(storeBtn);
-        } else if (scan === "scanned" && src.warehouse_status !== "promoted" && desktopCapability("canDraftCapsules")) {
-          var prepBtn = document.createElement("button");
-          prepBtn.type = "button";
-          prepBtn.className = "btn-ghost btn-source-scan";
-          prepBtn.textContent = t("prepare");
-          prepBtn.addEventListener("click", function (e) {
-            e.preventDefault();
-            e.stopPropagation();
-            handlePrepareSource(src.id);
-          });
-          right.appendChild(prepBtn);
         } else {
           var lunaReuse = data.lunaReuseBySource && data.lunaReuseBySource[src.id];
           var verification = data.verificationBySource && data.verificationBySource[src.id];
@@ -5936,15 +5678,7 @@
       closeAllPopovers();
     });
 
-    var addSourceBtn = document.querySelector(".btn-add-source");
-    if (addSourceBtn) {
-      addSourceBtn.addEventListener("click", function (e) {
-        e.preventDefault();
-        e.stopPropagation();
-        handleAddSource();
-      });
-      syncSourceControls();
-    }
+    syncSourceControls();
 
     var btnViewPackage = $("btn-view-package");
     if (btnViewPackage) {

@@ -1077,9 +1077,16 @@ def test_desktop_engine_routes_selected_modules_to_stage4(tmp_path: Path) -> Non
         )
         expected_entry = tmp_path / "previews" / result["generatedPackage"]["folder"] / "index.html"
         assert engine.get_latest_product_entry_path() == str(expected_entry.resolve())
-        service = ReweaveAppService(engine=engine)
-        assert service.get_latest_product_entry_path() is None
-        assert service.generate_preview({"taskText": "legacy"})["error"]["code"] == "legacy_generation_inactive"
+        with patch.dict(
+            "os.environ",
+            {"REWEAVE_STATE_DIR": str(tmp_path / "service-state")},
+        ):
+            service = ReweaveAppService(engine=engine)
+            try:
+                assert service.get_latest_product_entry_path() is None
+                assert service.generate_preview({"taskText": "legacy"})["error"]["code"] == "legacy_generation_inactive"
+            finally:
+                service.close()
         expected_entry.unlink()
         expected_entry.symlink_to(tmp_path / "outside.html")
         assert engine.get_latest_product_entry_path() is None
@@ -1838,22 +1845,23 @@ def test_desktop_bridge_runs_structured_data_composition_flow(tmp_path: Path) ->
             return ""
 
     state = tmp_path / "state"
-    service = ReweaveAppService(engine=LumoLiteReweaveEngine())
     with (
         patch.dict("os.environ", {"REWEAVE_STATE_DIR": str(state)}),
         patch.object(desktop, "import_qt_bridge", return_value=(QObject, Slot, object)),
         patch.object(desktop, "import_qt_webengine", return_value=(object, object, object, object, object, QFileDialog)),
     ):
+        service = ReweaveAppService(engine=LumoLiteReweaveEngine())
         desktop.ReweaveBridge._qobject_cls = None
         try:
             bridge = desktop.ReweaveBridge.create(service)
             generated = json.loads(
-                bridge.notify_generate(
+                bridge.generate_product(
                     json.dumps({"taskText": "legacy", "selectionMode": "auto_behavior"})
                 )
             )
         finally:
             desktop.ReweaveBridge._qobject_cls = None
+            service.close()
 
     assert generated["ok"] is False
     assert generated["error"]["code"] == "product_task_invalid"

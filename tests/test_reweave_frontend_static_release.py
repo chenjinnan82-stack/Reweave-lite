@@ -399,6 +399,110 @@ def test_product_plan_ide_prototype_acceptance_stays_prototype_only() -> None:
     assert report["scope_limit"]["real_candidate_generation_implemented"] is False
 
 
+def test_product_acceptance_scalar_parser_matches_formal_data_contract() -> None:
+    node = shutil.which("node")
+    if not node:
+        return
+    scene_path = ROOT / "reweave_frontend" / "product_plan_scene.js"
+    script = r"""
+const fs = require("fs");
+global.window = {};
+let source = fs.readFileSync(process.argv[1], "utf8").replace(/\r\n?/g, "\n");
+const needle = `    return {
+      bind: bind,
+      sync: sync,
+      open: enterScene,
+      getState: getState,
+      consumeWarehouseReturn: consumeWarehouseReturn,
+      resume: resumeScene,
+      refreshCurrentWorkspace: refreshCurrentWorkspace,
+    };`;
+const replacement = `    return {
+      bind: bind,
+      sync: sync,
+      open: enterScene,
+      getState: getState,
+      consumeWarehouseReturn: consumeWarehouseReturn,
+      resume: resumeScene,
+      refreshCurrentWorkspace: refreshCurrentWorkspace,
+      __test: {
+        parseValue: parseValue,
+        scalarSupported: acceptanceScalarSupported,
+      },
+    };`;
+if (!source.includes(needle)) throw new Error("product plan hook insertion failed");
+eval(source.replace(needle, replacement));
+const hooks = window.ReweaveProductPlanScene.create({}).__test;
+const integer = {type:"integer",minimum:1,maximum:3,enum:[1,2,3]};
+const decimal = {
+  type:"decimal",
+  minimum:"-999999999999999999.99",
+  maximum:"999999999999999999.99",
+  max_scale:2,
+};
+const decimalEnum = {
+  type:"decimal",
+  minimum:"1",
+  maximum:"3",
+  max_scale:2,
+  enum:["1.23","2.5"],
+};
+const string = {type:"string",min_length:0,max_length:8};
+const stringEnum = {
+  type:"string",
+  min_length:0,
+  max_length:8,
+  enum:["  keep  ",""],
+};
+function rejects(value, contract) {
+  try { hooks.parseValue(value, contract); return false; }
+  catch (_) { return true; }
+}
+const result = {
+  integer: hooks.parseValue(" 2 ", integer),
+  decimal: hooks.parseValue(" 001.2300 ", decimal),
+  precise: hooks.parseValue("9007199254740991.12", decimal),
+  decimal_enum: hooks.parseValue("1.230", decimalEnum),
+  truth: hooks.parseValue("true", {type:"boolean"}),
+  empty: hooks.parseValue("", string),
+  spaces: hooks.parseValue("  keep  ", stringEnum),
+  utf16: hooks.parseValue("😀", {type:"string",min_length:2,max_length:2}),
+  rejected: [
+    rejects("4", integer),
+    rejects("1.234", decimal),
+    rejects("1000000000000000000", decimal),
+    rejects("-0.00", decimal),
+    rejects("2.6", decimalEnum),
+    rejects(" true ", {type:"boolean"}),
+    rejects("other", stringEnum),
+  ],
+  unsupported: ["number","object","array"].map(function (type) {
+    return hooks.scalarSupported({type:type}) === false;
+  }),
+};
+console.log(JSON.stringify(result));
+"""
+    result = subprocess.run(
+        [node, "-e", script, str(scene_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    parsed = json.loads(result.stdout)
+    assert parsed == {
+        "integer": 2,
+        "decimal": "1.23",
+        "precise": "9007199254740991.12",
+        "decimal_enum": "1.23",
+        "truth": True,
+        "empty": "",
+        "spaces": "  keep  ",
+        "utf16": "😀",
+        "rejected": [True] * 7,
+        "unsupported": [True] * 3,
+    }
+
+
 def test_capsule_core_code_late_response_cannot_replace_current_revision() -> None:
     node = shutil.which("node")
     if not node:
@@ -685,7 +789,7 @@ def test_capsule_warehouse_defaults_to_compact_simple_mode() -> None:
     assert 'id="warehouse-mode-help"' not in index
     assert 'data-i18n="modelTimeoutNote"' not in index
     assert 'data-i18n-title="modelTimeoutNote"' in index
-    assert 'setOptionalTitle(bindBtn, canBind ? "" : t("sourceBoxBindingDisabled"));' in app
+    assert 'setOptionalTitle(bindBtn, t("sourceBoxBindingDisabled"));' in app
     assert 'else element.removeAttribute("title");' in app
     assert 'controlHelp(el, key);' in app
     assert 'bindBtn.title = canBind ? ""' not in app
@@ -980,15 +1084,19 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert "function isCapsuleManageEligible(cap)" in app
     assert "function syncSourceControls()" in app
     assert "function syncWelcomeSourceBoxMode()" in app
-    assert "function handleStoreSource(sourceId)" in app
-    assert 'storeBtn.textContent = t("store");' in app
     assert "Bind locally, scan read-only, no source writes." in app
-    assert 'desktopCapability("canChooseSourceFolder")' in app
-    assert 'desktopCapability("canScanSourceBox")' in app
-    assert 'desktopCapability("canDraftCapsules")' in app
+    assert "addSourceBtn.disabled = true;" in app
+    assert 'addSourceBtn.classList.add("hidden");' in app
+    assert 'bindBtn.classList.add("hidden");' in app
+    for retired in (
+        "choose_source_folder",
+        "scan_source_box",
+        "draft_capsules",
+        "promote_source_drafts",
+    ):
+        assert retired not in app
     assert 'params.get("desktop") === "1"' not in app
     assert 'params.get("main") === "1"' in app
-    assert 'classList.toggle("hidden", !allowed)' in app
     assert 'new QWebChannel(qt.webChannelTransport' in app
     assert "function applyLumoLiteRuntimeView()" in app
     assert "function currentWorkflowStep(hasTaskPackPreview)" in app
@@ -1123,7 +1231,10 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert "alias.eligible_targets" in legacy_ui
     assert "ingestionManagement.capabilityGroups" not in legacy_ui
     management_start = app.index("  function managementPayload(")
-    management_end = app.index("\n  function addBoundSource(", management_start)
+    management_end = app.index(
+        "\n  function applyVerificationResult(",
+        management_start,
+    )
     management = app[management_start:management_end]
     assert "data.capsules" not in management
     assert "usedCapsuleIds" not in management

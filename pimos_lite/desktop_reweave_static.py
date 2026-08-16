@@ -185,11 +185,6 @@ class ReweaveBridge:
 
             def _lumo_lite_block(self, action: str) -> dict[str, Any] | None:
                 if action in {
-                    "choose_source_folder",
-                    "scan_source_box",
-                    "draft_capsules",
-                    "promote_source_drafts",
-                    "notify_generate",
                     "enrich_capsule_content",
                     "get_capsule_content",
                     "get_latest_preview_package",
@@ -853,111 +848,6 @@ class ReweaveBridge:
                     "retry_product_usage_registration", payload_json
                 )
 
-            @Slot(result=str)
-            def choose_source_folder(self) -> str:
-                blocked = self._lumo_lite_block("choose_source_folder")
-                if blocked:
-                    return json.dumps(blocked)
-                _, _, _, _, _, QFileDialog = import_qt_webengine()
-                path = QFileDialog.getExistingDirectory(self._parent_widget, "Select source folder")
-                if not path:
-                    return json.dumps({"ok": False, "cancelled": True})
-                source = self._engine.bind_source_folder(path)
-                if isinstance(source, dict) and source.get("ok") is False:
-                    return json.dumps(source)
-                logger.info("Bound source: %s", source.get("path"))
-                return json.dumps({"ok": True, "source": source})
-
-            @Slot(str, result=str)
-            def scan_source_box(self, source_id: str = "") -> str:
-                blocked = self._lumo_lite_block("scan_source_box")
-                if blocked:
-                    return json.dumps(blocked)
-                source_id = (source_id or "").strip()
-                if not source_id:
-                    return json.dumps({"ok": False, "source_id": "", "error": "missing source_id"})
-                try:
-                    summary = self._engine.scan_source(source_id)
-                    if isinstance(summary, dict) and summary.get("ok") is False:
-                        return json.dumps(summary)
-                    source = self._engine.get_source(source_id)
-                    return json.dumps(
-                        {"ok": True, "source_id": source_id, "summary": summary, "source": source}
-                    )
-                except KeyError:
-                    return json.dumps({"ok": False, "source_id": source_id, "error": "source not found"})
-                except Exception as exc:
-                    logger.exception("Scan failed: %s", source_id)
-                    return json.dumps(
-                        {
-                            "ok": False,
-                            "source_id": source_id,
-                            "error": str(exc)[:200],
-                            "source": self._engine.get_source(source_id),
-                        }
-                    )
-
-            @Slot(str, result=str)
-            def draft_capsules(self, source_id: str = "") -> str:
-                blocked = self._lumo_lite_block("draft_capsules")
-                if blocked:
-                    return json.dumps(blocked)
-                source_id = (source_id or "").strip()
-                if not source_id:
-                    return json.dumps({"ok": False, "source_id": "", "error": "missing source_id"})
-                try:
-                    draft = self._engine.draft_source(source_id)
-                    if isinstance(draft, dict) and draft.get("ok") is False:
-                        return json.dumps(draft)
-                    source = self._engine.get_source(source_id)
-                    return json.dumps(
-                        {"ok": True, "source_id": source_id, "draft": draft, "source": source}
-                    )
-                except Exception as exc:
-                    logger.exception("Draft failed: %s", source_id)
-                    return json.dumps(
-                        {
-                            "ok": False,
-                            "source_id": source_id,
-                            "error": str(exc)[:200],
-                            "source": self._engine.get_source(source_id),
-                        }
-                    )
-
-            @Slot(str, result=str)
-            def promote_source_drafts(self, source_id: str = "") -> str:
-                blocked = self._lumo_lite_block("promote_source_drafts")
-                if blocked:
-                    return json.dumps(blocked)
-                source_id = (source_id or "").strip()
-                if not source_id:
-                    return json.dumps({"ok": False, "source_id": "", "error": "missing source_id"})
-                try:
-                    promoted = self._engine.promote_source(source_id)
-                    if isinstance(promoted, dict) and promoted.get("ok") is False:
-                        return json.dumps(promoted)
-                    source = self._engine.get_source(source_id)
-                    state = self._engine.get_initial_state()
-                    return json.dumps(
-                        {
-                            "ok": True,
-                            "source_id": source_id,
-                            "promoted": promoted,
-                            "source": source,
-                            "capsules": state.get("capsules", []),
-                        }
-                    )
-                except Exception as exc:
-                    logger.exception("Promote failed: %s", source_id)
-                    return json.dumps(
-                        {
-                            "ok": False,
-                            "source_id": source_id,
-                            "error": str(exc)[:200],
-                            "source": self._engine.get_source(source_id),
-                        }
-                    )
-
             @Slot(str, result=str)
             def create_review_queue_for_source(self, source_id: str = "") -> str:
                 blocked = self._lumo_lite_block("create_review_queue_for_source")
@@ -1320,12 +1210,6 @@ class ReweaveBridge:
                     return json.dumps(
                         {"ok": False, "source_id": source_id, "error": str(exc)[:200]}
                     )
-
-            @Slot(str, result=str)
-            def notify_generate(self, payload_json: str = "") -> str:
-                # Historical QWebChannel alias only. The active frontend calls
-                # generate_product and neither path can reach generate_preview.
-                return self._phase4_call("generate_product", payload_json)
 
             @Slot(result=str)
             def open_generated_product(self) -> str:

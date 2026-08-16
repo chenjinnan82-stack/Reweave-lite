@@ -67,6 +67,7 @@ const computationCaptureEntry = "__reweave_capture__/selected.js";
 const computationAdapterV2 = "computation_adapter.v2";
 const computationAdapterV3 = "computation_adapter.v3";
 const computationAdapterV4 = "computation_adapter.v4";
+const computationAdapterV5 = "computation_adapter.v5";
 const deterministicAdapterOrigin = "deterministic_computation_adapter";
 
 function parseModule(path, source) {
@@ -347,7 +348,10 @@ function analyzeCandidate() {
     && input.adapter_contract_version === computationAdapterV3;
   const declaredAdapterV4 = input.candidate_origin === deterministicAdapterOrigin
     && input.adapter_contract_version === computationAdapterV4;
-  const declaredAdapter = declaredAdapterV2 || declaredAdapterV3 || declaredAdapterV4;
+  const declaredAdapterV5 = input.candidate_origin === deterministicAdapterOrigin
+    && input.adapter_contract_version === computationAdapterV5;
+  const declaredAdapter = declaredAdapterV2 || declaredAdapterV3 || declaredAdapterV4
+    || declaredAdapterV5;
   if (declaredAdapter && (!trees.has(computationCaptureEntry)
       || !trees.has(computationAdapterEntry) || entryPath !== computationAdapterEntry)) {
     throw new Rejection("computation_adapter_authorization_invalid", computationAdapterEntry);
@@ -357,7 +361,8 @@ function analyzeCandidate() {
   }
 
   if (trees.has(computationAdapterEntry) || entryPath === computationAdapterEntry) {
-    const adapterV2 = declaredAdapterV2 || declaredAdapterV3 || declaredAdapterV4;
+    const adapterV2 = declaredAdapterV2 || declaredAdapterV3 || declaredAdapterV4
+      || declaredAdapterV5;
     const inputContract = input.input_contract;
     const outputContract = input.output_contract;
     const errorContract = input.error_contract;
@@ -397,6 +402,13 @@ function analyzeCandidate() {
           }
           if (!adapterV2) return true;
           if (contract.type === "boolean") return Object.keys(contract).some((key) => !["type"].includes(key));
+          if (declaredAdapterV5) {
+            return contract.type !== "string" || !Number.isSafeInteger(contract.min_length)
+              || !Number.isSafeInteger(contract.max_length) || contract.min_length < 0
+              || contract.min_length > contract.max_length || contract.max_length > 10000
+              || Object.keys(contract).some((key) =>
+                !["type", "min_length", "max_length"].includes(key));
+          }
           return contract.type !== "string" || !Number.isSafeInteger(contract.min_length)
             || !Number.isSafeInteger(contract.max_length) || contract.min_length < 0
             || contract.min_length > contract.max_length || !Array.isArray(contract.enum)
@@ -409,7 +421,7 @@ function analyzeCandidate() {
         || outputContract?.additional_properties !== false || !outputShapeValid
         || !Array.isArray(outputContract.required)
         || JSON.stringify([...outputContract.required].sort()) !== JSON.stringify(outputFields)
-        || (declaredAdapterV4
+        || (declaredAdapterV4 || declaredAdapterV5
           ? outputProperties[resultField]?.type !== "string"
             || !Number.isSafeInteger(outputProperties[resultField]?.min_length)
             || !Number.isSafeInteger(outputProperties[resultField]?.max_length)
@@ -513,6 +525,11 @@ function analyzeCandidate() {
         `${inputName}.${field} > ${contract.maximum}`,
       ];
       if (contract.type === "boolean") return [`typeof ${inputName}.${field} !== "boolean"`];
+      if (declaredAdapterV5) return [
+        `typeof ${inputName}.${field} !== "string"`,
+        `${inputName}.${field}.length < ${contract.min_length}`,
+        `${inputName}.${field}.length > ${contract.max_length}`,
+      ];
       return [
         `typeof ${inputName}.${field} !== "string"`,
         `(${contract.enum.map((value) => `${inputName}.${field} !== ${JSON.stringify(value)}`).join(" && ")})`,
@@ -522,7 +539,7 @@ function analyzeCandidate() {
     const outputValue = outputProperties[outputField];
     const inputError = '    return { ok: false, error: { code: "INPUT_CONTRACT_VIOLATION", field: null, details: {} } };';
     const outputError = '    return { ok: false, error: { code: "OUTPUT_CONTRACT_VIOLATION", field: null, details: {} } };';
-    const outputChecks = declaredAdapterV4
+    const outputChecks = declaredAdapterV4 || declaredAdapterV5
       ? [
         '    typeof result !== "string"',
         `    || (${outputValue.enum.map((value) =>

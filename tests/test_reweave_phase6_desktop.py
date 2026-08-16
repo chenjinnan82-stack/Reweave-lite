@@ -2108,23 +2108,53 @@ def _run_product_capability_gap_qweb_case(
         published_role_order = []
     elif multi_field_replan:
         replan_fixture = True
-        screenshot_prefix = "capability-gap-rectangle-replan"
-        product_name = "矩形面积能力准备"
-        goal = "创建一个本地矩形面积计算器。"
-        summary = "缺少一个确定性的整数面积计算。"
-        gap_title = "矩形面积计算"
-        gap_reason = "正式能力原先无法计算矩形面积。"
+        screenshot_prefix = "candidate-acceptance-formal-scalars"
+        product_name = "正式标量验收夹具"
+        goal = "DETERMINISTIC_TEST_FIXTURE_NOT_FORMAL_WAREHOUSE_STATE"
+        summary = "验证计划页正式标量验收值。"
+        gap_title = "正式标量验收"
+        gap_reason = "测试计划页对正式标量契约的精确提交。"
         capability_key = "rectangle_area_calculation"
         capability_group_display_name = "矩形面积计算"
         input_properties = {
-            "height": {"type": "integer", "minimum": 1, "maximum": 1000},
-            "width": {"type": "integer", "minimum": 1, "maximum": 1000},
+            "count": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3,
+                "enum": [1, 2, 3],
+            },
+            "enabled": {"type": "boolean"},
+            "label": {
+                "type": "string",
+                "min_length": 0,
+                "max_length": 8,
+                "enum": ["", "  keep  "],
+            },
+            "price": {
+                "type": "decimal",
+                "minimum": "0",
+                "maximum": "999999999999999999.99",
+                "max_scale": 2,
+            },
         }
         output_properties = {
-            "area": {"type": "integer", "minimum": 1, "maximum": 1000000}
+            "amount": {
+                "type": "decimal",
+                "minimum": "0",
+                "maximum": "999999999999999999.99",
+                "max_scale": 2,
+            },
+            "approved": {"type": "boolean"},
+            "note": {"type": "string", "min_length": 0, "max_length": 8},
+            "rank": {
+                "type": "integer",
+                "minimum": 1,
+                "maximum": 3,
+                "enum": [1, 2, 3],
+            },
         }
         adapter_contract_version = "computation_adapter.v2"
-        result_field = "area"
+        result_field = "amount"
         passthrough_fields = []
         warehouse_revision = 63
         published_role_order = [
@@ -2490,16 +2520,18 @@ def _run_product_capability_gap_qweb_case(
                         "role_order": published_role_order,
                         "acceptance_suggestions": [
                             {
-                                "input": {"height": 1, "width": 1},
-                                "expected_output": {"area": 1},
-                            },
-                            {
-                                "input": {"height": 8, "width": 12},
-                                "expected_output": {"area": 96},
-                            },
-                            {
-                                "input": {"height": 1000, "width": 1000},
-                                "expected_output": {"area": 1000000},
+                                "input": {
+                                    "count": 1,
+                                    "enabled": True,
+                                    "label": "",
+                                    "price": "1.2",
+                                },
+                                "expected_output": {
+                                    "amount": "1.2",
+                                    "approved": True,
+                                    "note": "",
+                                    "rank": 1,
+                                },
                             },
                         ],
                     },
@@ -2739,7 +2771,7 @@ def _run_product_capability_gap_qweb_case(
                             "schema": "data_contract.v1",
                             "type": "object",
                             "properties": copy.deepcopy(input_properties),
-                            "required": ["height", "width"],
+                            "required": sorted(input_properties),
                             "additional_properties": False,
                         }
                     },
@@ -2751,14 +2783,14 @@ def _run_product_capability_gap_qweb_case(
                     "schema": "data_contract.v1",
                     "type": "object",
                     "properties": copy.deepcopy(input_properties),
-                    "required": ["height", "width"],
+                    "required": sorted(input_properties),
                     "additional_properties": False,
                 },
                 "output_contract_json": {
                     "schema": "data_contract.v1",
                     "type": "object",
                     "properties": copy.deepcopy(output_properties),
-                    "required": ["area"],
+                    "required": sorted(output_properties),
                     "additional_properties": False,
                 },
             },
@@ -2951,6 +2983,22 @@ def _run_product_capability_gap_qweb_case(
                 copy.deepcopy(projection),
             )
         )
+    submitted_acceptance: list[dict[str, object]] = []
+    if multi_field_replan:
+        service.confirm_product_plan = lambda _payload: {
+            "ok": True,
+            "data": planner._successor_workspace(),
+        }
+
+        def confirm_acceptance(payload):
+            submitted_acceptance.append(copy.deepcopy(payload))
+            return {"ok": True, "data": {"canonical_digest": "a" * 64}}
+
+        service.confirm_product_candidate_acceptance = confirm_acceptance
+        service.start_confirmed_product_candidate = lambda _payload: {
+            "ok": False,
+            "error": {"code": "candidate_start_intentionally_stopped"},
+        }
     qt_parts = desktop.import_qt_webengine()
     QApplication = qt_parts[0]
     app = QApplication.instance() or QApplication(sys.argv)
@@ -3048,7 +3096,7 @@ def _run_product_capability_gap_qweb_case(
                 wait_js(
                     "document.querySelectorAll("
                     "'#product-acceptance-cases .product-acceptance-row'"
-                    ").length === 3",
+                    f").length === {1 if multi_field_replan else 3}",
                     "replan acceptance suggestions",
                 )
                 assert js(
@@ -3056,7 +3104,7 @@ def _run_product_capability_gap_qweb_case(
                     "'#product-acceptance-cases input'"
                     ")).map(node=>node.value))"
                 ) == (
-                    '["1","1","1","8","12","96","1000","1000","1000000"]'
+                    '["1","true","","1.2","1.2","true","","1"]'
                     if multi_field_replan
                     else '["1","12","2","24","10","120"]'
                 )
@@ -3074,6 +3122,50 @@ def _run_product_capability_gap_qweb_case(
                 assert window.centralWidget().grab().save(
                     str(tmp_path / f"{screenshot_prefix}-review-1100x720.png")
                 )
+                if multi_field_replan:
+                    js(
+                        "(() => {"
+                        "const fields=Array.from(document.querySelectorAll("
+                        "'#product-acceptance-cases input'));"
+                        "const values=[' 2 ','true','  keep  ','001.2300',"
+                        "'9007199254740991.1200','false','  ok  ','3'];"
+                        "fields.forEach((field,index)=>{"
+                        "field.value=values[index];"
+                        "field.dispatchEvent(new Event('input',{bubbles:true}));"
+                        "});"
+                        "document.getElementById("
+                        "'btn-confirm-and-generate').click();"
+                        "return true;})()"
+                    )
+                    deadline = time.monotonic() + 20
+                    while not submitted_acceptance and time.monotonic() < deadline:
+                        pump(0.08)
+                    assert submitted_acceptance == [
+                        {
+                            "plan_token": planner.successor_token,
+                            "plan_digest": "6" * 64,
+                            "acceptance_cases": [
+                                {
+                                    "requirement_ids": [
+                                        "requirement_rectangle"
+                                    ],
+                                    "input": {
+                                        "count": 2,
+                                        "enabled": True,
+                                        "label": "  keep  ",
+                                        "price": "1.23",
+                                    },
+                                    "expected_output": {
+                                        "amount": "9007199254740991.12",
+                                        "approved": False,
+                                        "note": "  ok  ",
+                                        "rank": 3,
+                                    },
+                                }
+                            ],
+                        }
+                    ]
+                    return
                 planner.replan_status = "capability_replan_handoff_conflict"
                 window.centralWidget().reload()
                 pump(0.8)
@@ -3597,10 +3689,11 @@ def test_product_flow_builds_previews_exports_and_restores_real_candidate(
         requirement["source_digest"] = plan["goal_digest"]
     _refresh(plan, base_confirmation)
     question_set = {
-        "schema_version": "product_plan_question_set.v3",
+        "schema_version": "product_plan_question_set.v4",
         "purpose": "capability_gap_target",
         "warehouse_revision": 71,
         "catalog_digest": "d" * 64,
+        "target_context_digest": "e" * 64,
         "questions": [
             {
                 "question_id": "question_capability_gap_target",
@@ -3619,6 +3712,13 @@ def test_product_flow_builds_previews_exports_and_restores_real_candidate(
                         "impact": "输入长宽高；输出体积；缺少一个计算能力。",
                         "recommended": False,
                         "forms_gap": True,
+                    },
+                    {
+                        "option_id": "option_no_match",
+                        "label": "以上都不是",
+                        "impact": "停止规划，不创建正式 capability gap。",
+                        "recommended": False,
+                        "forms_gap": False,
                     },
                 ],
                 "allow_custom": False,
@@ -3652,6 +3752,11 @@ def test_product_flow_builds_previews_exports_and_restores_real_candidate(
                 "plan_token": plan_token,
                 "goal": goal,
                 "status": self.status,
+                "failure_code": (
+                    "product_plan_capability_gap_target_unmatched"
+                    if self.status == "failed"
+                    else None
+                ),
                 "question_set": (
                     copy.deepcopy(question_set)
                     if self.status == "needs_clarification"
@@ -3734,6 +3839,26 @@ def test_product_flow_builds_previews_exports_and_restores_real_candidate(
         ):
             assert token == plan_token
             assert digest == question_set["digest"]
+            if answers == [
+                {
+                    "question_id": "question_capability_gap_target",
+                    "source": "option",
+                    "value": "option_no_match",
+                }
+            ]:
+                self.status = "failed"
+                return {
+                    "ok": False,
+                    "error": {
+                        "code": (
+                            "product_plan_capability_gap_target_unmatched"
+                        ),
+                        "message_key": (
+                            "product_plan_capability_gap_target_unmatched"
+                        ),
+                    },
+                    "data": self._projection(),
+                }
             assert answers == [
                 {
                     "question_id": "question_capability_gap_target",
@@ -4240,7 +4365,7 @@ def test_product_flow_builds_previews_exports_and_restores_real_candidate(
             assert "get_product_plan_run" in bridge_calls
             assert js(
                 "document.querySelectorAll('#product-plan-question-form input[type=radio]').length"
-            ) == 2
+            ) == 3
             assert js(
                 "document.querySelectorAll('.product-question-custom').length"
             ) == 0
@@ -4253,7 +4378,7 @@ def test_product_flow_builds_previews_exports_and_restores_real_candidate(
                         )
                     )
                 )
-            ) == {"工作流状态分类", "长方体体积计算"}
+            ) == {"工作流状态分类", "长方体体积计算", "以上都不是"}
             assert js(
                 "document.getElementById('product-plan-status').getAttribute('aria-live')"
             ) == "polite"
@@ -4265,6 +4390,32 @@ def test_product_flow_builds_previews_exports_and_restores_real_candidate(
                 "'#product-plan-question-form input[type=radio]')"
             )
             if os.environ.get("REWEAVE_MULTI_GAP_QUESTION_ONLY") == "1":
+                assert not {
+                    "confirm_product_plan",
+                    "generate_product_candidate",
+                    "save_product_candidate",
+                }.intersection(bridge_calls)
+                return
+            if os.environ.get("REWEAVE_GAP_NO_MATCH_ONLY") == "1":
+                js(
+                    "(() => { const rows = document.querySelectorAll("
+                    "'#product-plan-question-form input[type=radio]'); "
+                    "rows[rows.length - 1].click(); "
+                    "document.getElementById('btn-submit-product-answers').click(); "
+                    "return true; })()"
+                )
+                wait_js(
+                    "window.ReweavePrototype.getState().productPlan.view === 'failed'",
+                    30,
+                    "gap target unmatched",
+                )
+                assert (
+                    js(
+                        "document.getElementById('product-plan-failed-copy').textContent"
+                    )
+                    == "当前正式能力及可补齐缺口均不符合本次目标，"
+                    "Reweave 已停止规划，未创建正式 capability gap。"
+                )
                 assert not {
                     "confirm_product_plan",
                     "generate_product_candidate",
@@ -4731,6 +4882,18 @@ def test_multi_gap_question_ui_stops_before_plan_or_candidate(
 ) -> None:
     monkeypatch.setenv("REWEAVE_PRODUCT_FLOW_CHILD", "1")
     monkeypatch.setenv("REWEAVE_MULTI_GAP_QUESTION_ONLY", "1")
+    test_product_flow_builds_previews_exports_and_restores_real_candidate(
+        tmp_path,
+        monkeypatch,
+    )
+
+
+def test_gap_target_no_match_stops_with_explicit_copy(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("REWEAVE_PRODUCT_FLOW_CHILD", "1")
+    monkeypatch.setenv("REWEAVE_GAP_NO_MATCH_ONLY", "1")
     test_product_flow_builds_previews_exports_and_restores_real_candidate(
         tmp_path,
         monkeypatch,

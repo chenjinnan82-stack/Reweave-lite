@@ -31,6 +31,7 @@ from typing import Any, Callable
 from pimos_lite.composer.module_native import (
     ADAPTER_V3_FORMAL_PRODUCT_COMPOSER_VERSION,
     ADAPTER_V4_FORMAL_PRODUCT_COMPOSER_VERSION,
+    ADAPTER_V5_FORMAL_PRODUCT_COMPOSER_VERSION,
     FORMAL_PRODUCT_COMPOSER_VERSION,
     MULTI_COMPUTATION_FORMAL_PRODUCT_COMPOSER_VERSION,
     PARAMETERIZED_FORMAL_PRODUCT_COMPOSER_VERSION,
@@ -47,12 +48,15 @@ from pimos_lite.reweave_canonical import canonical_json_digest
 from pimos_lite.reweave_capsule_stage3 import (
     CAPTURE_MAPPING_V3,
     CAPTURE_MAPPING_V4,
+    CAPTURE_MAPPING_V5,
     CAPTURE_RESUME_V1,
     CAPTURE_RESUME_V2,
     CAPTURE_RESUME_V3,
+    CAPTURE_RESUME_V4,
     COMPUTATION_ADAPTER_V2,
     COMPUTATION_ADAPTER_V3,
     COMPUTATION_ADAPTER_V4,
+    COMPUTATION_ADAPTER_V5,
     FROZEN_REVIEW_ADMISSION_VERSION,
     FROZEN_UI_REVIEW_ADMISSION_AUTHORIZATION_VERSION,
     FROZEN_UI_REVIEW_ADMISSION_VERSION,
@@ -69,6 +73,7 @@ from pimos_lite.reweave_capsule_store import (
     CANONICALIZATION_VERSION,
     CapsuleStoreError,
     CapsuleWarehouseStore,
+    acquire_state_root_lease,
     canonicalize_capsule,
 )
 from pimos_lite.reweave_data_contract import (
@@ -76,9 +81,13 @@ from pimos_lite.reweave_data_contract import (
     data_contract_accepts,
     normalize_capsule_contracts,
 )
-from pimos_lite.reweave_process_environment import restricted_subprocess_environment
+from pimos_lite.reweave_process_environment import (
+    qwebengine_qpa_platform,
+    restricted_subprocess_environment,
+)
 from pimos_lite.reweave_product_planner import (
     CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_V2,
+    CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_V3,
     CAPABILITY_SOURCE_PROPOSAL_OUTPUT_V2,
     PRODUCT_PLANNING_PHASES,
     ProductPlanner,
@@ -132,6 +141,12 @@ _PRODUCT_ID = re.compile(r"product_[0-9a-f]{32}\Z")
 _MANIFEST_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
 _CANDIDATE_ID = re.compile(r"candidate_[0-9a-f]{32}\Z")
 _CANDIDATE_TOKEN = re.compile(r"candidate_token_[0-9a-f]{48}\Z")
+_CANDIDATE_STAGING = re.compile(
+    r"\.candidate_[0-9a-f]{32}-[a-z0-9_]{8}\Z"
+)
+_PRODUCT_STAGING = re.compile(
+    r"\.product_[0-9a-f]{32}-[a-z0-9_]{8}\Z"
+)
 PUBLIC_PRODUCT_ACTIONS = frozenset(
     {
         "get_initial_state",
@@ -154,6 +169,8 @@ PUBLIC_PRODUCT_ACTIONS = frozenset(
         "create_local_agent_handoff",
         "revoke_local_agent_handoff",
         "list_reusable_product_capabilities",
+        "get_confirmed_product_plan",
+        "start_confirmed_product_candidate",
         "start_product_candidate",
         "get_product_candidate_run",
         "get_product_candidate",
@@ -288,6 +305,127 @@ def _copy_private_file(source: Path, target: Path) -> None:
             os.fsync(directory_descriptor)
         finally:
             os.close(directory_descriptor)
+
+
+def _staging_tree_identity(path: Path) -> tuple[int, int]:
+    def raise_walk_error(error: OSError) -> None:
+        raise error
+
+    try:
+        root = path.lstat()
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        if (
+            stat.S_ISLNK(root.st_mode)
+            or bool(
+                getattr(root, "st_file_attributes", 0)
+                & reparse_flag
+            )
+            or not stat.S_ISDIR(root.st_mode)
+        ):
+            raise CapsuleStoreError("product_staging_recovery_conflict")
+        for current, directories, files in os.walk(
+            path,
+            topdown=True,
+            onerror=raise_walk_error,
+            followlinks=False,
+        ):
+            for name in [*directories, *files]:
+                details = (Path(current) / name).lstat()
+                if (
+                    stat.S_ISLNK(details.st_mode)
+                    or bool(
+                        getattr(details, "st_file_attributes", 0)
+                        & reparse_flag
+                    )
+                    or not (
+                        stat.S_ISDIR(details.st_mode)
+                        or stat.S_ISREG(details.st_mode)
+                    )
+                ):
+                    raise CapsuleStoreError(
+                        "product_staging_recovery_conflict"
+                    )
+        return int(root.st_dev), int(root.st_ino)
+    except CapsuleStoreError:
+        raise
+    except OSError as exc:
+        raise CapsuleStoreError(
+            "product_staging_recovery_failed"
+        ) from exc
+
+
+def _recover_product_staging(state_root: Path) -> None:
+    candidates: list[tuple[Path, tuple[int, int]]] = []
+    touched: set[Path] = set()
+    for root, pattern in (
+        (state_root / PRODUCT_CANDIDATES_DIRNAME, _CANDIDATE_STAGING),
+        (state_root / PRODUCTS_DIRNAME, _PRODUCT_STAGING),
+    ):
+        if not root.exists() and not root.is_symlink():
+            continue
+        try:
+            root_details = root.lstat()
+            if (
+                stat.S_ISLNK(root_details.st_mode)
+                or bool(
+                    getattr(root_details, "st_file_attributes", 0)
+                    & getattr(
+                        stat,
+                        "FILE_ATTRIBUTE_REPARSE_POINT",
+                        0,
+                    )
+                )
+                or not stat.S_ISDIR(root_details.st_mode)
+            ):
+                raise CapsuleStoreError(
+                    "product_staging_recovery_conflict"
+                )
+            with os.scandir(root) as entries:
+                for entry in entries:
+                    if pattern.fullmatch(entry.name):
+                        path = root / entry.name
+                        candidates.append(
+                            (path, _staging_tree_identity(path))
+                        )
+        except CapsuleStoreError:
+            raise
+        except OSError as exc:
+            raise CapsuleStoreError(
+                "product_staging_recovery_failed"
+            ) from exc
+
+    for path, expected_identity in candidates:
+        if _staging_tree_identity(path) != expected_identity:
+            raise CapsuleStoreError(
+                "product_staging_recovery_conflict"
+            )
+        try:
+            shutil.rmtree(path)
+        except OSError as exc:
+            raise CapsuleStoreError(
+                "product_staging_recovery_failed"
+            ) from exc
+        if path.exists() or path.is_symlink():
+            raise CapsuleStoreError(
+                "product_staging_recovery_failed"
+            )
+        touched.add(path.parent)
+
+    if os.name == "posix":
+        for root in sorted(touched):
+            try:
+                descriptor = os.open(
+                    root,
+                    os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+                )
+                try:
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+            except OSError as exc:
+                raise CapsuleStoreError(
+                    "product_staging_recovery_failed"
+                ) from exc
 
 
 def _retired_v1_adapter_candidate(candidate: Any) -> bool:
@@ -592,10 +730,6 @@ def _canonical_manifest_bytes(manifest: dict[str, Any]) -> bytes:
     if _strict_json_bytes(encoded) != manifest:
         raise ProductGenerationError("product_manifest_not_canonical")
     return encoded
-
-
-def _product_directory() -> Path:
-    return state_dir() / PRODUCTS_DIRNAME
 
 
 def _safe_product_relative(value: object) -> str:
@@ -1283,7 +1417,7 @@ def _product_worker_environment(temporary: Path) -> dict[str, str]:
         "XDG_DATA_HOME": str(temporary / "data"),
         "APPDATA": str(temporary / "appdata"),
         "LOCALAPPDATA": str(temporary / "localappdata"),
-        "QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen"),
+        "QT_QPA_PLATFORM": qwebengine_qpa_platform(),
         "QTWEBENGINE_CHROMIUM_FLAGS": os.environ.get(
             "QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu"
         ),
@@ -1487,29 +1621,47 @@ class ReweaveAppService:
     ) -> None:
         self._engine = engine or _InactiveLegacyEngine()
         self._capsule_store = capsule_store or CapsuleWarehouseStore()
-        self._ollama_base_url = ollama_base_url
-        self._capsule_intake = ReweaveCapsuleIntake(self._capsule_store)
-        self._capsule_supervisor = OllamaSupervisor(self._capsule_store)
-        self._capsule_stage3 = ReweaveCapsuleStage3(
-            self._capsule_store,
-            intake=self._capsule_intake,
-            supervisor=self._capsule_supervisor,
-        )
-        self._javascript_sources = JavascriptSourceService(self._capsule_store)
-        self._product_planner = ProductPlanner(
-            self._capsule_store.path.parent / "product_workspaces",
-            ollama_base_url,
-        )
-        self._management_lock = threading.RLock()
-        self._capsule_operation_lock = threading.RLock()
-        self._management_executor: ThreadPoolExecutor | None = None
-        self._management_tasks: dict[str, dict[str, Any]] = {}
-        self._restore_pending = False
-        self._management_closed = False
-        self._management_recovered = False
-        self._management_rules_checked = False
-        # Process-local by contract: source bytes, graphs, and offers never enter SQLite.
-        self._javascript_capture_sessions: dict[str, dict[str, Any]] = {}
+        self._state_root = self._capsule_store.path.parent.resolve()
+        self._state_root_lease = acquire_state_root_lease(self._state_root)
+        if not self._state_root_lease.primary_owner:
+            self._state_root_lease.close()
+            self._state_root_lease = None
+            raise CapsuleStoreError("reweave_state_root_in_use")
+        try:
+            _recover_product_staging(self._state_root)
+            self._ollama_base_url = ollama_base_url
+            self._capsule_intake = ReweaveCapsuleIntake(
+                self._capsule_store
+            )
+            self._capsule_supervisor = OllamaSupervisor(
+                self._capsule_store
+            )
+            self._capsule_stage3 = ReweaveCapsuleStage3(
+                self._capsule_store,
+                intake=self._capsule_intake,
+                supervisor=self._capsule_supervisor,
+            )
+            self._javascript_sources = JavascriptSourceService(
+                self._capsule_store
+            )
+            self._product_planner = ProductPlanner(
+                self._state_root / "product_workspaces",
+                ollama_base_url,
+            )
+            self._management_lock = threading.RLock()
+            self._capsule_operation_lock = threading.RLock()
+            self._management_executor: ThreadPoolExecutor | None = None
+            self._management_tasks: dict[str, dict[str, Any]] = {}
+            self._restore_pending = False
+            self._management_closed = False
+            self._management_recovered = False
+            self._management_rules_checked = False
+            # Process-local by contract: source bytes, graphs, and offers never enter SQLite.
+            self._javascript_capture_sessions: dict[str, dict[str, Any]] = {}
+            self._product_planner.recover_orphaned_workspaces(set())
+        except BaseException:
+            self._state_root_lease.close()
+            raise
 
     @property
     def engine(self) -> Any:
@@ -1787,6 +1939,7 @@ class ReweaveAppService:
             raise ProductPlanningError(
                 "capability_source_proposal_capture_invalid"
             )
+        adapter_version = authorization.get("adapter_contract_version")
         arguments = []
         for field, parameter in zip(input_fields, parameters):
             contract = input_properties[field]
@@ -1807,6 +1960,30 @@ class ReweaveAppService:
                         }
                     )
                     continue
+                if (
+                    adapter_version == COMPUTATION_ADAPTER_V5
+                    and set(contract)
+                    == {"type", "min_length", "max_length"}
+                    and contract.get("type") == "string"
+                    and type(contract.get("min_length")) is int
+                    and type(contract.get("max_length")) is int
+                    and 0
+                    <= contract["min_length"]
+                    <= contract["max_length"]
+                    <= 10_000
+                ):
+                    arguments.append(
+                        {
+                            "parameter_binding_id": parameter[
+                                "parameter_binding_id"
+                            ],
+                            "input_field": field,
+                            "kind": "string",
+                            "min_length": contract["min_length"],
+                            "max_length": contract["max_length"],
+                        }
+                    )
+                    continue
                 raise ProductPlanningError(
                     "capability_source_proposal_capture_invalid"
                 )
@@ -1823,7 +2000,6 @@ class ReweaveAppService:
             )
         result_field = authorization.get("result_field")
         passthrough_fields = authorization.get("passthrough_fields")
-        adapter_version = authorization.get("adapter_contract_version")
         if (
             type(result_field) is not str
             or result_field not in output_properties
@@ -1833,6 +2009,7 @@ class ReweaveAppService:
                 COMPUTATION_ADAPTER_V2,
                 COMPUTATION_ADAPTER_V3,
                 COMPUTATION_ADAPTER_V4,
+                COMPUTATION_ADAPTER_V5,
             }
         ):
             raise ProductPlanningError(
@@ -1866,7 +2043,7 @@ class ReweaveAppService:
                 }
             )
 
-        if adapter_version == COMPUTATION_ADAPTER_V4:
+        if adapter_version in {COMPUTATION_ADAPTER_V4, COMPUTATION_ADAPTER_V5}:
             witnesses = (
                 proposal.get("witnesses")
                 if type(proposal) is dict
@@ -1875,11 +2052,23 @@ class ReweaveAppService:
             result_enum = authorization.get("result_enum")
             if (
                 authorization.get("schema_version")
-                != CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_V2
+                != (
+                    CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_V3
+                    if adapter_version == COMPUTATION_ADAPTER_V5
+                    else CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_V2
+                )
                 or authorization.get("capture_mapping_schema")
-                != CAPTURE_MAPPING_V4
+                != (
+                    CAPTURE_MAPPING_V5
+                    if adapter_version == COMPUTATION_ADAPTER_V5
+                    else CAPTURE_MAPPING_V4
+                )
                 or authorization.get("proof_schema")
-                != "source_graph_proof.v2"
+                != (
+                    "source_graph_proof.v3"
+                    if adapter_version == COMPUTATION_ADAPTER_V5
+                    else "source_graph_proof.v2"
+                )
                 or passthrough_fields
                 or type(result_enum) is not list
                 or not result_enum
@@ -1949,12 +2138,20 @@ class ReweaveAppService:
                 **mapping,
                 "passthrough_fields": passthrough_fields,
             }
-        elif adapter_version == COMPUTATION_ADAPTER_V4:
+        elif adapter_version in {COMPUTATION_ADAPTER_V4, COMPUTATION_ADAPTER_V5}:
             mapping = {
-                "schema": CAPTURE_MAPPING_V4,
+                "schema": (
+                    CAPTURE_MAPPING_V5
+                    if adapter_version == COMPUTATION_ADAPTER_V5
+                    else CAPTURE_MAPPING_V4
+                ),
                 **mapping,
                 "result_enum": copy.deepcopy(result_enum),
-                "proof_schema": "source_graph_proof.v2",
+                "proof_schema": (
+                    "source_graph_proof.v3"
+                    if adapter_version == COMPUTATION_ADAPTER_V5
+                    else "source_graph_proof.v2"
+                ),
             }
         return (
             {
@@ -2266,10 +2463,24 @@ class ReweaveAppService:
             self._management_closed = True
             for task in self._management_tasks.values():
                 task["cancel_event"].set()
+                future = task.get("future")
+                if (
+                    isinstance(future, Future)
+                    and future.cancel()
+                    and task["status"] not in _TERMINAL_TASK_STATES
+                ):
+                    task["status"] = "cancelled"
+                    task["completed_at"] = _now()
             self._javascript_capture_sessions.clear()
             executor = self._management_executor
-        if executor is not None:
-            executor.shutdown(wait=True, cancel_futures=False)
+            lease = self._state_root_lease
+            self._state_root_lease = None
+        try:
+            if executor is not None:
+                executor.shutdown(wait=True, cancel_futures=True)
+        finally:
+            if lease is not None:
+                lease.close()
 
     def _capsule_management_state(self) -> dict[str, Any]:
         initialized = self._capsule_store.path.is_file()
@@ -2464,6 +2675,11 @@ class ReweaveAppService:
                     candidate.get("adapter_contract_version")
                     == COMPUTATION_ADAPTER_V4
                     and candidate.get("resume_contract") == CAPTURE_RESUME_V3
+                )
+                or (
+                    candidate.get("adapter_contract_version")
+                    == COMPUTATION_ADAPTER_V5
+                    and candidate.get("resume_contract") == CAPTURE_RESUME_V4
                 )
             )
         )
@@ -2704,6 +2920,7 @@ class ReweaveAppService:
                     COMPUTATION_ADAPTER_V2,
                     COMPUTATION_ADAPTER_V3,
                     COMPUTATION_ADAPTER_V4,
+                    COMPUTATION_ADAPTER_V5,
                 }:
                     stale[str(row["capsule_id"])] = (
                         str(row["current_version_id"]),
@@ -2715,6 +2932,7 @@ class ReweaveAppService:
                         COMPUTATION_ADAPTER_V2,
                         COMPUTATION_ADAPTER_V3,
                         COMPUTATION_ADAPTER_V4,
+                        COMPUTATION_ADAPTER_V5,
                     }
                     and not self._capsule_stage3._stored_version_evidence_eligible(
                         dict(row)
@@ -2768,6 +2986,7 @@ class ReweaveAppService:
         read_only_planning: bool = False,
         read_only_candidate: bool = False,
         planning_progress: bool = False,
+        retry_terminal: bool = False,
     ) -> dict[str, Any]:
         if read_only_planning and not kind.startswith("product_plan_"):
             raise ValueError("read_only_planning_kind_invalid")
@@ -2775,14 +2994,28 @@ class ReweaveAppService:
             raise ValueError("planning_progress_kind_invalid")
         if read_only_candidate and not kind.startswith("product_candidate_"):
             raise ValueError("read_only_candidate_kind_invalid")
-        if not restore and not read_only_planning and not read_only_candidate:
-            try:
-                self._ensure_capsule_management()
-            except (CapsuleStoreError, OSError, RuntimeError, sqlite3.Error) as exc:
-                return self._exception_error(exc, "capsule_management_unavailable")
+        if retry_terminal and (
+            run_id is None
+            or not read_only_candidate
+            or kind != "product_candidate_start_confirmed"
+        ):
+            raise ValueError("management_retry_terminal_invalid")
         with self._management_lock:
             if self._management_closed:
                 return self._error("capsule_management_closed")
+            if not restore and not read_only_planning and not read_only_candidate:
+                try:
+                    self._ensure_capsule_management()
+                except (
+                    CapsuleStoreError,
+                    OSError,
+                    RuntimeError,
+                    sqlite3.Error,
+                ) as exc:
+                    return self._exception_error(
+                        exc,
+                        "capsule_management_unavailable",
+                    )
             if self._restore_pending:
                 return self._error("restore_in_progress")
             if restore:
@@ -2801,11 +3034,16 @@ class ReweaveAppService:
                 if existing_task is not None:
                     if existing_task["kind"] != kind:
                         raise ValueError("management_run_id_conflict")
-                    return {
-                        "ok": True,
-                        "run_id": run_id,
-                        "status": existing_task["status"],
-                    }
+                    if not (
+                        retry_terminal
+                        and existing_task["status"] in {"failed", "cancelled"}
+                        and existing_task["completed_at"] is not None
+                    ):
+                        return {
+                            "ok": True,
+                            "run_id": run_id,
+                            "status": existing_task["status"],
+                        }
             cancel_event = threading.Event()
             task: dict[str, Any] = {
                 "run_id": task_id,
@@ -2832,11 +3070,14 @@ class ReweaveAppService:
 
             def run() -> None:
                 try:
-                    if cancel_event.is_set() and cancellable:
-                        task["status"] = "cancelled"
-                        return
-                    task["status"] = "running"
-                    task["started_at"] = _now()
+                    with self._management_lock:
+                        if self._management_closed or (
+                            cancel_event.is_set() and cancellable
+                        ):
+                            task["status"] = "cancelled"
+                            return
+                        task["status"] = "running"
+                        task["started_at"] = _now()
                     with self._capsule_operation_lock:
                         task["data"] = (
                             action(cancel_event, report_phase)
@@ -3359,6 +3600,16 @@ class ReweaveAppService:
                 "examples": request.get("examples"),
             }
             prepare = self._capsule_stage3.prepare_ephemeral_computation_capture_v4
+        elif mapping_schema == CAPTURE_MAPPING_V5:
+            mapping = {
+                "schema": CAPTURE_MAPPING_V5,
+                "arguments": request.get("arguments"),
+                "result_field": request.get("result_field"),
+                "result_enum": request.get("result_enum"),
+                "proof_schema": request.get("proof_schema"),
+                "examples": request.get("examples"),
+            }
+            prepare = self._capsule_stage3.prepare_ephemeral_computation_capture_v5
         else:
             raise Stage3Error("capture_request_invalid")
         selection = {
@@ -3439,7 +3690,7 @@ class ReweaveAppService:
                         "passthrough_fields",
                         "examples",
                     }
-                elif mapping_schema == CAPTURE_MAPPING_V4:
+                elif mapping_schema in {CAPTURE_MAPPING_V4, CAPTURE_MAPPING_V5}:
                     allowed_keys = {
                         "schema",
                         "project_id",
@@ -3840,6 +4091,17 @@ class ReweaveAppService:
             return self._submit_management_task(
                 "product_plan_capability_replan",
                 action,
+                run_id=(
+                    "run_"
+                    + canonical_json_digest(
+                        {
+                            "schema_version": (
+                                "capability_replan_management_run.v1"
+                            ),
+                            **request,
+                        }
+                    )[:32]
+                ),
                 cancellable=True,
                 read_only_planning=True,
                 planning_progress=True,
@@ -4265,6 +4527,7 @@ class ReweaveAppService:
         except (CapsuleStoreError, OSError, ProductGenerationError, ValueError) as exc:
             return self._exception_error(exc, "product_plan_workspace_failed")
 
+    @_serialized_management
     def confirm_product_plan(
         self, payload: dict[str, Any] | None = None
     ) -> dict[str, Any]:
@@ -4309,11 +4572,15 @@ class ReweaveAppService:
                         result.get("ok") is True
                         and result.get("data", {}).get("status") == "confirmed"
                     ):
-                        self._record_product_experience(
-                            request["plan_token"],
-                            "plan_confirmed",
-                            catalog=catalog,
-                        )
+                        result = {
+                            **result,
+                            "data": self._with_experience_record(
+                                result["data"],
+                                request["plan_token"],
+                                "plan_confirmed",
+                                catalog=catalog,
+                            ),
+                        }
                     return result
                 capsule_ids = sorted(
                     {
@@ -4357,11 +4624,15 @@ class ReweaveAppService:
                     result.get("ok") is True
                     and result.get("data", {}).get("status") == "confirmed"
                 ):
-                    self._record_product_experience(
-                        request["plan_token"],
-                        "plan_confirmed",
-                        catalog=catalog,
-                    )
+                    result = {
+                        **result,
+                        "data": self._with_experience_record(
+                            result["data"],
+                            request["plan_token"],
+                            "plan_confirmed",
+                            catalog=catalog,
+                        ),
+                    }
                 return result
         except (
             CapsuleStoreError,
@@ -4392,6 +4663,36 @@ class ReweaveAppService:
         except ProductPlanningError as exc:
             raise ProductGenerationError(exc.code) from exc
 
+    def _with_experience_record(
+        self,
+        data: dict[str, Any],
+        plan_token: str,
+        milestone: str,
+        *,
+        catalog: dict[str, Any] | None = None,
+        candidate: dict[str, Any] | None = None,
+        export_status: str | None = None,
+    ) -> dict[str, Any]:
+        enriched = dict(data)
+        try:
+            self._record_product_experience(
+                plan_token,
+                milestone,
+                catalog=catalog,
+                candidate=candidate,
+                export_status=export_status,
+            )
+        except Exception as exc:
+            code = self._exception_error(
+                exc,
+                "project_experience_record_failed",
+            )["error"]["code"]
+            enriched["experience_record_status"] = "failed"
+            enriched["experience_record_error_code"] = code
+        else:
+            enriched["experience_record_status"] = "recorded"
+        return enriched
+
     def retrieve_product_experience(
         self,
         plan_token: str,
@@ -4403,6 +4704,7 @@ class ReweaveAppService:
                 limit,
             )
 
+    @_serialized_management
     def record_product_capability_gap_decision(
         self,
         payload: dict[str, Any] | None = None,
@@ -4443,6 +4745,7 @@ class ReweaveAppService:
                 "capability_gap_decision_failed",
             )
 
+    @_serialized_management
     def prepare_product_capability_source_proposal(
         self,
         payload: dict[str, Any] | None = None,
@@ -4566,9 +4869,9 @@ class ReweaveAppService:
                 raise ProductPlanningError(
                     "capability_source_proposal_run_conflict"
                 )
-            _copy_private_file(
-                self._capsule_store.path,
+            self._capsule_store.create_consistent_snapshot(
                 validation_database,
+                expected_revision=identity["warehouse_revision"],
             )
             isolated_store = CapsuleWarehouseStore(validation_database)
             isolated_intake = ReweaveCapsuleIntake(isolated_store)
@@ -4663,6 +4966,9 @@ class ReweaveAppService:
                 ),
                 COMPUTATION_ADAPTER_V4: (
                     isolated_stage3.prepare_ephemeral_computation_capture_v4
+                ),
+                COMPUTATION_ADAPTER_V5: (
+                    isolated_stage3.prepare_ephemeral_computation_capture_v5
                 ),
             }.get(authorization["adapter_contract_version"])
             if prepare is None:
@@ -5072,6 +5378,7 @@ class ReweaveAppService:
         except CandidateAcceptanceError as exc:
             raise ProductGenerationError(exc.code) from exc
 
+    @_serialized_management
     def create_local_agent_handoff(
         self,
         payload: dict[str, Any] | None = None,
@@ -5113,6 +5420,7 @@ class ReweaveAppService:
         ) as exc:
             return self._exception_error(exc, "agent_handoff_create_failed")
 
+    @_serialized_management
     def revoke_local_agent_handoff(
         self,
         payload: dict[str, Any] | None = None,
@@ -5198,6 +5506,7 @@ class ReweaveAppService:
             ],
         }
 
+    @_serialized_management
     def confirm_product_candidate_acceptance(
         self, payload: dict[str, Any] | None = None
     ) -> dict[str, Any]:
@@ -5412,7 +5721,10 @@ class ReweaveAppService:
             return self._exception_error(exc, "product_plan_workspace_failed")
 
     def _product_candidate_root(self) -> Path:
-        return self._capsule_store.path.parent / PRODUCT_CANDIDATES_DIRNAME
+        return self._state_root / PRODUCT_CANDIDATES_DIRNAME
+
+    def _formal_product_root(self) -> Path:
+        return self._state_root / PRODUCTS_DIRNAME
 
     @staticmethod
     def _compile_candidate_execution(
@@ -6150,7 +6462,13 @@ class ReweaveAppService:
                 "candidate_acceptance_confirmation_required"
             )
         expected_composer_version = (
-            ADAPTER_V4_FORMAL_PRODUCT_COMPOSER_VERSION
+            ADAPTER_V5_FORMAL_PRODUCT_COMPOSER_VERSION
+            if any(
+                capsule.get("adapter_contract_version")
+                == COMPUTATION_ADAPTER_V5
+                for capsule in selected
+            )
+            else ADAPTER_V4_FORMAL_PRODUCT_COMPOSER_VERSION
             if any(
                 capsule.get("adapter_contract_version")
                 == COMPUTATION_ADAPTER_V4
@@ -6222,12 +6540,12 @@ class ReweaveAppService:
                 raise ProductGenerationError(
                     "candidate_acceptance_contract_conflict"
                 )
-            self._record_product_experience(
+            return self._with_experience_record(
+                self._candidate_projection(existing),
                 plan_token,
                 "candidate_terminal",
                 candidate=existing,
             )
-            return self._candidate_projection(existing)
         try:
             composition = compose_capsule_product(
                 task=execution["composer_request"]["task"],
@@ -6632,12 +6950,12 @@ class ReweaveAppService:
                 finally:
                     os.close(descriptor)
             persisted = self._read_candidate_record_path(final)
-            self._record_product_experience(
+            return self._with_experience_record(
+                self._candidate_projection(persisted),
                 plan_token,
                 "candidate_terminal",
                 candidate=persisted,
             )
-            return self._candidate_projection(persisted)
         except (OSError, sqlite3.Error) as exc:
             raise ProductGenerationError("product_candidate_write_failed") from exc
         finally:
@@ -6669,7 +6987,7 @@ class ReweaveAppService:
                 return self._error("product_candidate_request_invalid")
             return self._submit_management_task(
                 "product_candidate_start",
-                lambda _cancel: self._ok(
+                lambda _cancel: self._candidate_task_result(
                     self._build_product_candidate(
                         request["plan_token"],
                         request["plan_digest"],
@@ -6680,6 +6998,21 @@ class ReweaveAppService:
             )
         except ValueError as exc:
             return self._exception_error(exc, "product_candidate_request_invalid")
+
+    @classmethod
+    def _candidate_task_result(
+        cls,
+        candidate: dict[str, Any],
+    ) -> dict[str, Any]:
+        projection = dict(candidate)
+        result = cls._ok(projection)
+        for key in (
+            "experience_record_status",
+            "experience_record_error_code",
+        ):
+            if key in projection:
+                result[key] = projection.pop(key)
+        return result
 
     def _build_confirmed_product_candidate(
         self,
@@ -6735,7 +7068,7 @@ class ReweaveAppService:
                 return self._error("product_candidate_request_invalid")
             return self._submit_management_task(
                 "product_candidate_start_confirmed",
-                lambda _cancel: self._ok(
+                lambda _cancel: self._candidate_task_result(
                     self._build_confirmed_product_candidate(
                         request["plan_token"],
                         request["plan_digest"],
@@ -6758,6 +7091,7 @@ class ReweaveAppService:
                     )[:32]
                 ),
                 read_only_candidate=True,
+                retry_terminal=True,
             )
         except ValueError as exc:
             return self._exception_error(exc, "product_candidate_request_invalid")
@@ -6917,19 +7251,21 @@ class ReweaveAppService:
             )
 
             def result(status: str) -> dict[str, Any]:
-                self._record_product_experience(
-                    request["plan_token"],
-                    "export_terminal",
-                    candidate=record,
-                    export_status=status,
-                )
                 return self._ok(
-                    {
-                        "schema_version": "product_candidate_export.v1",
-                        "status": status,
-                        "directory_name": directory_name,
-                        "file_count": len(record["files"]),
-                    }
+                    self._with_experience_record(
+                        {
+                            "schema_version": (
+                                "product_candidate_export.v1"
+                            ),
+                            "status": status,
+                            "directory_name": directory_name,
+                            "file_count": len(record["files"]),
+                        },
+                        request["plan_token"],
+                        "export_terminal",
+                        candidate=record,
+                        export_status=status,
+                    )
                 )
 
             source = candidate_dir / "product"
@@ -6941,7 +7277,7 @@ class ReweaveAppService:
 
             parent_descriptor = _open_export_directory(
                 parent,
-                self._capsule_store.path.parent,
+                self._state_root,
             )
             temporary_name = f".reweave-export-{uuid.uuid4().hex}"
             temporary_identity: tuple[int, int] | None = None
@@ -7189,6 +7525,7 @@ class ReweaveAppService:
                     CAPTURE_RESUME_V1,
                     CAPTURE_RESUME_V2,
                     CAPTURE_RESUME_V3,
+                    CAPTURE_RESUME_V4,
                 }:
                     redaction = item.get("redaction") or {}
                     item["capture_summary"] = {
@@ -7209,6 +7546,7 @@ class ReweaveAppService:
                             CAPTURE_RESUME_V1,
                             CAPTURE_RESUME_V2,
                             CAPTURE_RESUME_V3,
+                            CAPTURE_RESUME_V4,
                         }
                         and item.get("candidate_status") == "waiting_user"
                     )
@@ -7594,6 +7932,11 @@ class ReweaveAppService:
                         candidate.get("adapter_contract_version")
                         == COMPUTATION_ADAPTER_V4
                         and item.get("resume_contract") == CAPTURE_RESUME_V3
+                    )
+                    or (
+                        candidate.get("adapter_contract_version")
+                        == COMPUTATION_ADAPTER_V5
+                        and item.get("resume_contract") == CAPTURE_RESUME_V4
                     )
                 )
             )
@@ -8997,7 +9340,12 @@ class ReweaveAppService:
             capsule_ids = list(raw_ids)
             return self._submit_management_task(
                 "generate_product",
-                lambda _cancel: self._generate_formal_product(task, capsule_ids),
+                lambda cancel: self._generate_formal_product(
+                    task,
+                    capsule_ids,
+                    cancel,
+                ),
+                cancellable=True,
             )
         except ValueError as exc:
             return self._exception_error(exc, "generate_product_invalid")
@@ -9181,7 +9529,10 @@ class ReweaveAppService:
                         "javascript_modules": values["javascript_modules"],
                         "assets": assets,
                     }
-                if adapter_contract_version == COMPUTATION_ADAPTER_V4:
+                if adapter_contract_version in {
+                    COMPUTATION_ADAPTER_V4,
+                    COMPUTATION_ADAPTER_V5,
+                }:
                     evidence = extraction_summary.get("ephemeral_capture_payload")
                     if type(evidence) is not dict:
                         raise ProductGenerationError(
@@ -9380,11 +9731,20 @@ class ReweaveAppService:
             self._capsule_store.bump_revision(connection)
 
     def _generate_formal_product(
-        self, task: str, capsule_ids: list[str]
+        self,
+        task: str,
+        capsule_ids: list[str],
+        cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
+        def raise_if_cancelled() -> None:
+            if cancel_event is not None and cancel_event.is_set():
+                raise ProductGenerationError("cancelled_by_user")
+
+        raise_if_cancelled()
         capsules, product_scope, page_contracts = self._load_composer_capsules(
             capsule_ids
         )
+        raise_if_cancelled()
         product_id = f"product_{uuid.uuid4().hex}"
         generated_at = _now()
         try:
@@ -9394,12 +9754,14 @@ class ReweaveAppService:
                 generated_at=generated_at,
                 capsules=capsules,
                 verified_page_contracts=page_contracts,
+                cancel_check=raise_if_cancelled,
             )
         except ValueError as exc:
             code = str(exc)
             raise ProductGenerationError(
                 code if re.fullmatch(r"[a-z][a-z0-9_]{1,95}", code) else "product_composition_failed"
             ) from exc
+        raise_if_cancelled()
         if (
             type(composition) is not dict
             or composition.get("status") != "composed"
@@ -9408,7 +9770,7 @@ class ReweaveAppService:
             or type(composition.get("provenance")) is not dict
         ):
             raise ProductGenerationError("product_composition_invalid")
-        products = _product_directory()
+        products = self._formal_product_root()
         if products.is_symlink():
             raise ProductGenerationError("products_directory_unsafe")
         products.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -9456,7 +9818,9 @@ class ReweaveAppService:
             )
             _fsync_product_tree(temporary)
             quality = _validate_product_static(temporary)
+            raise_if_cancelled()
             runtime = _validate_product_runtime(temporary)
+            raise_if_cancelled()
             _write_product_file(
                 temporary,
                 "quality_gate.json",
@@ -9500,6 +9864,7 @@ class ReweaveAppService:
             with self._capsule_store.read_connection() as connection:
                 self._assert_generation_capsules_current(connection, capsules)
             _fsync_product_tree(temporary)
+            raise_if_cancelled()
             if final.exists() or final.is_symlink():
                 raise ProductGenerationError("product_id_collision")
             os.replace(temporary, final)
@@ -9510,6 +9875,7 @@ class ReweaveAppService:
                     os.fsync(descriptor)
                 finally:
                     os.close(descriptor)
+            raise_if_cancelled()
             self._register_product_usage(manifest, manifest_digest, capsules)
             usage_registered = True
         except (OSError, sqlite3.Error) as exc:
@@ -9689,7 +10055,7 @@ class ReweaveAppService:
 
     def _read_product_record(self, directory: Path) -> dict[str, Any]:
         product_id = directory.name
-        base = _product_directory().resolve()
+        base = self._formal_product_root().resolve()
         try:
             resolved = directory.resolve(strict=True)
             resolved.relative_to(base)
@@ -9803,7 +10169,7 @@ class ReweaveAppService:
         }
 
     def _product_records(self) -> list[dict[str, Any]]:
-        root = _product_directory()
+        root = self._formal_product_root()
         if root.is_symlink() or not root.is_dir():
             return []
         records: list[dict[str, Any]] = []
@@ -9829,7 +10195,7 @@ class ReweaveAppService:
         )
 
     def _latest_pre_restore_backup_path(self) -> str | None:
-        root = self._capsule_store.path.parent / BACKUP_DIRECTORY
+        root = self._state_root / BACKUP_DIRECTORY
         try:
             if root.is_symlink() or not root.is_dir():
                 return None
@@ -9971,7 +10337,9 @@ class ReweaveAppService:
             product_id = str(request.get("product_id") or "")
             if _PRODUCT_ID.fullmatch(product_id) is None:
                 return self._error("product_id_invalid")
-            record = self._read_product_record(_product_directory() / product_id)
+            record = self._read_product_record(
+                self._formal_product_root() / product_id
+            )
             if record["status"] == "registered":
                 return self._ok({"product_id": product_id, "status": "registered"})
             if record["status"] != "usage_registration_incomplete":
@@ -10010,7 +10378,9 @@ class ReweaveAppService:
             self._register_product_usage(
                 record["manifest"], record["manifest_digest"], capsules
             )
-            confirmed = self._read_product_record(_product_directory() / product_id)
+            confirmed = self._read_product_record(
+                self._formal_product_root() / product_id
+            )
             if confirmed["status"] != "registered":
                 return self._error("product_usage_registration_incomplete")
             return self._ok({"product_id": product_id, "status": "registered"})
@@ -10032,7 +10402,7 @@ class ReweaveAppService:
                 continue
             try:
                 resolved = candidate.resolve(strict=True)
-                resolved.relative_to(_product_directory().resolve())
+                resolved.relative_to(self._formal_product_root().resolve())
             except (OSError, ValueError):
                 continue
             return str(resolved)

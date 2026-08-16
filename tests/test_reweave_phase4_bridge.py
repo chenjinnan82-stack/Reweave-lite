@@ -119,11 +119,16 @@ def test_generation_slots_only_call_generate_product_with_strict_json() -> None:
             "ok": True,
             "run_id": "run_product",
         }
-        assert json.loads(bridge.notify_generate(json.dumps(payload))) == {
-            "ok": True,
-            "run_id": "run_product",
-        }
-        assert service.payloads == [payload, payload]
+        assert not hasattr(bridge, "notify_generate")
+        assert not hasattr(bridge, "generate_preview")
+        for retired in (
+            "choose_source_folder",
+            "scan_source_box",
+            "draft_capsules",
+            "promote_source_drafts",
+        ):
+            assert not hasattr(bridge, retired)
+        assert service.payloads == [payload]
 
         malformed = json.loads(bridge.generate_product("[not-json"))
         assert malformed["error"] == {
@@ -135,6 +140,30 @@ def test_generation_slots_only_call_generate_product_with_strict_json() -> None:
             "code": "invalid_payload",
             "message_key": "invalidPayload",
         }
+    finally:
+        desktop.ReweaveBridge._qobject_cls = None
+
+    try:
+        import PySide6.QtCore  # noqa: F401
+    except ImportError:
+        return
+    real_bridge = desktop.ReweaveBridge.create(service)
+    try:
+        meta = real_bridge.metaObject()
+        signatures = {
+            bytes(meta.method(index).methodSignature()).decode("ascii")
+            for index in range(meta.methodOffset(), meta.methodCount())
+        }
+        assert "generate_product(QString)" in signatures
+        assert "notify_generate(QString)" not in signatures
+        assert "generate_preview(QString)" not in signatures
+        for retired in (
+            "choose_source_folder()",
+            "scan_source_box(QString)",
+            "draft_capsules(QString)",
+            "promote_source_drafts(QString)",
+        ):
+            assert retired not in signatures
     finally:
         desktop.ReweaveBridge._qobject_cls = None
 

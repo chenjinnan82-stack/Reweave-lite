@@ -18,6 +18,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 import pimos_lite.reweave_capsule_stage3 as stage3_module
+from pimos_lite import reweave_app_service as app_service_module
 from pimos_lite.reweave_capsule_intake import (
     EXTRACTION_CONTRACT_VERSION,
     IntakeError,
@@ -26,6 +27,7 @@ from pimos_lite.reweave_capsule_intake import (
 from pimos_lite.reweave_capsule_stage3 import (
     CAPTURE_MAPPING_V3,
     CAPTURE_MAPPING_V4,
+    CAPTURE_MAPPING_V5,
     FROZEN_UI_REVIEW_ADMISSION_AUTHORIZATION_VERSION,
     FROZEN_UI_REVIEW_ADMISSION_VERSION,
     PreparedReview,
@@ -35,6 +37,7 @@ from pimos_lite.reweave_capsule_stage3 import (
     capture_static_gate,
     _normalize_capture_mapping_v3,
     _normalize_capture_mapping_v4,
+    _normalize_capture_mapping_v5,
     inspect_ephemeral_computation_offers_v2,
     make_prepared_review,
     _clean_assets,
@@ -2476,10 +2479,16 @@ alice&#64;example.com</main><script type="module" src="./compute.js"></script>
         )
 
 
-DESKTOP_PYTHON = ROOT / ".venv-reweave" / "bin" / "python"
+try:
+    DESKTOP_PYTHON = Path(stage3_module._desktop_python())
+except Stage3Error:
+    DESKTOP_PYTHON = None
 
 
-@unittest.skipUnless(DESKTOP_PYTHON.is_file(), "Independent PySide6 desktop environment required")
+@unittest.skipUnless(
+    DESKTOP_PYTHON is not None,
+    "Independent PySide6 desktop environment required",
+)
 class Stage3PySideFlowTest(unittest.TestCase):
     def setUp(self) -> None:
         self._temporary = tempfile.TemporaryDirectory()
@@ -2521,6 +2530,54 @@ class Stage3PySideFlowTest(unittest.TestCase):
             _clean_assets({"pixel.jpg": original})
 
     def test_real_qwebengine_runs_declared_event_and_dispose(self) -> None:
+        for system, expected in (
+            ("Darwin", "cocoa"),
+            ("Linux", "offscreen"),
+            ("Windows", "offscreen"),
+        ):
+            with (
+                patch.dict(os.environ, {}, clear=True),
+                patch(
+                    "pimos_lite.reweave_process_environment.platform.system",
+                    return_value=system,
+                ),
+            ):
+                self.assertEqual(
+                    stage3_module._pyside_environment(self.root)[
+                        "QT_QPA_PLATFORM"
+                    ],
+                    expected,
+                )
+                self.assertEqual(
+                    app_service_module._product_worker_environment(self.root)[
+                        "QT_QPA_PLATFORM"
+                    ],
+                    expected,
+                )
+        with (
+            patch.dict(
+                os.environ,
+                {"QT_QPA_PLATFORM": "minimal"},
+                clear=True,
+            ),
+            patch(
+                "pimos_lite.reweave_process_environment.platform.system",
+                return_value="Darwin",
+            ),
+        ):
+            self.assertEqual(
+                stage3_module._pyside_environment(self.root)[
+                    "QT_QPA_PLATFORM"
+                ],
+                "minimal",
+            )
+            self.assertEqual(
+                app_service_module._product_worker_environment(self.root)[
+                    "QT_QPA_PLATFORM"
+                ],
+                "minimal",
+            )
+
         (self.source / "index.html").write_text(
             """<!doctype html><html><body><main>
 <input data-ref="quantity" type="number" min="1" max="10" step="1" value="2">
@@ -2838,14 +2895,7 @@ class Stage3PySideFlowTest(unittest.TestCase):
             'globalThis.__reweave_result={schema_version:"qweb_validation.v1",status:"passed"};',
             encoding="utf-8",
         )
-        environment = dict(os.environ)
-        environment.update(
-            {
-                "QT_QPA_PLATFORM": "offscreen",
-                "QTWEBENGINE_CHROMIUM_FLAGS": "--disable-gpu",
-                "TMPDIR": str(package),
-            }
-        )
+        environment = stage3_module._pyside_environment(package)
         completed = subprocess.run(
             [str(DESKTOP_PYTHON), str(ROOT / "pimos_lite/reweave_capsule_worker.py")],
             input=json.dumps(
@@ -3089,6 +3139,53 @@ export function calculate(quantity, price) {
             ],
         }
         prepared = self.stage3.prepare_ephemeral_computation_capture_v4(
+            snapshot,
+            selection,
+            mapping,
+        )
+        self.assertIsInstance(prepared, PreparedReview)
+        return prepared, snapshot, mapping, selection
+
+    def _positive_capture_v5(
+        self,
+    ) -> tuple[PreparedReview, object, dict[str, object], dict[str, str]]:
+        (self.source / "message.js").write_text(
+            """export function classifyMessage(message) {
+  return message.includes("urgent") ? "urgent" : "normal";
+}
+""",
+            encoding="utf-8",
+        )
+        snapshot = self.source_service.scan(self.project_id)
+        selection, parameters = _stage_e_selection(
+            snapshot, "message.js", "classifyMessage"
+        )
+        mapping = {
+            "schema": CAPTURE_MAPPING_V5,
+            "arguments": [
+                {
+                    "parameter_binding_id": parameters[0]["binding_id"],
+                    "input_field": "message",
+                    "kind": "string",
+                    "min_length": 1,
+                    "max_length": 1000,
+                }
+            ],
+            "result_field": "classification",
+            "result_enum": ["normal", "urgent"],
+            "proof_schema": "source_graph_proof.v3",
+            "examples": [
+                {
+                    "input": {"message": "routine task"},
+                    "expected": {"classification": "normal"},
+                },
+                {
+                    "input": {"message": "urgent task"},
+                    "expected": {"classification": "urgent"},
+                },
+            ],
+        }
+        prepared = self.stage3.prepare_ephemeral_computation_capture_v5(
             snapshot,
             selection,
             mapping,
@@ -3391,6 +3488,119 @@ export function calculate(quantity, price) {
             self.stage3.prepare_ephemeral_computation_capture_v4(
                 snapshot, selection, mismatched
             )
+
+    def test_capture_v5_restarts_publishes_and_rejects_tampered_evidence(self) -> None:
+        prepared, snapshot, mapping, selection = self._positive_capture_v5()
+        repeated = self.stage3.prepare_ephemeral_computation_capture_v5(
+            snapshot, selection, mapping
+        )
+        unordered = copy.deepcopy(mapping)
+        unordered["result_enum"].reverse()
+        reordered = self.stage3.prepare_ephemeral_computation_capture_v5(
+            snapshot, selection, unordered
+        )
+        self.assertEqual(prepared.candidate_payload_json, repeated.candidate_payload_json)
+        self.assertEqual(prepared.candidate_payload_json, reordered.candidate_payload_json)
+        payload = json.loads(prepared.candidate_payload_json)
+        self.assertEqual(payload["source_graph_proof"]["schema"], "source_graph_proof.v3")
+        self.assertEqual(
+            payload["canonical_candidate"]["input_contract"]["properties"],
+            {
+                "message": {
+                    "type": "string",
+                    "min_length": 1,
+                    "max_length": 1000,
+                }
+            },
+        )
+        self.assertEqual(
+            payload["canonical_candidate"]["output_contract"]["properties"],
+            {
+                "classification": {
+                    "type": "string",
+                    "min_length": 6,
+                    "max_length": 6,
+                    "enum": ["normal", "urgent"],
+                }
+            },
+        )
+        self.assertEqual(_normalize_capture_mapping_v5(mapping)[3], ["normal", "urgent"])
+        runtime = stage3_module._validate_computation(
+            payload["canonical_candidate"],
+            {
+                "schema": "synthetic_fixtures.v1",
+                "normal": [
+                    {"message": "routine task"},
+                    {"message": "urgent task"},
+                ],
+                "boundary": [
+                    {"message": "x"},
+                    {"message": "x" * 994 + "urgent"},
+                ],
+                "invalid": [
+                    {"value": {}},
+                    {"value": {"message": "x", "extra": True}},
+                    {"value": {"message": 1}},
+                    {"value": {"message": "x" * 1001}},
+                ],
+            },
+        )
+        self.assertEqual(
+            (runtime["normal_cases"], runtime["boundary_cases"], runtime["invalid_cases"]),
+            (2, 2, 4),
+        )
+        with patch.object(
+            self.stage3.supervisor,
+            "supervise",
+            return_value=self._approved_supervision(),
+        ):
+            result = self.stage3.process_ephemeral_capture(prepared)
+        self.assertEqual(result["status"], "review_required")
+        restarted = ReweaveCapsuleStage3(self.store)
+        published = restarted.publish_review(
+            result["review_id"],
+            decision="publish_general",
+            capability_key="message_classification",
+            role_key="classify_message",
+            display_name="Message classification",
+        )
+        self.assertEqual(published["status"], "published")
+        with self.store.read_connection() as connection:
+            row = dict(
+                connection.execute(
+                    "SELECT cv.*, c.status, c.current_version_id, c.capability_kind "
+                    "FROM capsule_versions cv JOIN capsules c "
+                    "ON c.capsule_id = cv.capsule_id WHERE cv.version_id = ?",
+                    (published["version_id"],),
+                ).fetchone()
+            )
+        self.assertTrue(restarted._eligible_exact(row))
+        for label, mutate in (
+            (
+                "proof",
+                lambda value: value["ephemeral_capture_payload"].update(
+                    source_graph_proof_sha256="0" * 64
+                ),
+            ),
+            (
+                "mapping",
+                lambda value: value["ephemeral_capture_payload"]["mapping"].update(
+                    result_enum=["normal"]
+                ),
+            ),
+            (
+                "adapter",
+                lambda value: value.update(adapter_contract_version="computation_adapter.v4"),
+            ),
+        ):
+            changed = dict(row)
+            extraction = json.loads(changed["extraction_summary_json"])
+            mutate(extraction)
+            changed["extraction_summary_json"] = json.dumps(
+                extraction, sort_keys=True, separators=(",", ":")
+            )
+            with self.subTest(label=label):
+                self.assertFalse(restarted._eligible_exact(changed))
 
     def test_capture_v3_mapping_rejects_invalid_passthrough(self) -> None:
         binding = "a" * 64
@@ -4092,94 +4302,107 @@ export function calculate(quantity, price) {
                 0,
             )
 
-    def test_frozen_review_admission_v2_accepts_v4_without_publication(self) -> None:
-        prepared, _snapshot, _mapping, _selection = self._positive_capture_v4()
-        with patch.object(
-            self.stage3.supervisor,
-            "supervise",
-            return_value=self._approved_supervision(),
+    def test_frozen_review_admission_v2_accepts_v4_and_v5_without_publication(
+        self,
+    ) -> None:
+        for label, factory, expected_adapter in (
+            ("v4", self._positive_capture_v4, "computation_adapter.v4"),
+            ("v5", self._positive_capture_v5, "computation_adapter.v5"),
         ):
-            reviewed = self.stage3.process_ephemeral_capture(prepared)
-        source_sha256 = hashlib.sha256(self.store.path.read_bytes()).hexdigest()
-        target = CapsuleWarehouseStore(
-            self.root / "target-v4" / "capsule_warehouse.sqlite3"
-        )
-        target.initialize()
-        target.migrate_v1_to_v2()
-        self._select_frozen_review_model(target)
-        before_revision = target.current_revision()
-        binding = self._frozen_review_authorization_binding(
-            prepared,
-            before_revision,
-        )
-        stage3 = ReweaveCapsuleStage3(target)
+            with self.subTest(adapter=label):
+                prepared, _snapshot, _mapping, _selection = factory()
+                with patch.object(
+                    self.stage3.supervisor,
+                    "supervise",
+                    return_value=self._approved_supervision(),
+                ):
+                    reviewed = self.stage3.process_ephemeral_capture(prepared)
+                source_sha256 = hashlib.sha256(
+                    self.store.path.read_bytes()
+                ).hexdigest()
+                target = CapsuleWarehouseStore(
+                    self.root / f"target-{label}" / "capsule_warehouse.sqlite3"
+                )
+                target.initialize()
+                target.migrate_v1_to_v2()
+                self._select_frozen_review_model(target)
+                before_revision = target.current_revision()
+                binding = self._frozen_review_authorization_binding(
+                    prepared,
+                    before_revision,
+                )
+                stage3 = ReweaveCapsuleStage3(target)
 
-        admitted = stage3.admit_frozen_review(
-            self.store.path,
-            self.source,
-            reviewed["review_id"],
-            expected_source_sha256=source_sha256,
-            expected_warehouse_revision=before_revision,
-            authorization_binding=binding,
-        )
+                admitted = stage3.admit_frozen_review(
+                    self.store.path,
+                    self.source,
+                    reviewed["review_id"],
+                    expected_source_sha256=source_sha256,
+                    expected_warehouse_revision=before_revision,
+                    authorization_binding=binding,
+                )
 
-        self.assertEqual(admitted["status"], "review_required")
-        with target.read_connection() as connection:
-            row = connection.execute(
-                "SELECT sanitized_candidate_json FROM review_items "
-                "WHERE review_id = ?",
-                (reviewed["review_id"],),
-            ).fetchone()
-            self.assertEqual(
-                connection.execute("SELECT COUNT(*) FROM capsules").fetchone()[0],
-                0,
-            )
-            self.assertEqual(
-                connection.execute(
-                    "SELECT COUNT(*) FROM capsule_versions"
-                ).fetchone()[0],
-                0,
-            )
-        receipt = json.loads(row["sanitized_candidate_json"])[
-            "frozen_review_admission"
-        ]
-        self.assertEqual(
-            (
-                receipt["schema"],
-                receipt["authorized_adapter_contract_version"],
-            ),
-            (
-                "frozen_stage3_review_admission.v2",
-                "computation_adapter.v4",
-            ),
-        )
-        repeated = stage3.admit_frozen_review(
-            self.store.path,
-            self.source,
-            reviewed["review_id"],
-            expected_source_sha256=source_sha256,
-            expected_warehouse_revision=admitted["warehouse_revision"],
-            authorization_binding=binding,
-        )
-        self.assertEqual(repeated["status"], "already_admitted")
-        self.assertEqual(
-            target.current_revision(),
-            before_revision + 1,
-        )
-        changed_binding = copy.deepcopy(binding)
-        changed_binding["target_catalog_digest"] = "6" * 64
-        with self.assertRaisesRegex(
-            Stage3Error,
-            "^frozen_review_identity_conflict$",
-        ):
-            stage3.admit_frozen_review(
-                self.store.path,
-                self.source,
-                reviewed["review_id"],
-                expected_source_sha256=source_sha256,
-                expected_warehouse_revision=admitted["warehouse_revision"],
-                authorization_binding=changed_binding,
-            )
+                self.assertEqual(admitted["status"], "review_required")
+                with target.read_connection() as connection:
+                    row = connection.execute(
+                        "SELECT sanitized_candidate_json FROM review_items "
+                        "WHERE review_id = ?",
+                        (reviewed["review_id"],),
+                    ).fetchone()
+                    self.assertEqual(
+                        connection.execute(
+                            "SELECT COUNT(*) FROM capsules"
+                        ).fetchone()[0],
+                        0,
+                    )
+                    self.assertEqual(
+                        connection.execute(
+                            "SELECT COUNT(*) FROM capsule_versions"
+                        ).fetchone()[0],
+                        0,
+                    )
+                receipt = json.loads(row["sanitized_candidate_json"])[
+                    "frozen_review_admission"
+                ]
+                self.assertEqual(
+                    (
+                        receipt["schema"],
+                        receipt["authorized_adapter_contract_version"],
+                    ),
+                    (
+                        "frozen_stage3_review_admission.v2",
+                        expected_adapter,
+                    ),
+                )
+                repeated = stage3.admit_frozen_review(
+                    self.store.path,
+                    self.source,
+                    reviewed["review_id"],
+                    expected_source_sha256=source_sha256,
+                    expected_warehouse_revision=admitted["warehouse_revision"],
+                    authorization_binding=binding,
+                )
+                self.assertEqual(repeated["status"], "already_admitted")
+                self.assertEqual(
+                    target.current_revision(),
+                    before_revision + 1,
+                )
+                changed_binding = copy.deepcopy(binding)
+                changed_binding["target_catalog_digest"] = "6" * 64
+                with self.assertRaisesRegex(
+                    Stage3Error,
+                    "^frozen_review_identity_conflict$",
+                ):
+                    stage3.admit_frozen_review(
+                        self.store.path,
+                        self.source,
+                        reviewed["review_id"],
+                        expected_source_sha256=source_sha256,
+                        expected_warehouse_revision=admitted[
+                            "warehouse_revision"
+                        ],
+                        authorization_binding=changed_binding,
+                    )
 
     def test_frozen_review_admission_v4_rejects_proof_and_mapping_tampering(
         self,

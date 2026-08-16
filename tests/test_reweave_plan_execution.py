@@ -77,6 +77,12 @@ from tests.test_reweave_phase5_generation import (
 NOW = "2026-07-23T00:00:00Z"
 SECTIONS = ("frontend", "backend", "data", "infrastructure")
 
+try:
+    PRODUCT_WORKER_PYTHON = app_service._desktop_worker_python()
+except ProductGenerationError:
+    PRODUCT_WORKER_PYTHON = None
+PRODUCT_WORKER_AVAILABLE = PRODUCT_WORKER_PYTHON is not None
+
 
 def _formal_payload(capsule: dict) -> dict:
     return {
@@ -810,8 +816,7 @@ class PlanExecutionV1Test(unittest.TestCase):
         self.temporary.cleanup()
 
     @unittest.skipUnless(
-        Path(".venv-reweave/bin/python").is_file()
-        or Path(".venv-reweave/Scripts/python.exe").is_file(),
+        PRODUCT_WORKER_AVAILABLE,
         "PySide worker environment is required",
     )
     def test_composed_runtime_requires_exactly_one_non_nested_main(self) -> None:
@@ -1137,6 +1142,76 @@ class PlanExecutionV1Test(unittest.TestCase):
             "plan_execution_dom_capsule_required",
         ):
             compile_plan_execution(no_dom_plan, no_dom_confirmation, self.capsules)
+
+        string_input = {
+            "schema": "data_contract.v1",
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "min_length": 1,
+                    "max_length": 1000,
+                }
+            },
+            "required": ["message"],
+            "additional_properties": False,
+        }
+        string_output = {
+            "schema": "data_contract.v1",
+            "type": "object",
+            "properties": {
+                "classification": {
+                    "type": "string",
+                    "min_length": 6,
+                    "max_length": 6,
+                    "enum": ["normal", "urgent"],
+                }
+            },
+            "required": ["classification"],
+            "additional_properties": False,
+        }
+        string_capsules = copy.deepcopy(self.capsules)
+        for capsule in string_capsules:
+            capsule["capability_key"] = "message_classification"
+            if capsule["capability_kind"] == "interaction":
+                capsule["output_contract"] = {
+                    "schema": "event_outputs.v1",
+                    "events": {
+                        "classification_requested": copy.deepcopy(string_input),
+                    },
+                }
+            elif capsule["capability_kind"] == "computation":
+                capsule["input_contract"] = copy.deepcopy(string_input)
+                capsule["output_contract"] = copy.deepcopy(string_output)
+                capsule["canonical_hash"] = canonicalize_capsule(
+                    _formal_payload(capsule)
+                ).sha256
+            else:
+                capsule["input_contract"] = copy.deepcopy(string_output)
+        page_projections: list[dict] = []
+        _bind_page_declaration(
+            string_capsules,
+            page_projections,
+            "presentation",
+            _page_capability_elements(),
+        )
+        _bind_page_declaration(
+            string_capsules,
+            page_projections,
+            "interaction",
+            _page_capability_elements(),
+        )
+        string_plan, string_confirmation = _confirmed_plan(
+            string_capsules,
+            self.service._product_planning_catalog()["warehouse_revision"],
+        )
+        string_execution = compile_plan_execution(
+            string_plan,
+            string_confirmation,
+            string_capsules,
+            verified_page_contracts=page_projections,
+        )
+        self.assertEqual(string_execution["schema_version"], "plan_execution.v1")
 
     def test_multi_computation_serial_execution_and_composer_are_deterministic(
         self,
@@ -1829,8 +1904,7 @@ process.stdout.write(JSON.stringify({result, rendered: totalNode.textContent}));
         )
 
     @unittest.skipUnless(
-        Path(".venv-reweave/bin/python").is_file()
-        or Path(".venv-reweave/Scripts/python.exe").is_file(),
+        PRODUCT_WORKER_AVAILABLE,
         "PySide worker environment is required",
     )
     def test_real_qweb_multi_computation_serial_acceptance(self) -> None:
@@ -1864,8 +1938,7 @@ process.stdout.write(JSON.stringify({result, rendered: totalNode.textContent}));
         )
 
     @unittest.skipUnless(
-        Path(".venv-reweave/bin/python").is_file()
-        or Path(".venv-reweave/Scripts/python.exe").is_file(),
+        PRODUCT_WORKER_AVAILABLE,
         "PySide worker environment is required",
     )
     def test_real_qweb_multi_computation_rejects_bad_intermediate_output(
@@ -3412,6 +3485,7 @@ process.stdout.write(JSON.stringify({result, rendered: totalNode.textContent}));
         )
         planner.plan = copy.deepcopy(self.plan)
 
+        self.service.close()
         restarted = ReweaveAppService(
             _NoLegacyEngine(),
             capsule_store=self.store,
@@ -3599,6 +3673,7 @@ process.stdout.write(JSON.stringify({result, rendered: totalNode.textContent}));
             finally:
                 second_service.close()
 
+            self.service.close()
             restarted = ReweaveAppService(
                 _NoLegacyEngine(),
                 capsule_store=self.store,
@@ -3749,62 +3824,70 @@ process.stdout.write(JSON.stringify({result, rendered: totalNode.textContent}));
                     traversal["error"]["code"],
                     "product_file_path_invalid",
                 )
+            except BaseException:
+                restarted.close()
+                raise
+
+            try:
+                candidate_dir = next(
+                    (self.state / "product_candidates").glob("candidate_*")
+                )
+                self.assertTrue(
+                    (candidate_dir / "acceptance_contract.json").is_file()
+                )
+                self.assertTrue(
+                    (candidate_dir / "acceptance_receipt.json").is_file()
+                )
+                contract_path = candidate_dir / "acceptance_contract.json"
+                contract_bytes = contract_path.read_bytes()
+                contract = json.loads(contract_bytes)
+                contract["cases"][0]["expected_output"]["total"] = 7
+                contract_path.write_text(
+                    json.dumps(contract, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                tampered_contract = restarted.get_product_candidate(
+                    {"candidate_token": candidate["candidate_token"]}
+                )
+                self.assertFalse(tampered_contract["ok"])
+                self.assertEqual(
+                    tampered_contract["error"]["code"],
+                    "product_candidate_invalid",
+                )
+                contract_path.write_bytes(contract_bytes)
+
+                receipt_path = candidate_dir / "acceptance_receipt.json"
+                receipt_bytes = receipt_path.read_bytes()
+                receipt = json.loads(receipt_bytes)
+                receipt["cases"][0]["actual_output"]["total"] = 7
+                receipt_path.write_text(
+                    json.dumps(receipt, ensure_ascii=False),
+                    encoding="utf-8",
+                )
+                tampered_receipt = restarted.get_product_candidate(
+                    {"candidate_token": candidate["candidate_token"]}
+                )
+                self.assertFalse(tampered_receipt["ok"])
+                self.assertEqual(
+                    tampered_receipt["error"]["code"],
+                    "product_candidate_invalid",
+                )
+                receipt_path.write_bytes(receipt_bytes)
+
+                (candidate_dir / "product" / "index.html").write_text(
+                    "corrupted\n",
+                    encoding="utf-8",
+                )
+                corrupted = restarted.get_product_candidate(
+                    {"candidate_token": candidate["candidate_token"]}
+                )
+                self.assertFalse(corrupted["ok"])
+                self.assertEqual(
+                    corrupted["error"]["code"],
+                    "product_candidate_invalid",
+                )
             finally:
                 restarted.close()
-
-            candidate_dir = next(
-                (self.state / "product_candidates").glob("candidate_*")
-            )
-            self.assertTrue((candidate_dir / "acceptance_contract.json").is_file())
-            self.assertTrue((candidate_dir / "acceptance_receipt.json").is_file())
-            contract_path = candidate_dir / "acceptance_contract.json"
-            contract_bytes = contract_path.read_bytes()
-            contract = json.loads(contract_bytes)
-            contract["cases"][0]["expected_output"]["total"] = 7
-            contract_path.write_text(
-                json.dumps(contract, ensure_ascii=False),
-                encoding="utf-8",
-            )
-            tampered_contract = self.service.get_product_candidate(
-                {"candidate_token": candidate["candidate_token"]}
-            )
-            self.assertFalse(tampered_contract["ok"])
-            self.assertEqual(
-                tampered_contract["error"]["code"],
-                "product_candidate_invalid",
-            )
-            contract_path.write_bytes(contract_bytes)
-
-            receipt_path = candidate_dir / "acceptance_receipt.json"
-            receipt_bytes = receipt_path.read_bytes()
-            receipt = json.loads(receipt_bytes)
-            receipt["cases"][0]["actual_output"]["total"] = 7
-            receipt_path.write_text(
-                json.dumps(receipt, ensure_ascii=False),
-                encoding="utf-8",
-            )
-            tampered_receipt = self.service.get_product_candidate(
-                {"candidate_token": candidate["candidate_token"]}
-            )
-            self.assertFalse(tampered_receipt["ok"])
-            self.assertEqual(
-                tampered_receipt["error"]["code"],
-                "product_candidate_invalid",
-            )
-            receipt_path.write_bytes(receipt_bytes)
-
-            (candidate_dir / "product" / "index.html").write_text(
-                "corrupted\n",
-                encoding="utf-8",
-            )
-            corrupted = self.service.get_product_candidate(
-                {"candidate_token": candidate["candidate_token"]}
-            )
-            self.assertFalse(corrupted["ok"])
-            self.assertEqual(
-                corrupted["error"]["code"],
-                "product_candidate_invalid",
-            )
 
         self.assertEqual(_store_snapshot(self.store), before)
         self.assertFalse(products.exists())
@@ -3902,6 +3985,7 @@ process.stdout.write(JSON.stringify({result, rendered: totalNode.textContent}));
             ["export_terminal", "export_terminal"],
         )
 
+        self.service.close()
         restarted = ReweaveAppService(
             _NoLegacyEngine(),
             capsule_store=self.store,
@@ -4282,8 +4366,7 @@ process.stdout.write(JSON.stringify({result, rendered: totalNode.textContent}));
         )
 
     @unittest.skipUnless(
-        Path(".venv-reweave/bin/python").is_file()
-        or Path(".venv-reweave/Scripts/python.exe").is_file(),
+        PRODUCT_WORKER_AVAILABLE,
         "PySide worker environment is required",
     )
     def test_real_qweb_acceptance_allows_matching_business_output(self) -> None:
@@ -4313,8 +4396,556 @@ process.stdout.write(JSON.stringify({result, rendered: totalNode.textContent}));
         )
 
     @unittest.skipUnless(
-        Path(".venv-reweave/bin/python").is_file()
-        or Path(".venv-reweave/Scripts/python.exe").is_file(),
+        PRODUCT_WORKER_AVAILABLE,
+        "PySide worker environment is required",
+    )
+    def test_bounded_string_v5_deterministic_vertical_loop(self) -> None:
+        from pimos_lite.composer.module_native import (
+            ADAPTER_V5_FORMAL_PRODUCT_COMPOSER_VERSION,
+        )
+        from pimos_lite.reweave_capsule_stage3 import OllamaSupervisor
+        from tests.test_reweave_product_planner import (
+            StubPlanner,
+            no_composition_selection,
+            select_small,
+            single_quote_gap_blueprint,
+        )
+
+        self.store.migrate_v1_to_v2()
+        capability_key = "message_classification_fixture"
+        string_input = {
+            "schema": "data_contract.v1",
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "min_length": 1,
+                    "max_length": 1000,
+                }
+            },
+            "required": ["message"],
+            "additional_properties": False,
+        }
+        string_output = {
+            "schema": "data_contract.v1",
+            "type": "object",
+            "properties": {
+                "classification": {
+                    "type": "string",
+                    "min_length": 6,
+                    "max_length": 6,
+                    "enum": ["normal", "urgent"],
+                }
+            },
+            "required": ["classification"],
+            "additional_properties": False,
+        }
+        html = (
+            '<main class="classifier">'
+            '<label>Message <input data-ref="message" maxlength="1000"></label>'
+            '<button data-action="classify" type="button">Classify</button>'
+            '<output data-ref="classification"></output>'
+            "</main>"
+        )
+        interaction = copy.deepcopy(_capsule_payload("interaction"))
+        interaction.update(
+            html=html,
+            css="__CAPSULE_ROOT__ .classifier { display: grid; gap: 0.5rem; }\n",
+            output_contract={
+                "schema": "event_outputs.v1",
+                "events": {"classification_requested": string_input},
+            },
+            dom_scope={
+                "root_contract": "capsule_root",
+                "classes": [],
+                "attributes": [],
+                "selectors": [
+                    "[data-action='classify']",
+                    "[data-ref='message']",
+                ],
+                "events": ["click"],
+            },
+            javascript_modules=[
+                {
+                    "path": "interaction.js",
+                    "source": """export function mount(root, ports) {
+  const input = root.querySelector("[data-ref='message']");
+  const button = root.querySelector("[data-action='classify']");
+  const onClick = (event) => {
+    event.preventDefault();
+    const message = input.value;
+    if (typeof message !== "string" || message.length < 1 || message.length > 1000) return;
+    ports.emit("classification_requested", {message});
+  };
+  button.addEventListener("click", onClick);
+  return () => { button.removeEventListener("click", onClick); };
+}
+""",
+                }
+            ],
+        )
+        presentation = copy.deepcopy(_capsule_payload("presentation"))
+        presentation.update(
+            html=html,
+            css=interaction["css"],
+            input_contract=string_output,
+            dom_scope={
+                "root_contract": "capsule_root",
+                "classes": [],
+                "attributes": [],
+                "selectors": ["[data-ref='classification']"],
+                "events": [],
+            },
+            javascript_modules=[
+                {
+                    "path": "presentation.js",
+                    "source": """export function render(root, input) {
+  const output = root.querySelector("[data-ref='classification']");
+  output.textContent = input.classification;
+}
+""",
+                }
+            ],
+        )
+        _seed_capsule(
+            self.store,
+            "interaction",
+            capability_key=capability_key,
+            suffix="message_fixture_input",
+            payload=interaction,
+        )
+        _seed_capsule(
+            self.store,
+            "presentation",
+            capability_key=capability_key,
+            suffix="message_fixture_result",
+            payload=presentation,
+        )
+
+        planner = StubPlanner(self.state / "product_workspaces")
+        select_small(planner)
+        self.service._product_planner = planner
+        outline_value = {
+            "schema_version": "product_plan_outline.v1",
+            "product_name": "Deterministic string fixture",
+            "language": "en",
+            "requirements": [
+                {
+                    "ref": "r_classify",
+                    "statement": "Classify one bounded message and show the result locally.",
+                    "source": "goal",
+                }
+            ],
+            "needs_clarification": False,
+            "questions": [],
+        }
+        planner.generation_outputs.extend(
+            [
+                outline_value,
+                no_composition_selection(),
+                single_quote_gap_blueprint(),
+            ]
+        )
+        catalog = self.service._product_planning_catalog()
+        started = planner.start(
+            "DETERMINISTIC_TEST_FIXTURE_NOT_FORMAL_WAREHOUSE_STATE",
+            catalog,
+        )
+        question_set = started["data"]["question_set"]
+        question = question_set["questions"][0]
+        option = next(
+            value for value in question["options"] if value["forms_gap"]
+        )
+        planned = planner.answer(
+            started["data"]["plan_token"],
+            question_set["digest"],
+            [
+                {
+                    "question_id": question["question_id"],
+                    "source": "option",
+                    "value": option["option_id"],
+                }
+            ],
+            catalog,
+        )
+        self.assertTrue(planned["ok"], planned)
+        gap = planned["data"]["capability_gaps"][0]
+        projection = gap["projection"]
+        self.assertEqual(
+            (
+                projection["schema_version"],
+                projection["adapter_contract_version"],
+            ),
+            ("capability_gap_projection.v3", "computation_adapter.v5"),
+        )
+        plan = planned["data"]["plan"]
+        plan_token = planned["data"]["plan_token"]
+        acceptance_cases = [
+            {
+                "input": {"message": "routine task"},
+                "expected_output": {"classification": "normal"},
+            },
+            {
+                "input": {"message": "urgent task"},
+                "expected_output": {"classification": "urgent"},
+            },
+        ]
+        decided = self.service.record_product_capability_gap_decision(
+            {
+                "plan_token": plan_token,
+                "plan_digest": plan["canonical_digest"],
+                "projection_digest": projection["projection_digest"],
+                "expected_previous_decision_digest": None,
+                "decision": "authorize",
+                "behavior_intent": "Return one finite classification for a bounded string.",
+                "reason": None,
+                "acceptance_cases": acceptance_cases,
+            }
+        )
+        self.assertTrue(decided["ok"], decided)
+        decision = decided["data"]["capability_gaps"][0]["current_decision"]
+        authorized = self.service.prepare_product_capability_source_proposal(
+            {
+                "plan_token": plan_token,
+                "plan_digest": plan["canonical_digest"],
+                "projection_digest": projection["projection_digest"],
+                "authorize_decision_digest": decision["canonical_digest"],
+            }
+        )
+        self.assertTrue(authorized["ok"], authorized)
+        workspace = planner._workspace_by_token(plan_token)
+        stored_projection = planner._read_capability_gap_projection(workspace)
+        authorization = planner._read_capability_source_proposal_authorization(
+            workspace,
+            stored_projection,
+            planner._capability_gap_decisions(
+                workspace,
+                stored_projection,
+            )[-1],
+        )
+        planner.generation_outputs.append(
+            {
+                "schema": "capability_source_proposal.v2",
+                "entry": {
+                    "module_relpath": "capability.js",
+                    "export_name": "compute",
+                },
+                "files": [
+                    {
+                        "path": "capability.js",
+                        "content": (
+                            "export function compute(arg0) { "
+                            'return arg0.includes("urgent") ? "urgent" : "normal"; }'
+                        ),
+                    }
+                ],
+                "witnesses": [
+                    {
+                        "input": {"message": "routine task"},
+                        "expected_scalar_result": "normal",
+                    },
+                    {
+                        "input": {"message": "urgent task"},
+                        "expected_scalar_result": "urgent",
+                    },
+                ],
+            }
+        )
+        selected_supervisor = {
+            "base_url": "http://127.0.0.1:11434",
+            "name": "deterministic-supervisor",
+            "digest": "b" * 64,
+            "selected_at": NOW,
+        }
+        with self.store.transaction() as connection:
+            connection.execute(
+                "INSERT INTO app_settings(setting_key, value_json, updated_at) "
+                "VALUES ('capsule_supervision_model', ?, ?) "
+                "ON CONFLICT(setting_key) DO UPDATE SET "
+                "value_json = excluded.value_json, "
+                "updated_at = excluded.updated_at",
+                (
+                    json.dumps(
+                        selected_supervisor,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    NOW,
+                ),
+            )
+        supervision = (
+            {
+                "schema_version": "capsule_supervision.v1",
+                "verdict": "approve",
+                "capability_kind": "computation",
+                "semantic_summary": "Return a finite local classification.",
+                "keep_reason_codes": ["DECLARED_LOCAL_COMPUTATION"],
+                "remove_reason_codes": [],
+                "brand_signals": [],
+                "sensitive_data_status": "clear",
+                "hidden_dependency_codes": [],
+                "duplicate_suggestions": [],
+                "review_required": False,
+            },
+            "a" * 64,
+            {
+                "name": selected_supervisor["name"],
+                "digest": selected_supervisor["digest"],
+            },
+        )
+        generate_before = sum(
+            path == "/api/generate" for path, _payload in planner.requests
+        )
+        with patch.object(
+            OllamaSupervisor,
+            "supervise",
+            return_value=supervision,
+        ) as supervised:
+            run = self.service.start_product_capability_source_proposal(
+                {
+                    "plan_token": plan_token,
+                    "plan_digest": plan["canonical_digest"],
+                    "projection_digest": projection["projection_digest"],
+                    "authorization_digest": authorization[
+                        "authorization_digest"
+                    ],
+                }
+            )
+            self.assertTrue(run["ok"], run)
+            for _ in range(6000):
+                polled = self.service.get_intake_run(
+                    {"run_id": run["run_id"]}
+                )
+                if (
+                    polled["ok"]
+                    and polled["data"]["status"]
+                    in {
+                        "completed",
+                        "review_required",
+                        "failed",
+                        "cancelled",
+                    }
+                ):
+                    source_task = polled["data"]
+                    break
+                time.sleep(0.01)
+            else:
+                self.fail("source proposal run did not finish")
+        self.assertEqual(
+            source_task["status"],
+            "review_required",
+            source_task,
+        )
+        source_run = planner.get_capability_source_proposal_run(run["run_id"])
+        self.assertEqual(source_run["status"], "review_required")
+        self.assertEqual(supervised.call_count, 1)
+        self.assertEqual(
+            sum(path == "/api/generate" for path, _payload in planner.requests)
+            - generate_before,
+            1,
+        )
+
+        review_id = source_run["review_id"]
+        with self.store.read_connection() as connection:
+            display_name = connection.execute(
+                "SELECT display_name FROM capability_groups "
+                "WHERE capability_key = ?",
+                (capability_key,),
+            ).fetchone()[0]
+        published = self.service.decide_review_item(
+            {
+                "review_id": review_id,
+                "decision": "publish_general",
+                "capability_key": capability_key,
+                "role_key": "message_classifier",
+                "variant_key": "default",
+                "display_name": display_name,
+            }
+        )
+        self.assertTrue(published["ok"], published)
+
+        original_generate = planner._generate_json
+        planner.generation_outputs.append(outline_value)
+
+        def generated(
+            model,
+            call_type,
+            request_value,
+            cancel_check=None,
+            **kwargs,
+        ):
+            if call_type == "composition_selection":
+                offer = request_value["composition_offers"][0]
+                planner.generation_outputs.insert(
+                    0,
+                    {
+                        "schema_version": "product_composition_selection.v1",
+                        "capability_key": offer["capability_key"],
+                    },
+                )
+            elif call_type == "product_blueprint":
+                offer = request_value["composition_offers"][0]
+                assignments = {
+                    member["candidate_ref"]: {
+                        "section_id": (
+                            "frontend"
+                            if member["capability_kind"]
+                            in {"interaction", "presentation"}
+                            else "backend"
+                        ),
+                        "requirement_refs": ["r_classify"],
+                        "title": member["role_key"],
+                        "summary": "Use the exact locked formal member.",
+                        "acceptance_intent": "Verify the bounded local classification.",
+                    }
+                    for member in offer["members"]
+                }
+                planner.generation_outputs.insert(
+                    0,
+                    {
+                        "schema_version": "product_plan_blueprint.v2",
+                        "sections": {
+                            "frontend": {
+                                "applicability": "applicable",
+                                "summary": "Input and result.",
+                            },
+                            "backend": {
+                                "applicability": "applicable",
+                                "summary": "Bounded classification.",
+                            },
+                            "data": {
+                                "applicability": "not_applicable",
+                                "summary": "No data layer.",
+                            },
+                            "infrastructure": {
+                                "applicability": "not_applicable",
+                                "summary": "Local-only execution.",
+                            },
+                        },
+                        "selection": {
+                            "offer_ref": offer["offer_ref"],
+                            "assignments": assignments,
+                        },
+                        "gaps": [],
+                    },
+                )
+            return original_generate(
+                model,
+                call_type,
+                request_value,
+                cancel_check,
+                **kwargs,
+            )
+
+        planner._generate_json = generated  # type: ignore[method-assign]
+        replan = self.service.start_product_capability_replan(
+            {
+                "plan_token": plan_token,
+                "plan_digest": plan["canonical_digest"],
+                "projection_digest": projection["projection_digest"],
+            }
+        )
+        self.assertTrue(replan["ok"], replan)
+        for _ in range(6000):
+            polled = self.service.get_product_plan_run(
+                {"run_id": replan["run_id"]}
+            )
+            if (
+                polled["ok"]
+                and polled["data"]["status"]
+                in {"completed", "failed", "cancelled"}
+            ):
+                replan_task = polled["data"]
+                break
+            time.sleep(0.01)
+        else:
+            self.fail("replan did not finish")
+        self.assertEqual(replan_task["status"], "completed", replan_task)
+        successor = replan_task["data"]["data"]
+        self.assertEqual(successor["status"], "plan_review")
+        self.assertEqual(successor["capability_gaps"], [])
+        successor_plan = successor["plan"]
+        successor_token = successor["plan_token"]
+        confirmed = self.service.confirm_product_plan(
+            {
+                "plan_token": successor_token,
+                "plan_digest": successor_plan["canonical_digest"],
+                "reviewed_plan": successor_plan,
+            }
+        )
+        self.assertTrue(confirmed["ok"], confirmed)
+        (
+            confirmed_workspace,
+            exact_capsules,
+            _product_scope,
+            page_contracts,
+        ) = self.service._confirmed_candidate_context(successor_token)
+        execution = self.service._compile_candidate_execution(
+            confirmed_workspace["plan"],
+            confirmed_workspace["confirmation"],
+            exact_capsules,
+            page_contracts,
+        )
+        self.assertEqual(execution["schema_version"], "plan_execution.v1")
+        requirement_id = successor_plan["requirements"][0]["requirement_id"]
+        max_message = "x" * 994 + "urgent"
+        candidate_cases = [
+            {
+                "requirement_ids": [requirement_id],
+                "input": {"message": "routine task"},
+                "expected_output": {"classification": "normal"},
+            },
+            {
+                "requirement_ids": [requirement_id],
+                "input": {"message": "urgent task"},
+                "expected_output": {"classification": "urgent"},
+            },
+            {
+                "requirement_ids": [requirement_id],
+                "input": {"message": "x"},
+                "expected_output": {"classification": "normal"},
+            },
+            {
+                "requirement_ids": [requirement_id],
+                "input": {"message": max_message},
+                "expected_output": {"classification": "urgent"},
+            },
+        ]
+        acceptance = self.service.confirm_product_candidate_acceptance(
+            {
+                "plan_token": successor_token,
+                "plan_digest": successor_plan["canonical_digest"],
+                "acceptance_cases": candidate_cases,
+            }
+        )
+        self.assertTrue(acceptance["ok"], acceptance)
+        candidate_run = self.service.start_confirmed_product_candidate(
+            {
+                "plan_token": successor_token,
+                "plan_digest": successor_plan["canonical_digest"],
+                "acceptance_confirmation_digest": acceptance["data"][
+                    "canonical_digest"
+                ],
+            }
+        )
+        candidate_task = _poll(self.service, candidate_run["run_id"])
+        self.assertEqual(candidate_task["status"], "completed", candidate_task)
+        candidate = candidate_task["data"]["data"]
+        self.assertEqual(candidate["status"], "review_ready")
+        self.assertEqual(
+            candidate["composer_version"],
+            ADAPTER_V5_FORMAL_PRODUCT_COMPOSER_VERSION,
+        )
+        self.assertEqual(
+            [
+                value["actual_output"]
+                for value in candidate["acceptance"]["cases"]
+            ],
+            [case["expected_output"] for case in candidate_cases],
+        )
+
+    @unittest.skipUnless(
+        PRODUCT_WORKER_AVAILABLE,
         "PySide worker environment is required",
     )
     def test_real_qweb_acceptance_reports_wrong_business_output(self) -> None:
@@ -4356,8 +4987,7 @@ process.stdout.write(JSON.stringify({result, rendered: totalNode.textContent}));
         self.assertNotIn("requirement_ids", candidate["acceptance"]["cases"][0])
 
     @unittest.skipUnless(
-        Path(".venv-reweave/bin/python").is_file()
-        or Path(".venv-reweave/Scripts/python.exe").is_file(),
+        PRODUCT_WORKER_AVAILABLE,
         "PySide worker environment is required",
     )
     def test_real_qweb_parameter_binding_is_applied_and_cannot_be_overridden(
@@ -4436,6 +5066,7 @@ process.stdout.write(JSON.stringify({result, rendered: totalNode.textContent}));
                 }
             ],
         )
+        self.service.close()
         restarted = ReweaveAppService(
             _NoLegacyEngine(),
             capsule_store=self.store,

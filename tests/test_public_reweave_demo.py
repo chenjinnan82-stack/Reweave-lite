@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -12,6 +13,29 @@ from scripts import run_public_reweave_demo as demo
 
 ROOT = Path(__file__).resolve().parents[1]
 SCRIPT = ROOT / "scripts" / "run_public_reweave_demo.py"
+
+
+def _bounded_result_worker(connection, *_args) -> None:
+    connection.send({"ok": True, "productId": "product-1"})
+    connection.close()
+
+
+def _bounded_hanging_worker(_connection, *_args) -> None:
+    while True:
+        time.sleep(1)
+
+
+def _bounded_error_worker(_connection, *_args) -> None:
+    raise RuntimeError("sentinel")
+
+
+def _bounded_eof_worker(connection, *_args) -> None:
+    connection.close()
+
+
+def _bounded_invalid_worker(connection, *_args) -> None:
+    connection.send(["invalid"])
+    connection.close()
 
 
 def test_public_reweave_demo_help_is_formal_capsule_only() -> None:
@@ -25,7 +49,12 @@ def test_public_reweave_demo_help_is_formal_capsule_only() -> None:
 
     assert all(
         option in completed.stdout
-        for option in ("--task", "--capsule-id", "--state-dir")
+        for option in (
+            "--task",
+            "--capsule-id",
+            "--state-dir",
+            "--timeout-seconds",
+        )
     )
     assert all(
         option not in completed.stdout
@@ -35,7 +64,6 @@ def test_public_reweave_demo_help_is_formal_capsule_only() -> None:
             "--llm",
             "--model",
             "--select-capsule",
-            "--timeout",
         )
     )
 
@@ -46,6 +74,7 @@ def test_public_reweave_demo_uses_only_app_service_generation() -> None:
     assert "ReweaveAppService" in source
     assert "service.generate_product(" in source
     assert "service.get_intake_run(" in source
+    assert "service.cancel_intake_run(" in source
     assert all(
         token not in source
         for token in (
@@ -155,3 +184,187 @@ def test_public_reweave_demo_polls_and_returns_raw_product(tmp_path: Path) -> No
         },
     )
     assert calls[-1] == ("close", None)
+
+
+def test_public_reweave_demo_timeout_requests_safe_cancel() -> None:
+    calls: list[str] = []
+
+    class Service:
+        def generate_product(self, _payload: dict[str, object]) -> dict[str, object]:
+            return {"ok": True, "run_id": "run-1", "status": "queued"}
+
+        def get_intake_run(self, _payload: dict[str, object]) -> dict[str, object]:
+            calls.append("poll")
+            return {
+                "ok": True,
+                "data": {
+                    "status": "running" if len(calls) == 1 else "cancelled"
+                },
+            }
+
+        def cancel_intake_run(
+            self, _payload: dict[str, object]
+        ) -> dict[str, object]:
+            calls.append("cancel")
+            return {"ok": True}
+
+        def close(self) -> None:
+            calls.append("close")
+
+    with (
+        patch.object(demo, "ReweaveAppService", Service),
+        patch.object(demo.time, "monotonic", side_effect=(0.0, 1.0)),
+        patch.object(demo.time, "sleep"),
+    ):
+        result = demo.run("Build", ["capsule-a"], timeout_seconds=1)
+
+    assert result == demo._error("generation_timed_out")
+    assert calls == ["poll", "cancel", "poll", "close"]
+
+
+def test_public_reweave_demo_completion_wins_after_cancel_request() -> None:
+    completed = {"ok": True, "productId": "product-1"}
+    polls = 0
+
+    class Service:
+        def generate_product(self, _payload: dict[str, object]) -> dict[str, object]:
+            return {"ok": True, "run_id": "run-1", "status": "queued"}
+
+        def get_intake_run(self, _payload: dict[str, object]) -> dict[str, object]:
+            nonlocal polls
+            polls += 1
+            return {
+                "ok": True,
+                "data": (
+                    {"status": "running"}
+                    if polls == 1
+                    else {"status": "completed", "data": completed}
+                ),
+            }
+
+        def cancel_intake_run(
+            self, _payload: dict[str, object]
+        ) -> dict[str, object]:
+            return {"ok": True}
+
+        def close(self) -> None:
+            pass
+
+    with (
+        patch.object(demo, "ReweaveAppService", Service),
+        patch.object(demo.time, "monotonic", side_effect=(0.0, 1.0)),
+        patch.object(demo.time, "sleep"),
+    ):
+        result = demo.run("Build", ["capsule-a"], timeout_seconds=1)
+
+    assert result == completed
+
+
+def test_public_reweave_demo_cancel_drain_is_bounded() -> None:
+    cancels = 0
+
+    class Service:
+        def generate_product(self, _payload: dict[str, object]) -> dict[str, object]:
+            return {"ok": True, "run_id": "run-1", "status": "queued"}
+
+        def get_intake_run(self, _payload: dict[str, object]) -> dict[str, object]:
+            return {"ok": True, "data": {"status": "running"}}
+
+        def cancel_intake_run(
+            self, _payload: dict[str, object]
+        ) -> dict[str, object]:
+            nonlocal cancels
+            cancels += 1
+            return {"ok": True}
+
+        def close(self) -> None:
+            pass
+
+    with (
+        patch.object(demo, "ReweaveAppService", Service),
+        patch.object(demo.time, "monotonic", side_effect=(0.0, 1.0, 31.0)),
+        patch.object(demo.time, "sleep"),
+    ):
+        result = demo.run("Build", ["capsule-a"], timeout_seconds=1)
+
+    assert result == demo._error("generation_cancel_timeout")
+    assert cancels == 1
+
+
+def test_public_reweave_demo_rejects_invalid_timeout_without_starting() -> None:
+    with patch.object(
+        demo,
+        "ReweaveAppService",
+        side_effect=AssertionError("service must not start"),
+    ):
+        assert demo.run("Build", ["capsule-a"], timeout_seconds=0) == demo._error(
+            "generation_timeout_invalid"
+        )
+
+
+def test_public_reweave_demo_bounded_process_returns_exact_result() -> None:
+    result = demo._run_bounded(
+        "Build",
+        ["capsule-a"],
+        timeout_seconds=1,
+        _worker=_bounded_result_worker,
+    )
+
+    assert result == {"ok": True, "productId": "product-1"}
+
+
+def test_public_reweave_demo_bounded_process_stops_hanging_worker() -> None:
+    started = time.monotonic()
+    with (
+        patch.object(demo, "CANCEL_DRAIN_SECONDS", 0),
+        patch.object(demo, "PROCESS_OVERHEAD_SECONDS", 0),
+        patch.object(demo, "PROCESS_STOP_SECONDS", 0.1),
+    ):
+        result = demo._run_bounded(
+            "Build",
+            ["capsule-a"],
+            timeout_seconds=1,
+            _worker=_bounded_hanging_worker,
+        )
+
+    assert result == demo._error("generation_process_timeout")
+    assert time.monotonic() - started < 3
+
+
+def test_public_reweave_demo_bounded_process_fails_closed() -> None:
+    for worker in (
+        _bounded_error_worker,
+        _bounded_eof_worker,
+        _bounded_invalid_worker,
+    ):
+        assert demo._run_bounded(
+            "Build",
+            ["capsule-a"],
+            timeout_seconds=1,
+            _worker=worker,
+        ) == demo._error("public_reweave_cli_failed")
+
+
+def test_public_reweave_demo_stop_escalates_to_kill() -> None:
+    calls: list[str] = []
+
+    class Process:
+        alive = True
+
+        def is_alive(self) -> bool:
+            return self.alive
+
+        def terminate(self) -> None:
+            calls.append("terminate")
+
+        def join(self, timeout: float) -> None:
+            calls.append(f"join:{timeout}")
+
+        def kill(self) -> None:
+            calls.append("kill")
+            self.alive = False
+
+    with patch.object(demo, "PROCESS_STOP_SECONDS", 0.25):
+        demo._stop_process(Process())
+
+    assert calls == ["terminate", "join:0.25", "kill", "join:0.25"]

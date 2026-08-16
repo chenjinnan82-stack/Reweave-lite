@@ -1,14 +1,39 @@
 from __future__ import annotations
 
 import ast
+import json
 import re
-from pathlib import Path
+import shutil
+import subprocess
+from html.parser import HTMLParser
+from pathlib import Path, PurePosixPath
 from typing import Any
+from urllib.parse import urlsplit
 
 
-AUDIT_VERSION = "reweave_release_surface_audit.v2"
+AUDIT_VERSION = "reweave_release_surface_audit.v3"
 SUMMARY_VERSION = "reweave_release_surface_summary.v2"
 PUBLIC_ALPHA_SUMMARY_VERSION = "reweave_public_alpha_release_summary.v2"
+
+FRONTEND_LOADED_SCRIPTS = (
+    "bridge.js",
+    "renderers.js",
+    "artifacts.js",
+    "source_workflow.js",
+    "capsule_reader.js",
+    "capsule_warehouse_scene.js",
+    "product_plan_scene.js",
+    "target_workflow.js",
+    "app.js",
+)
+LEGACY_JSON_MUTATORS = frozenset(
+    {
+        "choose_source_folder",
+        "scan_source_box",
+        "draft_capsules",
+        "promote_source_drafts",
+    }
+)
 
 
 REQUIRED_SURFACE_FILES = (
@@ -19,6 +44,7 @@ REQUIRED_SURFACE_FILES = (
     "pimos_lite/reweave_plan_execution.py",
     "pimos_lite/reweave_page_capability_contract.py",
     "pimos_lite/reweave_product_planner.py",
+    "pimos_lite/composer/__init__.py",
     "pimos_lite/composer/module_native.py",
     "pimos_lite/reweave_capsule_store.py",
     "pimos_lite/reweave_capsule_intake.py",
@@ -58,7 +84,6 @@ HISTORICAL_EXCLUDED_SURFACE_FILES = (
     "pimos_lite/capsule_module/__init__.py",
     "pimos_lite/capsule_module/contract.py",
     "pimos_lite/capsule_module/source_extract.py",
-    "pimos_lite/composer/__init__.py",
     "pimos_lite/composer/intent.py",
     "pimos_lite/reweave_behavior_runtime.py",
     "pimos_lite/reweave_capsule_content.py",
@@ -120,7 +145,8 @@ def build_reweave_release_surface_audit(
     base = Path(root).resolve() if root else Path(__file__).resolve().parents[1]
     entries = [_entry(base, relative) for relative in _surface_paths(base)]
     missing = [relative for relative in REQUIRED_SURFACE_FILES if not (base / relative).is_file()]
-    checks = _release_checks(base)
+    loaded_scripts = _frontend_loaded_scripts(base)
+    checks = _release_checks(base, loaded_scripts)
     unknown = [
         row["path"]
         for row in entries
@@ -148,6 +174,7 @@ def build_reweave_release_surface_audit(
         "source_write_allowed": False,
         "legacy_generation_active": False,
         "stage4_coverage": "historical_excluded",
+        "frontend_loaded_scripts": loaded_scripts or [],
         "release_checks": checks,
         "release_blockers": blockers,
         "missing_surface_files": missing,
@@ -241,6 +268,8 @@ def _role(relative: str) -> str:
         return "formal_page_capability_contract"
     if relative == "pimos_lite/reweave_product_planner.py":
         return "local_product_planner"
+    if relative == "pimos_lite/composer/__init__.py":
+        return "formal_composer_package"
     if relative == "pimos_lite/composer/module_native.py":
         return "formal_composer"
     if relative == "pimos_lite/reweave_capsule_store.py":
@@ -296,8 +325,12 @@ def _surface_paths(base: Path) -> list[str]:
     return sorted(paths)
 
 
-def _release_checks(base: Path) -> dict[str, bool]:
+def _release_checks(
+    base: Path,
+    loaded_scripts: list[str] | None = None,
+) -> dict[str, bool]:
     app_service = _read(base / "pimos_lite/reweave_app_service.py")
+    composer_package = _read(base / "pimos_lite/composer/__init__.py")
     composer = _read(base / "pimos_lite/composer/module_native.py")
     desktop = _read(base / "pimos_lite/desktop_reweave_static.py")
     product_planner = _read(base / "pimos_lite/reweave_product_planner.py")
@@ -320,6 +353,28 @@ def _release_checks(base: Path) -> dict[str, bool]:
     service_calls = set(re.findall(r"\bservice\.([A-Za-z_][A-Za-z0-9_]*)\(", public_cli))
     compose_lower = compose_method.casefold()
     eager_imports = _top_level_imports(app_service) | _top_level_imports(composer)
+    composer_exports = _python_string_collection(composer_package, "__all__")
+    composer_imports = _python_from_imports(composer_package)
+    bridge_slots = _python_slot_methods(desktop)
+    public_product_actions = _python_string_collection(
+        app_service,
+        "PUBLIC_PRODUCT_ACTIONS",
+    )
+    loaded_scripts = (
+        _frontend_loaded_scripts(base) if loaded_scripts is None else loaded_scripts
+    )
+    frontend_actions = (
+        _javascript_frontend_actions(
+            base,
+            [base / "reweave_frontend" / name for name in loaded_scripts],
+        )
+        if loaded_scripts is not None
+        else {}
+    )
+    formal_imports: set[str] = set()
+    for relative in REQUIRED_SURFACE_FILES:
+        if relative.endswith(".py"):
+            formal_imports.update(_python_import_references(_read(base / relative)))
     historical_modules = {
         relative.removesuffix(".py").replace("/", ".")
         for relative in HISTORICAL_EXCLUDED_SURFACE_FILES
@@ -336,7 +391,12 @@ def _release_checks(base: Path) -> dict[str, bool]:
         "public_cli_uses_formal_app_service_only": (
             "ReweaveAppService" in public_cli
             and service_calls
-            == {"generate_product", "get_intake_run", "close"}
+            == {
+                "generate_product",
+                "get_intake_run",
+                "cancel_intake_run",
+                "close",
+            }
             and all(
                 token not in public_cli
                 for token in (
@@ -351,21 +411,44 @@ def _release_checks(base: Path) -> dict[str, bool]:
         ),
         "frontend_uses_formal_generation_only": (
             bool(frontend_generation)
-            and 'bridgeCall("generate_product"' in frontend_generation
-            and 'bridgeCall("get_intake_run"' in frontend_generation
+            and frontend_actions.get("bridge_generation_actions")
+            == ["generate_product"]
+            and frontend_actions.get("generation_literals")
+            == ["generate_product"]
             and 'selection_mode: "manual"' in frontend_generation
             and "usedCapsuleIds.length === 0" in frontend
             and "auto_match" not in frontend
-            and "generate_preview" not in frontend
             and "stage4_module_native" not in frontend
             and re.search(r"\borigin\b", frontend, re.IGNORECASE) is None
             and "model" not in frontend_generation.casefold()
+        ),
+        "frontend_loaded_scripts_closed_world": (
+            loaded_scripts == list(FRONTEND_LOADED_SCRIPTS)
+        ),
+        "frontend_generation_actions_formal_only": (
+            frontend_actions.get("bridge_generation_actions")
+            == ["generate_product"]
+            and frontend_actions.get("generation_literals")
+            == ["generate_product"]
+        ),
+        "legacy_json_mutators_absent_from_loaded_frontend": (
+            frontend_actions.get("legacy_mutator_references") == []
         ),
         "sqlite_generation_is_active": (
             '"generationActive": True' in app_service
             and '"generationFromSqlite": True' in app_service
         ),
         "module_native_formal_composer_present": bool(compose_method),
+        "module_native_package_exports_formal_only": (
+            composer_exports == {"compose_capsule_product"}
+            and composer_imports
+            == {
+                (
+                    "pimos_lite.composer.module_native",
+                    "compose_capsule_product",
+                )
+            }
+        ),
         "module_native_formal_composer_is_memory_only": (
             bool(compose_method)
             and "capsules" in compose_method
@@ -391,6 +474,32 @@ def _release_checks(base: Path) -> dict[str, bool]:
         "desktop_bridge_exposes_formal_generation": (
             bool(desktop_method)
             and '_phase4_call("generate_product"' in desktop_method
+            and bridge_slots.intersection(
+                {"generate_product", "generate_preview", "notify_generate"}
+            )
+            == {"generate_product"}
+        ),
+        "legacy_json_mutators_absent_from_desktop_bridge": (
+            not bridge_slots.intersection(LEGACY_JSON_MUTATORS)
+        ),
+        "public_product_actions_use_formal_generation_only": (
+            "generate_product" in public_product_actions
+            and "generate_preview" not in public_product_actions
+            and "notify_generate" not in public_product_actions
+        ),
+        "agent_candidate_actions_have_public_product_boundary": (
+            {
+                "get_confirmed_product_plan",
+                "start_confirmed_product_candidate",
+            }
+            <= public_product_actions
+        ),
+        "formal_entrypoints_exclude_stage4_composer": (
+            not any(
+                module == "pimos_lite.reweave_stage4_composer"
+                or module.startswith("pimos_lite.reweave_stage4_composer.")
+                for module in formal_imports
+            )
         ),
         "product_planning_is_local_review_only": (
             "class ProductPlanner" in product_planner
@@ -435,6 +544,308 @@ def _python_function_source(source: str, function_name: str) -> str:
         if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)) and node.name == function_name:
             return ast.get_source_segment(source, node) or ""
     return ""
+
+
+def _python_string_collection(source: str, name: str) -> set[str]:
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return set()
+    for node in tree.body:
+        if not isinstance(node, ast.Assign) or not any(
+            isinstance(target, ast.Name) and target.id == name
+            for target in node.targets
+        ):
+            continue
+        value = node.value
+        if (
+            isinstance(value, ast.Call)
+            and isinstance(value.func, ast.Name)
+            and value.func.id == "frozenset"
+            and len(value.args) == 1
+            and not value.keywords
+        ):
+            value = value.args[0]
+        try:
+            collection = ast.literal_eval(value)
+        except (ValueError, TypeError):
+            return set()
+        if not isinstance(collection, (list, tuple, set, frozenset)) or not all(
+            isinstance(item, str) for item in collection
+        ):
+            return set()
+        return set(collection)
+    return set()
+
+
+def _python_from_imports(source: str) -> set[tuple[str, str]]:
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return set()
+    return {
+        (node.module, alias.name)
+        for node in tree.body
+        if isinstance(node, ast.ImportFrom) and node.module
+        for alias in node.names
+    }
+
+
+def _python_slot_methods(source: str) -> set[str]:
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return set()
+    methods: set[str] = set()
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for decorator in node.decorator_list:
+            target = decorator.func if isinstance(decorator, ast.Call) else decorator
+            decorator_name = (
+                target.id
+                if isinstance(target, ast.Name)
+                else target.attr
+                if isinstance(target, ast.Attribute)
+                else ""
+            )
+            if decorator_name == "Slot":
+                methods.add(node.name)
+                break
+    return methods
+
+
+def _python_import_references(source: str) -> set[str]:
+    try:
+        tree = ast.parse(source)
+    except SyntaxError:
+        return set()
+    modules: set[str] = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            modules.update(alias.name for alias in node.names)
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            modules.add(node.module)
+        elif isinstance(node, ast.Call) and node.args:
+            function = node.func
+            name = (
+                function.id
+                if isinstance(function, ast.Name)
+                else function.attr
+                if isinstance(function, ast.Attribute)
+                else ""
+            )
+            if (
+                name in {"__import__", "import_module"}
+                and isinstance(node.args[0], ast.Constant)
+                and isinstance(node.args[0].value, str)
+            ):
+                modules.add(node.args[0].value)
+    return modules
+
+
+class _FrontendScriptParser(HTMLParser):
+    def __init__(self) -> None:
+        super().__init__(convert_charrefs=True)
+        self.scripts: list[str] = []
+        self.valid = True
+        self._inside_script = False
+        self._script_src: str | None = None
+        self._script_type = ""
+        self._script_body: list[str] = []
+
+    def handle_starttag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        if tag.casefold() != "script":
+            return
+        if self._inside_script:
+            self.valid = False
+            return
+        names = [name.casefold() for name, _value in attrs]
+        if len(names) != len(set(names)):
+            self.valid = False
+        values = {
+            name.casefold(): value or ""
+            for name, value in attrs
+        }
+        self._inside_script = True
+        self._script_src = values.get("src")
+        self._script_type = values.get("type", "").strip().casefold()
+        self._script_body = []
+        if self._script_src is not None:
+            if set(names) != {"src"}:
+                self.valid = False
+            self.scripts.append(self._script_src)
+
+    def handle_startendtag(
+        self,
+        tag: str,
+        attrs: list[tuple[str, str | None]],
+    ) -> None:
+        if tag.casefold() == "script":
+            self.valid = False
+
+    def handle_data(self, data: str) -> None:
+        if self._inside_script:
+            self._script_body.append(data)
+
+    def handle_endtag(self, tag: str) -> None:
+        if tag.casefold() != "script":
+            return
+        if not self._inside_script:
+            self.valid = False
+            return
+        body = "".join(self._script_body).strip()
+        if self._script_src is None:
+            if self._script_type != "application/json":
+                self.valid = False
+        elif body:
+            self.valid = False
+        self._inside_script = False
+        self._script_src = None
+        self._script_type = ""
+        self._script_body = []
+
+    def close(self) -> None:
+        super().close()
+        if self._inside_script:
+            self.valid = False
+
+
+def _frontend_loaded_scripts(base: Path) -> list[str] | None:
+    index = base / "reweave_frontend/index.html"
+    if not index.is_file() or index.is_symlink():
+        return None
+    try:
+        parser = _FrontendScriptParser()
+        parser.feed(index.read_text(encoding="utf-8"))
+        parser.close()
+    except (OSError, UnicodeError):
+        return None
+    scripts = parser.scripts
+    if (
+        not parser.valid
+        or index.parent.is_symlink()
+        or scripts != list(FRONTEND_LOADED_SCRIPTS)
+        or len(scripts) != len(set(scripts))
+    ):
+        return None
+    frontend_root = index.parent
+    for source in scripts:
+        parsed = urlsplit(source)
+        relative = PurePosixPath(parsed.path)
+        if (
+            parsed.scheme
+            or parsed.netloc
+            or parsed.query
+            or parsed.fragment
+            or "\\" in source
+            or relative.is_absolute()
+            or ".." in relative.parts
+        ):
+            return None
+        path = frontend_root.joinpath(*relative.parts)
+        if path.is_symlink() or not path.is_file():
+            return None
+    return scripts
+
+
+def _javascript_frontend_actions(
+    base: Path,
+    paths: list[Path],
+) -> dict[str, list[str]]:
+    node = shutil.which("node")
+    if not node or not paths or any(not path.is_file() for path in paths):
+        return {}
+    probe = r"""
+import fs from "node:fs";
+import * as ts from "typescript";
+const names = new Set(["generate_product", "generate_preview", "notify_generate"]);
+const legacy = new Set([
+  "choose_source_folder",
+  "scan_source_box",
+  "draft_capsules",
+  "promote_source_drafts",
+]);
+const generationLiterals = new Set();
+const bridgeGenerationActions = new Set();
+const bridgeActions = new Set();
+const legacyMutatorReferences = new Set();
+function visit(current) {
+  if (ts.isStringLiteralLike(current) && names.has(current.text)) {
+    generationLiterals.add(current.text);
+  }
+  if (
+    (ts.isStringLiteralLike(current) || ts.isIdentifier(current))
+    && legacy.has(current.text)
+  ) {
+    legacyMutatorReferences.add(current.text);
+  }
+  if (
+    ts.isCallExpression(current)
+    && ts.isIdentifier(current.expression)
+    && current.expression.text === "bridgeCall"
+    && current.arguments.length
+    && ts.isStringLiteralLike(current.arguments[0])
+  ) {
+    const action = current.arguments[0].text;
+    bridgeActions.add(action);
+    if (names.has(action)) bridgeGenerationActions.add(action);
+  }
+  ts.forEachChild(current, visit);
+}
+for (const path of process.argv.slice(1)) {
+  const source = fs.readFileSync(path, "utf8");
+  const tree = ts.createSourceFile(
+    path,
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.JS,
+  );
+  if (tree.parseDiagnostics.length) process.exit(2);
+  visit(tree);
+}
+process.stdout.write(JSON.stringify({
+  bridge_actions: [...bridgeActions].sort(),
+  bridge_generation_actions: [...bridgeGenerationActions].sort(),
+  generation_literals: [...generationLiterals].sort(),
+  legacy_mutator_references: [...legacyMutatorReferences].sort(),
+}));
+"""
+    try:
+        completed = subprocess.run(
+            [
+                node,
+                "--input-type=module",
+                "-e",
+                probe,
+                *(str(path) for path in paths),
+            ],
+            cwd=base,
+            capture_output=True,
+            text=True,
+            timeout=15,
+            check=False,
+        )
+        value = json.loads(completed.stdout) if completed.returncode == 0 else {}
+    except (json.JSONDecodeError, OSError, subprocess.TimeoutExpired):
+        return {}
+    if not isinstance(value, dict) or any(
+        not isinstance(value.get(key), list)
+        or not all(isinstance(item, str) for item in value[key])
+        for key in (
+            "bridge_actions",
+            "bridge_generation_actions",
+            "generation_literals",
+            "legacy_mutator_references",
+        )
+    ):
+        return {}
+    return value
 
 
 def _between(source: str, start: str, end: str) -> str:

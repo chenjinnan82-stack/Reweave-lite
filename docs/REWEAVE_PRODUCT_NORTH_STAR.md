@@ -168,15 +168,28 @@ flowchart LR
 
 ### 5.3 当前正式版本摘要
 
-- 规划：`product_plan.v2`、`product_workspace.v10`、`reweave_product_planning_rules.v10`、
+- 规划：`product_plan.v2`、`product_workspace.v12`、`reweave_product_planning_rules.v12`、
   `reweave_product_planning_prompt.v13`。
 - 完整组合选择：`product_composition_offer.v1`；模型只选择完整 offer，确定性核心展开成员与依赖。
+- 缺口归属：`product_plan_question_set.v4`、`product_capability_gap_target_selection.v2`、
+  `capability_gap_projection.v3`、`capability_replan_handoff.v2`；一个至三个候选均由用户作业务选择，
+  “以上都不是”在 Blueprint 前失败关闭。
+- 字符串证明核：`source_graph_request.v2` / `source_graph_proof.v3`、
+  `computation_capture_mapping.v5` / `computation_adapter.v5`；只覆盖有界字符串上的直接
+  `includes` 与有限枚举结果。
 - 执行：单 computation 使用 `plan_execution.v1`；双 computation 使用 `plan_execution.v3`。
 - 唯一 Composer 产品线：
   - `module_native_formal_product.v3`：单 computation 与中性文档宿主。
   - `module_native_formal_product.v4`：普通、唯一的双 computation 串联。
   - `module_native_formal_product.v5`：包含 `computation_adapter.v3` 的正式串联。
   - `module_native_formal_product.v6`：包含有限字符串枚举 `computation_adapter.v4` 的正式串联。
+  - `module_native_formal_product.v7`：包含有界字符串 `computation_adapter.v5` 的正式串联。
+- 发布运行面：`reweave_release_surface_audit.v3` 闭世界检查 `index.html` 实际加载的九个脚本与公开动作；macOS Cocoa
+  QWeb 门固定逐进程运行 29 个桌面、Stage 3、Candidate/Product 节点。应用状态由单一 state-root
+  owner 持有，SQLite backup 验证后原子发布，Candidate/Product 孤儿 staging 在启动时安全清理。
+  Legacy JSON Source Box 写入口已退役；正式 Intake / Stage 3、`generate_product`、Agent Candidate
+  handoff 和有界公开 CLI 仍按各自权限边界可达。Agent Integration 文档仍是未冻结的本地设计草案，
+  不构成当前产品承诺或发布事实。
 
 历史计划、workspace、执行、Composer、manifest 和导出继续按自身精确版本验证，不迁移、不重算。
 更细的职责与兼容矩阵见 `ARCHITECTURE.md`。
@@ -209,10 +222,13 @@ flowchart LR
 
 当前 `LEVEL_THREE_SYSTEM_MINIMUM_LOOP=PASS` 只证明：在锁定 catalog、既有 composition 形状和同一
 `capability_key` 内，补齐一个具有明确输入、输出和错误契约、无外部副作用的单一纯 computation 缺口。
-当核心同时枚举出两个或三个合格候选时，用户可在不接触技术身份的情况下选择一个，核心随后按原 candidate digest
-锁定正式 gap；一个候选保持自动锁定，零个或超过三个继续失败关闭。模型不参与正式 gap 选择。
-已验证结果类型包括受控整数以及有限字符串枚举；后者由 `source_graph_proof.v2`、capture/adapter v4 和精确
-枚举 witness 共同约束，不等于任意字符串、任意对象返回或通用类型系统。
+当核心枚举出一个至三个合格候选时，用户可在不接触技术身份的情况下选择一个或确认“以上都不是”，核心随后按原
+candidate digest 锁定正式 gap；“以上都不是”在 Blueprint 前以 no-match 终止，零个候选不产生正式投影，
+超过三个继续失败关闭。模型不参与正式 gap 选择。
+真实验证的结果类型包括受控整数以及有限字符串枚举；后者由 `source_graph_proof.v2`、capture/adapter v4 和精确
+枚举 witness 共同约束。当前代码还以 `source_graph_proof.v3`、capture/adapter v5 确定性验证了
+“有界字符串 `includes` → 有限枚举”的纵向路径，但尚未取得真实模型生成或正式发布授权；两者都不等于任意字符串、
+任意对象返回或通用类型系统。
 
 它不证明 presentation、interaction、Data、同时创建多个 gap、跨 `capability_key`、网络、文件系统或数据库写入，
 也不证明其他有副作用能力的创建。
@@ -246,9 +262,9 @@ LEVEL_THREE_FINITE_ENUM_STANDALONE_DELIVERY=PASS
 
 当前不建设训练平台，不进行在线自训练，也不把 Candidate 或导出产品自动晋升为胶囊。
 
-新建 v10 workspace 默认冻结并使用同项目、同模型 digest 的最多三条安全案例，且只注入 composition selection。
-历史 v5–v9 workspace 和已有 v10 workspace 保存的启用值不重算；冻结 A/B 只授权这一窄默认值，不构成模型资格、
-训练授权或广泛任务分布证明。
+新建 v12 workspace 延续项目内 experience：冻结并使用同项目、同模型 digest 的最多三条安全案例，且只注入
+composition selection。历史 v5–v11 workspace 和已有 workspace 保存的启用值不重算；冻结 A/B 只授权这一窄
+默认值，不构成模型资格、训练授权或广泛任务分布证明。
 
 在独立正式能力组上的复现已经证明同一有界结构可重复交付。随后，第一条非数值 boolean 输入到有限字符串枚举输出的
 真实链又贯通了有限多 gap 用户选择、源码提案、capture/adapter v4、正式发布、固定模型重新规划、
@@ -450,7 +466,7 @@ Candidate 仍是审阅候选，不等于 products 晋升或完整产品版本历
 4. SQLite 正式胶囊仓库、Capsule IR、Composer 产品线和 Stage 3 继续保持唯一。
 5. 模型选择完整 offer 或生成隔离 source proposal，确定性核心和用户继续掌握正式事实与发布权。
 6. Reweave 通过正式能力、契约、组合规则、经验和验证器共同增长；训练只是后期可选优化。
-7. 项目内 planning / validation experience 已完成非正式、默认脱敏的不可变记录与确定性检索，并只向新 v10
+7. 项目内 planning / validation experience 已完成非正式、默认脱敏的不可变记录与确定性检索，并只向新 v12
    workspace 的 composition selection 注入最多三条同项目、同模型 digest 案例；当前优先封板后用真实新任务观察，
    再按指标决定是否需要任何扩展。
 

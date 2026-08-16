@@ -18,7 +18,7 @@ from html.parser import HTMLParser
 from importlib import import_module
 from itertools import combinations, permutations
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Callable
 
 from pimos_lite.reweave_data_contract import (
     DataContractError,
@@ -100,11 +100,13 @@ MULTI_COMPUTATION_FORMAL_PRODUCT_MANIFEST_VERSION = (
 )
 ADAPTER_V3_FORMAL_PRODUCT_COMPOSER_VERSION = "module_native_formal_product.v5"
 ADAPTER_V4_FORMAL_PRODUCT_COMPOSER_VERSION = "module_native_formal_product.v6"
+ADAPTER_V5_FORMAL_PRODUCT_COMPOSER_VERSION = "module_native_formal_product.v7"
 DETERMINISTIC_COMPUTATION_ADAPTER = "deterministic_computation_adapter"
 COMPUTATION_ADAPTER_V1 = "computation_adapter.v1"
 COMPUTATION_ADAPTER_V2 = "computation_adapter.v2"
 COMPUTATION_ADAPTER_V3 = "computation_adapter.v3"
 COMPUTATION_ADAPTER_V4 = "computation_adapter.v4"
+COMPUTATION_ADAPTER_V5 = "computation_adapter.v5"
 COMPUTATION_ADAPTER_V2_MODULES = {
     "__reweave_adapter__/compute.js",
     "__reweave_capture__/selected.js",
@@ -135,6 +137,7 @@ def compose_capsule_product(
     verified_page_contracts: list[dict[str, Any]] | None = None,
     verified_connections: list[dict[str, Any]] | None = None,
     connection_digest: str | None = None,
+    cancel_check: Callable[[], None] | None = None,
 ) -> dict[str, Any]:
     """Compose eligible formal capsules supplied entirely in memory.
 
@@ -142,6 +145,8 @@ def compose_capsule_product(
     legacy JSON warehouse, or final product writes.  All temporary files below
     exist only to run the repository-pinned esbuild and safety analyzer.
     """
+    check_cancelled = cancel_check or (lambda: None)
+    check_cancelled()
     if type(task) is not str or not task.strip() or len(task) > 4096:
         raise ValueError("product_task_invalid")
     if type(product_id) is not str or not re.fullmatch(r"product_[a-z0-9]{16,64}", product_id):
@@ -189,6 +194,11 @@ def compose_capsule_product(
     adapter_v4 = any(
         row.get("candidate_origin") == DETERMINISTIC_COMPUTATION_ADAPTER
         and row.get("adapter_contract_version") == COMPUTATION_ADAPTER_V4
+        for row in normalized
+    )
+    adapter_v5 = any(
+        row.get("candidate_origin") == DETERMINISTIC_COMPUTATION_ADAPTER
+        and row.get("adapter_contract_version") == COMPUTATION_ADAPTER_V5
         for row in normalized
     )
     capability_keys = {row["capability_key"] for row in normalized}
@@ -268,7 +278,14 @@ def compose_capsule_product(
         for index, row in enumerate(normalized):
             global_name = f"ReweaveFormalCapsule{index}"
             globals_by_version[row["version_id"]] = global_name
-            bundle_sources.append(_bundle_formal_capsule(row, global_name))
+            bundle_sources.append(
+                _bundle_formal_capsule(
+                    row,
+                    global_name,
+                    cancel_check=check_cancelled,
+                )
+            )
+            check_cancelled()
         globals_by_kind = {
             row["capability_kind"]: globals_by_version[row["version_id"]]
             for row in normalized
@@ -293,7 +310,12 @@ def compose_capsule_product(
         for index, row in enumerate(sorted(normalized, key=lambda item: item["capability_kind"])):
             global_name = f"ReweaveFormalCapsule{index}"
             globals_by_kind[row["capability_kind"]] = global_name
-            bundles[row["capability_kind"]] = _bundle_formal_capsule(row, global_name)
+            bundles[row["capability_kind"]] = _bundle_formal_capsule(
+                row,
+                global_name,
+                cancel_check=check_cancelled,
+            )
+            check_cancelled()
         bootstrap = _formal_bootstrap(
             by_kind,
             globals_by_kind,
@@ -310,7 +332,9 @@ def compose_capsule_product(
                 "",
             ]
         )
+    check_cancelled()
     _check_generated_javascript(app_text)
+    check_cancelled()
 
     title = html.escape(task.strip(), quote=False)
     index_text = (
@@ -338,7 +362,14 @@ def compose_capsule_product(
         }
         for row in ordered
     ]
-    if adapter_v4:
+    if adapter_v5:
+        composer_version = ADAPTER_V5_FORMAL_PRODUCT_COMPOSER_VERSION
+        manifest_version = (
+            MULTI_COMPUTATION_FORMAL_PRODUCT_MANIFEST_VERSION
+            if multi_computation
+            else FORMAL_PRODUCT_MANIFEST_VERSION
+        )
+    elif adapter_v4:
         composer_version = ADAPTER_V4_FORMAL_PRODUCT_COMPOSER_VERSION
         manifest_version = (
             MULTI_COMPUTATION_FORMAL_PRODUCT_MANIFEST_VERSION
@@ -479,6 +510,7 @@ def _normalize_formal_capsule(
             COMPUTATION_ADAPTER_V2,
             COMPUTATION_ADAPTER_V3,
             COMPUTATION_ADAPTER_V4,
+            COMPUTATION_ADAPTER_V5,
         }
     ):
         raise ValueError("formal_capsule_origin_invalid")
@@ -519,8 +551,12 @@ def _normalize_formal_capsule(
         "javascript_modules": modules,
         "assets": assets,
     }
-    if adapter_version == COMPUTATION_ADAPTER_V4:
-        _validate_adapter_v4_evidence(normalized, row.get("adapter_evidence"))
+    if adapter_version in {COMPUTATION_ADAPTER_V4, COMPUTATION_ADAPTER_V5}:
+        _validate_adapter_v4_evidence(
+            normalized,
+            row.get("adapter_evidence"),
+            adapter_version=adapter_version,
+        )
     elif "adapter_evidence" in row:
         raise ValueError("formal_adapter_evidence_invalid")
     if "canonical_hash" in value and verify_canonical_hash:
@@ -620,6 +656,7 @@ def _assert_computation_adapter_modules(
             COMPUTATION_ADAPTER_V2,
             COMPUTATION_ADAPTER_V3,
             COMPUTATION_ADAPTER_V4,
+            COMPUTATION_ADAPTER_V5,
         }
         and (
             len(modules) != len(COMPUTATION_ADAPTER_V2_MODULES)
@@ -628,7 +665,9 @@ def _assert_computation_adapter_modules(
         )
     ):
         raise ValueError(
-            "formal_computation_adapter_v4_modules_invalid"
+            "formal_computation_adapter_v5_modules_invalid"
+            if version == COMPUTATION_ADAPTER_V5
+            else "formal_computation_adapter_v4_modules_invalid"
             if version == COMPUTATION_ADAPTER_V4
             else "formal_computation_adapter_v3_modules_invalid"
             if version == COMPUTATION_ADAPTER_V3
@@ -637,7 +676,10 @@ def _assert_computation_adapter_modules(
 
 
 def _validate_adapter_v4_evidence(
-    capsule: dict[str, Any], evidence: Any
+    capsule: dict[str, Any],
+    evidence: Any,
+    *,
+    adapter_version: str = COMPUTATION_ADAPTER_V4,
 ) -> None:
     if type(evidence) is not dict:
         raise ValueError("formal_adapter_v4_evidence_invalid")
@@ -672,7 +714,7 @@ def _validate_adapter_v4_evidence(
         set(evidence) != expected_keys
         or evidence.get("schema") != "ephemeral_capture_candidate.v1"
         or evidence.get("candidate_origin") != DETERMINISTIC_COMPUTATION_ADAPTER
-        or evidence.get("adapter_contract_version") != COMPUTATION_ADAPTER_V4
+        or evidence.get("adapter_contract_version") != adapter_version
         or evidence.get("source_graph_version") != "source_graph.v1"
         or evidence.get("bundle_contract_version") != "reweave_capture_bundle.v1"
         or type(mapping) is not dict
@@ -685,10 +727,25 @@ def _validate_adapter_v4_evidence(
             "proof_schema",
             "examples",
         }
-        or mapping.get("schema") != "computation_capture_mapping.v4"
-        or mapping.get("proof_schema") != "source_graph_proof.v2"
+        or mapping.get("schema")
+        != (
+            "computation_capture_mapping.v5"
+            if adapter_version == COMPUTATION_ADAPTER_V5
+            else "computation_capture_mapping.v4"
+        )
+        or mapping.get("proof_schema")
+        != (
+            "source_graph_proof.v3"
+            if adapter_version == COMPUTATION_ADAPTER_V5
+            else "source_graph_proof.v2"
+        )
         or type(proof) is not dict
-        or proof.get("schema") != "source_graph_proof.v2"
+        or proof.get("schema")
+        != (
+            "source_graph_proof.v3"
+            if adapter_version == COMPUTATION_ADAPTER_V5
+            else "source_graph_proof.v2"
+        )
         or canonical_json_digest(mapping) != evidence.get("mapping_sha256")
         or canonical_json_digest(proof)
         != evidence.get("source_graph_proof_sha256")
@@ -751,7 +808,12 @@ def _validate_adapter_v4_evidence(
             type(field) is not str
             or field in fields
             or digest.fullmatch(binding or "") is None
-            or kind not in {"integer", "boolean", "enum"}
+        or kind
+        not in (
+            {"string"}
+            if adapter_version == COMPUTATION_ADAPTER_V5
+            else {"integer", "boolean", "enum"}
+        )
         ):
             raise ValueError("formal_adapter_v4_evidence_invalid")
         fields.append(field)
@@ -762,13 +824,39 @@ def _validate_adapter_v4_evidence(
             }
         elif kind == "boolean":
             domain = {"kind": "boolean", "values": [False, True]}
-        else:
+        elif kind == "enum":
             domain = {"kind": "enum", "values": argument.get("values")}
+        else:
+            domain = {
+                "kind": "string",
+                "min_length": argument.get("min_length"),
+                "max_length": argument.get("max_length"),
+            }
         domains.append({"parameter_binding_id": binding, "domain": domain})
     modules = {item["path"]: item["source"] for item in capsule["javascript_modules"]}
     if (
         set(fields) != set(input_properties)
         or proof.get("parameter_domains") != domains
+        or (
+            adapter_version == COMPUTATION_ADAPTER_V5
+            and (
+                len(arguments) != 1
+                or set(arguments[0])
+                != {
+                    "parameter_binding_id",
+                    "input_field",
+                    "kind",
+                    "min_length",
+                    "max_length",
+                }
+                or input_properties.get(fields[0])
+                != {
+                    "type": "string",
+                    "min_length": arguments[0].get("min_length"),
+                    "max_length": arguments[0].get("max_length"),
+                }
+            )
+        )
         or type(selected) is not dict
         or proof.get("target_binding_id") != selected.get("target_binding_id")
         or hashlib.sha256(
@@ -776,7 +864,7 @@ def _validate_adapter_v4_evidence(
         ).hexdigest()
         != selected.get("selected_bundle_sha256")
         or evidence.get("rule_versions", {}).get("adapter_contract_version")
-        != COMPUTATION_ADAPTER_V4
+        != adapter_version
         or evidence.get("rule_versions", {}).get("source_graph_version")
         != "source_graph.v1"
     ):
@@ -1236,7 +1324,14 @@ def _run_formal_analyzer(payload: dict[str, Any]) -> None:
         raise ValueError(str(result.get("error_code") or "formal_bundle_security_rejected"))
 
 
-def _bundle_formal_capsule(capsule: dict[str, Any], global_name: str) -> str:
+def _bundle_formal_capsule(
+    capsule: dict[str, Any],
+    global_name: str,
+    *,
+    cancel_check: Callable[[], None] | None = None,
+) -> str:
+    check_cancelled = cancel_check or (lambda: None)
+    check_cancelled()
     root = Path(__file__).resolve().parents[2]
     _assert_computation_adapter_modules(
         capsule, capsule["javascript_modules"]
@@ -1254,6 +1349,7 @@ def _bundle_formal_capsule(capsule: dict[str, Any], global_name: str) -> str:
         "javascript_modules": capsule["javascript_modules"],
         "redact_strings": [],
     })
+    check_cancelled()
     if not (root / "node_modules" / "esbuild" / "package.json").is_file():
         raise ValueError("esbuild_unavailable")
     with tempfile.TemporaryDirectory(prefix="reweave-formal-compose-") as temporary:
@@ -1284,6 +1380,7 @@ def _bundle_formal_capsule(capsule: dict[str, Any], global_name: str) -> str:
             capture_output=True, text=True, cwd=root, timeout=15, check=False,
             env=restricted_subprocess_environment(),
         )
+        check_cancelled()
         if completed.returncode or completed.stderr or not output.is_file():
             raise ValueError("formal_esbuild_bundle_failed")
         source = output.read_text(encoding="utf-8")
@@ -1291,9 +1388,11 @@ def _bundle_formal_capsule(capsule: dict[str, Any], global_name: str) -> str:
             [_node_binary_formal(), "--check", str(output)], capture_output=True, text=True,
             cwd=directory, timeout=10, check=False, env=restricted_subprocess_environment(),
         )
+        check_cancelled()
         if checked.returncode or checked.stderr:
             raise ValueError("formal_bundle_syntax_invalid")
         _run_formal_analyzer({"mode": "bundle", "source": source})
+        check_cancelled()
         return source
 
 
@@ -3401,6 +3500,7 @@ __all__ = [
     "COMPOSITION_PLAN_VERSION",
     "ADAPTER_V3_FORMAL_PRODUCT_COMPOSER_VERSION",
     "ADAPTER_V4_FORMAL_PRODUCT_COMPOSER_VERSION",
+    "ADAPTER_V5_FORMAL_PRODUCT_COMPOSER_VERSION",
     "FORMAL_PRODUCT_COMPOSER_VERSION",
     "build_module_capability_graph",
     "compose_capsule_product",

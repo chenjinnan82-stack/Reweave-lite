@@ -6,7 +6,8 @@ import * as esbuild from "esbuild";
 import * as ts from "typescript";
 
 const SOURCE_GRAPH_VERSION = "source_graph.v1";
-const REQUEST_SCHEMA = "source_graph_request.v1";
+const REQUEST_SCHEMA_V1 = "source_graph_request.v1";
+const REQUEST_SCHEMA_V2 = "source_graph_request.v2";
 const VIRTUAL_ROOT = "/__reweave_snapshot__";
 const INTRINSIC_PATH = "/__reweave_intrinsic__.d.ts";
 const MAX_SAFE = Number.MAX_SAFE_INTEGER;
@@ -415,6 +416,9 @@ function createProgram(snapshot, entryModules, isolateEntryFailures = false) {
     }
   }
   const intrinsicSource = [
+    "interface String {",
+    "  includes(searchString: string): boolean;",
+    "}",
     "interface __ReweaveMath {",
     "  min(...values: number[]): number;",
     "  max(...values: number[]): number;",
@@ -900,6 +904,9 @@ const MIN_SAFE = Number.MIN_SAFE_INTEGER;
 const MAX_INT_SEGMENTS = 16;
 const MAX_ENUM_VALUES = 32;
 const MAX_SWITCH_CASES = 16;
+const MAX_STRING_LENGTH = 10_000;
+// ponytail: keep the proof surface includes-only until a real task justifies another predicate.
+const MAX_STRING_INCLUDES_CALLS = 32;
 
 function installProof({ ts, checker, graphContext, Rejection, canonicalSha256 }) {
   if (!ts || !checker || !graphContext || !Rejection || !canonicalSha256) {
@@ -925,6 +932,18 @@ function installProof({ ts, checker, graphContext, Rejection, canonicalSha256 })
       if (a[index] !== b[index]) return a[index] - b[index];
     }
     return a.length - b.length;
+  }
+
+  function callSiteEvidence(node) {
+    return {
+      logical_path: graphContext.logicalPathOfSourceFile(node.getSourceFile()),
+      start_utf16: node.getStart(node.getSourceFile(), false),
+    };
+  }
+
+  function callSiteKey(node) {
+    const evidence = callSiteEvidence(node);
+    return `${evidence.logical_path}\u0000${evidence.start_utf16}`;
   }
 
   function resolveAlias(symbol, node = null) {
@@ -1028,6 +1047,23 @@ function installProof({ ts, checker, graphContext, Rejection, canonicalSha256 })
     return Object.freeze({ kind: "enum", values: Object.freeze(unique) });
   }
 
+  function stringRange(minLength, maxLength, node = null) {
+    if (
+      !Number.isSafeInteger(minLength) ||
+      !Number.isSafeInteger(maxLength) ||
+      minLength < 0 ||
+      minLength > maxLength ||
+      maxLength > MAX_STRING_LENGTH
+    ) {
+      reject("interval_unproven", node);
+    }
+    return Object.freeze({
+      kind: "string",
+      min_length: minLength,
+      max_length: maxLength,
+    });
+  }
+
   function assertSafeInteger(value, node = null) {
     if (!Number.isSafeInteger(value)) reject("interval_unproven", node);
     return Object.is(value, -0) ? 0 : value;
@@ -1074,6 +1110,13 @@ function installProof({ ts, checker, graphContext, Rejection, canonicalSha256 })
     if (domain.kind === "bottom") return { kind: "bottom" };
     if (domain.kind === "integer") {
       return { kind: "integer", intervals: domain.intervals.map((pair) => [...pair]) };
+    }
+    if (domain.kind === "string") {
+      return {
+        kind: "string",
+        min_length: domain.min_length,
+        max_length: domain.max_length,
+      };
     }
     return { kind: domain.kind, values: [...domain.values] };
   }
@@ -1221,7 +1264,7 @@ function installProof({ ts, checker, graphContext, Rejection, canonicalSha256 })
     return boolSet(domain.values.map((value) => !value));
   }
 
-  function parseParameterDomain(raw, node = null) {
+  function parseParameterDomain(raw, node = null, allowBoundedString = false) {
     if (!raw || typeof raw !== "object") reject("interval_unproven", node);
     if (raw.kind === "integer") {
       const domain = intSet(raw.intervals, node);
@@ -1241,6 +1284,15 @@ function installProof({ ts, checker, graphContext, Rejection, canonicalSha256 })
         reject("interval_unproven", node);
       }
       return enumSet(raw.values, node);
+    }
+    if (raw.kind === "string" && allowBoundedString) {
+      if (
+        Object.keys(raw).sort().join("\u0000") !==
+        ["kind", "max_length", "min_length"].sort().join("\u0000")
+      ) {
+        reject("interval_unproven", node);
+      }
+      return stringRange(raw.min_length, raw.max_length, node);
     }
     reject("interval_unproven", node);
   }
@@ -1346,7 +1398,12 @@ function installProof({ ts, checker, graphContext, Rejection, canonicalSha256 })
   }
 
   function scanFunctionSyntax(functionNode, auditState = null) {
-    const state = auditState || { active: new Set(), done: new Set() };
+    const state = auditState || {
+      active: new Set(),
+      done: new Set(),
+      stringIncludes: new Map(),
+      allowStringIncludes: false,
+    };
     if (state.active.has(functionNode)) reject("closure_unproven", functionNode);
     if (state.done.has(functionNode)) return;
     state.active.add(functionNode);
@@ -1449,11 +1506,34 @@ function installProof({ ts, checker, graphContext, Rejection, canonicalSha256 })
           scanFunctionSyntax(functionNodeForSymbol(called, node.expression), state);
         } else if (ts.isPropertyAccessExpression(node.expression)) {
           const receiver = node.expression.expression;
-          if (!ts.isIdentifier(receiver) || !["min", "max", "abs"].includes(node.expression.name.text)) {
+          const name = node.expression.name.text;
+          if (name === "includes") {
+            if (
+              state.allowStringIncludes !== true ||
+              node.expression.questionDotToken ||
+              !ts.isIdentifier(receiver) ||
+              node.arguments.length !== 1 ||
+              !ts.isStringLiteral(node.arguments[0]) ||
+              node.arguments[0].text.length === 0
+            ) {
+              reject("unsupported_control_flow", node);
+            }
+            const key = callSiteKey(node);
+            state.stringIncludes.set(key, callSiteEvidence(node));
+            if (state.stringIncludes.size > MAX_STRING_INCLUDES_CALLS) {
+              reject("interval_unproven", node);
+            }
+          } else if (
+            !ts.isIdentifier(receiver) ||
+            !["min", "max", "abs"].includes(name)
+          ) {
             reject("unsupported_control_flow", node);
+          } else {
+            const mathSymbol = symbolAt(receiver);
+            if (!intrinsicMath(mathSymbol)) {
+              reject("unsupported_control_flow", node);
+            }
           }
-          const mathSymbol = symbolAt(receiver);
-          if (!intrinsicMath(mathSymbol)) reject("unsupported_control_flow", node);
         } else {
           reject("dynamic_dependency", node);
         }
@@ -1620,11 +1700,48 @@ function installProof({ ts, checker, graphContext, Rejection, canonicalSha256 })
   }
 
   function evaluateCall(call, environment, state) {
-    const argumentsDomains = call.arguments.map((argument) => evaluateExpression(argument, environment, state));
     if (ts.isPropertyAccessExpression(call.expression)) {
       const receiver = call.expression.expression;
-      if (!ts.isIdentifier(receiver) || !intrinsicMath(symbolAt(receiver))) reject("dynamic_dependency", call);
       const name = call.expression.name.text;
+      if (name === "includes") {
+        if (
+          state.allowStringIncludes !== true ||
+          call.expression.questionDotToken ||
+          !ts.isIdentifier(receiver) ||
+          call.arguments.length !== 1 ||
+          !ts.isStringLiteral(call.arguments[0]) ||
+          call.arguments[0].text.length === 0
+        ) {
+          reject("unsupported_control_flow", call);
+        }
+        const receiverDomain = evaluateIdentifier(receiver, environment, state);
+        const needle = call.arguments[0].text;
+        let result;
+        if (receiverDomain.kind === "enum") {
+          if (needle.length > Math.max(...receiverDomain.values.map((value) => value.length))) {
+            reject("interval_unproven", call);
+          }
+          result = boolSet(
+            receiverDomain.values.map((value) => value.includes(needle)),
+          );
+        } else if (receiverDomain.kind === "string") {
+          if (needle.length > receiverDomain.max_length) {
+            reject("interval_unproven", call);
+          }
+          result = boolSet([false, true]);
+        } else {
+          reject("interval_unproven", call);
+        }
+        const evidence = callSiteEvidence(call);
+        state.intrinsicStringIncludes.set(callSiteKey(call), evidence);
+        return result;
+      }
+      const argumentsDomains = call.arguments.map(
+        (argument) => evaluateExpression(argument, environment, state),
+      );
+      if (!ts.isIdentifier(receiver) || !intrinsicMath(symbolAt(receiver))) {
+        reject("dynamic_dependency", call);
+      }
       if (name === "abs" && argumentsDomains.length === 1) return mathAbs(argumentsDomains[0], call);
       if ((name === "min" || name === "max") && argumentsDomains.length >= 1) {
         return mathMinMax(argumentsDomains, name, call);
@@ -1632,6 +1749,9 @@ function installProof({ ts, checker, graphContext, Rejection, canonicalSha256 })
       reject("dynamic_dependency", call);
     }
     if (!ts.isIdentifier(call.expression)) reject("dynamic_dependency", call);
+    const argumentsDomains = call.arguments.map(
+      (argument) => evaluateExpression(argument, environment, state),
+    );
     const symbol = resolveAlias(symbolAt(call.expression), call.expression);
     return evaluateFunction(symbol, argumentsDomains, state, call, environment);
   }
@@ -1919,7 +2039,7 @@ function installProof({ ts, checker, graphContext, Rejection, canonicalSha256 })
     if (state.activeFunctions.has(resolved)) reject("closure_unproven", callNode);
     if (state.activeFunctions.size >= 32) reject("closure_unproven", callNode);
     const functionNode = functionNodeForSymbol(resolved, callNode);
-    scanFunctionSyntax(functionNode);
+    scanFunctionSyntax(functionNode, state.syntaxAuditState);
     ensureFunctionSignature(functionNode);
     if (argumentDomains.length !== functionNode.parameters.length) reject("interval_unproven", callNode || functionNode);
     const environment = new Map(captureEnvironment || []);
@@ -1955,7 +2075,12 @@ function installProof({ ts, checker, graphContext, Rejection, canonicalSha256 })
     }));
   }
 
-  function proveTarget({ moduleRelpath, exportName, parameterDomains = [] }) {
+  function proveTarget({
+    moduleRelpath,
+    exportName,
+    parameterDomains = [],
+    allowBoundedString = false,
+  }) {
     if (typeof moduleRelpath !== "string" || typeof exportName !== "string") {
       reject("closure_unproven", moduleRelpath || null);
     }
@@ -1966,7 +2091,14 @@ function installProof({ ts, checker, graphContext, Rejection, canonicalSha256 })
       if (!item || typeof item.parameter_binding_id !== "string" || domainByBindingId.has(item.parameter_binding_id)) {
         reject("interval_unproven", target.functionNode);
       }
-      domainByBindingId.set(item.parameter_binding_id, parseParameterDomain(item.domain, target.functionNode));
+      domainByBindingId.set(
+        item.parameter_binding_id,
+        parseParameterDomain(
+          item.domain,
+          target.functionNode,
+          allowBoundedString,
+        ),
+      );
     }
     ensureFunctionSignature(target.functionNode);
     const argumentDomains = target.functionNode.parameters.map((parameter) => {
@@ -1983,10 +2115,35 @@ function installProof({ ts, checker, graphContext, Rejection, canonicalSha256 })
       constDeclarationStack: [],
       constDomains: new Map(),
       dependencyBindings: new Set(),
+      intrinsicStringIncludes: new Map(),
+      allowStringIncludes: allowBoundedString,
+      syntaxAuditState: {
+        active: new Set(),
+        done: new Set(),
+        stringIncludes: new Map(),
+        allowStringIncludes: allowBoundedString,
+      },
     };
     const returnDomain = evaluateFunction(target.leafSymbol, argumentDomains, state, target.functionNode);
     if (!["integer", "enum"].includes(returnDomain.kind)) {
       reject("interval_unproven", target.functionNode);
+    }
+    const hasBoundedStringInput = argumentDomains.some(
+      (domain) => domain.kind === "string",
+    );
+    const usesStringProof =
+      hasBoundedStringInput || state.intrinsicStringIncludes.size > 0;
+    if (usesStringProof && returnDomain.kind !== "enum") {
+      reject("interval_unproven", target.functionNode);
+    }
+    if (
+      state.syntaxAuditState.stringIncludes.size !==
+      state.intrinsicStringIncludes.size ||
+      [...state.syntaxAuditState.stringIncludes].some(
+        ([key]) => !state.intrinsicStringIncludes.has(key),
+      )
+    ) {
+      reject("unsupported_control_flow", target.functionNode);
     }
     // Give selected mutable captures the specific failure before the complete
     // module-evaluation proof rejects unrelated top-level effects.
@@ -2005,9 +2162,11 @@ function installProof({ ts, checker, graphContext, Rejection, canonicalSha256 })
       top_level: topLevelEvidence(moduleClosure.modules),
     };
     const proof = {
-      schema: returnDomain.kind === "integer"
-        ? "source_graph_proof.v1"
-        : "source_graph_proof.v2",
+      schema: usesStringProof
+        ? "source_graph_proof.v3"
+        : returnDomain.kind === "integer"
+          ? "source_graph_proof.v1"
+          : "source_graph_proof.v2",
       status: "proved",
       target: {
         module_relpath: moduleRelpath,
@@ -2022,13 +2181,28 @@ function installProof({ ts, checker, graphContext, Rejection, canonicalSha256 })
       dependency_closure: closureEvidence,
       closure_evidence_sha256: canonicalSha256(closureEvidence),
       dynamic_dependencies: [],
+      intrinsic_string_includes: [
+        ...state.intrinsicStringIncludes.values(),
+      ].sort(
+        (left, right) =>
+          compareUtf8(left.logical_path, right.logical_path) ||
+          left.start_utf16 - right.start_utf16,
+      ),
     };
     return proof;
   }
 
   return Object.freeze({
     proveTarget,
-    domains: Object.freeze({ bottom, boolSet, enumSet, intSet, serializeDomain, unionDomains }),
+    domains: Object.freeze({
+      bottom,
+      boolSet,
+      enumSet,
+      intSet,
+      stringRange,
+      serializeDomain,
+      unionDomains,
+    }),
   });
 }
 
@@ -2110,13 +2284,16 @@ function createProof(request, snapshot, graph) {
     moduleRelpath: normalizedLogicalPath(request.target.module_relpath),
     exportName: request.target.export_name,
     parameterDomains: request.parameter_domains,
+    allowBoundedString: request.schema === REQUEST_SCHEMA_V2,
   });
   const closure = {
     module_paths: internal.dependency_closure.modules.map((item) => item.logical_path),
     binding_ids: [...internal.dependency_closure.binding_ids],
   };
-  return {
-    ...(internal.schema === "source_graph_proof.v2"
+  const proof = {
+    ...(["source_graph_proof.v2", "source_graph_proof.v3"].includes(
+      internal.schema,
+    )
       ? { schema: internal.schema }
       : {}),
     target_binding_id: internal.target.binding_id,
@@ -2128,6 +2305,27 @@ function createProof(request, snapshot, graph) {
     module_evidence_sha256: canonicalSha256(internal.dependency_closure.modules),
     top_level_evidence_sha256: canonicalSha256(internal.dependency_closure.top_level),
   };
+  return {
+    proof,
+    intrinsicStringIncludes: internal.intrinsic_string_includes,
+  };
+}
+
+function applyIntrinsicStringIncludesEvidence(graph, evidence) {
+  const accepted = new Set(
+    evidence.map(
+      (item) => `${item.logical_path}\u0000${item.start_utf16}`,
+    ),
+  );
+  for (const module of graph.modules) {
+    module.dynamic_dependencies = module.dynamic_dependencies.filter(
+      (item) =>
+        !(
+          item.kind === "unknown_member_call" &&
+          accepted.has(`${module.logical_path}\u0000${item.start_utf16}`)
+        ),
+    );
+  }
 }
 
 function captureEntrySource(target) {
@@ -2393,7 +2591,8 @@ async function readRequest() {
 async function main() {
   try {
     const request = await readRequest();
-    if (!request || request.schema !== REQUEST_SCHEMA || !["graph", "prove", "capture"].includes(request.mode) ||
+    if (!request || ![REQUEST_SCHEMA_V1, REQUEST_SCHEMA_V2].includes(request.schema) ||
+        !["graph", "prove", "capture"].includes(request.mode) ||
         typeof request.project_id !== "string" || !request.project_id ||
         typeof request.scope_snapshot_sha256 !== "string" || !/^[0-9a-f]{64}$/u.test(request.scope_snapshot_sha256) ||
         typeof request.source_identity_sha256 !== "string" || !/^[0-9a-f]{64}$/u.test(request.source_identity_sha256) ||
@@ -2434,7 +2633,12 @@ async function main() {
       result.rejection_summary = rejectionSummary(programState.entryRejections);
     }
     if (["prove", "capture"].includes(request.mode)) {
-      result.proof = createProof(request, snapshot, graph);
+      const createdProof = createProof(request, snapshot, graph);
+      result.proof = createdProof.proof;
+      applyIntrinsicStringIncludesEvidence(
+        graph,
+        createdProof.intrinsicStringIncludes,
+      );
     }
     if (request.mode === "capture") {
       result.capture = await createCapture(request, snapshot, graph, result.proof);

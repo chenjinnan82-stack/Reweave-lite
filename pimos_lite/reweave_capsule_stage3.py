@@ -32,6 +32,7 @@ from pimos_lite.reweave_capsule_intake import (
     COMPUTATION_ADAPTER_V2,
     COMPUTATION_ADAPTER_V3,
     COMPUTATION_ADAPTER_V4,
+    COMPUTATION_ADAPTER_V5,
     EPHEMERAL_COMPUTATION_ADAPTER_VERSIONS,
     EXTRACTION_CONTRACT_VERSION,
     IntakeError,
@@ -63,7 +64,10 @@ from pimos_lite.reweave_page_capability_contract import (
     build_page_capability_declaration_v2,
     normalize_page_capability_selector,
 )
-from pimos_lite.reweave_process_environment import restricted_subprocess_environment
+from pimos_lite.reweave_process_environment import (
+    qwebengine_qpa_platform,
+    restricted_subprocess_environment,
+)
 
 
 SECURITY_RULES_VERSION = "security_rules.v1"
@@ -88,9 +92,11 @@ CAPTURE_EXECUTION_BUNDLE_OPTIONS_SHA256 = (
 COMPUTE_WORKER_CONTRACT_VERSION = "compute_validation.v1"
 CAPTURE_MAPPING_V3 = "computation_capture_mapping.v3"
 CAPTURE_MAPPING_V4 = "computation_capture_mapping.v4"
+CAPTURE_MAPPING_V5 = "computation_capture_mapping.v5"
 CAPTURE_RESUME_V1 = "resubmit_ephemeral_capture.v1"
 CAPTURE_RESUME_V2 = "resubmit_ephemeral_capture.v2"
 CAPTURE_RESUME_V3 = "resubmit_ephemeral_capture.v3"
+CAPTURE_RESUME_V4 = "resubmit_ephemeral_capture.v4"
 _CAPTURE_TEMP_MARKER = b"reweave-capture-private-root.v1\n"
 _CAPTURE_JOB_MARKER = b"reweave-capture-private-job.v1\n"
 _CAPTURE_TEMP_LOCK = threading.RLock()
@@ -1505,7 +1511,10 @@ def capture_static_gate(
         "rule_versions",
         "canonical_candidate",
     }
-    if payload.get("adapter_contract_version") == COMPUTATION_ADAPTER_V4:
+    if payload.get("adapter_contract_version") in {
+        COMPUTATION_ADAPTER_V4,
+        COMPUTATION_ADAPTER_V5,
+    }:
         payload_keys.update(
             {"source_graph_proof", "source_graph_proof_sha256"}
         )
@@ -1596,9 +1605,40 @@ def capture_static_gate(
                 and type(mapping.get("examples")) is list
                 and bool(mapping["examples"])
             )
+            or (
+                adapter_version == COMPUTATION_ADAPTER_V5
+                and set(mapping)
+                == {
+                    "schema",
+                    "arguments",
+                    "result_field",
+                    "result_enum",
+                    "proof_schema",
+                    "examples",
+                }
+                and mapping.get("schema") == CAPTURE_MAPPING_V5
+                and mapping.get("proof_schema") == "source_graph_proof.v3"
+                and type(mapping.get("result_enum")) is list
+                and bool(mapping["result_enum"])
+                and type(mapping.get("examples")) is list
+                and bool(mapping["examples"])
+            )
         )
     )
-    if mapping_valid and adapter_version == COMPUTATION_ADAPTER_V4:
+    if mapping_valid and adapter_version in {
+        COMPUTATION_ADAPTER_V4,
+        COMPUTATION_ADAPTER_V5,
+    }:
+        normalize_mapping = (
+            _normalize_capture_mapping_v5
+            if adapter_version == COMPUTATION_ADAPTER_V5
+            else _normalize_capture_mapping_v4
+        )
+        expected_mapping_schema = (
+            CAPTURE_MAPPING_V5
+            if adapter_version == COMPUTATION_ADAPTER_V5
+            else CAPTURE_MAPPING_V4
+        )
         try:
             (
                 normalized_arguments,
@@ -1608,12 +1648,12 @@ def capture_static_gate(
                 normalized_proof_schema,
                 normalized_examples,
                 _normalized_enumerations,
-            ) = _normalize_capture_mapping_v4(mapping)
+            ) = normalize_mapping(mapping)
         except Stage3Error:
             mapping_valid = False
         else:
             mapping_valid = mapping == {
-                "schema": CAPTURE_MAPPING_V4,
+                "schema": expected_mapping_schema,
                 "arguments": normalized_arguments,
                 "result_field": normalized_result_field,
                 "result_enum": normalized_result_enum,
@@ -1703,11 +1743,15 @@ def capture_static_gate(
         or re.fullmatch(r"[0-9a-f]{64}", payload.get("execution_bundle_sha256") or "")
         is None
         or (
-            adapter_version == COMPUTATION_ADAPTER_V4
+            adapter_version in {COMPUTATION_ADAPTER_V4, COMPUTATION_ADAPTER_V5}
             and (
                 type(payload.get("source_graph_proof")) is not dict
                 or payload["source_graph_proof"].get("schema")
-                != "source_graph_proof.v2"
+                != (
+                    "source_graph_proof.v3"
+                    if adapter_version == COMPUTATION_ADAPTER_V5
+                    else "source_graph_proof.v2"
+                )
                 or hashlib.sha256(
                     _canonical_json_bytes(payload["source_graph_proof"])
                 ).hexdigest()
@@ -1806,6 +1850,13 @@ def capture_static_gate(
             },
             "boolean": {"parameter_binding_id", "input_field", "kind"},
             "enum": {"parameter_binding_id", "input_field", "kind", "values"},
+            "string": {
+                "parameter_binding_id",
+                "input_field",
+                "kind",
+                "min_length",
+                "max_length",
+            },
         }.get(kind)
         field_name = argument.get("input_field")
         binding_id = argument.get("parameter_binding_id")
@@ -1826,6 +1877,12 @@ def capture_static_gate(
             }
         elif kind == "boolean":
             domain = {"kind": "boolean", "values": [False, True]}
+        elif kind == "string":
+            domain = {
+                "kind": "string",
+                "min_length": argument["min_length"],
+                "max_length": argument["max_length"],
+            }
         else:
             domain = {"kind": "enum", "values": argument["values"]}
         parameter_domains.append(
@@ -1849,6 +1906,14 @@ def capture_static_gate(
                 contract.get("type") != "string"
                 or contract.get("enum") != argument.get("values")
             )
+        ) or (
+            kind == "string"
+            and contract
+            != {
+                "type": "string",
+                "min_length": argument.get("min_length"),
+                "max_length": argument.get("max_length"),
+            }
         ):
             raise Stage3Error("capture_evidence_invalid")
     passthrough_fields = (
@@ -1890,6 +1955,11 @@ def capture_static_gate(
             "target_binding_id": selected_function["target_binding_id"],
         },
         parameter_domains,
+        request_schema=(
+            "source_graph_request.v2"
+            if adapter_version == COMPUTATION_ADAPTER_V5
+            else "source_graph_request.v1"
+        ),
     )
     rebuilt_proof = rebuilt["proof"]
     rebuilt_capture = rebuilt["capture"]
@@ -1902,6 +1972,21 @@ def capture_static_gate(
         (
             adapter_version == COMPUTATION_ADAPTER_V4
             and rebuilt_proof.get("schema") == "source_graph_proof.v2"
+            and result_domain
+            == {"kind": "enum", "values": mapping.get("result_enum")}
+            and output_contract.get("type") == "string"
+            and output_contract.get("enum") == mapping.get("result_enum")
+            and payload.get("source_graph_proof") == rebuilt_proof
+            and mapping.get("examples")
+            == json.loads(_json(mapping.get("examples")))
+            and hashlib.sha256(
+                _canonical_json_bytes(mapping["examples"])
+            ).hexdigest()
+            == examples.get("canonical_sha256")
+        )
+        or (
+            adapter_version == COMPUTATION_ADAPTER_V5
+            and rebuilt_proof.get("schema") == "source_graph_proof.v3"
             and result_domain
             == {"kind": "enum", "values": mapping.get("result_enum")}
             and output_contract.get("type") == "string"
@@ -2288,6 +2373,91 @@ def generate_computation_adapter_v4(
     return source.replace(old_check, new_check, 1)
 
 
+def generate_computation_adapter_v5(
+    argument_fields: list[str],
+    input_contract: dict[str, Any],
+    output_contract: dict[str, Any],
+) -> str:
+    """Generate the bounded-string scalar-enum adapter v5."""
+
+    input_properties = input_contract.get("properties")
+    if (
+        type(input_properties) is not dict
+        or len(input_properties) != 1
+        or argument_fields != list(input_properties)
+    ):
+        raise Stage3Error("adapter_mapping_invalid")
+    contract = next(iter(input_properties.values()))
+    if (
+        type(contract) is not dict
+        or set(contract) != {"type", "min_length", "max_length"}
+        or contract.get("type") != "string"
+        or type(contract.get("min_length")) is not int
+        or type(contract.get("max_length")) is not int
+        or not 0 <= contract["min_length"] <= contract["max_length"] <= 10_000
+    ):
+        raise Stage3Error("adapter_mapping_invalid")
+    output_properties = output_contract.get("properties")
+    if type(output_properties) is not dict or len(output_properties) != 1:
+        raise Stage3Error("adapter_mapping_invalid")
+    result_field, result_contract = next(iter(output_properties.items()))
+    values = result_contract.get("enum") if type(result_contract) is dict else None
+    if (
+        type(result_field) is not str
+        or _SNAKE.fullmatch(result_field) is None
+        or type(values) is not list
+        or not values
+        or len(values) > 32
+        or any(type(value) is not str for value in values)
+        or values != sorted(set(values), key=lambda value: value.encode("utf-8"))
+    ):
+        raise Stage3Error("adapter_mapping_invalid")
+    field = argument_fields[0]
+    input_error = (
+        '    return { ok: false, error: { code: "INPUT_CONTRACT_VIOLATION", '
+        "field: null, details: {} } };"
+    )
+    output_error = (
+        '    return { ok: false, error: { code: "OUTPUT_CONTRACT_VIOLATION", '
+        "field: null, details: {} } };"
+    )
+    return "\n".join(
+        [
+            'import { __selected as __source } from "../__reweave_capture__/selected.js";',
+            "",
+            "export function compute(input) {",
+            "  if (",
+            "    input === null",
+            '    || typeof input !== "object"',
+            "    || Array.isArray(input)",
+            "    || Object.keys(input).length !== 1",
+            f"    || !Object.hasOwn(input, {_json(field)})",
+            "  ) {",
+            input_error,
+            "  }",
+            "  if (",
+            f'    typeof input.{field} !== "string"',
+            f"    || input.{field}.length < {contract['min_length']}",
+            f"    || input.{field}.length > {contract['max_length']}",
+            "  ) {",
+            input_error,
+            "  }",
+            f"  const result = __source(input.{field});",
+            "  if (",
+            '    typeof result !== "string"',
+            "    || ("
+            + " && ".join(f"result !== {_json(value)}" for value in values)
+            + ")",
+            "  ) {",
+            output_error,
+            "  }",
+            f"  return {{ ok: true, value: {{ {_json(result_field)}: result }} }};",
+            "}",
+            "",
+        ]
+    )
+
+
 def preflight_computation_capture_v2(
     candidate_payload_json: bytes,
     examples: list[dict[str, Any]],
@@ -2523,6 +2693,23 @@ def preflight_computation_capture_v4(
     return gate, _canonical_json_bytes(receipt)
 
 
+def preflight_computation_capture_v5(
+    candidate_payload_json: bytes,
+    examples: list[dict[str, Any]],
+    *,
+    snapshot: JavascriptScopeSnapshot,
+    expected_source_identity_sha256: str,
+) -> tuple[CaptureStaticGateResult, bytes]:
+    """Run bounded-string enum examples after the v5 static proof gate."""
+
+    return preflight_computation_capture_v4(
+        candidate_payload_json,
+        examples,
+        snapshot=snapshot,
+        expected_source_identity_sha256=expected_source_identity_sha256,
+    )
+
+
 def make_prepared_review(
     *,
     run_id: str,
@@ -2612,7 +2799,14 @@ def _run_source_graph_capture(
     snapshot: JavascriptScopeSnapshot,
     selection: dict[str, str],
     parameter_domains: list[dict[str, Any]],
+    *,
+    request_schema: str = "source_graph_request.v1",
 ) -> dict[str, Any]:
+    if request_schema not in {
+        "source_graph_request.v1",
+        "source_graph_request.v2",
+    }:
+        raise Stage3Error("capture_request_invalid")
     root = Path(__file__).resolve().parents[1]
     module_snapshot = [
         {
@@ -2623,7 +2817,7 @@ def _run_source_graph_capture(
         for module in snapshot.modules
     ]
     request = {
-        "schema": "source_graph_request.v1",
+        "schema": request_schema,
         "mode": "capture",
         "project_id": snapshot.project_id,
         "scope_snapshot_sha256": snapshot.scope_snapshot_sha256,
@@ -3224,6 +3418,128 @@ def _normalize_capture_mapping_v4(
     )
 
 
+def _normalize_capture_mapping_v5(
+    mapping: dict[str, Any],
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    str,
+    list[str],
+    str,
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
+    expected_keys = {
+        "schema",
+        "arguments",
+        "result_field",
+        "result_enum",
+        "proof_schema",
+        "examples",
+    }
+    arguments_value = mapping.get("arguments") if type(mapping) is dict else None
+    if (
+        type(mapping) is not dict
+        or set(mapping) != expected_keys
+        or mapping.get("schema") != CAPTURE_MAPPING_V5
+        or mapping.get("proof_schema") != "source_graph_proof.v3"
+        or type(arguments_value) is not list
+        or len(arguments_value) != 1
+    ):
+        raise Stage3Error("adapter_mapping_invalid")
+    item = arguments_value[0]
+    if (
+        type(item) is not dict
+        or set(item)
+        != {
+            "parameter_binding_id",
+            "input_field",
+            "kind",
+            "min_length",
+            "max_length",
+        }
+        or re.fullmatch(r"[0-9a-f]{64}", item.get("parameter_binding_id") or "")
+        is None
+        or type(item.get("input_field")) is not str
+        or _SNAKE.fullmatch(item["input_field"]) is None
+        or item.get("kind") != "string"
+        or type(item.get("min_length")) is not int
+        or type(item.get("max_length")) is not int
+        or not 0 <= item["min_length"] <= item["max_length"] <= 10_000
+    ):
+        raise Stage3Error("adapter_mapping_invalid")
+    argument = {
+        "parameter_binding_id": item["parameter_binding_id"],
+        "input_field": item["input_field"],
+        "kind": "string",
+        "min_length": item["min_length"],
+        "max_length": item["max_length"],
+    }
+    result_field = mapping.get("result_field")
+    values = mapping.get("result_enum")
+    if (
+        type(result_field) is not str
+        or _SNAKE.fullmatch(result_field) is None
+        or result_field == argument["input_field"]
+        or type(values) is not list
+        or not values
+        or len(values) > 32
+        or any(type(value) is not str for value in values)
+        or len(set(values)) != len(values)
+    ):
+        raise Stage3Error("adapter_mapping_invalid")
+    try:
+        result_enum = sorted(values, key=lambda value: value.encode("utf-8"))
+    except UnicodeEncodeError as exc:
+        raise Stage3Error("adapter_mapping_invalid") from exc
+    input_contract, output_contract, _error_contract = _capture_contracts_v5(
+        [argument],
+        result_field,
+        {"kind": "enum", "values": result_enum},
+    )
+    examples = mapping.get("examples")
+    if type(examples) is not list or not 1 <= len(examples) <= 64:
+        raise Stage3Error("adapter_mapping_invalid")
+    normalized_examples: list[dict[str, Any]] = []
+    covered: set[str] = set()
+    for example in examples:
+        if (
+            type(example) is not dict
+            or set(example) != {"input", "expected"}
+            or type(example.get("input")) is not dict
+            or set(example["input"]) != {argument["input_field"]}
+            or type(example.get("expected")) is not dict
+            or set(example["expected"]) != {result_field}
+            or not data_contract_accepts(input_contract, example["input"])
+            or not data_contract_accepts(output_contract, example["expected"])
+        ):
+            raise Stage3Error("adapter_mapping_invalid")
+        covered.add(example["expected"][result_field])
+        normalized_examples.append(json.loads(_json(example)))
+    normalized_examples.sort(key=_canonical_json_bytes)
+    if covered != set(result_enum):
+        raise Stage3Error("adapter_mapping_invalid")
+    domains = [
+        {
+            "parameter_binding_id": argument["parameter_binding_id"],
+            "domain": {
+                "kind": "string",
+                "min_length": argument["min_length"],
+                "max_length": argument["max_length"],
+            },
+        }
+    ]
+    return (
+        [argument],
+        domains,
+        result_field,
+        result_enum,
+        "source_graph_proof.v3",
+        normalized_examples,
+        [],
+    )
+
+
 def _capture_error_contract() -> dict[str, Any]:
     details = {
         "schema": "data_contract.v1",
@@ -3400,6 +3716,75 @@ def _capture_contracts_v4(
     try:
         return normalize_capsule_contracts(
             "computation", input_contract, output_contract, _capture_error_contract()
+        )
+    except DataContractError as exc:
+        raise Stage3Error("adapter_mapping_invalid") from exc
+
+
+def _capture_contracts_v5(
+    arguments: list[dict[str, Any]],
+    result_field: str,
+    result_domain: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    values = result_domain.get("values") if type(result_domain) is dict else None
+    if (
+        len(arguments) != 1
+        or type(arguments[0]) is not dict
+        or arguments[0].get("kind") != "string"
+        or type(values) is not list
+        or not values
+        or len(values) > 32
+        or any(type(value) is not str for value in values)
+        or len(set(values)) != len(values)
+        or values != sorted(values, key=lambda value: value.encode("utf-8"))
+    ):
+        raise Stage3Error("interval_unproven")
+    argument = arguments[0]
+    if (
+        type(argument.get("input_field")) is not str
+        or _SNAKE.fullmatch(argument["input_field"]) is None
+        or type(argument.get("min_length")) is not int
+        or type(argument.get("max_length")) is not int
+        or not 0 <= argument["min_length"] <= argument["max_length"] <= 10_000
+        or type(result_field) is not str
+        or _SNAKE.fullmatch(result_field) is None
+        or result_field == argument["input_field"]
+    ):
+        raise Stage3Error("adapter_mapping_invalid")
+    result_lengths = [_utf16_length(value) for value in values]
+    input_contract = {
+        "schema": "data_contract.v1",
+        "type": "object",
+        "properties": {
+            argument["input_field"]: {
+                "type": "string",
+                "min_length": argument["min_length"],
+                "max_length": argument["max_length"],
+            }
+        },
+        "required": [argument["input_field"]],
+        "additional_properties": False,
+    }
+    output_contract = {
+        "schema": "data_contract.v1",
+        "type": "object",
+        "properties": {
+            result_field: {
+                "type": "string",
+                "min_length": min(result_lengths),
+                "max_length": max(result_lengths),
+                "enum": list(values),
+            }
+        },
+        "required": [result_field],
+        "additional_properties": False,
+    }
+    try:
+        return normalize_capsule_contracts(
+            "computation",
+            input_contract,
+            output_contract,
+            _capture_error_contract(),
         )
     except DataContractError as exc:
         raise Stage3Error("adapter_mapping_invalid") from exc
@@ -3676,7 +4061,7 @@ def _pyside_environment(temp_root: Path) -> dict[str, str]:
         "XDG_DATA_HOME": str(temp_root / "data"),
         "APPDATA": str(temp_root / "appdata"),
         "LOCALAPPDATA": str(temp_root / "localappdata"),
-        "QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen"),
+        "QT_QPA_PLATFORM": qwebengine_qpa_platform(),
         "QTWEBENGINE_CHROMIUM_FLAGS": "--disable-gpu",
         "QT_LOGGING_RULES": "*.debug=false;qt.webenginecontext.info=false",
     })
@@ -4362,6 +4747,7 @@ class ReweaveCapsuleStage3:
                 COMPUTATION_ADAPTER_V2,
                 COMPUTATION_ADAPTER_V3,
                 COMPUTATION_ADAPTER_V4,
+                COMPUTATION_ADAPTER_V5,
             }
             or type(
                 authorization_binding.get("authorization_warehouse_revision")
@@ -5359,7 +5745,17 @@ class ReweaveCapsuleStage3:
         passthrough_fields: list[str] = []
         result_enum: list[str] = []
         proof_schema: str | None = None
-        if adapter_version == COMPUTATION_ADAPTER_V4:
+        if adapter_version == COMPUTATION_ADAPTER_V5:
+            (
+                arguments,
+                parameter_domains,
+                result_field,
+                result_enum,
+                proof_schema,
+                examples,
+                enumerations,
+            ) = _normalize_capture_mapping_v5(mapping)
+        elif adapter_version == COMPUTATION_ADAPTER_V4:
             (
                 arguments,
                 parameter_domains,
@@ -5390,10 +5786,20 @@ class ReweaveCapsuleStage3:
             {
                 COMPUTATION_ADAPTER_V3: CAPTURE_RESUME_V2,
                 COMPUTATION_ADAPTER_V4: CAPTURE_RESUME_V3,
+                COMPUTATION_ADAPTER_V5: CAPTURE_RESUME_V4,
             }.get(adapter_version, CAPTURE_RESUME_V1)
         )
         try:
-            first = _run_source_graph_capture(snapshot, selection, parameter_domains)
+            first = _run_source_graph_capture(
+                snapshot,
+                selection,
+                parameter_domains,
+                request_schema=(
+                    "source_graph_request.v2"
+                    if adapter_version == COMPUTATION_ADAPTER_V5
+                    else "source_graph_request.v1"
+                ),
+            )
         except Stage3Error as exc:
             if (
                 adapter_version == COMPUTATION_ADAPTER_V3
@@ -5410,7 +5816,16 @@ class ReweaveCapsuleStage3:
             or capture.get("target_binding_id") != selection["target_binding_id"]
         ):
             raise Stage3Error("offer_stale")
-        second = _run_source_graph_capture(snapshot, selection, parameter_domains)
+        second = _run_source_graph_capture(
+            snapshot,
+            selection,
+            parameter_domains,
+            request_schema=(
+                "source_graph_request.v2"
+                if adapter_version == COMPUTATION_ADAPTER_V5
+                else "source_graph_request.v1"
+            ),
+        )
         if _canonical_json_bytes(first) != _canonical_json_bytes(second):
             raise Stage3Error("bundle_not_deterministic")
 
@@ -5424,23 +5839,39 @@ class ReweaveCapsuleStage3:
 
         require_fresh_snapshot()
 
-        if adapter_version == COMPUTATION_ADAPTER_V4:
+        if adapter_version in {COMPUTATION_ADAPTER_V4, COMPUTATION_ADAPTER_V5}:
             if (
                 proof.get("schema") != proof_schema
                 or proof.get("result_domain")
                 != {"kind": "enum", "values": result_enum}
             ):
                 raise Stage3Error("interval_unproven")
-            input_contract, output_contract, error_contract = _capture_contracts_v4(
-                arguments,
-                result_field,
-                proof.get("result_domain"),
-            )
-            adapter_source = generate_computation_adapter_v4(
-                [item["input_field"] for item in arguments],
-                input_contract,
-                output_contract,
-            )
+            if adapter_version == COMPUTATION_ADAPTER_V5:
+                input_contract, output_contract, error_contract = (
+                    _capture_contracts_v5(
+                        arguments,
+                        result_field,
+                        proof.get("result_domain"),
+                    )
+                )
+                adapter_source = generate_computation_adapter_v5(
+                    [item["input_field"] for item in arguments],
+                    input_contract,
+                    output_contract,
+                )
+            else:
+                input_contract, output_contract, error_contract = (
+                    _capture_contracts_v4(
+                        arguments,
+                        result_field,
+                        proof.get("result_domain"),
+                    )
+                )
+                adapter_source = generate_computation_adapter_v4(
+                    [item["input_field"] for item in arguments],
+                    input_contract,
+                    output_contract,
+                )
         elif adapter_version == COMPUTATION_ADAPTER_V3:
             input_contract, output_contract, error_contract = _capture_contracts_v3(
                 arguments,
@@ -5473,14 +5904,18 @@ class ReweaveCapsuleStage3:
         del execution_bundle
         mapping_evidence = (
             {
-                "schema": CAPTURE_MAPPING_V4,
+                "schema": (
+                    CAPTURE_MAPPING_V5
+                    if adapter_version == COMPUTATION_ADAPTER_V5
+                    else CAPTURE_MAPPING_V4
+                ),
                 "arguments": arguments,
                 "result_field": result_field,
                 "result_enum": result_enum,
                 "proof_schema": proof_schema,
                 "examples": examples,
             }
-            if adapter_version == COMPUTATION_ADAPTER_V4
+            if adapter_version in {COMPUTATION_ADAPTER_V4, COMPUTATION_ADAPTER_V5}
             else
             {
                 "schema": CAPTURE_MAPPING_V3,
@@ -5652,7 +6087,7 @@ class ReweaveCapsuleStage3:
                 "rule_versions": rule_versions,
                 "canonical_candidate": canonical,
             }
-            if adapter_version == COMPUTATION_ADAPTER_V4:
+            if adapter_version in {COMPUTATION_ADAPTER_V4, COMPUTATION_ADAPTER_V5}:
                 value["source_graph_proof"] = proof
                 value["source_graph_proof_sha256"] = hashlib.sha256(
                     _canonical_json_bytes(proof)
@@ -5718,7 +6153,7 @@ class ReweaveCapsuleStage3:
             "brand_profile_id": profile.get("id"),
             "brand_profile_digest": profile.get("digest"),
         }
-        if adapter_version == COMPUTATION_ADAPTER_V4:
+        if adapter_version in {COMPUTATION_ADAPTER_V4, COMPUTATION_ADAPTER_V5}:
             decision_binding["source_graph_proof_sha256"] = hashlib.sha256(
                 _canonical_json_bytes(proof)
             ).hexdigest()
@@ -5880,6 +6315,7 @@ class ReweaveCapsuleStage3:
             {
                 COMPUTATION_ADAPTER_V3: preflight_computation_capture_v3,
                 COMPUTATION_ADAPTER_V4: preflight_computation_capture_v4,
+                COMPUTATION_ADAPTER_V5: preflight_computation_capture_v5,
             }.get(adapter_version, preflight_computation_capture_v2)
         )
         gate, receipt_json = preflight(
@@ -5954,6 +6390,22 @@ class ReweaveCapsuleStage3:
             selection,
             mapping,
             adapter_version=COMPUTATION_ADAPTER_V4,
+            review_id=review_id,
+        )
+
+    def prepare_ephemeral_computation_capture_v5(
+        self,
+        snapshot: JavascriptScopeSnapshot,
+        selection: dict[str, str],
+        mapping: dict[str, Any],
+        *,
+        review_id: str | None = None,
+    ) -> PreparedReview | dict[str, Any]:
+        return self._prepare_ephemeral_computation_capture(
+            snapshot,
+            selection,
+            mapping,
+            adapter_version=COMPUTATION_ADAPTER_V5,
             review_id=review_id,
         )
 
@@ -6344,7 +6796,12 @@ class ReweaveCapsuleStage3:
                 "rejected",
             }
             and summary.get("resume_contract")
-            in {CAPTURE_RESUME_V1, CAPTURE_RESUME_V2, CAPTURE_RESUME_V3}
+            in {
+                CAPTURE_RESUME_V1,
+                CAPTURE_RESUME_V2,
+                CAPTURE_RESUME_V3,
+                CAPTURE_RESUME_V4,
+            }
         ):
             raise Stage3Error("capture_resubmission_required")
         if review["candidate_status"] != "extracted":
@@ -6667,6 +7124,7 @@ class ReweaveCapsuleStage3:
             "resume_contract": {
                 COMPUTATION_ADAPTER_V3: CAPTURE_RESUME_V2,
                 COMPUTATION_ADAPTER_V4: CAPTURE_RESUME_V3,
+                COMPUTATION_ADAPTER_V5: CAPTURE_RESUME_V4,
             }.get(adapter_version, CAPTURE_RESUME_V1),
             "stage3_failure": {
                 "schema_version": "stage3_failure.v1",
@@ -7284,6 +7742,7 @@ class ReweaveCapsuleStage3:
             CAPTURE_RESUME_V1,
             CAPTURE_RESUME_V2,
             CAPTURE_RESUME_V3,
+            CAPTURE_RESUME_V4,
         }:
             raise Stage3Error("capture_resubmission_required")
         if (
@@ -7294,6 +7753,7 @@ class ReweaveCapsuleStage3:
                 COMPUTATION_ADAPTER_V2,
                 COMPUTATION_ADAPTER_V3,
                 COMPUTATION_ADAPTER_V4,
+                COMPUTATION_ADAPTER_V5,
             }
         ):
             return self._prepare_persisted_capture(review, summary)
@@ -8324,6 +8784,10 @@ class ReweaveCapsuleStage3:
         row: dict[str, Any],
         extraction: dict[str, Any],
         modules: list[dict[str, str]],
+        *,
+        adapter_version: str = COMPUTATION_ADAPTER_V4,
+        mapping_schema: str = CAPTURE_MAPPING_V4,
+        proof_schema_expected: str = "source_graph_proof.v2",
     ) -> bool:
         payload = extraction.get("ephemeral_capture_payload")
         if type(payload) is not dict:
@@ -8362,7 +8826,7 @@ class ReweaveCapsuleStage3:
             or payload.get("schema") != "ephemeral_capture_candidate.v1"
             or payload.get("candidate_origin")
             != "deterministic_computation_adapter"
-            or payload.get("adapter_contract_version") != COMPUTATION_ADAPTER_V4
+            or payload.get("adapter_contract_version") != adapter_version
             or payload.get("source_graph_version") != "source_graph.v1"
             or payload.get("bundle_contract_version")
             != CAPTURE_BUNDLE_CONTRACT_VERSION
@@ -8380,7 +8844,7 @@ class ReweaveCapsuleStage3:
             or candidate.get("javascript_modules") != modules
             or type(mapping) is not dict
             or type(proof) is not dict
-            or proof.get("schema") != "source_graph_proof.v2"
+            or proof.get("schema") != proof_schema_expected
             or hashlib.sha256(_canonical_json_bytes(proof)).hexdigest()
             != payload.get("source_graph_proof_sha256")
             or hashlib.sha256(_canonical_json_bytes(mapping)).hexdigest()
@@ -8404,7 +8868,11 @@ class ReweaveCapsuleStage3:
                 proof_schema,
                 normalized_examples,
                 enumerations,
-            ) = _normalize_capture_mapping_v4(mapping)
+            ) = (
+                _normalize_capture_mapping_v5(mapping)
+                if adapter_version == COMPUTATION_ADAPTER_V5
+                else _normalize_capture_mapping_v4(mapping)
+            )
             stored_candidate = {
                 "capability_kind": row["capability_kind"],
                 "activation": json.loads(row["activation_json"]),
@@ -8425,7 +8893,7 @@ class ReweaveCapsuleStage3:
         if (
             mapping
             != {
-                "schema": CAPTURE_MAPPING_V4,
+                "schema": mapping_schema,
                 "arguments": arguments,
                 "result_field": result_field,
                 "result_enum": result_enum,
@@ -8438,10 +8906,13 @@ class ReweaveCapsuleStage3:
             or candidate.get("capability_kind") != "computation"
         ):
             return False
-        input_contract, output_contract, error_contract = _capture_contracts_v4(
-            arguments,
-            result_field,
-            {"kind": "enum", "values": result_enum},
+        contract_builder = (
+            _capture_contracts_v5
+            if adapter_version == COMPUTATION_ADAPTER_V5
+            else _capture_contracts_v4
+        )
+        input_contract, output_contract, error_contract = contract_builder(
+            arguments, result_field, {"kind": "enum", "values": result_enum}
         )
         if (
             candidate.get("input_contract") != input_contract
@@ -8521,7 +8992,7 @@ class ReweaveCapsuleStage3:
             type(rules) is not dict
             or set(rules) != expected_rule_keys
             or rules.get("source_graph_version") != "source_graph.v1"
-            or rules.get("adapter_contract_version") != COMPUTATION_ADAPTER_V4
+            or rules.get("adapter_contract_version") != adapter_version
             or rules.get("bundle_contract_version")
             != CAPTURE_BUNDLE_CONTRACT_VERSION
             or rules.get("typescript_version") != CAPTURE_TYPESCRIPT_VERSION
@@ -8552,7 +9023,12 @@ class ReweaveCapsuleStage3:
         ):
             return False
         try:
-            expected_adapter = generate_computation_adapter_v4(
+            adapter_builder = (
+                generate_computation_adapter_v5
+                if adapter_version == COMPUTATION_ADAPTER_V5
+                else generate_computation_adapter_v4
+            )
+            expected_adapter = adapter_builder(
                 [item["input_field"] for item in arguments],
                 input_contract,
                 output_contract,
@@ -8591,6 +9067,15 @@ class ReweaveCapsuleStage3:
             return not adapter_modules
         if origin != "deterministic_computation_adapter":
             return False
+        if extraction.get("adapter_contract_version") == COMPUTATION_ADAPTER_V5:
+            return cls._stored_capture_v4_evidence_eligible(
+                row,
+                extraction,
+                modules,
+                adapter_version=COMPUTATION_ADAPTER_V5,
+                mapping_schema=CAPTURE_MAPPING_V5,
+                proof_schema_expected="source_graph_proof.v3",
+            )
         if extraction.get("adapter_contract_version") == COMPUTATION_ADAPTER_V4:
             return cls._stored_capture_v4_evidence_eligible(
                 row, extraction, modules

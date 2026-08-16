@@ -290,6 +290,78 @@ class Phase4ManagementTest(unittest.TestCase):
         self.assertNotIn("customer-secret", str(failed))
         self.assertEqual(maximum, 1)
 
+    def test_close_cancels_queued_tasks_and_waits_for_running_action(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        queued_ran = threading.Event()
+
+        def running(_cancel: threading.Event) -> dict[str, bool]:
+            entered.set()
+            release.wait(2)
+            return {"committed": True}
+
+        first = self.service._submit_management_task(
+            "product_plan_close_running",
+            running,
+            read_only_planning=True,
+        )
+        self.assertTrue(entered.wait(1))
+        second = self.service._submit_management_task(
+            "product_plan_close_queued",
+            lambda _cancel: (
+                queued_ran.set(),
+                {"should_not_run": True},
+            )[1],
+            read_only_planning=True,
+        )
+        closed = threading.Event()
+
+        def close_service() -> None:
+            self.service.close()
+            closed.set()
+
+        closer = threading.Thread(target=close_service)
+        closer.start()
+        deadline = time.monotonic() + 2
+        while not self.service._management_closed:
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(0.01)
+        rejected = self.service._submit_management_task(
+            "product_plan_after_close",
+            lambda _cancel: {"should_not_run": True},
+            read_only_planning=True,
+        )
+        self.assertEqual(
+            rejected["error"]["code"],
+            "capsule_management_closed",
+        )
+        with patch.object(
+            self.service,
+            "_ensure_capsule_management",
+            side_effect=AssertionError("closed service touched state"),
+        ):
+            self.assertEqual(
+                self.service._submit_management_task(
+                    "ordinary_after_close",
+                    lambda _cancel: {"should_not_run": True},
+                )["error"]["code"],
+                "capsule_management_closed",
+            )
+        self.assertFalse(closed.is_set())
+        release.set()
+        closer.join(2)
+        self.assertTrue(closed.is_set())
+        self.assertFalse(queued_ran.is_set())
+        self.assertEqual(
+            self.service._management_tasks[first["run_id"]]["status"],
+            "completed",
+        )
+        self.assertEqual(
+            self.service._management_tasks[second["run_id"]]["status"],
+            "cancelled",
+        )
+        self.service.close()
+
     def test_read_only_product_planning_task_does_not_initialize_warehouse(self) -> None:
         self.assertFalse(self.store.path.exists())
 
@@ -488,6 +560,128 @@ class Phase4ManagementTest(unittest.TestCase):
         )
         cancelled_task = self._wait_product_plan(cancelled["run_id"])
         self.assertEqual(cancelled_task["status"], "cancelled")
+
+    def test_confirmed_candidate_terminal_retry_is_explicit_and_bounded(self) -> None:
+        request = {
+            "plan_token": "plan_token_" + "a" * 48,
+            "plan_digest": "b" * 64,
+            "acceptance_confirmation_digest": "c" * 64,
+        }
+        calls = 0
+
+        def build(*_args: object) -> dict[str, object]:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("transient")
+            return {"candidate_token": "candidate_" + "d" * 32}
+
+        with patch.object(
+            self.service,
+            "_build_confirmed_product_candidate",
+            side_effect=build,
+        ):
+            first = self.service.start_confirmed_product_candidate(request)
+            self.assertEqual(
+                self._wait(first["run_id"])["status"],
+                "failed",
+            )
+            self.service._management_tasks[first["run_id"]]["future"].result(
+                timeout=2
+            )
+            retried = self.service.start_confirmed_product_candidate(request)
+            self.assertEqual(retried["run_id"], first["run_id"])
+            self.assertEqual(
+                self._wait(retried["run_id"])["status"],
+                "completed",
+            )
+            completed = self.service.start_confirmed_product_candidate(request)
+            self.assertEqual(completed["run_id"], first["run_id"])
+            self.assertEqual(completed["status"], "completed")
+        self.assertEqual(calls, 2)
+
+        cancelled_run = "run_" + "e" * 32
+        cancelled = self.service._submit_management_task(
+            "product_candidate_start_confirmed",
+            lambda _cancel: {"status": "cancelled"},
+            run_id=cancelled_run,
+            cancellable=True,
+            read_only_candidate=True,
+            retry_terminal=True,
+        )
+        self.assertEqual(
+            self._wait(cancelled["run_id"])["status"],
+            "cancelled",
+        )
+        self.service._management_tasks[cancelled["run_id"]]["future"].result(
+            timeout=2
+        )
+        retry_calls = 0
+
+        def retry(_cancel: threading.Event) -> dict[str, bool]:
+            nonlocal retry_calls
+            retry_calls += 1
+            return {"retried": True}
+
+        restarted = self.service._submit_management_task(
+            "product_candidate_start_confirmed",
+            retry,
+            run_id=cancelled_run,
+            read_only_candidate=True,
+            retry_terminal=True,
+        )
+        self.assertEqual(
+            self._wait(restarted["run_id"])["status"],
+            "completed",
+        )
+        self.assertEqual(retry_calls, 1)
+
+    def test_confirmed_candidate_concurrent_starts_share_one_attempt(self) -> None:
+        request = {
+            "plan_token": "plan_token_" + "1" * 48,
+            "plan_digest": "2" * 64,
+            "acceptance_confirmation_digest": "3" * 64,
+        }
+        entered = threading.Event()
+        release = threading.Event()
+        calls = 0
+
+        def build(*_args: object) -> dict[str, object]:
+            nonlocal calls
+            calls += 1
+            entered.set()
+            release.wait(2)
+            return {"candidate_token": "candidate_" + "4" * 32}
+
+        with patch.object(
+            self.service,
+            "_build_confirmed_product_candidate",
+            side_effect=build,
+        ):
+            first = self.service.start_confirmed_product_candidate(request)
+            self.assertTrue(entered.wait(1))
+            responses: list[dict[str, object]] = []
+
+            def start() -> None:
+                responses.append(
+                    self.service.start_confirmed_product_candidate(request)
+                )
+
+            threads = [threading.Thread(target=start) for _ in range(100)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(2)
+            release.set()
+            self.assertEqual(
+                self._wait(first["run_id"])["status"],
+                "completed",
+            )
+        self.assertEqual(
+            {response["run_id"] for response in responses},
+            {first["run_id"]},
+        )
+        self.assertEqual(calls, 1)
 
     def test_product_planning_payloads_reject_unknown_fields(self) -> None:
         cases = (
@@ -1424,6 +1618,73 @@ class Phase4ManagementTest(unittest.TestCase):
                 timeout=2
             )
             self.assertEqual(self._wait(started["run_id"])["status"], "completed")
+
+    def test_restore_pending_rejects_all_synchronous_product_writes(self) -> None:
+        actions = (
+            self.service.confirm_product_plan,
+            self.service.record_product_capability_gap_decision,
+            self.service.prepare_product_capability_source_proposal,
+            self.service.confirm_product_candidate_acceptance,
+            self.service.create_local_agent_handoff,
+            self.service.revoke_local_agent_handoff,
+        )
+        self.service._restore_pending = True
+        try:
+            with patch.object(
+                self.service,
+                "_payload",
+                side_effect=AssertionError("write method entered"),
+            ):
+                for action in actions:
+                    with self.subTest(action=action.__name__):
+                        rejected = action({})
+                        self.assertEqual(
+                            rejected["error"]["code"],
+                            "restore_in_progress",
+                        )
+        finally:
+            self.service._restore_pending = False
+        self.assertFalse((self.state / "product_workspaces").exists())
+
+    def test_restore_barrier_checks_again_after_operation_lock_wait(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        real_lock = self.service._capsule_operation_lock
+
+        class BlockingLock:
+            def __enter__(self) -> object:
+                entered.set()
+                release.wait(2)
+                real_lock.acquire()
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                real_lock.release()
+
+        self.service._capsule_operation_lock = BlockingLock()
+        result: list[dict[str, object]] = []
+        with patch.object(
+            self.service._product_planner,
+            "revoke_agent_handoff_for_plan",
+            side_effect=AssertionError("write method entered"),
+        ):
+            thread = threading.Thread(
+                target=lambda: result.append(
+                    self.service.revoke_local_agent_handoff(
+                        {"plan_token": "plan_token_" + "a" * 48}
+                    )
+                )
+            )
+            thread.start()
+            self.assertTrue(entered.wait(1))
+            with self.service._management_lock:
+                self.service._restore_pending = True
+            release.set()
+            thread.join(2)
+        self.service._restore_pending = False
+        self.service._capsule_operation_lock = real_lock
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(result[0]["error"]["code"], "restore_in_progress")
 
     def test_corrupt_database_still_exposes_and_restores_valid_backup(self) -> None:
         self.store.initialize()

@@ -31,7 +31,7 @@ flowchart LR
   P["Product goal"] --> Q["Explicit local <=15B planning-model selection and probe"]
   Q --> F
   F --> R["product_plan.v2 review and confirmation"]
-  R --> S["Application-state product_workspace.v10"]
+  R --> S["Application-state product_workspace.v12"]
   R --> T["plan_execution.v1 or v3 with exact connections"]
   T --> G
   G --> U["isolated product_candidate.v2"]
@@ -64,8 +64,8 @@ raw prompt, raw model response, capsule source, product source, or candidate
 files. Isolated candidate files live under the separate application-state
 `product_candidates` area; that area is not a formal product store.
 
-Current workspaces use `product_workspace.v10`,
-`reweave_product_planning_rules.v10`, and
+Current workspaces use `product_workspace.v12`,
+`reweave_product_planning_rules.v12`, and
 `reweave_product_planning_prompt.v13`; current plans use `product_plan.v2`.
 Historical plan, workspace, prompt, execution, Candidate, manifest, and export
 artifacts remain pinned to their own exact versions and are not migrated or
@@ -94,6 +94,12 @@ Static Web and JavaScript capture paths; it is not a general repository model.
 The SQLite warehouse is the only formal Capsule IR. It owns capability groups,
 capsules, immutable versions, contracts, scopes, sources, assets, status events,
 validation evidence, product usage, backup, restore, and revalidation state.
+One process owns a state root at a time through a cross-process lease. Restore
+and migration take the exclusive operation barrier; ordinary initialization
+cannot pass through it. SQLite backups are built under hidden temporary names,
+validated, and atomically published. Candidate and Product staging roots are
+recovered on startup without treating unknown or unsafe entries as valid
+products.
 
 Presentation, interaction, and computation candidates pass deterministic HTML,
 CSS, JavaScript, asset, data-contract, sensitive-data, and brand gates. Local
@@ -120,7 +126,7 @@ composition owner. Plan Execution and Product Planner retain their existing
 public error boundaries while using the shared byte/digest implementation, so
 existing v1/v2 canonical bytes and digests do not change.
 
-The single Composer product line has four current exact identities:
+The single Composer product line has five current exact identities:
 
 - `module_native_formal_product.v3` is the sealed historical
   single-computation/document-shell version. It owns technical assembly,
@@ -134,6 +140,9 @@ The single Composer product line has four current exact identities:
 - `module_native_formal_product.v6` accepts a formal composition containing
   finite-string-enum `computation_adapter.v4`. It does not replace or rewrite
   v3/v4/v5.
+- `module_native_formal_product.v7` accepts a formal composition containing
+  bounded-string `computation_adapter.v5`. It does not replace or rewrite
+  v3/v4/v5/v6.
 
 The selected presentation capsule owns rendered document semantics, including
 the page `main` landmark. Page Capability Contract v2 proves only the exact
@@ -165,6 +174,16 @@ from an exact finite string enum proved by `source_graph_proof.v2` and complete
 ordered witnesses. They do not admit open strings, partial enum branches,
 arbitrary objects, multiple result fields, or a general runtime type system.
 
+`source_graph_request.v2` / `source_graph_proof.v3`,
+`computation_capture_mapping.v5`, and `computation_adapter.v5` add one more
+bounded semantic: one length-bounded string argument may use only direct,
+literal `includes` tests and existing boolean control flow to return one value
+from an exact finite string enum. The proof, mapping, adapter source, string
+bounds, witnesses, and formal identities are revalidated by Stage 3 and
+Composer v7. This deterministic path is not arbitrary text processing, regex,
+normalization, object return, or a general string type system; real-model
+generation and formal publication remain separately authorized facts.
+
 The same service owns the product-planning actions. A separate logical local
 planning-model role interprets goals, asks bounded blocking questions, and
 selects one complete safe composition offer or explicitly reports no match.
@@ -181,7 +200,7 @@ for both roles.
 ## Product Planning and Isolated Delivery (Not v0.3.0)
 
 The desktop's single product-goal input now creates `product_plan.v2` inside
-`product_workspace.v10` using `reweave_product_planning_rules.v10` and
+`product_workspace.v12` using `reweave_product_planning_rules.v12` and
 `reweave_product_planning_prompt.v13`. The first use of an exact local Ollama
 name and digest requires explicit selection,
 Ollama metadata proof of at most 15B actual parameters, and a strict Schema
@@ -210,13 +229,16 @@ requirement coverage and such constraints do not create capability gaps.
 
 When no complete offer exists, the model's no-match response still does not
 create a formal gap. The Planner enumerates exact computation-gap candidates
-from the locked catalog and contracts. One candidate is locked automatically;
-two or three produce `product_plan_question_set.v3`, and the user's
-`product_capability_gap_target_selection.v1` binds one exact candidate digest.
-Zero or more than three fail closed. The subsequent locked Blueprint may only
-describe that gap; it cannot choose or alter its formal identity.
+from the locked catalog and contracts. One to three candidates produce
+`product_plan_question_set.v4`; the user's
+`product_capability_gap_target_selection.v2` binds one exact candidate digest
+or records “none of the above”. A no-match selection terminates before
+Blueprint, plan, projection, handoff, or Candidate creation. Zero candidates
+produce no formal projection and more than three fail closed. A subsequent
+locked Blueprint may only describe the selected gap; it cannot choose or alter
+its formal identity.
 
-Before the first model request, a v10 workspace deterministically retrieves at
+Before the first model request, a v12 workspace deterministically retrieves at
 most three related records from the same project scope and exact model digest,
 then freezes `product_experience_query.v1` beside that workspace. The query is
 immutable for the workspace even when later records are added. Only the
@@ -224,8 +246,8 @@ composition-selection request receives the redacted case projections; outline
 and locked Blueprint receive none. Cases are explicitly non-formal advice and
 cannot create or alter offers, gaps, members, identities, dependencies, or
 wiring. A frozen paired A/B gate authorized default injection only for newly
-created v10 workspaces. Historical v5-v9 workspaces and an existing v10
-workspace's saved enablement value are never recomputed. The A/B result is not
+created experience-aware workspaces. Historical v5-v11 workspaces and any
+existing workspace's saved enablement value are never recomputed. The A/B result is not
 model qualification, training authorization, or broad task-distribution proof.
 
 The planning backend supports explanation, controlled `plan_diff` review,
@@ -250,6 +272,11 @@ parameter bindings and acceptance cases remain separate formal inputs; the
 two-computation v3 path does not introduce hidden parameter binding. Runtime
 operation and product-goal conformance are validated independently; all gates
 must pass before a Candidate becomes `review_ready`.
+
+An adapter-v5 bounded-string path selects Composer v7 and revalidates its exact
+proof v3 and capture mapping v5 before assembly. It uses the existing
+`plan_execution.v1/v3` topology and connection digest semantics; it does not
+add fan-in, fan-out, cross-key wiring, or a new execution format.
 
 Historical `product_plan.v1`, earlier workspaces/prompts,
 `plan_execution.v1/v2`, Candidate provenance, Composer v3 manifests, and exports
@@ -277,6 +304,24 @@ is invalidated by plan, acceptance-record, or capsule-fact drift and can be
 explicitly revoked. It does not authorize planning, model selection, formal
 capsule mutation, product promotion, export, or user-project writes.
 
+The public generation CLI runs its service lifecycle in a bounded child
+process and can terminate a non-cooperative child. Desktop and Agent access to
+one state root remains sequential-exclusive rather than concurrent. The
+release surface is closed by `reweave_release_surface_audit.v3`, which checks
+all nine scripts actually loaded by `index.html`, the Qt metaobject, public action
+allowlists, and the formal Composer package export. Legacy JSON Source Box
+mutators and historical generation aliases are not desktop-reachable; the
+formal Source Box Intake/Stage 3 path, `generate_product`, and Agent Candidate
+handoff remain reachable.
+
+`REWEAVE_PRODUCT_ENTRY_AND_AGENT_INTEGRATION.md` remains an unfrozen local
+design draft. It is not a runtime contract, public protocol, or release fact.
+
+QWeb release validation uses Cocoa on macOS and runs a fixed set of 29 desktop,
+Stage 3, Candidate/Product runtime, and business-acceptance nodes in fresh
+processes. The gate does not disable the Chromium sandbox or turn a signal,
+skip, or timeout into success.
+
 ## Level-3 Capability Growth (PARTIAL)
 
 The target architecture distinguishes three identities:
@@ -291,28 +336,33 @@ The target architecture distinguishes three identities:
 
 The current Level-3 path now has formal application-state identities:
 
-- `capability_gap_projection.v1/v2` deterministically binds a supported
+- `capability_gap_projection.v1/v2/v3` deterministically binds a supported
   computation gap to exact adjacent formal members, ports, contracts, adapter,
   warehouse revision, and catalog digest. v2 adds the finite-string-enum proof
-  identity without changing historical v1.
-- `product_plan_question_set.v3` and
-  `product_capability_gap_target_selection.v1` let the user choose among two or
-  three deterministic candidates without seeing formal IDs; the model has no
-  gap-selection authority.
+  identity; v3 adds the bounded-string proof/mapping identity without changing
+  historical v1/v2.
+- `product_plan_question_set.v4` and
+  `product_capability_gap_target_selection.v2` require the user to choose among
+  one to three deterministic candidates or “none of the above” without seeing
+  formal IDs; the model has no gap-selection authority.
 - `capability_gap_decision.v1` records the user's immutable
   `authorize / defer / reject` decision.
-- `capability_source_proposal_authorization.v1/v2` binds an authorized isolated
+- `capability_source_proposal_authorization.v1/v2/v3` binds an authorized isolated
   source proposal to that projection and its acceptance cases. The v2 path can
   invoke `capability_source_proposal_request.v4` /
   `capability_source_proposal.v2` with `capability_source_function_abi.v2` for
-  finite enum witnesses. A model may produce source only; it cannot choose
+  finite enum witnesses. The v3 path uses
+  `capability_source_proposal_request.v5` /
+  `capability_source_proposal_prompt.v5` and
+  `capability_source_function_abi.v3` for one bounded string argument and
+  finite-enum witnesses. A model may produce source only; it cannot choose
   formal identity, contract, wiring, or publish state.
 - `frozen_stage3_review_admission.v2` is the controlled internal bridge from a
   frozen isolated Stage 3 review into the formal review queue. Admission
   preserves the full authorization, source, validation, supervision, and target
   catalog lineage, but creates no capsule version. User publication remains the
   authoritative boundary.
-- `capability_replan_handoff.v1` preserves the original workspace and gap
+- `capability_replan_handoff.v2` preserves the original workspace and gap
   history after publication, deterministically filters the one complete offer
   containing the newly published exact version, and creates a separate
   successor workspace. It neither overwrites the old plan nor confirms the new

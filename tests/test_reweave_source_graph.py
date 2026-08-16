@@ -31,6 +31,7 @@ def _request(
     mode: str,
     modules: dict[str, str | bytes],
     *,
+    request_schema: str = "source_graph_request.v1",
     entry_modules: list[str] | None = None,
     target: dict[str, str] | None = None,
     parameter_domains: list[dict[str, object]] | None = None,
@@ -39,7 +40,7 @@ def _request(
     isolate_entry_failures: bool = False,
 ) -> dict[str, object]:
     request: dict[str, object] = {
-        "schema": "source_graph_request.v1",
+        "schema": request_schema,
         "mode": mode,
         "project_id": "source-graph-contract-test",
         "scope_snapshot_sha256": "1" * 64,
@@ -115,6 +116,7 @@ def _prove(
     export_name: str,
     domains: list[dict[str, object]],
     *,
+    request_schema: str = "source_graph_request.v1",
     entry_modules: list[str] | None = None,
 ) -> dict[str, object]:
     graph = _graph(modules, entry_modules=entry_modules or [module_path])
@@ -128,6 +130,7 @@ def _prove(
     result = _request(
         "prove",
         modules,
+        request_schema=request_schema,
         entry_modules=entry_modules or [module_path],
         target={"module_relpath": module_path, "export_name": export_name},
         parameter_domains=parameter_domains,
@@ -159,6 +162,8 @@ def _capture(
     module_path: str,
     export_name: str,
     domains: list[dict[str, object]],
+    *,
+    request_schema: str = "source_graph_request.v1",
 ) -> dict[str, object]:
     graph = _graph(modules, entry_modules=[module_path])
     target_binding = _export(graph, module_path, export_name)
@@ -167,6 +172,7 @@ def _capture(
     result = _request(
         "capture",
         modules,
+        request_schema=request_schema,
         entry_modules=[module_path],
         target={"module_relpath": module_path, "export_name": export_name},
         parameter_domains=[
@@ -189,6 +195,14 @@ def _boolean(*values: bool) -> dict[str, object]:
 
 def _enum(*values: str) -> dict[str, object]:
     return {"kind": "enum", "values": list(values)}
+
+
+def _string(min_length: int, max_length: int) -> dict[str, object]:
+    return {
+        "kind": "string",
+        "min_length": min_length,
+        "max_length": max_length,
+    }
 
 
 def _assert_rejected(result: dict[str, object], *codes: str) -> None:
@@ -257,6 +271,338 @@ def test_finite_string_enum_return_uses_v2_proof_and_capture() -> None:
     )
     assert captured["status"] == "ok", captured
     assert captured["proof"] == proved["proof"]
+    assert _canonical_sha256(proved) == (
+        "c6ec7493231ffa21a1651a33c4392759855deac55fc0fbe27c67c800f1945055"
+    )
+
+
+def test_bounded_string_includes_uses_v3_proof_and_capture() -> None:
+    source = """export function classify(text) {
+  if (text.includes("blocked") || text.includes("leak")) return "urgent";
+  return "normal";
+}
+"""
+    proved = _prove(
+        {"main.js": source},
+        "main.js",
+        "classify",
+        [_string(1, 1000)],
+        request_schema="source_graph_request.v2",
+    )
+    assert proved["status"] == "ok", proved
+    assert proved["proof"]["schema"] == "source_graph_proof.v3"
+    assert proved["proof"]["parameter_domains"][0]["domain"] == {
+        "kind": "string",
+        "min_length": 1,
+        "max_length": 1000,
+    }
+    assert proved["proof"]["result_domain"] == {
+        "kind": "enum",
+        "values": ["normal", "urgent"],
+    }
+    assert all(
+        module["dynamic_dependencies"] == [] for module in proved["modules"]
+    )
+    serialized_proof = json.dumps(proved["proof"], ensure_ascii=False)
+    assert "blocked" not in serialized_proof
+    assert "leak" not in serialized_proof
+
+    captured = _capture(
+        {"main.js": source},
+        "main.js",
+        "classify",
+        [_string(1, 1000)],
+        request_schema="source_graph_request.v2",
+    )
+    assert captured["status"] == "ok", captured
+    assert captured["proof"] == proved["proof"]
+
+
+def test_bounded_string_proof_is_deterministic_across_module_order() -> None:
+    modules = {
+        "main.js": (
+            'import { containsLeak } from "./rules.js"; '
+            "export function classify(text) { "
+            'return containsLeak(text) ? "urgent" : "normal"; }\n'
+        ),
+        "rules.js": (
+            "export function containsLeak(text) { "
+            'return text.includes("leak"); }\n'
+        ),
+    }
+    reversed_modules = dict(reversed(list(modules.items())))
+    first = _prove(
+        modules,
+        "main.js",
+        "classify",
+        [_string(1, 1000)],
+        request_schema="source_graph_request.v2",
+    )
+    second = _prove(
+        reversed_modules,
+        "main.js",
+        "classify",
+        [_string(1, 1000)],
+        request_schema="source_graph_request.v2",
+    )
+    third = _prove(
+        modules,
+        "main.js",
+        "classify",
+        [_string(1, 1000)],
+        request_schema="source_graph_request.v2",
+    )
+    assert first == second == third
+
+
+def test_finite_enum_receiver_includes_is_evaluated_exactly_in_v2_request() -> None:
+    result = _prove(
+        {
+            "main.js": (
+                "export function classify(text) { "
+                'return text.includes("x") ? "yes" : "no"; }\n'
+            )
+        },
+        "main.js",
+        "classify",
+        [_enum("plain", "x-ray")],
+        request_schema="source_graph_request.v2",
+    )
+    assert result["status"] == "ok", result
+    assert result["proof"]["schema"] == "source_graph_proof.v3"
+    assert result["proof"]["result_domain"] == {
+        "kind": "enum",
+        "values": ["no", "yes"],
+    }
+
+
+def test_request_v1_does_not_accept_bounded_string_or_includes() -> None:
+    source = (
+        "export function classify(text) { "
+        'return text.includes("x") ? "yes" : "no"; }\n'
+    )
+    result = _prove(
+        {
+            "main.js": source,
+        },
+        "main.js",
+        "classify",
+        [_string(1, 10)],
+    )
+    _assert_rejected(result, "interval_unproven", "unsupported_control_flow")
+    legacy_enum = _prove(
+        {"main.js": source},
+        "main.js",
+        "classify",
+        [_enum("plain", "x-ray")],
+    )
+    _assert_rejected(legacy_enum, "unsupported_control_flow")
+
+
+@pytest.mark.parametrize(
+    "domain",
+    [
+        {"kind": "string", "min_length": -1, "max_length": 10},
+        {"kind": "string", "min_length": 11, "max_length": 10},
+        {"kind": "string", "min_length": 0, "max_length": 10001},
+        {"kind": "string", "min_length": 0.5, "max_length": 10},
+        {
+            "kind": "string",
+            "min_length": 0,
+            "max_length": 10,
+            "extra": True,
+        },
+    ],
+)
+def test_bounded_string_domain_is_closed_and_bounded(
+    domain: dict[str, object],
+) -> None:
+    result = _prove(
+        {"main.js": 'export function f(text) { return "ok"; }\n'},
+        "main.js",
+        "f",
+        [domain],
+        request_schema="source_graph_request.v2",
+    )
+    _assert_rejected(result, "interval_unproven")
+
+
+@pytest.mark.parametrize(
+    ("source", "domains"),
+    [
+        (
+            'export function f(text) { return text.includes("") ? "a" : "b"; }\n',
+            [_string(0, 10)],
+        ),
+        (
+            'export function f(text) { return text.includes("toolong") ? "a" : "b"; }\n',
+            [_string(0, 3)],
+        ),
+        (
+            "export function f(text, needle) { "
+            'return text.includes(needle) ? "a" : "b"; }\n',
+            [_string(0, 10), _string(0, 10)],
+        ),
+        (
+            'export function f(text) { return text.includes("x", 0) ? "a" : "b"; }\n',
+            [_string(0, 10)],
+        ),
+        (
+            'export function f(text) { return text?.includes("x") ? "a" : "b"; }\n',
+            [_string(0, 10)],
+        ),
+        (
+            'export function f(text) { return text.startsWith("x") ? "a" : "b"; }\n',
+            [_string(0, 10)],
+        ),
+        (
+            'export function f(text) { return text.endsWith("x") ? "a" : "b"; }\n',
+            [_string(0, 10)],
+        ),
+        (
+            'export function f(text) { return text.indexOf("x") >= 0 ? "a" : "b"; }\n',
+            [_string(0, 10)],
+        ),
+        (
+            'export function f(text) { return text.trim() === "x" ? "a" : "b"; }\n',
+            [_string(0, 10)],
+        ),
+        (
+            'export function f(text) { return /x/.test(text) ? "a" : "b"; }\n',
+            [_string(0, 10)],
+        ),
+        (
+            'export function f(text) { return ["x"].some((x) => text.includes(x)) ? "a" : "b"; }\n',
+            [_string(0, 10)],
+        ),
+    ],
+)
+def test_bounded_string_rejects_non_literal_or_non_includes_surface(
+    source: str,
+    domains: list[dict[str, object]],
+) -> None:
+    result = _prove(
+        {"main.js": source},
+        "main.js",
+        "f",
+        domains,
+        request_schema="source_graph_request.v2",
+    )
+    _assert_rejected(
+        result,
+        "unsupported_control_flow",
+        "dynamic_dependency",
+        "interval_unproven",
+    )
+
+
+def test_bounded_string_rejects_more_than_32_includes_calls() -> None:
+    condition = " || ".join(
+        f'text.includes("v{index}")' for index in range(33)
+    )
+    result = _prove(
+        {
+            "main.js": (
+                "export function f(text) { "
+                f'return ({condition}) ? "yes" : "no"; }}\n'
+            )
+        },
+        "main.js",
+        "f",
+        [_string(1, 100)],
+        request_schema="source_graph_request.v2",
+    )
+    _assert_rejected(result, "interval_unproven")
+
+
+def test_bounded_string_allows_exactly_32_includes_calls() -> None:
+    condition = " || ".join(
+        f'text.includes("v{index}")' for index in range(32)
+    )
+    result = _prove(
+        {
+            "main.js": (
+                "export function f(text) { "
+                f'return ({condition}) ? "yes" : "no"; }}\n'
+            )
+        },
+        "main.js",
+        "f",
+        [_string(1, 100)],
+        request_schema="source_graph_request.v2",
+    )
+    assert result["status"] == "ok", result
+    assert result["proof"]["schema"] == "source_graph_proof.v3"
+
+
+def test_bounded_string_lengths_use_utf16_code_units() -> None:
+    source = (
+        "export function f(text) { "
+        'return text.includes("🚨") ? "yes" : "no"; }\n'
+    )
+    accepted = _prove(
+        {"main.js": source},
+        "main.js",
+        "f",
+        [_string(0, 2)],
+        request_schema="source_graph_request.v2",
+    )
+    assert accepted["status"] == "ok", accepted
+    rejected = _prove(
+        {"main.js": source},
+        "main.js",
+        "f",
+        [_string(0, 1)],
+        request_schema="source_graph_request.v2",
+    )
+    _assert_rejected(rejected, "interval_unproven")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        (
+            "export function f(text) { "
+            'if (text.includes("x")) return "yes"; }\n'
+        ),
+        (
+            "export function f(text) { "
+            'return text.includes("x") ? "yes" : 0; }\n'
+        ),
+        (
+            "export function f(text) { "
+            'return text.includes("x") ? text : "no"; }\n'
+        ),
+    ],
+)
+def test_bounded_string_requires_total_finite_enum_return(source: str) -> None:
+    result = _prove(
+        {"main.js": source},
+        "main.js",
+        "f",
+        [_string(1, 10)],
+        request_schema="source_graph_request.v2",
+    )
+    _assert_rejected(result, "interval_unproven")
+
+
+def test_unproved_same_named_member_is_not_exempted() -> None:
+    source = (
+        "export function f(value) { "
+        'return value.includes("x") ? "yes" : "no"; }\n'
+    )
+    graph = _graph({"main.js": source})
+    assert graph["modules"][0]["dynamic_dependencies"] == [
+        {"kind": "unknown_member_call", "start_utf16": 34}
+    ]
+    rejected = _prove(
+        {"main.js": source},
+        "main.js",
+        "f",
+        [_integer(0, 10)],
+        request_schema="source_graph_request.v2",
+    )
+    _assert_rejected(rejected, "interval_unproven")
 
 
 def test_integer_proof_keeps_v1_external_shape() -> None:

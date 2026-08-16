@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sys
+import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -843,6 +844,15 @@ def revision_71_two_gap_catalog() -> dict[str, object]:
     return value
 
 
+def revision_73_one_gap_catalog() -> dict[str, object]:
+    value = revision_71_two_gap_catalog()
+    value["warehouse_revision"] = 73
+    value["capsules"].append(
+        copy.deepcopy(workflow_state_complete_catalog()["capsules"][1])
+    )
+    return value
+
+
 def formal_revision_42_catalog() -> dict[str, object]:
     value = two_offer_catalog()
     identities = {
@@ -929,13 +939,28 @@ def start_time_gap_plan(
     planner: StubPlanner,
     missing_role: str,
 ) -> dict[str, object]:
+    catalog = time_gap_catalog(missing_role)
     select_small(planner)
     planner.generation_outputs.extend(
         [time_outline(), no_composition_selection(), time_gap_blueprint()]
     )
-    return planner.start(
+    started = planner.start(
         "确定性测试夹具：时间换算能力准备",
-        time_gap_catalog(missing_role),
+        catalog,
+    )
+    question = started["data"]["question_set"]["questions"][0]
+    option = next(item for item in question["options"] if item["forms_gap"])
+    return planner.answer(
+        started["data"]["plan_token"],
+        started["data"]["question_set"]["digest"],
+        [
+            {
+                "question_id": question["question_id"],
+                "source": "option",
+                "value": option["option_id"],
+            }
+        ],
+        catalog,
     )
 
 
@@ -943,13 +968,28 @@ def start_quote_gap_plan(
     planner: StubPlanner,
     catalog_value: dict[str, object] | None = None,
 ) -> dict[str, object]:
+    catalog = catalog_value or quote_gap_catalog()
     select_small(planner)
     planner.generation_outputs.extend(
         [quote_outline(), no_composition_selection(), single_quote_gap_blueprint()]
     )
-    return planner.start(
+    started = planner.start(
         "创建一个缺少报价策略的本地报价工具。",
-        catalog_value or quote_gap_catalog(),
+        catalog,
+    )
+    question = started["data"]["question_set"]["questions"][0]
+    option = next(item for item in question["options"] if item["forms_gap"])
+    return planner.answer(
+        started["data"]["plan_token"],
+        started["data"]["question_set"]["digest"],
+        [
+            {
+                "question_id": question["question_id"],
+                "source": "option",
+                "value": option["option_id"],
+            }
+        ],
+        catalog,
     )
 
 
@@ -1149,6 +1189,117 @@ def seed_revision_question_set(
     with planner._lock:
         planner._save_workspace(workspace)
     return copy.deepcopy(question_set)
+
+
+def test_workspace_reads_do_not_interrupt_another_live_planner(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "product_workspaces"
+    planner = StubPlanner(root)
+    select_small(planner)
+    workspace = planner._new_workspace(
+        "保持正在运行的工作区",
+        planner._selected_model(check_current=False),
+    )
+    workspace["status"] = "planning"
+    workspace["phase"] = "requirements_outline"
+    planner._save_workspace(workspace)
+    workspace_path = (
+        planner._workspace_dir(workspace["workspace_id"]) / "workspace.json"
+    )
+    running_bytes = workspace_path.read_bytes()
+
+    reader = ProductPlanner(root)
+    state = reader.initial_state()
+    assert state["ok"] is True
+    assert workspace_path.read_bytes() == running_bytes
+    assert planner._workspace_by_token(workspace["plan_token"])["status"] == "planning"
+
+    assert reader.recover_orphaned_workspaces({workspace["plan_token"]}) == 0
+    assert workspace_path.read_bytes() == running_bytes
+    assert reader.recover_orphaned_workspaces(set()) == 1
+    interrupted_bytes = workspace_path.read_bytes()
+    assert interrupted_bytes != running_bytes
+    assert reader._workspace_by_token(workspace["plan_token"])["status"] == "interrupted"
+    assert reader.recover_orphaned_workspaces(set()) == 0
+    assert workspace_path.read_bytes() == interrupted_bytes
+
+
+def test_immutable_sidecar_publish_is_cross_process_create_only(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "product_workspaces"
+    receipt = root / "receipts" / "receipt.json"
+    gate = tmp_path / "gate"
+    script = (
+        "import json,sys,time\n"
+        "from pathlib import Path\n"
+        "from pimos_lite.reweave_product_planner import "
+        "ProductPlanner,ProductPlanningError\n"
+        "root,path,gate,ready,result=map(Path,sys.argv[1:6])\n"
+        "value=json.loads(sys.argv[6])\n"
+        "ready.write_text('ready',encoding='utf-8')\n"
+        "while not gate.exists(): time.sleep(0.01)\n"
+        "try:\n"
+        " ProductPlanner(root)._write_immutable(path,value)\n"
+        "except ProductPlanningError as exc:\n"
+        " result.write_text(exc.code,encoding='utf-8')\n"
+        "else:\n"
+        " result.write_text('ok',encoding='utf-8')\n"
+    )
+
+    def race(path: Path, values: list[dict[str, object]]) -> list[str]:
+        gate.unlink(missing_ok=True)
+        processes = []
+        results = []
+        for index, value in enumerate(values):
+            ready = tmp_path / f"{path.stem}-ready-{index}"
+            result = tmp_path / f"{path.stem}-result-{index}"
+            ready.unlink(missing_ok=True)
+            result.unlink(missing_ok=True)
+            results.append(result)
+            processes.append(
+                subprocess.Popen(
+                    [
+                        sys.executable,
+                        "-c",
+                        script,
+                        str(root),
+                        str(path),
+                        str(gate),
+                        str(ready),
+                        str(result),
+                        json.dumps(value, sort_keys=True),
+                    ],
+                    cwd=Path(__file__).resolve().parents[1],
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                )
+            )
+        deadline = time.monotonic() + 10
+        while not all(
+            (tmp_path / f"{path.stem}-ready-{index}").is_file()
+            for index in range(len(values))
+        ):
+            assert time.monotonic() < deadline
+            time.sleep(0.01)
+        gate.touch()
+        for process in processes:
+            _stdout, stderr = process.communicate(timeout=10)
+            assert process.returncode == 0, stderr
+        return [result.read_text(encoding="utf-8") for result in results]
+
+    distinct = [{"winner": "first"}, {"winner": "second"}]
+    assert sorted(race(receipt, distinct)) == [
+        "ok",
+        "product_plan_confirmation_conflict",
+    ]
+    assert json.loads(receipt.read_text(encoding="utf-8")) in distinct
+
+    idempotent = root / "receipts" / "same.json"
+    assert race(idempotent, [{"same": True}, {"same": True}]) == ["ok", "ok"]
+    assert json.loads(idempotent.read_text(encoding="utf-8")) == {"same": True}
 
 
 def test_action_suggestion_and_explicit_revision_schemas_are_strict() -> None:
@@ -3680,7 +3831,7 @@ def test_product_plan_v2_blueprint_binds_each_role_once_and_derives_topology(
     assert plan["prompt_version"] == product_planner_module.PLANNING_PROMPT_VERSION
     assert sum(path == "/api/generate" for path, _ in planner.requests) - calls_before == 3
     workspace = planner._workspace_by_token(result["data"]["plan_token"])
-    assert workspace["schema_version"] == "product_workspace.v10"
+    assert workspace["schema_version"] == "product_workspace.v12"
     assert "section_checkpoints" not in workspace
     assert workspace["composition_selection"] == {
         "schema_version": "product_composition_selection.v1",
@@ -3751,7 +3902,7 @@ def test_product_plan_v2_blueprint_binds_each_role_once_and_derives_topology(
     assert recovered["data"]["plan"] == plan
 
 
-def test_v10_freezes_query_before_calls_and_injects_only_selection(
+def test_v12_freezes_query_before_calls_and_injects_only_selection(
     tmp_path: Path,
 ) -> None:
     root = tmp_path / "state" / "product_workspaces"
@@ -3809,7 +3960,7 @@ def test_v10_freezes_query_before_calls_and_injects_only_selection(
     control_workspace = control._workspace_by_token(
         control_result["data"]["plan_token"]
     )
-    assert control_workspace["schema_version"] == "product_workspace.v10"
+    assert control_workspace["schema_version"] == "product_workspace.v12"
     assert control_workspace["experience_injection_enabled"] is False
     query_path = (
         control.root
@@ -4055,6 +4206,16 @@ def test_v10_frozen_query_tamper_fails_before_generate(
             product_planner_module.PREVIOUS_REQUIREMENT_COVERAGE_PLANNING_RULES_VERSION,
             product_planner_module.PREVIOUS_REQUIREMENT_COVERAGE_PROMPT_VERSION,
         ),
+        (
+            product_planner_module.PREVIOUS_EXPERIENCE_WORKSPACE_SCHEMA_VERSION,
+            product_planner_module.PREVIOUS_EXPERIENCE_PLANNING_RULES_VERSION,
+            product_planner_module.PLANNING_PROMPT_VERSION,
+        ),
+        (
+            product_planner_module.PREVIOUS_NO_MATCH_WORKSPACE_SCHEMA_VERSION,
+            product_planner_module.PREVIOUS_NO_MATCH_PLANNING_RULES_VERSION,
+            product_planner_module.PLANNING_PROMPT_VERSION,
+        ),
     ],
 )
 def test_historical_locked_blueprint_workspace_remains_recoverable(
@@ -4089,8 +4250,12 @@ def test_historical_locked_blueprint_workspace_remains_recoverable(
     offers = planner._composition_offers(candidate_map)
 
     workspace["schema_version"] = workspace_version
-    workspace.pop("experience_query_digest")
-    workspace.pop("experience_injection_enabled")
+    if (
+        workspace_version
+        not in product_planner_module.EXPERIENCE_WORKSPACE_SCHEMA_VERSIONS
+    ):
+        workspace.pop("experience_query_digest")
+        workspace.pop("experience_injection_enabled")
     if (
         workspace_version
         not in product_planner_module.TARGET_SELECTION_WORKSPACE_SCHEMA_VERSIONS
@@ -4130,6 +4295,82 @@ def test_historical_locked_blueprint_workspace_remains_recoverable(
     assert recovered["data"]["plan"]["prompt_version"] == prompt_version
     assert recovered["data"]["developer_evidence"]["prompt_version"] == prompt_version
     restored._validate_plan(recovered["data"]["plan"])
+
+
+def test_pending_v10_gap_question_v3_remains_recoverable(
+    tmp_path: Path,
+) -> None:
+    root = tmp_path / "product_workspaces"
+    planner = StubPlanner(root)
+    catalog = revision_71_two_gap_catalog()
+    select_small(planner)
+    planner.generation_outputs.extend(
+        [quote_outline(), no_composition_selection()]
+    )
+    started = planner.start("创建本地分类工具。", catalog)
+    workspace = planner._workspace_by_token(
+        started["data"]["plan_token"]
+    )
+    normalized = planner._catalog(catalog)
+    candidate_map = {
+        "candidate_"
+        + product_planner_module._digest(
+            {
+                "workspace_id": workspace["workspace_id"],
+                "warehouse_revision": normalized["warehouse_revision"],
+                "index": index,
+                "capsule_id": capsule["capsule_id"],
+                "version_id": capsule["version_id"],
+                "canonical_hash": capsule["canonical_hash"],
+            }
+        )[:24]: capsule
+        for index, capsule in enumerate(normalized["capsules"])
+    }
+    workspace["schema_version"] = (
+        product_planner_module.PREVIOUS_EXPERIENCE_WORKSPACE_SCHEMA_VERSION
+    )
+    legacy_question = planner._capability_gap_target_question_set(
+        planner._capability_gap_candidates(normalized),
+        normalized,
+    )
+    workspace["question_history"] = [legacy_question["digest"]]
+    workspace["current_question_set"] = legacy_question
+    workspace["outline_input_digest"] = planner._outline_input_digest(
+        workspace
+    )
+    workspace["composition_selection_input_digest"] = (
+        planner._composition_selection_input_digest(
+            workspace,
+            workspace["outline"],
+            planner._composition_offers(candidate_map),
+        )
+    )
+    planner._save_workspace(workspace)
+
+    restarted = StubPlanner(root)
+    recovered = restarted.get(workspace["plan_token"], catalog)
+    assert recovered["ok"] is True
+    assert recovered["data"]["question_set"]["schema_version"] == (
+        "product_plan_question_set.v3"
+    )
+    question = recovered["data"]["question_set"]["questions"][0]
+    restarted.generation_outputs.append(single_quote_gap_blueprint())
+    answered = restarted.answer(
+        workspace["plan_token"],
+        recovered["data"]["question_set"]["digest"],
+        [
+            {
+                "question_id": question["question_id"],
+                "source": "option",
+                "value": question["options"][0]["option_id"],
+            }
+        ],
+        catalog,
+    )
+    assert answered["ok"] is True
+    assert restarted._workspace_by_token(workspace["plan_token"])[
+        "capability_gap_target_selection"
+    ]["schema_version"] == "product_capability_gap_target_selection.v1"
 
 
 def test_product_workspace_v4_direct_blueprint_remains_recoverable(
@@ -4404,7 +4645,7 @@ def test_locked_blueprint_requires_product_constraints_on_an_assignment(
     plan = result["data"]["plan"]
     assert plan["schema_version"] == "product_plan.v2"
     assert plan["planning_rules_version"] == (
-        "reweave_product_planning_rules.v10"
+        "reweave_product_planning_rules.v12"
     )
     assert plan["prompt_version"] == "reweave_product_planning_prompt.v13"
     assert all(not section["gaps"] for section in plan["sections"])
@@ -7621,6 +7862,130 @@ def test_finite_enum_gap_prepares_v2_authorization_and_v4_request(
     )
 
 
+def test_bounded_string_gap_prepares_v3_authorization_and_v5_request(
+    tmp_path: Path,
+) -> None:
+    catalog = finite_enum_gap_catalog(
+        capability_key="message_classification",
+        display_name="消息分类",
+        input_properties={
+            "message": {
+                "type": "string",
+                "min_length": 1,
+                "max_length": 1000,
+            }
+        },
+        result_field="classification",
+        result_enum=["normal", "urgent"],
+    )
+    planner = StubPlanner(tmp_path / "product_workspaces")
+    created = start_quote_gap_plan(planner, catalog)
+    projection = created["data"]["capability_gaps"][0]["projection"]
+    assert projection["schema_version"] == "capability_gap_projection.v3"
+    assert projection["adapter_contract_version"] == "computation_adapter.v5"
+    assert projection["proof_schema"] == "source_graph_proof.v3"
+    assert projection["result_enum"] == ["normal", "urgent"]
+    plan = created["data"]["plan"]
+    token = created["data"]["plan_token"]
+    workspace = planner._workspace_by_token(token)
+    stored_projection = planner._read_capability_gap_projection(workspace)
+    assert stored_projection["capture_mapping_schema"] == (
+        "computation_capture_mapping.v5"
+    )
+    authorized = planner.record_capability_gap_decision(
+        token,
+        plan["canonical_digest"],
+        projection["projection_digest"],
+        None,
+        "authorize",
+        "根据有界字符串返回有限分类。",
+        None,
+        [
+            {
+                "input": {"message": "routine task"},
+                "expected_output": {"classification": "normal"},
+            },
+            {
+                "input": {"message": "urgent task"},
+                "expected_output": {"classification": "urgent"},
+            },
+        ],
+        catalog,
+    )
+    assert authorized["ok"] is True
+    decision = authorized["data"]["capability_gaps"][0]["current_decision"]
+    prepared = planner.prepare_capability_source_proposal(
+        token,
+        plan["canonical_digest"],
+        projection["projection_digest"],
+        decision["canonical_digest"],
+        catalog,
+    )
+    assert prepared["ok"] is True
+    workspace = planner._workspace_by_token(token)
+    assert workspace["schema_version"] == "product_workspace.v12"
+    authorization = planner._read_capability_source_proposal_authorization(
+        workspace,
+        planner._read_capability_gap_projection(workspace),
+        decision,
+    )
+    assert authorization["schema_version"] == (
+        "capability_source_proposal_authorization.v3"
+    )
+    request = authorization["request"]
+    assert request["schema_version"] == "capability_source_proposal_request.v5"
+    assert request["formal_binding"]["prompt_version"] == (
+        "capability_source_proposal_prompt.v5"
+    )
+    assert request["model_safe_input"]["source_function"]["schema_version"] == (
+        "capability_source_function_abi.v3"
+    )
+    assert "arg0.includes(\"fixed non-empty literal\")" in request["prompt"]
+    for forbidden in ("capsule_id", "version_id", "canonical_hash", "source_path"):
+        assert forbidden not in json.dumps(request, sort_keys=True)
+
+    response = {
+        "schema": "capability_source_proposal.v2",
+        "entry": {
+            "module_relpath": "capability.js",
+            "export_name": "compute",
+        },
+        "files": [
+            {
+                "path": "capability.js",
+                "content": (
+                    "export function compute(arg0) { "
+                    "return arg0.includes('urgent') ? 'urgent' : 'normal'; }"
+                ),
+            }
+        ],
+        "witnesses": [
+            {
+                "input": {"message": "urgent task"},
+                "expected_scalar_result": "urgent",
+            },
+            {
+                "input": {"message": "routine task"},
+                "expected_scalar_result": "normal",
+            },
+        ],
+    }
+    normalized = planner.validate_capability_source_proposal_response(
+        response,
+        request,
+    )
+    assert [
+        item["expected_scalar_result"] for item in normalized["witnesses"]
+    ] == ["normal", "urgent"]
+    too_long = copy.deepcopy(response)
+    too_long["witnesses"][0]["input"]["message"] = "x" * 1001
+    with pytest.raises(
+        ProductPlanningError,
+        match="capability_source_proposal_response_invalid",
+    ):
+        planner.validate_capability_source_proposal_response(too_long, request)
+
+
 def test_finite_enum_source_proposal_v2_requires_complete_ordered_witnesses(
     tmp_path: Path,
 ) -> None:
@@ -8015,13 +8380,26 @@ def test_multiple_deterministic_gaps_require_one_safe_user_selection(
         "rectangular_prism_volume",
         "workflow_state_classification",
     ]
-    question_set = planner._capability_gap_target_question_set(
-        candidates,
-        normalized,
+    select_small(planner)
+    planner.generation_outputs.extend(
+        [quote_outline(), no_composition_selection()]
     )
+    started = planner.start(
+        "创建一个本地工作流状态分类工具。",
+        catalog,
+    )
+    assert started["ok"] is True
+    assert started["data"]["status"] == "needs_clarification"
+    question_set = started["data"]["question_set"]
+    workspace = planner._workspace_by_token(
+        started["data"]["plan_token"]
+    )
+    assert workspace["schema_version"] == "product_workspace.v12"
+    assert question_set["schema_version"] == "product_plan_question_set.v4"
     reversed_question_set = planner._capability_gap_target_question_set(
         reversed_candidates,
         reversed_normalized,
+        question_set["target_context_digest"],
     )
     assert json.dumps(
         question_set,
@@ -8039,6 +8417,7 @@ def test_multiple_deterministic_gaps_require_one_safe_user_selection(
     assert [option["label"] for option in question["options"]] == [
         "工作流状态分类",
         "长方体体积计算",
+        "以上都不是",
     ]
     serialized = json.dumps(question_set, ensure_ascii=False)
     for forbidden in (
@@ -8065,22 +8444,49 @@ def test_multiple_deterministic_gaps_require_one_safe_user_selection(
     ]
     structured = planner._answers(question_set, workflow_answers)
     first_selection = planner._capability_gap_target_selection(
+        workspace,
         question_set,
         structured,
         normalized,
     )
     second_selection = planner._capability_gap_target_selection(
+        workspace,
         reversed_question_set,
         structured,
         reversed_normalized,
     )
     assert first_selection == second_selection
+    no_match_answers = planner._answers(
+        question_set,
+        [
+            {
+                "question_id": question["question_id"],
+                "source": "option",
+                "value": question["options"][-1]["option_id"],
+            }
+        ],
+    )
+    no_match_selection = planner._capability_gap_target_selection(
+        workspace,
+        question_set,
+        no_match_answers,
+        normalized,
+    )
+    assert no_match_selection == planner._capability_gap_target_selection(
+        workspace,
+        reversed_question_set,
+        no_match_answers,
+        reversed_normalized,
+    )
+    assert no_match_selection["outcome"] == "no_match"
+    assert no_match_selection["candidate_digest"] is None
     prism_option = next(
         option
         for option in question["options"]
         if option["label"] == "长方体体积计算"
     )
     prism_selection = planner._capability_gap_target_selection(
+        workspace,
         question_set,
         planner._answers(
             question_set,
@@ -8098,19 +8504,7 @@ def test_multiple_deterministic_gaps_require_one_safe_user_selection(
         prism_selection,
         normalized,
     )["capability_key"] == "rectangular_prism_volume"
-
-    select_small(planner)
-    planner.generation_outputs.extend(
-        [quote_outline(), no_composition_selection()]
-    )
-    started = planner.start("创建一个本地工作流状态分类工具。", catalog)
-    assert started["ok"] is True
-    assert started["data"]["status"] == "needs_clarification"
     assert started["data"]["question_set"] == question_set
-    workspace = planner._workspace_by_token(
-        started["data"]["plan_token"]
-    )
-    assert workspace["schema_version"] == "product_workspace.v10"
     assert [call["call_type"] for call in workspace["model_calls"]] == [
         "requirements_outline",
         "composition_selection",
@@ -8180,6 +8574,39 @@ def test_multiple_deterministic_gaps_require_one_safe_user_selection(
         "product_blueprint",
     ]
 
+    rejector = StubPlanner(tmp_path / "reject-all")
+    select_small(rejector)
+    rejector.generation_outputs.extend(
+        [quote_outline(), no_composition_selection()]
+    )
+    rejected_start = rejector.start(
+        "创建另一个不属于这些候选的本地工具。",
+        catalog,
+    )
+    rejected_question_set = rejected_start["data"]["question_set"]
+    rejected_question = rejected_question_set["questions"][0]
+    rejected = rejector.answer(
+        rejected_start["data"]["plan_token"],
+        rejected_question_set["digest"],
+        [
+            {
+                "question_id": rejected_question["question_id"],
+                "source": "option",
+                "value": rejected_question["options"][-1]["option_id"],
+            }
+        ],
+        catalog,
+    )
+    assert rejected["error"]["code"] == (
+        "product_plan_capability_gap_target_unmatched"
+    )
+    assert [
+        call["call_type"]
+        for call in rejector._workspace_by_token(
+            rejected_start["data"]["plan_token"]
+        )["model_calls"]
+    ] == ["requirements_outline", "composition_selection"]
+
 
 def test_gap_target_selection_fails_closed_on_invalid_answer_or_drift(
     tmp_path: Path,
@@ -8237,6 +8664,40 @@ def test_gap_target_selection_fails_closed_on_invalid_answer_or_drift(
         changed,
     )
     assert stale["error"]["code"] == (
+        "product_plan_capability_gap_target_stale"
+    )
+
+    workspace = planner._workspace_by_token(
+        started["data"]["plan_token"]
+    )
+    target_context_drift = copy.deepcopy(question_set)
+    target_context_drift["target_context_digest"] = "f" * 64
+    target_context_drift["digest"] = product_planner_module._digest(
+        {
+            key: value
+            for key, value in target_context_drift.items()
+            if key != "digest"
+        }
+    )
+    with pytest.raises(ProductPlanningError) as captured:
+        planner._capability_gap_target_selection(
+            workspace,
+            target_context_drift,
+            planner._answers(
+                question_set,
+                [
+                    {
+                        "question_id": question_set["questions"][0][
+                            "question_id"
+                        ],
+                        "source": "option",
+                        "value": option["option_id"],
+                    }
+                ],
+            ),
+            planner._catalog(catalog),
+        )
+    assert captured.value.code == (
         "product_plan_capability_gap_target_stale"
     )
 
@@ -8315,7 +8776,130 @@ def test_gap_target_selection_fails_closed_on_invalid_answer_or_drift(
     )
 
 
-def test_unique_gap_is_locked_before_blueprint_and_model_only_describes_it(
+def test_single_unrelated_gap_can_be_rejected_before_blueprint(
+    tmp_path: Path,
+) -> None:
+    planner = StubPlanner(tmp_path / "product_workspaces")
+    catalog = revision_73_one_gap_catalog()
+    select_small(planner)
+    planner.generation_outputs.extend(
+        [
+            {
+                "schema_version": "product_plan_outline.v1",
+                "product_name": "本地报修消息紧急度分类器",
+                "language": "zh",
+                "requirements": [
+                    {
+                        "ref": "r_workorder",
+                        "statement": "输入报修文本并分类为紧急或普通。",
+                        "source": "goal",
+                    }
+                ],
+                "needs_clarification": False,
+                "questions": [],
+            },
+            no_composition_selection(),
+        ]
+    )
+    started = planner.start(
+        "创建一个本地报修消息紧急度分类器。",
+        catalog,
+    )
+    assert started["ok"] is True
+    assert started["data"]["status"] == "needs_clarification"
+    question_set = started["data"]["question_set"]
+    assert question_set["schema_version"] == "product_plan_question_set.v4"
+    question = question_set["questions"][0]
+    assert [option["label"] for option in question["options"]] == [
+        "长方体体积计算",
+        "以上都不是",
+    ]
+    assert [option["forms_gap"] for option in question["options"]] == [
+        True,
+        False,
+    ]
+    no_match = question["options"][-1]
+    stopped = planner.answer(
+        started["data"]["plan_token"],
+        question_set["digest"],
+        [
+            {
+                "question_id": question["question_id"],
+                "source": "option",
+                "value": no_match["option_id"],
+            }
+        ],
+        catalog,
+    )
+    assert stopped["error"]["code"] == (
+        "product_plan_capability_gap_target_unmatched"
+    )
+    assert stopped["data"]["status"] == "failed"
+    assert stopped["data"]["plan"] is None
+    assert stopped["data"]["capability_gaps"] == []
+    workspace = planner._workspace_by_token(
+        started["data"]["plan_token"]
+    )
+    assert workspace["failure_code"] == (
+        "product_plan_capability_gap_target_unmatched"
+    )
+    assert workspace["capability_gap_target_selection"]["outcome"] == (
+        "no_match"
+    )
+    assert workspace["capability_gap_target_selection"][
+        "candidate_digest"
+    ] is None
+    assert workspace["blueprint"] is None
+    assert [call["call_type"] for call in workspace["model_calls"]] == [
+        "requirements_outline",
+        "composition_selection",
+    ]
+    assert not list(
+        (tmp_path / "product_workspaces").rglob(
+            "capability_gap_projection*.json"
+        )
+    )
+    assert not list(
+        (tmp_path / "product_workspaces").rglob("agent_handoff_v1_*.json")
+    )
+    workspace_path = (
+        planner.root / workspace["workspace_id"] / "workspace.json"
+    )
+    terminal_bytes = workspace_path.read_bytes()
+    request_count = len(planner.requests)
+
+    resumed = planner.start(
+        "创建一个本地报修消息紧急度分类器。",
+        catalog,
+        resume_plan_token=workspace["plan_token"],
+    )
+    assert resumed["error"]["code"] == "product_plan_no_match_terminal"
+    assert len(planner.requests) == request_count
+    assert workspace_path.read_bytes() == terminal_bytes
+
+    for _ in range(2):
+        abandoned = planner.abandon(workspace["plan_token"])
+        assert abandoned["ok"] is True
+        assert abandoned["data"]["status"] == "failed"
+        assert workspace_path.read_bytes() == terminal_bytes
+
+    restarted = StubPlanner(tmp_path / "product_workspaces")
+    restored = restarted.get(workspace["plan_token"], catalog)
+    assert restored["ok"] is True
+    assert restored["data"]["status"] == "failed"
+    assert restored["data"]["developer_evidence"]["failure_code"] == (
+        "product_plan_capability_gap_target_unmatched"
+    )
+    summaries = restarted.list_summaries()["data"]["summaries"]
+    assert any(
+        row["plan_token"] == workspace["plan_token"]
+        and row["status"] == "failed"
+        for row in summaries
+    )
+    assert workspace_path.read_bytes() == terminal_bytes
+
+
+def test_unique_gap_requires_confirmation_then_model_only_describes_it(
     tmp_path: Path,
 ) -> None:
     planner = StubPlanner(tmp_path / "product_workspaces")
@@ -8391,7 +8975,7 @@ def test_unique_gap_is_locked_before_blueprint_and_model_only_describes_it(
         plan["requirements"][0]["requirement_id"]
     ]
     workspace = planner._workspace_by_token(created["data"]["plan_token"])
-    assert workspace["schema_version"] == "product_workspace.v10"
+    assert workspace["schema_version"] == "product_workspace.v12"
     assert workspace["blueprint_input_digest"] == (
         planner._selected_blueprint_input_digest(
             workspace,
@@ -8411,7 +8995,7 @@ def test_unique_gap_is_locked_before_blueprint_and_model_only_describes_it(
         )
     )
     assert workspace["plan"]["planning_rules_version"] == (
-        "reweave_product_planning_rules.v10"
+        "reweave_product_planning_rules.v12"
     )
     assert workspace["plan"]["prompt_version"] == (
         "reweave_product_planning_prompt.v13"
@@ -8816,6 +9400,23 @@ def test_capability_replan_handoff_locks_one_offer_and_is_idempotent(
         [outline_value, no_composition_selection(), time_gap_blueprint()]
     )
     created = planner.start(goal, gap_catalog)
+    question_set = created["data"]["question_set"]
+    question = question_set["questions"][0]
+    candidate_option = next(
+        option for option in question["options"] if option["forms_gap"]
+    )
+    created = planner.answer(
+        created["data"]["plan_token"],
+        question_set["digest"],
+        [
+            {
+                "question_id": question["question_id"],
+                "source": "option",
+                "value": candidate_option["option_id"],
+            }
+        ],
+        gap_catalog,
+    )
     gap = created["data"]["capability_gaps"][0]
     projection = gap["projection"]
     decided = planner.record_capability_gap_decision(
@@ -9045,7 +9646,7 @@ def test_capability_replan_handoff_locks_one_offer_and_is_idempotent(
     assert repeated["ok"] is True
     assert repeated["data"]["plan_token"] == successor["plan_token"]
     assert len(planner.requests) == request_count
-    with ThreadPoolExecutor(max_workers=4) as executor:
+    with ThreadPoolExecutor(max_workers=20) as executor:
         concurrent = list(
             executor.map(
                 lambda _index: planner.start_capability_replan(
@@ -9055,7 +9656,7 @@ def test_capability_replan_handoff_locks_one_offer_and_is_idempotent(
                     None,
                     full_catalog,
                 ),
-                range(4),
+                range(20),
             )
         )
     assert {
@@ -9082,6 +9683,7 @@ def test_capability_replan_handoff_locks_one_offer_and_is_idempotent(
     )
     successor_bytes = successor_path.read_bytes()
     successor_path.unlink()
+    planner.generation_outputs.append(outline_value)
     missing = planner.start_capability_replan(
         created["data"]["plan_token"],
         created["data"]["plan"]["canonical_digest"],
@@ -9089,23 +9691,120 @@ def test_capability_replan_handoff_locks_one_offer_and_is_idempotent(
         None,
         full_catalog,
     )
-    assert missing["error"]["code"] == "capability_replan_handoff_conflict"
-    successor_path.write_bytes(successor_bytes)
+    assert missing["ok"] is True
+    assert missing["data"]["plan_token"] == successor["plan_token"]
+    assert missing["data"]["status"] == "plan_review"
+    assert successor_path.exists()
+    assert len(list(planner.root.glob("workspace_*/workspace.json"))) == 2
+    assert len(
+        list(
+            planner._capability_replan_handoffs_dir().glob(
+                "handoff_*.json"
+            )
+        )
+    ) == 1
 
     handoff_path = planner._capability_replan_handoff_path(
         created["data"]["plan"]["canonical_digest"]
     )
-    handoff = planner._read_json(handoff_path)
-    handoff["target_offer_digest"] = "0" * 64
-    handoff_path.write_text(
-        json.dumps(handoff, sort_keys=True, separators=(",", ":")) + "\n",
-        encoding="utf-8",
+    handoff_v2 = planner._read_json(handoff_path)
+    assert handoff_v2["schema_version"] == "capability_replan_handoff.v2"
+    pristine = planner._successor_workspace_from_binding(
+        handoff_v2["successor_workspace_binding"]
     )
-    tampered = planner.start_capability_replan(
+    assert handoff_v2["successor_workspace_digest"] == (
+        product_planner_module._digest(pristine)
+    )
+    planner._atomic_write(successor_path, pristine)
+    assert planner.recover_orphaned_workspaces(set()) == 1
+    planner.generation_outputs.append(outline_value)
+    resumed_after_restart = planner.start_capability_replan(
         created["data"]["plan_token"],
         created["data"]["plan"]["canonical_digest"],
         projection["projection_digest"],
         None,
         full_catalog,
     )
-    assert tampered["error"]["code"] == "capability_replan_handoff_conflict"
+    assert resumed_after_restart["ok"] is True
+    assert resumed_after_restart["data"]["plan_token"] == (
+        successor["plan_token"]
+    )
+    assert resumed_after_restart["data"]["status"] == "plan_review"
+
+    legacy = {
+        key: copy.deepcopy(value)
+        for key, value in handoff_v2.items()
+        if key
+        not in {
+            "source_goal_answers_digest",
+            "successor_workspace_binding",
+            "successor_workspace_digest",
+            "handoff_digest",
+        }
+    }
+    legacy["schema_version"] = "capability_replan_handoff.v1"
+    legacy["handoff_digest"] = product_planner_module._digest(legacy)
+    planner._atomic_write(handoff_path, legacy)
+    legacy_result = planner.start_capability_replan(
+        created["data"]["plan_token"],
+        created["data"]["plan"]["canonical_digest"],
+        projection["projection_digest"],
+        None,
+        full_catalog,
+    )
+    assert legacy_result["ok"] is True
+    assert legacy_result["data"]["plan_token"] == successor["plan_token"]
+    assert legacy_result["data"]["capability_replan"]["schema_version"] == (
+        "capability_replan_handoff.v1"
+    )
+    planner._atomic_write(handoff_path, handoff_v2)
+
+    different_request = planner.start_capability_replan(
+        created["data"]["plan_token"],
+        "f" * 64,
+        projection["projection_digest"],
+        None,
+        full_catalog,
+    )
+    assert different_request["error"]["code"] == (
+        "capability_replan_handoff_conflict"
+    )
+
+    for field in (
+        "target_offer_digest",
+        "successor_workspace_digest",
+        "source_goal_answers_digest",
+    ):
+        handoff = copy.deepcopy(handoff_v2)
+        handoff[field] = "0" * 64
+        planner._atomic_write(handoff_path, handoff)
+        tampered = planner.start_capability_replan(
+            created["data"]["plan_token"],
+            created["data"]["plan"]["canonical_digest"],
+            projection["projection_digest"],
+            None,
+            full_catalog,
+        )
+        assert tampered["error"]["code"] == (
+            "capability_replan_handoff_conflict"
+        )
+        planner._atomic_write(handoff_path, handoff_v2)
+
+    recovered_workspace = planner._workspace_by_token(
+        successor["plan_token"]
+    )
+    drifted_workspace = copy.deepcopy(recovered_workspace)
+    drifted_workspace["goal"] = "被篡改的后继目标"
+    drifted_workspace["goal_digest"] = product_planner_module._digest(
+        drifted_workspace["goal"]
+    )
+    planner._atomic_write(successor_path, drifted_workspace)
+    drifted = planner.start_capability_replan(
+        created["data"]["plan_token"],
+        created["data"]["plan"]["canonical_digest"],
+        projection["projection_digest"],
+        None,
+        full_catalog,
+    )
+    assert drifted["error"]["code"] == "capability_replan_handoff_conflict"
+    successor_path.write_bytes(successor_bytes)

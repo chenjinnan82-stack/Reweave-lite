@@ -24,6 +24,7 @@ AGENT_ACTIONS = frozenset(
 )
 _REQUEST_ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
 _MAX_REQUEST_BYTES = 1024 * 1024
+_MAX_JSON_DEPTH = 64
 _INTERNAL_CANDIDATE_FILES = frozenset({"manifest.json", "provenance.json"})
 
 
@@ -34,6 +35,30 @@ def _error(request_id: str | None, code: str) -> dict[str, Any]:
         "ok": False,
         "error": {"code": code, "message_key": code},
     }
+
+
+def _json_depth_within_limit(value: str) -> bool:
+    # ponytail: protocol requests are shallow; bound parser stack before json.loads.
+    depth = 0
+    in_string = False
+    escaped = False
+    for char in value:
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+        elif char == '"':
+            in_string = True
+        elif char in "[{":
+            depth += 1
+            if depth > _MAX_JSON_DEPTH:
+                return False
+        elif char in "]}":
+            depth -= 1
+    return True
 
 
 def _candidate_projection(value: dict[str, Any]) -> dict[str, Any]:
@@ -417,11 +442,9 @@ def serve_jsonl(
             response = None
         if len(encoded) > _MAX_REQUEST_BYTES:
             response = _error(None, "agent_request_too_large")
-        if response is not None and not raw.endswith(newline):
-            while True:
-                remainder = input_stream.readline(_MAX_REQUEST_BYTES + 1)
-                if remainder in {b"", ""} or remainder.endswith(newline):
-                    break
+        close_after_response = response is not None and not raw.endswith(
+            newline
+        )
         if response is not None:
             line = ""
         else:
@@ -433,6 +456,8 @@ def serve_jsonl(
         if not line.strip():
             if response is None:
                 continue
+        if response is None and not _json_depth_within_limit(line):
+            response = _error(None, "agent_json_invalid")
         if response is None:
             try:
                 request = json.loads(
@@ -441,10 +466,17 @@ def serve_jsonl(
                         ValueError(value)
                     ),
                 )
-            except (UnicodeError, ValueError, json.JSONDecodeError):
+            except (
+                RecursionError,
+                UnicodeError,
+                ValueError,
+                json.JSONDecodeError,
+            ):
                 response = _error(None, "agent_json_invalid")
             else:
                 response = dispatch_agent_request(service, request, session)
+        if response is not None and not raw.endswith(newline):
+            close_after_response = True
         output_stream.write(
             json.dumps(
                 response,
@@ -456,6 +488,8 @@ def serve_jsonl(
             + "\n"
         )
         output_stream.flush()
+        if close_after_response:
+            break
 
 
 def main() -> int:

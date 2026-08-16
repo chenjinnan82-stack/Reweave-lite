@@ -65,7 +65,9 @@ PREVIOUS_LOCKED_BLUEPRINT_WORKSPACE_SCHEMA_VERSION = "product_workspace.v6"
 PREVIOUS_GAP_WORKSPACE_SCHEMA_VERSION = "product_workspace.v7"
 PREVIOUS_TARGET_SELECTION_WORKSPACE_SCHEMA_VERSION = "product_workspace.v8"
 PREVIOUS_REQUIREMENT_COVERAGE_WORKSPACE_SCHEMA_VERSION = "product_workspace.v9"
-WORKSPACE_SCHEMA_VERSION = "product_workspace.v10"
+PREVIOUS_EXPERIENCE_WORKSPACE_SCHEMA_VERSION = "product_workspace.v10"
+PREVIOUS_NO_MATCH_WORKSPACE_SCHEMA_VERSION = "product_workspace.v11"
+WORKSPACE_SCHEMA_VERSION = "product_workspace.v12"
 LOCKED_BLUEPRINT_WORKSPACE_SCHEMA_VERSIONS = frozenset(
     {
         LEGACY_LOCKED_BLUEPRINT_WORKSPACE_SCHEMA_VERSION,
@@ -73,6 +75,8 @@ LOCKED_BLUEPRINT_WORKSPACE_SCHEMA_VERSIONS = frozenset(
         PREVIOUS_GAP_WORKSPACE_SCHEMA_VERSION,
         PREVIOUS_TARGET_SELECTION_WORKSPACE_SCHEMA_VERSION,
         PREVIOUS_REQUIREMENT_COVERAGE_WORKSPACE_SCHEMA_VERSION,
+        PREVIOUS_EXPERIENCE_WORKSPACE_SCHEMA_VERSION,
+        PREVIOUS_NO_MATCH_WORKSPACE_SCHEMA_VERSION,
         WORKSPACE_SCHEMA_VERSION,
     }
 )
@@ -81,6 +85,8 @@ GAP_WORKSPACE_SCHEMA_VERSIONS = frozenset(
         PREVIOUS_GAP_WORKSPACE_SCHEMA_VERSION,
         PREVIOUS_TARGET_SELECTION_WORKSPACE_SCHEMA_VERSION,
         PREVIOUS_REQUIREMENT_COVERAGE_WORKSPACE_SCHEMA_VERSION,
+        PREVIOUS_EXPERIENCE_WORKSPACE_SCHEMA_VERSION,
+        PREVIOUS_NO_MATCH_WORKSPACE_SCHEMA_VERSION,
         WORKSPACE_SCHEMA_VERSION,
     }
 )
@@ -88,10 +94,18 @@ TARGET_SELECTION_WORKSPACE_SCHEMA_VERSIONS = frozenset(
     {
         PREVIOUS_TARGET_SELECTION_WORKSPACE_SCHEMA_VERSION,
         PREVIOUS_REQUIREMENT_COVERAGE_WORKSPACE_SCHEMA_VERSION,
+        PREVIOUS_EXPERIENCE_WORKSPACE_SCHEMA_VERSION,
+        PREVIOUS_NO_MATCH_WORKSPACE_SCHEMA_VERSION,
         WORKSPACE_SCHEMA_VERSION,
     }
 )
-EXPERIENCE_WORKSPACE_SCHEMA_VERSIONS = frozenset({WORKSPACE_SCHEMA_VERSION})
+EXPERIENCE_WORKSPACE_SCHEMA_VERSIONS = frozenset(
+    {
+        PREVIOUS_EXPERIENCE_WORKSPACE_SCHEMA_VERSION,
+        PREVIOUS_NO_MATCH_WORKSPACE_SCHEMA_VERSION,
+        WORKSPACE_SCHEMA_VERSION,
+    }
+)
 MODEL_SELECTION_SCHEMA_VERSION = "product_planning_model_selection.v1"
 SECTION_DRAFT_SCHEMA_VERSION = "product_plan_section_draft.v2"
 SECTION_CHECKPOINT_SCHEMA_VERSION = "product_plan_section_checkpoint.v2"
@@ -109,7 +123,11 @@ PREVIOUS_TARGET_SELECTION_PLANNING_RULES_VERSION = (
 PREVIOUS_REQUIREMENT_COVERAGE_PLANNING_RULES_VERSION = (
     "reweave_product_planning_rules.v9"
 )
-PLANNING_RULES_VERSION = "reweave_product_planning_rules.v10"
+PREVIOUS_EXPERIENCE_PLANNING_RULES_VERSION = (
+    "reweave_product_planning_rules.v10"
+)
+PREVIOUS_NO_MATCH_PLANNING_RULES_VERSION = "reweave_product_planning_rules.v11"
+PLANNING_RULES_VERSION = "reweave_product_planning_rules.v12"
 SUPPORTED_PLANNING_RULES_VERSIONS = frozenset(
     {
         LEGACY_PLANNING_RULES_VERSION,
@@ -120,6 +138,8 @@ SUPPORTED_PLANNING_RULES_VERSIONS = frozenset(
         PREVIOUS_GAP_PLANNING_RULES_VERSION,
         PREVIOUS_TARGET_SELECTION_PLANNING_RULES_VERSION,
         PREVIOUS_REQUIREMENT_COVERAGE_PLANNING_RULES_VERSION,
+        PREVIOUS_EXPERIENCE_PLANNING_RULES_VERSION,
+        PREVIOUS_NO_MATCH_PLANNING_RULES_VERSION,
         PLANNING_RULES_VERSION,
     }
 )
@@ -183,15 +203,22 @@ FORMAL_MODEL_TIMEOUT_SECONDS = 180
 EXPERIENCE_INJECTION_DEFAULT = True
 CAPABILITY_GAP_PROJECTION_VERSION = "capability_gap_projection.v1"
 CAPABILITY_GAP_PROJECTION_V2 = "capability_gap_projection.v2"
+CAPABILITY_GAP_PROJECTION_V3 = "capability_gap_projection.v3"
 CAPABILITY_GAP_DECISION_VERSION = "capability_gap_decision.v1"
-CAPABILITY_GAP_TARGET_SELECTION_VERSION = (
+LEGACY_CAPABILITY_GAP_TARGET_SELECTION_VERSION = (
     "product_capability_gap_target_selection.v1"
+)
+CAPABILITY_GAP_TARGET_SELECTION_VERSION = (
+    "product_capability_gap_target_selection.v2"
 )
 CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_VERSION = (
     "capability_source_proposal_authorization.v1"
 )
 CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_V2 = (
     "capability_source_proposal_authorization.v2"
+)
+CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_V3 = (
+    "capability_source_proposal_authorization.v3"
 )
 CAPABILITY_SOURCE_PROPOSAL_REQUEST_VERSION = (
     "capability_source_proposal_request.v1"
@@ -217,10 +244,17 @@ CAPABILITY_SOURCE_PROPOSAL_REQUEST_V4 = (
 CAPABILITY_SOURCE_PROPOSAL_PROMPT_V4 = (
     "capability_source_proposal_prompt.v4"
 )
+CAPABILITY_SOURCE_PROPOSAL_REQUEST_V5 = (
+    "capability_source_proposal_request.v5"
+)
+CAPABILITY_SOURCE_PROPOSAL_PROMPT_V5 = (
+    "capability_source_proposal_prompt.v5"
+)
 CAPABILITY_SOURCE_FUNCTION_ABI_VERSION = (
     "capability_source_function_abi.v1"
 )
 CAPABILITY_SOURCE_FUNCTION_ABI_V2 = "capability_source_function_abi.v2"
+CAPABILITY_SOURCE_FUNCTION_ABI_V3 = "capability_source_function_abi.v3"
 CAPABILITY_SOURCE_PROPOSAL_OUTPUT_VERSION = "capability_source_proposal.v1"
 CAPABILITY_SOURCE_PROPOSAL_OUTPUT_V2 = "capability_source_proposal.v2"
 CAPABILITY_SOURCE_PROPOSAL_MAX_BYTES = 4_096
@@ -242,7 +276,8 @@ CAPABILITY_SOURCE_PROPOSAL_RUN_STAGES = (
     "admission",
 )
 MAX_CAPABILITY_GAP_DECISIONS = 128
-CAPABILITY_REPLAN_HANDOFF_VERSION = "capability_replan_handoff.v1"
+LEGACY_CAPABILITY_REPLAN_HANDOFF_VERSION = "capability_replan_handoff.v1"
+CAPABILITY_REPLAN_HANDOFF_VERSION = "capability_replan_handoff.v2"
 CAPABILITY_REPLAN_OFFER_VERSION = "product_capability_replan_offer.v1"
 
 _DIGEST = re.compile(r"[0-9a-f]{64}\Z")
@@ -426,6 +461,7 @@ def _structured_output_schema(
             not in {
                 "product_capability_gap_blueprint_lock.v1",
                 "product_capability_gap_blueprint_lock.v2",
+                "product_capability_gap_blueprint_lock.v3",
             }
             or (
                 capability_gap_lock.get("schema_version")
@@ -438,6 +474,12 @@ def _structured_output_schema(
                 == "product_capability_gap_blueprint_lock.v2"
                 and capability_gap_lock.get("adapter_contract_version")
                 != "computation_adapter.v4"
+            )
+            or (
+                capability_gap_lock.get("schema_version")
+                == "product_capability_gap_blueprint_lock.v3"
+                and capability_gap_lock.get("adapter_contract_version")
+                != "computation_adapter.v5"
             )
             or capability_gap_lock.get("capability_kind") != "computation"
             or not selection_locked
@@ -1172,6 +1214,30 @@ class ProductPlanner:
             }
         )
 
+    def recover_orphaned_workspaces(
+        self,
+        live_plan_tokens: set[str] | frozenset[str],
+    ) -> int:
+        if type(live_plan_tokens) not in {set, frozenset} or any(
+            type(token) is not str or _PLAN_TOKEN.fullmatch(token) is None
+            for token in live_plan_tokens
+        ):
+            raise ProductPlanningError("product_plan_token_invalid")
+        recovered = 0
+        with self._lock:
+            for workspace in self._workspaces():
+                if (
+                    workspace["status"] not in _RUNNING_STATES
+                    or workspace["plan_token"] in live_plan_tokens
+                ):
+                    continue
+                interrupted = copy.deepcopy(workspace)
+                interrupted["status"] = "interrupted"
+                interrupted["updated_at"] = _now()
+                self._save_workspace(interrupted)
+                recovered += 1
+        return recovered
+
     @_public_call
     def select_model(
         self,
@@ -1246,6 +1312,8 @@ class ProductPlanner:
         workspace: dict[str, Any] | None = None
         if resume_plan_token is not None:
             previous = self._workspace_by_token(resume_plan_token)
+            if self._is_no_match_terminal(previous):
+                raise ProductPlanningError("product_plan_no_match_terminal")
             if (
                 previous["status"] in {"failed", "interrupted"}
                 and previous["goal"] == goal
@@ -1309,150 +1377,200 @@ class ProductPlanner:
         ):
             raise ProductPlanningError("capability_replan_unavailable")
         normalized_catalog = self._catalog(catalog)
-        source = self._workspace_by_token(plan_token)
         request = {
             "plan_token": plan_token,
             "plan_digest": plan_digest,
             "projection_digest": projection_digest,
         }
         request_digest = _digest(request)
-        existing = self._read_capability_replan_handoff(source)
-        if existing is not None:
-            if existing["request_digest"] != request_digest:
-                raise ProductPlanningError(
-                    "capability_replan_handoff_conflict"
-                )
-            self._validate_capability_replan_current(
-                existing,
-                normalized_catalog,
-            )
-            successor = self._successor_workspace_from_handoff(existing)
-            return _ok(
-                self._workspace_projection(successor, normalized_catalog)
-            )
-        if binding is None:
-            raise ProductPlanningError("capability_replan_unavailable")
-
-        plan = source.get("plan")
-        projection = self._read_capability_gap_projection(source)
-        if (
-            source.get("status") != "plan_review"
-            or type(plan) is not dict
-            or plan.get("canonical_digest") != plan_digest
-            or projection is None
-            or projection["projection_digest"] != projection_digest
-        ):
-            raise ProductPlanningError("capability_replan_unavailable")
-        decisions = self._capability_gap_decisions(source, projection)
-        decision = decisions[-1] if decisions else None
-        authorization = (
-            self._read_capability_source_proposal_authorization(
-                source,
-                projection,
-                decision,
-            )
-            if type(decision) is dict
-            and decision.get("decision") == "authorize"
-            else None
-        )
-        if authorization is None:
-            raise ProductPlanningError("capability_replan_unavailable")
-        binding = self._validate_capability_replan_binding(
-            binding,
-            projection,
-            decision,
-            authorization,
-        )
-        selected_model = self._model_identity(
-            self._selected_model(check_current=False)
-        )
-        if selected_model != source["model"]:
-            raise ProductPlanningError(
-                "capability_replan_handoff_stale"
-            )
-        target_offer = self._capability_replan_offer(
-            normalized_catalog,
-            projection,
-            binding["published_capsule"],
-            authorization["error_contract"],
-        )
-        if target_offer is None:
-            raise ProductPlanningError("capability_replan_unavailable")
-        suggestions = self._capability_replan_acceptance_suggestions(
-            normalized_catalog,
-            projection,
-            decision,
-        )
-        successor = self._new_workspace(source["goal"], selected_model)
-        successor["answers"] = self._planning_answers(source)
-        now = _now()
-        offer_digest = _digest(target_offer)
-        handoff_body = {
-            "schema_version": CAPABILITY_REPLAN_HANDOFF_VERSION,
-            "source_workspace_id": source["workspace_id"],
-            "source_plan_token": plan_token,
-            "source_plan_digest": plan_digest,
-            "source_gap_id": projection["gap_id"],
-            "projection_digest": projection_digest,
-            "authorize_decision_digest": decision["canonical_digest"],
-            "source_proposal_authorization_digest": authorization[
-                "authorization_digest"
-            ],
-            "admission_review_id": binding["admission_review_id"],
-            "admission_digest": binding["admission_digest"],
-            "publication_review_id": binding["publication_review_id"],
-            "published_capsule": copy.deepcopy(
-                binding["published_capsule"]
-            ),
-            "target_offer": target_offer,
-            "target_offer_digest": offer_digest,
-            "planning_model": selected_model,
-            "successor_workspace_id": successor["workspace_id"],
-            "successor_plan_token": successor["plan_token"],
-            "authorization_revision": binding["authorization_revision"],
-            "admission_revision_before": binding[
-                "admission_revision_before"
-            ],
-            "admission_revision_after": binding[
-                "admission_revision_after"
-            ],
-            "publication_revision": binding["publication_revision"],
-            "handoff_catalog_revision": normalized_catalog[
-                "warehouse_revision"
-            ],
-            "catalog_digest": _digest(normalized_catalog),
-            "request_digest": request_digest,
-            "acceptance_suggestions": suggestions,
-            "created_at": now,
-        }
-        handoff = {
-            **handoff_body,
-            "handoff_digest": _digest(handoff_body),
-        }
-        self._validate_capability_replan_handoff(handoff)
-        with self._lock:
-            repeated = self._read_capability_replan_handoff(source)
-            if repeated is not None:
-                if repeated != handoff:
+        continue_planning = False
+        handoff: dict[str, Any]
+        with self._capability_replan_guard():
+            source = self._workspace_by_token(plan_token)
+            existing = self._read_capability_replan_handoff(source)
+            if existing is not None:
+                if existing["request_digest"] != request_digest:
                     raise ProductPlanningError(
                         "capability_replan_handoff_conflict"
                     )
-                successor = self._successor_workspace_from_handoff(
-                    repeated
+                self._validate_capability_replan_current(
+                    existing,
+                    normalized_catalog,
                 )
+                successor, continue_planning = (
+                    self._materialize_capability_replan_successor(
+                        existing
+                    )
+                )
+                handoff = existing
             else:
+                if binding is None:
+                    raise ProductPlanningError(
+                        "capability_replan_unavailable"
+                    )
+                plan = source.get("plan")
+                projection = self._read_capability_gap_projection(source)
+                if (
+                    source.get("status") != "plan_review"
+                    or type(plan) is not dict
+                    or plan.get("canonical_digest") != plan_digest
+                    or projection is None
+                    or projection["projection_digest"]
+                    != projection_digest
+                ):
+                    raise ProductPlanningError(
+                        "capability_replan_unavailable"
+                    )
+                decisions = self._capability_gap_decisions(
+                    source,
+                    projection,
+                )
+                decision = decisions[-1] if decisions else None
+                authorization = (
+                    self._read_capability_source_proposal_authorization(
+                        source,
+                        projection,
+                        decision,
+                    )
+                    if type(decision) is dict
+                    and decision.get("decision") == "authorize"
+                    else None
+                )
+                if authorization is None:
+                    raise ProductPlanningError(
+                        "capability_replan_unavailable"
+                    )
+                binding = self._validate_capability_replan_binding(
+                    binding,
+                    projection,
+                    decision,
+                    authorization,
+                )
+                selected_model = self._model_identity(
+                    self._selected_model(check_current=False)
+                )
+                if selected_model != source["model"]:
+                    raise ProductPlanningError(
+                        "capability_replan_handoff_stale"
+                    )
+                target_offer = self._capability_replan_offer(
+                    normalized_catalog,
+                    projection,
+                    binding["published_capsule"],
+                    authorization["error_contract"],
+                )
+                if target_offer is None:
+                    raise ProductPlanningError(
+                        "capability_replan_unavailable"
+                    )
+                suggestions = (
+                    self._capability_replan_acceptance_suggestions(
+                        normalized_catalog,
+                        projection,
+                        decision,
+                    )
+                )
+                successor = self._new_workspace(
+                    source["goal"],
+                    selected_model,
+                )
+                successor["answers"] = self._planning_answers(source)
+                successor_binding = (
+                    self._capability_replan_successor_binding(successor)
+                )
+                now = successor["created_at"]
+                offer_digest = _digest(target_offer)
+                handoff_body = {
+                    "schema_version": CAPABILITY_REPLAN_HANDOFF_VERSION,
+                    "source_workspace_id": source["workspace_id"],
+                    "source_plan_token": plan_token,
+                    "source_plan_digest": plan_digest,
+                    "source_gap_id": projection["gap_id"],
+                    "projection_digest": projection_digest,
+                    "authorize_decision_digest": decision[
+                        "canonical_digest"
+                    ],
+                    "source_proposal_authorization_digest": authorization[
+                        "authorization_digest"
+                    ],
+                    "admission_review_id": binding[
+                        "admission_review_id"
+                    ],
+                    "admission_digest": binding["admission_digest"],
+                    "publication_review_id": binding[
+                        "publication_review_id"
+                    ],
+                    "published_capsule": copy.deepcopy(
+                        binding["published_capsule"]
+                    ),
+                    "target_offer": target_offer,
+                    "target_offer_digest": offer_digest,
+                    "planning_model": selected_model,
+                    "successor_workspace_id": successor["workspace_id"],
+                    "successor_plan_token": successor["plan_token"],
+                    "source_goal_answers_digest": _digest(
+                        {
+                            "goal": source["goal"],
+                            "confirmed_answers": self._planning_answers(
+                                source
+                            ),
+                        }
+                    ),
+                    "successor_workspace_binding": successor_binding,
+                    "successor_workspace_digest": _digest(
+                        successor
+                    ),
+                    "authorization_revision": binding[
+                        "authorization_revision"
+                    ],
+                    "admission_revision_before": binding[
+                        "admission_revision_before"
+                    ],
+                    "admission_revision_after": binding[
+                        "admission_revision_after"
+                    ],
+                    "publication_revision": binding[
+                        "publication_revision"
+                    ],
+                    "handoff_catalog_revision": normalized_catalog[
+                        "warehouse_revision"
+                    ],
+                    "catalog_digest": _digest(normalized_catalog),
+                    "request_digest": request_digest,
+                    "acceptance_suggestions": suggestions,
+                    "created_at": now,
+                }
+                handoff = {
+                    **handoff_body,
+                    "handoff_digest": _digest(handoff_body),
+                }
+                self._validate_capability_replan_handoff(handoff)
                 self._write_immutable(
                     self._capability_replan_handoff_path(plan_digest),
                     handoff,
                 )
-                self._save_workspace(successor)
+                successor, continue_planning = (
+                    self._materialize_capability_replan_successor(
+                        handoff
+                    )
+                )
+        if not continue_planning:
+            return _ok(
+                self._workspace_projection(
+                    successor,
+                    normalized_catalog,
+                )
+            )
         try:
             self._report_phase("model_probe", phase_callback)
             current = self._selected_model(
                 check_current=True,
                 cancel_check=cancel_check,
             )
-            if self._model_identity(current) != selected_model:
+            if (
+                self._model_identity(current)
+                != handoff["planning_model"]
+            ):
                 raise ProductPlanningError(
                     "capability_replan_handoff_stale"
                 )
@@ -1503,6 +1621,7 @@ class ProductPlanner:
             if question_set["purpose"] == "capability_gap_target":
                 gap_target_selection = (
                     self._capability_gap_target_selection(
+                        workspace,
                         question_set,
                         structured,
                         normalized_catalog,
@@ -1532,8 +1651,19 @@ class ProductPlanner:
             workspace["capability_gap_target_selection"] = (
                 gap_target_selection
             )
-        workspace["status"] = "planning"
-        workspace["failure_code"] = None
+        gap_target_unmatched = (
+            type(gap_target_selection) is dict
+            and gap_target_selection.get("outcome") == "no_match"
+        )
+        workspace["status"] = (
+            "failed" if gap_target_unmatched else "planning"
+        )
+        workspace["phase"] = None if gap_target_unmatched else workspace["phase"]
+        workspace["failure_code"] = (
+            "product_plan_capability_gap_target_unmatched"
+            if gap_target_unmatched
+            else None
+        )
         if question_set["purpose"] == "initial":
             if (
                 workspace["schema_version"]
@@ -1560,6 +1690,11 @@ class ProductPlanner:
         workspace["updated_at"] = _now()
         with self._lock:
             self._save_workspace(workspace)
+        if gap_target_unmatched:
+            return _error(
+                "product_plan_capability_gap_target_unmatched",
+                self._workspace_projection(workspace),
+            )
         try:
             if question_set["purpose"] == "revision":
                 self._enter_phase(workspace, "revision", phase_callback)
@@ -2186,9 +2321,10 @@ class ProductPlanner:
                 raise ProductPlanningError(
                     "capability_source_proposal_authorization_required"
                 )
-            enum_adapter = (
-                projection["adapter_contract_version"]
-                == "computation_adapter.v4"
+            adapter_version = projection["adapter_contract_version"]
+            enum_adapter = adapter_version == "computation_adapter.v4"
+            bounded_string_adapter = (
+                adapter_version == "computation_adapter.v5"
             )
             if enum_adapter and any(
                 contract.get("type") == "string"
@@ -2227,9 +2363,13 @@ class ProductPlanner:
                 )
             body = {
                 "schema_version": (
-                    CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_V2
-                    if enum_adapter
-                    else CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_VERSION
+                    CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_V3
+                    if bounded_string_adapter
+                    else (
+                        CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_V2
+                        if enum_adapter
+                        else CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_VERSION
+                    )
                 ),
                 "plan_id": plan["plan_id"],
                 "plan_version": plan["plan_version"],
@@ -2267,7 +2407,7 @@ class ProductPlanner:
                 "authorization_source": "user_confirmed_gap_decision",
                 "locked_at": _now(),
             }
-            if enum_adapter:
+            if enum_adapter or bounded_string_adapter:
                 body.update(
                     {
                         "capture_mapping_schema": projection[
@@ -2286,7 +2426,11 @@ class ProductPlanner:
             record = {
                 **authorization,
                 "request": (
-                    self._build_capability_source_proposal_request_v4(
+                    self._build_capability_source_proposal_request_v5(
+                        authorization
+                    )
+                    if bounded_string_adapter
+                    else self._build_capability_source_proposal_request_v4(
                         authorization
                     )
                     if enum_adapter
@@ -3300,6 +3444,8 @@ class ProductPlanner:
     @_public_call
     def abandon(self, plan_token: str) -> dict[str, Any]:
         workspace = self._workspace_by_token(plan_token)
+        if self._is_no_match_terminal(workspace):
+            return _ok(self._workspace_projection(workspace))
         self._abandon_workspace(workspace)
         return _ok(self._workspace_projection(workspace))
 
@@ -4099,11 +4245,166 @@ class ProductPlanner:
             / f"handoff_{plan_digest}.json"
         )
 
-    def _validate_capability_replan_handoff(
+    @staticmethod
+    def _capability_replan_successor_binding(
+        workspace: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "schema_version": workspace["schema_version"],
+            "workspace_id": workspace["workspace_id"],
+            "plan_token": workspace["plan_token"],
+            "goal": workspace["goal"],
+            "goal_digest": workspace["goal_digest"],
+            "confirmed_answers": ProductPlanner._planning_answers(
+                workspace
+            ),
+            "planning_model": copy.deepcopy(workspace["model"]),
+            "experience_injection_enabled": workspace[
+                "experience_injection_enabled"
+            ],
+            "created_at": workspace["created_at"],
+        }
+
+    def _successor_workspace_from_binding(
         self,
         value: Any,
     ) -> dict[str, Any]:
         keys = {
+            "schema_version",
+            "workspace_id",
+            "plan_token",
+            "goal",
+            "goal_digest",
+            "confirmed_answers",
+            "planning_model",
+            "experience_injection_enabled",
+            "created_at",
+        }
+        if (
+            type(value) is not dict
+            or set(value) != keys
+            or value["schema_version"] != WORKSPACE_SCHEMA_VERSION
+            or _WORKSPACE_ID.fullmatch(str(value["workspace_id"]))
+            is None
+            or _PLAN_TOKEN.fullmatch(str(value["plan_token"])) is None
+            or type(value["goal"]) is not str
+            or value["goal_digest"] != _digest(value["goal"])
+            or type(value["confirmed_answers"]) is not list
+            or type(value["planning_model"]) is not dict
+            or set(value["planning_model"])
+            != {"name", "digest", "parameter_count", "parameter_size"}
+            or type(value["experience_injection_enabled"]) is not bool
+            or type(value["created_at"]) is not str
+            or not value["created_at"]
+        ):
+            raise ProductPlanningError(
+                "capability_replan_handoff_conflict"
+            )
+        workspace = self._new_workspace(
+            value["goal"],
+            value["planning_model"],
+        )
+        workspace.update(
+            {
+                "workspace_id": value["workspace_id"],
+                "plan_token": value["plan_token"],
+                "created_at": value["created_at"],
+                "updated_at": value["created_at"],
+                "answers": copy.deepcopy(value["confirmed_answers"]),
+                "experience_injection_enabled": value[
+                    "experience_injection_enabled"
+                ],
+            }
+        )
+        self._validate_workspace(workspace)
+        return workspace
+
+    def _validate_capability_replan_successor(
+        self,
+        workspace: dict[str, Any],
+        handoff: dict[str, Any],
+    ) -> None:
+        if (
+            workspace["workspace_id"]
+            != handoff["successor_workspace_id"]
+            or workspace["plan_token"]
+            != handoff["successor_plan_token"]
+        ):
+            raise ProductPlanningError(
+                "capability_replan_handoff_conflict"
+            )
+        if (
+            handoff["schema_version"]
+            == LEGACY_CAPABILITY_REPLAN_HANDOFF_VERSION
+        ):
+            return
+        binding = handoff["successor_workspace_binding"]
+        confirmed_answers = binding["confirmed_answers"]
+        if (
+            workspace["schema_version"] != binding["schema_version"]
+            or workspace["goal"] != binding["goal"]
+            or workspace["goal_digest"] != binding["goal_digest"]
+            or workspace["model"] != binding["planning_model"]
+            or workspace["experience_injection_enabled"]
+            != binding["experience_injection_enabled"]
+            or workspace["created_at"] != binding["created_at"]
+            or len(workspace["answers"]) < len(confirmed_answers)
+            or workspace["answers"][: len(confirmed_answers)]
+            != confirmed_answers
+            or self._capability_replan_successor_binding(
+                self._successor_workspace_from_binding(binding)
+            )
+            != binding
+        ):
+            raise ProductPlanningError(
+                "capability_replan_handoff_conflict"
+            )
+
+    def _materialize_capability_replan_successor(
+        self,
+        handoff: dict[str, Any],
+    ) -> tuple[dict[str, Any], bool]:
+        path = (
+            self._workspace_dir(handoff["successor_workspace_id"])
+            / "workspace.json"
+        )
+        if path.exists() or path.is_symlink():
+            successor = self._successor_workspace_from_handoff(handoff)
+            if (
+                successor["status"] == "interrupted"
+                and successor.get("plan") is None
+            ):
+                successor["status"] = "model_probe"
+                successor["phase"] = "model_probe"
+                successor["failure_code"] = None
+                successor["updated_at"] = _now()
+                self._save_workspace(successor)
+                return successor, True
+            return successor, False
+        if (
+            handoff["schema_version"]
+            != CAPABILITY_REPLAN_HANDOFF_VERSION
+        ):
+            raise ProductPlanningError(
+                "capability_replan_handoff_conflict"
+            )
+        successor = self._successor_workspace_from_binding(
+            handoff["successor_workspace_binding"]
+        )
+        try:
+            self._write_immutable(path, successor)
+        except ProductPlanningError as exc:
+            raise ProductPlanningError(
+                "capability_replan_handoff_conflict"
+            ) from exc
+        restored = self._successor_workspace_from_handoff(handoff)
+        return restored, True
+
+    def _validate_capability_replan_handoff(
+        self,
+        value: Any,
+    ) -> dict[str, Any]:
+        legacy_keys = {
             "schema_version",
             "source_workspace_id",
             "source_plan_token",
@@ -4132,11 +4433,33 @@ class ProductPlanner:
             "created_at",
             "handoff_digest",
         }
-        if type(value) is not dict or set(value) != keys:
+        if type(value) is not dict:
             raise ProductPlanningError(
                 "capability_replan_handoff_conflict"
             )
         row = value
+        schema_version = row.get("schema_version")
+        keys = (
+            legacy_keys
+            if schema_version == LEGACY_CAPABILITY_REPLAN_HANDOFF_VERSION
+            else {
+                *legacy_keys,
+                "source_goal_answers_digest",
+                "successor_workspace_binding",
+                "successor_workspace_digest",
+            }
+        )
+        if (
+            schema_version
+            not in {
+                LEGACY_CAPABILITY_REPLAN_HANDOFF_VERSION,
+                CAPABILITY_REPLAN_HANDOFF_VERSION,
+            }
+            or set(row) != keys
+        ):
+            raise ProductPlanningError(
+                "capability_replan_handoff_conflict"
+            )
         body = {
             key: item for key, item in row.items() if key != "handoff_digest"
         }
@@ -4165,8 +4488,7 @@ class ProductPlanner:
             row["handoff_catalog_revision"],
         ]
         if (
-            row["schema_version"] != CAPABILITY_REPLAN_HANDOFF_VERSION
-            or _WORKSPACE_ID.fullmatch(
+            _WORKSPACE_ID.fullmatch(
                 str(row["source_workspace_id"])
             )
             is None
@@ -4285,6 +4607,46 @@ class ProductPlanner:
             raise ProductPlanningError(
                 "capability_replan_handoff_conflict"
             )
+        if schema_version == CAPABILITY_REPLAN_HANDOFF_VERSION:
+            try:
+                successor = self._successor_workspace_from_binding(
+                    row["successor_workspace_binding"]
+                )
+            except ProductPlanningError as exc:
+                raise ProductPlanningError(
+                    "capability_replan_handoff_conflict"
+                ) from exc
+            successor_binding = row["successor_workspace_binding"]
+            if (
+                _DIGEST.fullmatch(
+                    str(row["source_goal_answers_digest"])
+                )
+                is None
+                or _DIGEST.fullmatch(
+                    str(row["successor_workspace_digest"])
+                )
+                is None
+                or row["successor_workspace_digest"]
+                != _digest(successor)
+                or row["source_goal_answers_digest"]
+                != _digest(
+                    {
+                        "goal": successor_binding["goal"],
+                        "confirmed_answers": successor_binding[
+                            "confirmed_answers"
+                        ],
+                    }
+                )
+                or row["successor_workspace_id"]
+                != successor["workspace_id"]
+                or row["successor_plan_token"]
+                != successor["plan_token"]
+                or row["planning_model"] != successor["model"]
+                or row["created_at"] != successor["created_at"]
+            ):
+                raise ProductPlanningError(
+                    "capability_replan_handoff_conflict"
+                )
         return row
 
     def _read_capability_replan_handoff(
@@ -4383,7 +4745,7 @@ class ProductPlanner:
                 "acceptance_suggestions": [],
             }
         return {
-            "schema_version": CAPABILITY_REPLAN_HANDOFF_VERSION,
+            "schema_version": handoff["schema_version"],
             "status": status,
             "source_gap_id": handoff["source_gap_id"],
             "role_order": [
@@ -4420,7 +4782,18 @@ class ProductPlanner:
     def _workspaces(self) -> list[dict[str, Any]]:
         if not self.root.exists():
             return []
-        self._ensure_directory(self.root)
+        self._assert_no_symlink_components(self.root)
+        try:
+            root_metadata = self.root.lstat()
+        except OSError as exc:
+            raise ProductPlanningError(
+                "product_planning_state_unavailable"
+            ) from exc
+        if (
+            stat.S_ISLNK(root_metadata.st_mode)
+            or not stat.S_ISDIR(root_metadata.st_mode)
+        ):
+            raise ProductPlanningError("product_workspace_symlink_forbidden")
         result: list[dict[str, Any]] = []
         try:
             entries = sorted(self.root.iterdir(), key=lambda path: path.name)
@@ -4439,10 +4812,6 @@ class ProductPlanner:
                 )
                 if workspace["status"] == "confirmed":
                     self._validate_confirmed_snapshot(workspace)
-                if workspace["status"] in _RUNNING_STATES:
-                    workspace["status"] = "interrupted"
-                    workspace["updated_at"] = _now()
-                    self._save_workspace(workspace)
                 result.append(workspace)
             except (OSError, ProductPlanningError, ValueError, json.JSONDecodeError):
                 continue
@@ -4753,6 +5122,8 @@ class ProductPlanner:
                 PREVIOUS_GAP_WORKSPACE_SCHEMA_VERSION,
                 PREVIOUS_TARGET_SELECTION_WORKSPACE_SCHEMA_VERSION,
                 PREVIOUS_REQUIREMENT_COVERAGE_WORKSPACE_SCHEMA_VERSION,
+                PREVIOUS_EXPERIENCE_WORKSPACE_SCHEMA_VERSION,
+                PREVIOUS_NO_MATCH_WORKSPACE_SCHEMA_VERSION,
                 WORKSPACE_SCHEMA_VERSION,
             }
             or _WORKSPACE_ID.fullmatch(str(workspace["workspace_id"])) is None
@@ -5054,6 +5425,8 @@ class ProductPlanner:
                         PREVIOUS_GAP_WORKSPACE_SCHEMA_VERSION,
                         PREVIOUS_TARGET_SELECTION_WORKSPACE_SCHEMA_VERSION,
                         PREVIOUS_REQUIREMENT_COVERAGE_WORKSPACE_SCHEMA_VERSION,
+                        PREVIOUS_EXPERIENCE_WORKSPACE_SCHEMA_VERSION,
+                        PREVIOUS_NO_MATCH_WORKSPACE_SCHEMA_VERSION,
                         WORKSPACE_SCHEMA_VERSION,
                     }
                     and plan["schema_version"] != PLAN_SCHEMA_VERSION
@@ -5116,11 +5489,18 @@ class ProductPlanner:
                 for answer in workspace["answers"]
                 if answer["purpose"] == "capability_gap_target"
             ]
-            if (
-                (
+            target_question = (
+                question_set
+                if (
                     type(question_set) is dict
                     and question_set.get("purpose")
                     == "capability_gap_target"
+                )
+                else None
+            )
+            if (
+                (
+                    target_question is not None
                     and target_selection is not None
                 )
                 or (target_selection is None and target_answers)
@@ -5133,6 +5513,73 @@ class ProductPlanner:
                         or target_answers[0]["answers_digest"]
                         != target_selection["user_answer_digest"]
                     )
+                )
+                or (
+                    schema_version
+                    in {
+                        PREVIOUS_NO_MATCH_WORKSPACE_SCHEMA_VERSION,
+                        WORKSPACE_SCHEMA_VERSION,
+                    }
+                    and target_question is not None
+                    and (
+                        target_question["schema_version"]
+                        != "product_plan_question_set.v4"
+                        or target_question["target_context_digest"]
+                        != self._capability_gap_target_context_digest(
+                            workspace
+                        )
+                    )
+                )
+                or (
+                    schema_version
+                    in {
+                        PREVIOUS_NO_MATCH_WORKSPACE_SCHEMA_VERSION,
+                        WORKSPACE_SCHEMA_VERSION,
+                    }
+                    and target_selection is not None
+                    and (
+                        target_selection["schema_version"]
+                        != CAPABILITY_GAP_TARGET_SELECTION_VERSION
+                        or target_selection["target_context_digest"]
+                        != self._capability_gap_target_context_digest(
+                            workspace
+                        )
+                    )
+                )
+                or (
+                    schema_version
+                    not in {
+                        PREVIOUS_NO_MATCH_WORKSPACE_SCHEMA_VERSION,
+                        WORKSPACE_SCHEMA_VERSION,
+                    }
+                    and target_question is not None
+                    and target_question["schema_version"]
+                    != "product_plan_question_set.v3"
+                )
+                or (
+                    schema_version
+                    not in {
+                        PREVIOUS_NO_MATCH_WORKSPACE_SCHEMA_VERSION,
+                        WORKSPACE_SCHEMA_VERSION,
+                    }
+                    and target_selection is not None
+                    and target_selection["schema_version"]
+                    != LEGACY_CAPABILITY_GAP_TARGET_SELECTION_VERSION
+                )
+            ):
+                raise ProductPlanningError("product_workspace_corrupt")
+            if (
+                type(target_selection) is dict
+                and target_selection.get("outcome") == "no_match"
+                and (
+                    workspace["status"] != "failed"
+                    or workspace["failure_code"]
+                    != "product_plan_capability_gap_target_unmatched"
+                    or question_set is not None
+                    or plan is not None
+                    or workspace["blueprint"] is not None
+                    or workspace["blueprint_input_digest"] is not None
+                    or workspace["blueprint_response_digest"] is not None
                 )
             ):
                 raise ProductPlanningError("product_workspace_corrupt")
@@ -5253,17 +5700,23 @@ class ProductPlanner:
                 },
             )
             target_section_id = row["target_section_id"]
-        elif schema_version == "product_plan_question_set.v3":
+        elif schema_version in {
+            "product_plan_question_set.v3",
+            "product_plan_question_set.v4",
+        }:
+            keys = {
+                "schema_version",
+                "purpose",
+                "warehouse_revision",
+                "catalog_digest",
+                "questions",
+                "digest",
+            }
+            if schema_version == "product_plan_question_set.v4":
+                keys.add("target_context_digest")
             row = _stored_exact(
                 value,
-                {
-                    "schema_version",
-                    "purpose",
-                    "warehouse_revision",
-                    "catalog_digest",
-                    "questions",
-                    "digest",
-                },
+                keys,
             )
             target_section_id = None
         else:
@@ -5279,7 +5732,11 @@ class ProductPlanner:
                 )
             )
             or (
-                schema_version == "product_plan_question_set.v3"
+                schema_version
+                in {
+                    "product_plan_question_set.v3",
+                    "product_plan_question_set.v4",
+                }
                 and (
                     row["purpose"] != "capability_gap_target"
                     or type(row["warehouse_revision"]) is not int
@@ -5288,15 +5745,30 @@ class ProductPlanner:
                         str(row["catalog_digest"])
                     )
                     is None
+                    or (
+                        schema_version == "product_plan_question_set.v4"
+                        and _DIGEST.fullmatch(
+                            str(row["target_context_digest"])
+                        )
+                        is None
+                    )
                 )
             )
             or type(row["questions"]) is not list
             or (
-                schema_version == "product_plan_question_set.v3"
+                schema_version
+                in {
+                    "product_plan_question_set.v3",
+                    "product_plan_question_set.v4",
+                }
                 and len(row["questions"]) != 1
             )
             or (
-                schema_version != "product_plan_question_set.v3"
+                schema_version
+                not in {
+                    "product_plan_question_set.v3",
+                    "product_plan_question_set.v4",
+                }
                 and not 1 <= len(row["questions"]) <= 3
             )
             or row["digest"] != _digest({key: item for key, item in row.items() if key != "digest"})
@@ -5313,15 +5785,29 @@ class ProductPlanner:
                 or item["question_id"] in seen
                 or type(item["prompt"]) is not str
                 or (
-                    schema_version == "product_plan_question_set.v3"
+                    schema_version
+                    in {
+                        "product_plan_question_set.v3",
+                        "product_plan_question_set.v4",
+                    }
                     and item["allow_custom"] is not False
                 )
                 or (
-                    schema_version != "product_plan_question_set.v3"
+                    schema_version
+                    not in {
+                        "product_plan_question_set.v3",
+                        "product_plan_question_set.v4",
+                    }
                     and item["allow_custom"] is not True
                 )
                 or type(item["options"]) is not list
-                or not 2 <= len(item["options"]) <= 3
+                or not 2
+                <= len(item["options"])
+                <= (
+                    4
+                    if schema_version == "product_plan_question_set.v4"
+                    else 3
+                )
             ):
                 raise ProductPlanningError("product_workspace_corrupt")
             seen.add(item["question_id"])
@@ -5337,14 +5823,27 @@ class ProductPlanner:
                     or type(current["label"]) is not str
                     or type(current["impact"]) is not str
                     or (
-                        schema_version == "product_plan_question_set.v3"
+                        schema_version
+                        in {
+                            "product_plan_question_set.v3",
+                            "product_plan_question_set.v4",
+                        }
                         and current["recommended"] is not False
                     )
                     or (
-                        schema_version != "product_plan_question_set.v3"
+                        schema_version
+                        not in {
+                            "product_plan_question_set.v3",
+                            "product_plan_question_set.v4",
+                        }
                         and current["recommended"] is (index != 0)
                     )
                     or type(current["forms_gap"]) is not bool
+                    or (
+                        schema_version == "product_plan_question_set.v4"
+                        and current["forms_gap"]
+                        is not (index < len(item["options"]) - 1)
+                    )
                 ):
                     raise ProductPlanningError("product_workspace_corrupt")
                 option_ids.add(current["option_id"])
@@ -6096,12 +6595,11 @@ class ProductPlanner:
     def _ensure_directory(self, path: Path) -> None:
         try:
             self._assert_no_symlink_components(path)
-            if path.exists() or path.is_symlink():
-                metadata = path.lstat()
-                if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
-                    raise ProductPlanningError("product_workspace_symlink_forbidden")
-            else:
-                path.mkdir(parents=True, mode=0o700)
+            path.mkdir(parents=True, exist_ok=True, mode=0o700)
+            self._assert_no_symlink_components(path)
+            metadata = path.lstat()
+            if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
+                raise ProductPlanningError("product_workspace_symlink_forbidden")
             if os.name == "posix":
                 os.chmod(path, 0o700)
         except ProductPlanningError:
@@ -6214,12 +6712,73 @@ class ProductPlanner:
                 pass
 
     def _write_immutable(self, path: Path, value: Any) -> None:
-        if path.exists() or path.is_symlink():
-            existing = self._read_json(path)
-            if existing != value:
-                raise ProductPlanningError("product_plan_confirmation_conflict")
-            return
-        self._atomic_write(path, value)
+        self._ensure_directory(path.parent)
+        self._assert_no_symlink_components(path.parent)
+        payload = _canonical_bytes(value)
+        if len(payload) > MAX_WORKSPACE_BYTES:
+            raise ProductPlanningError("product_workspace_too_large")
+        temporary = path.parent / f".{path.name}.{uuid.uuid4().hex}.tmp"
+        flags = (
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        descriptor = -1
+        try:
+            descriptor = os.open(temporary, flags, 0o600)
+            with os.fdopen(descriptor, "wb") as handle:
+                descriptor = -1
+                handle.write(payload)
+                handle.flush()
+                os.fsync(handle.fileno())
+            try:
+                os.link(temporary, path)
+            except FileExistsError:
+                existing = self._read_json(path)
+                if _canonical_bytes(existing) != payload:
+                    raise ProductPlanningError(
+                        "product_plan_confirmation_conflict"
+                    )
+                return
+            temporary_metadata = temporary.lstat()
+            path_metadata = path.lstat()
+            if (
+                not stat.S_ISREG(path_metadata.st_mode)
+                or (temporary_metadata.st_dev, temporary_metadata.st_ino)
+                != (path_metadata.st_dev, path_metadata.st_ino)
+            ):
+                raise ProductPlanningError(
+                    "product_workspace_symlink_forbidden"
+                )
+            if os.name == "posix":
+                os.chmod(path, 0o600)
+                directory_fd = os.open(
+                    path.parent,
+                    os.O_RDONLY
+                    | getattr(os, "O_DIRECTORY", 0)
+                    | getattr(os, "O_NOFOLLOW", 0),
+                )
+                try:
+                    os.fsync(directory_fd)
+                finally:
+                    os.close(directory_fd)
+        except ProductPlanningError:
+            raise
+        except OSError as exc:
+            raise ProductPlanningError(
+                "product_planning_state_unavailable"
+            ) from exc
+        finally:
+            if descriptor >= 0:
+                try:
+                    os.close(descriptor)
+                except OSError:
+                    pass
+            try:
+                temporary.unlink(missing_ok=True)
+            except OSError:
+                pass
 
     def _capability_gap_plan_dir(
         self,
@@ -6246,6 +6805,13 @@ class ProductPlanner:
     ) -> Path:
         return self._capability_gap_plan_dir(workspace, plan) / "projection_v2.json"
 
+    def _capability_gap_projection_v3_path(
+        self,
+        workspace: dict[str, Any],
+        plan: dict[str, Any],
+    ) -> Path:
+        return self._capability_gap_plan_dir(workspace, plan) / "projection_v3.json"
+
     def _capability_gap_projection_path_for(
         self,
         workspace: dict[str, Any],
@@ -6256,6 +6822,8 @@ class ProductPlanner:
             return self._capability_gap_projection_path(workspace, plan)
         if projection.get("schema_version") == CAPABILITY_GAP_PROJECTION_V2:
             return self._capability_gap_projection_v2_path(workspace, plan)
+        if projection.get("schema_version") == CAPABILITY_GAP_PROJECTION_V3:
+            return self._capability_gap_projection_v3_path(workspace, plan)
         raise ProductPlanningError("capability_gap_projection_invalid")
 
     def _capability_gap_decisions_dir(
@@ -6285,6 +6853,16 @@ class ProductPlanner:
             / "source_proposal_authorization_v2.json"
         )
 
+    def _capability_source_proposal_authorization_v3_path(
+        self,
+        workspace: dict[str, Any],
+        plan: dict[str, Any],
+    ) -> Path:
+        return (
+            self._capability_gap_plan_dir(workspace, plan)
+            / "source_proposal_authorization_v3.json"
+        )
+
     def _capability_source_proposal_authorization_path_for(
         self,
         workspace: dict[str, Any],
@@ -6298,6 +6876,11 @@ class ProductPlanner:
             )
         if projection.get("schema_version") == CAPABILITY_GAP_PROJECTION_V2:
             return self._capability_source_proposal_authorization_v2_path(
+                workspace,
+                plan,
+            )
+        if projection.get("schema_version") == CAPABILITY_GAP_PROJECTION_V3:
+            return self._capability_source_proposal_authorization_v3_path(
                 workspace,
                 plan,
             )
@@ -6320,6 +6903,7 @@ class ProductPlanner:
             for name in (
                 "source_proposal_authorization_v1.json",
                 "source_proposal_authorization_v2.json",
+                "source_proposal_authorization_v3.json",
             ):
                 candidate = entry / name
                 if candidate.exists() or candidate.is_symlink():
@@ -6872,7 +7456,10 @@ class ProductPlanner:
             "projection_source",
             "projection_digest",
         }
-        if schema_version == CAPABILITY_GAP_PROJECTION_V2:
+        if schema_version in {
+            CAPABILITY_GAP_PROJECTION_V2,
+            CAPABILITY_GAP_PROJECTION_V3,
+        }:
             exact_fields |= {"proof_schema", "result_enum"}
         row = _stored_exact(
             value,
@@ -6887,6 +7474,7 @@ class ProductPlanner:
             not in {
                 CAPABILITY_GAP_PROJECTION_VERSION,
                 CAPABILITY_GAP_PROJECTION_V2,
+                CAPABILITY_GAP_PROJECTION_V3,
             }
             or row["plan_id"] != plan["plan_id"]
             or row["plan_version"] != plan["plan_version"]
@@ -6936,6 +7524,22 @@ class ProductPlanner:
                     )
                 )
             )
+            or (
+                row["schema_version"] == CAPABILITY_GAP_PROJECTION_V3
+                and (
+                    row["adapter_contract_version"]
+                    != "computation_adapter.v5"
+                    or row["capture_mapping_schema"]
+                    != "computation_capture_mapping.v5"
+                    or row["proof_schema"] != "source_graph_proof.v3"
+                    or type(row["result_enum"]) is not list
+                    or not row["result_enum"]
+                    or len(row["result_enum"]) > 32
+                    or not self._utf8_sorted_unique_strings(
+                        row["result_enum"]
+                    )
+                )
+            )
             or type(row["result_field"]) is not str
             or not row["result_field"]
             or type(row["passthrough_fields"]) is not list
@@ -6972,9 +7576,16 @@ class ProductPlanner:
         adapter = (
             self._integer_gap_adapter(normalized_input, normalized_output)
             if row["schema_version"] == CAPABILITY_GAP_PROJECTION_VERSION
-            else self._finite_enum_gap_adapter(
-                normalized_input,
-                normalized_output,
+            else (
+                self._bounded_string_enum_gap_adapter(
+                    normalized_input,
+                    normalized_output,
+                )
+                if row["schema_version"] == CAPABILITY_GAP_PROJECTION_V3
+                else self._finite_enum_gap_adapter(
+                    normalized_input,
+                    normalized_output,
+                )
             )
         )
         adapter_fields = [
@@ -6983,7 +7594,10 @@ class ProductPlanner:
             "result_field",
             "passthrough_fields",
         ]
-        if row["schema_version"] == CAPABILITY_GAP_PROJECTION_V2:
+        if row["schema_version"] in {
+            CAPABILITY_GAP_PROJECTION_V2,
+            CAPABILITY_GAP_PROJECTION_V3,
+        }:
             adapter_fields.extend(["proof_schema", "result_enum"])
         if (
             normalized_input != row["input_contract"]
@@ -7031,6 +7645,7 @@ class ProductPlanner:
             for path in (
                 self._capability_gap_projection_path(workspace, plan),
                 self._capability_gap_projection_v2_path(workspace, plan),
+                self._capability_gap_projection_v3_path(workspace, plan),
             )
             if path.exists() or path.is_symlink()
         ]
@@ -7059,6 +7674,11 @@ class ProductPlanner:
             )
             else None
         )
+        if (
+            type(selection) is dict
+            and selection.get("outcome") == "no_match"
+        ):
+            return None, "capability_gap_target_unmatched"
         return self._capability_gap_projection(
             plan,
             catalog,
@@ -7273,6 +7893,8 @@ class ProductPlanner:
                 input_properties[field] = {"type": "integer"}
             elif contract["type"] == "boolean":
                 input_properties[field] = {"type": "boolean"}
+            elif contract["type"] == "string":
+                input_properties[field] = {"type": "string"}
             else:
                 raise ProductPlanningError(
                     "capability_source_proposal_request_invalid"
@@ -7672,12 +8294,17 @@ class ProductPlanner:
             if request_version not in {
                 CAPABILITY_SOURCE_PROPOSAL_REQUEST_V3,
                 CAPABILITY_SOURCE_PROPOSAL_REQUEST_V4,
+                CAPABILITY_SOURCE_PROPOSAL_REQUEST_V5,
             }:
                 raise ProductPlanningError(
                     "capability_source_proposal_request_invalid"
                 )
-            unordered_witnesses = (
-                request_version == CAPABILITY_SOURCE_PROPOSAL_REQUEST_V4
+            unordered_witnesses = request_version in {
+                CAPABILITY_SOURCE_PROPOSAL_REQUEST_V4,
+                CAPABILITY_SOURCE_PROPOSAL_REQUEST_V5,
+            }
+            bounded_string_request = (
+                request_version == CAPABILITY_SOURCE_PROPOSAL_REQUEST_V5
             )
             authorization_value = (
                 {
@@ -7732,13 +8359,24 @@ class ProductPlanner:
                     row["error_contract"],
                 )
             )
-            adapter = cls._finite_enum_gap_adapter(
-                normalized_input,
-                normalized_output,
+            adapter = (
+                cls._bounded_string_enum_gap_adapter(
+                    normalized_input,
+                    normalized_output,
+                )
+                if bounded_string_request
+                else cls._finite_enum_gap_adapter(
+                    normalized_input,
+                    normalized_output,
+                )
             )
             if (
                 row["schema_version"]
-                != CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_V2
+                != (
+                    CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_V3
+                    if bounded_string_request
+                    else CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_V2
+                )
                 or row["capability_kind"] != "computation"
                 or row["authorization_source"]
                 != "user_confirmed_gap_decision"
@@ -7768,6 +8406,22 @@ class ProductPlanner:
                 key=lambda value: value.encode("utf-8"),
             )
             for contract in input_properties.values():
+                if bounded_string_request:
+                    if (
+                        set(contract)
+                        == {"type", "min_length", "max_length"}
+                        and contract["type"] == "string"
+                        and type(contract["min_length"]) is int
+                        and type(contract["max_length"]) is int
+                        and 0
+                        <= contract["min_length"]
+                        <= contract["max_length"]
+                        <= 10_000
+                    ):
+                        continue
+                    raise ProductPlanningError(
+                        "capability_source_proposal_request_invalid"
+                    )
                 if (
                     set(contract) == {"type", "minimum", "maximum"}
                     and contract["type"] == "integer"
@@ -7796,7 +8450,11 @@ class ProductPlanner:
                         "capability_source_proposal_request_invalid"
                     )
             source_function = {
-                "schema_version": CAPABILITY_SOURCE_FUNCTION_ABI_V2,
+                "schema_version": (
+                    CAPABILITY_SOURCE_FUNCTION_ABI_V3
+                    if bounded_string_request
+                    else CAPABILITY_SOURCE_FUNCTION_ABI_V2
+                ),
                 "module_relpath": "capability.js",
                 "export_name": "compute",
                 "parameters": [
@@ -7851,6 +8509,22 @@ class ProductPlanner:
             prompt = (
                 "Generate one deterministic pure JavaScript source proposal. "
                 f"Implement exactly export function compute({parameter_names}). "
+                "The single bounded-string parameter and its order must match "
+                "source_function. Return one scalar string from return_contract.enum. "
+                "The function body may only use direct "
+                'arg0.includes("fixed non-empty literal"), boolean &&, ||, !, '
+                "conditional branches, and scalar enum returns. Do not use an "
+                "object return, dynamic needle, regular expression, another string "
+                "method, array method, dependency, network, filesystem, environment "
+                "variable, process or global state, randomness, or time. "
+                f"{witness_instruction}using unique contract-valid inputs. "
+                "Return exactly one JSON object matching FORMAT_SCHEMA with no "
+                "Markdown or explanation.\nREQUEST_JSON:\n"
+                + _canonical_bytes(safe_input).decode("utf-8")
+                if bounded_string_request
+                else
+                "Generate one deterministic pure JavaScript source proposal. "
+                f"Implement exactly export function compute({parameter_names}). "
                 "The parameters and their order must match source_function. "
                 "Return one scalar string from return_contract.enum. "
                 "Do not return an object, array, Promise, or wrapped result; "
@@ -7876,9 +8550,13 @@ class ProductPlanner:
                     "warehouse_revision": row["warehouse_revision"],
                     "catalog_digest": row["catalog_digest"],
                     "prompt_version": (
-                        CAPABILITY_SOURCE_PROPOSAL_PROMPT_V4
-                        if unordered_witnesses
-                        else CAPABILITY_SOURCE_PROPOSAL_PROMPT_V3
+                        CAPABILITY_SOURCE_PROPOSAL_PROMPT_V5
+                        if bounded_string_request
+                        else (
+                            CAPABILITY_SOURCE_PROPOSAL_PROMPT_V4
+                            if unordered_witnesses
+                            else CAPABILITY_SOURCE_PROPOSAL_PROMPT_V3
+                        )
                     ),
                     "output_protocol_version": (
                         CAPABILITY_SOURCE_PROPOSAL_OUTPUT_V2
@@ -7919,10 +8597,27 @@ class ProductPlanner:
         )
 
     @classmethod
+    def _build_capability_source_proposal_request_v5(
+        cls,
+        authorization: dict[str, Any],
+    ) -> dict[str, Any]:
+        return cls._build_capability_source_proposal_request_v3(
+            authorization,
+            request_version=CAPABILITY_SOURCE_PROPOSAL_REQUEST_V5,
+        )
+
+    @classmethod
     def _runtime_capability_source_proposal_request(
         cls,
         authorization: dict[str, Any],
     ) -> dict[str, Any]:
+        if (
+            authorization.get("schema_version")
+            == CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_V3
+        ):
+            return cls._build_capability_source_proposal_request_v5(
+                authorization
+            )
         if (
             authorization.get("schema_version")
             == CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_V2
@@ -8038,6 +8733,7 @@ class ProductPlanner:
                 not in {
                     CAPABILITY_SOURCE_PROPOSAL_REQUEST_V3,
                     CAPABILITY_SOURCE_PROPOSAL_REQUEST_V4,
+                    CAPABILITY_SOURCE_PROPOSAL_REQUEST_V5,
                 }
                 or row["schema"] != CAPABILITY_SOURCE_PROPOSAL_OUTPUT_V2
                 or entry
@@ -8068,7 +8764,10 @@ class ProductPlanner:
             requirement_key = (
                 "expected_scalar_results"
                 if request_version
-                == CAPABILITY_SOURCE_PROPOSAL_REQUEST_V4
+                in {
+                    CAPABILITY_SOURCE_PROPOSAL_REQUEST_V4,
+                    CAPABILITY_SOURCE_PROPOSAL_REQUEST_V5,
+                }
                 else "ordered_expected_scalar_results"
             )
             result_enum = request["model_safe_input"][
@@ -8138,7 +8837,11 @@ class ProductPlanner:
                 request_version == CAPABILITY_SOURCE_PROPOSAL_REQUEST_V3
                 and actual_results != result_enum
             ) or (
-                request_version == CAPABILITY_SOURCE_PROPOSAL_REQUEST_V4
+                request_version
+                in {
+                    CAPABILITY_SOURCE_PROPOSAL_REQUEST_V4,
+                    CAPABILITY_SOURCE_PROPOSAL_REQUEST_V5,
+                }
                 and set(witnesses_by_result) != set(result_enum)
             ):
                 raise ProductPlanningError(
@@ -8160,7 +8863,10 @@ class ProductPlanner:
                 "capability_source_proposal_response_invalid"
             ) from exc
         normalized = copy.deepcopy(row)
-        if request_version == CAPABILITY_SOURCE_PROPOSAL_REQUEST_V4:
+        if request_version in {
+            CAPABILITY_SOURCE_PROPOSAL_REQUEST_V4,
+            CAPABILITY_SOURCE_PROPOSAL_REQUEST_V5,
+        }:
             normalized["witnesses"] = [
                 witnesses_by_result[result]
                 for result in result_enum
@@ -8177,7 +8883,10 @@ class ProductPlanner:
         if (
             type(value) is dict
             and value.get("schema_version")
-            == CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_V2
+            in {
+                CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_V2,
+                CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_V3,
+            }
         ):
             return self._validate_capability_source_proposal_authorization_v2(
                 workspace,
@@ -8310,12 +9019,24 @@ class ProductPlanner:
         authorization = {
             key: item for key, item in row.items() if key != "request"
         }
+        bounded_string_authorization = (
+            row["schema_version"]
+            == CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_V3
+        )
         if (
             type(plan) is not dict
             or projection.get("schema_version")
-            != CAPABILITY_GAP_PROJECTION_V2
+            != (
+                CAPABILITY_GAP_PROJECTION_V3
+                if bounded_string_authorization
+                else CAPABILITY_GAP_PROJECTION_V2
+            )
             or row["schema_version"]
-            != CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_V2
+            != (
+                CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_V3
+                if bounded_string_authorization
+                else CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_V2
+            )
             or row["plan_id"] != plan["plan_id"]
             or row["plan_version"] != plan["plan_version"]
             or row["plan_digest"] != plan["canonical_digest"]
@@ -8367,6 +9088,12 @@ class ProductPlanner:
         elif request_version == CAPABILITY_SOURCE_PROPOSAL_REQUEST_V4:
             expected_request = (
                 self._build_capability_source_proposal_request_v4(
+                    authorization
+                )
+            )
+        elif request_version == CAPABILITY_SOURCE_PROPOSAL_REQUEST_V5:
+            expected_request = (
+                self._build_capability_source_proposal_request_v5(
                     authorization
                 )
             )
@@ -8560,11 +9287,12 @@ class ProductPlanner:
         )
         if (
             public_projection is not None
-            and projection["schema_version"] == CAPABILITY_GAP_PROJECTION_V2
+            and projection["schema_version"]
+            in {CAPABILITY_GAP_PROJECTION_V2, CAPABILITY_GAP_PROJECTION_V3}
         ):
             public_projection.update(
                 {
-                    "schema_version": CAPABILITY_GAP_PROJECTION_V2,
+                    "schema_version": projection["schema_version"],
                     "proof_schema": projection["proof_schema"],
                     "result_enum": copy.deepcopy(
                         projection["result_enum"]
@@ -8725,12 +9453,16 @@ class ProductPlanner:
         )
 
     @contextmanager
-    def _agent_handoff_guard(self):
-        # ponytail: one root-wide lock is enough; split only if measured contention
-        # ever makes handoff operations a bottleneck.
+    def _planner_root_guard(
+        self,
+        filename: str,
+        error_code: str,
+    ):
+        # ponytail: short formal commit gates need one stdlib file lock, not a
+        # transaction filesystem or lock service.
         with self._lock:
             self._ensure_directory(self.root)
-            path = self.root / ".agent_handoff.lock"
+            path = self.root / filename
             self._assert_no_symlink_components(path.parent)
             flags = (
                 os.O_RDWR
@@ -8750,7 +9482,7 @@ class ProductPlanner:
                     or (details.st_dev, details.st_ino)
                     != (path_details.st_dev, path_details.st_ino)
                 ):
-                    raise ProductPlanningError("agent_handoff_conflict")
+                    raise ProductPlanningError(error_code)
                 if os.name == "posix":
                     os.fchmod(descriptor, 0o600)
                     import fcntl
@@ -8765,7 +9497,7 @@ class ProductPlanner:
                     os.lseek(descriptor, 0, os.SEEK_SET)
                     msvcrt.locking(descriptor, msvcrt.LK_LOCK, 1)
                 else:
-                    raise ProductPlanningError("agent_handoff_conflict")
+                    raise ProductPlanningError(error_code)
                 locked_path_details = path.lstat()
                 if (
                     stat.S_ISLNK(locked_path_details.st_mode)
@@ -8776,7 +9508,7 @@ class ProductPlanner:
                         locked_path_details.st_ino,
                     )
                 ):
-                    raise ProductPlanningError("agent_handoff_conflict")
+                    raise ProductPlanningError(error_code)
                 try:
                     yield
                 finally:
@@ -8788,12 +9520,26 @@ class ProductPlanner:
             except ProductPlanningError:
                 raise
             except OSError as exc:
-                raise ProductPlanningError(
-                    "agent_handoff_conflict"
-                ) from exc
+                raise ProductPlanningError(error_code) from exc
             finally:
                 if descriptor >= 0:
                     os.close(descriptor)
+
+    @contextmanager
+    def _agent_handoff_guard(self):
+        with self._planner_root_guard(
+            ".agent_handoff.lock",
+            "agent_handoff_conflict",
+        ):
+            yield
+
+    @contextmanager
+    def _capability_replan_guard(self):
+        with self._planner_root_guard(
+            ".capability_replan.lock",
+            "capability_replan_handoff_conflict",
+        ):
+            yield
 
     def _agent_handoff_records(
         self,
@@ -9103,6 +9849,22 @@ class ProductPlanner:
         ]
 
     @staticmethod
+    def _is_no_match_terminal(workspace: dict[str, Any]) -> bool:
+        selection = workspace.get("capability_gap_target_selection")
+        return (
+            workspace.get("schema_version")
+            in {
+                PREVIOUS_NO_MATCH_WORKSPACE_SCHEMA_VERSION,
+                WORKSPACE_SCHEMA_VERSION,
+            }
+            and workspace.get("status") == "failed"
+            and workspace.get("failure_code")
+            == "product_plan_capability_gap_target_unmatched"
+            and type(selection) is dict
+            and selection.get("outcome") == "no_match"
+        )
+
+    @staticmethod
     def _workspace_rules_version(workspace: dict[str, Any]) -> str:
         if workspace["schema_version"] == LEGACY_WORKSPACE_SCHEMA_VERSION:
             return SECTION_PLANNING_RULES_VERSION
@@ -9138,6 +9900,16 @@ class ProductPlanner:
             == PREVIOUS_REQUIREMENT_COVERAGE_WORKSPACE_SCHEMA_VERSION
         ):
             return PREVIOUS_REQUIREMENT_COVERAGE_PLANNING_RULES_VERSION
+        if (
+            workspace["schema_version"]
+            == PREVIOUS_EXPERIENCE_WORKSPACE_SCHEMA_VERSION
+        ):
+            return PREVIOUS_EXPERIENCE_PLANNING_RULES_VERSION
+        if (
+            workspace["schema_version"]
+            == PREVIOUS_NO_MATCH_WORKSPACE_SCHEMA_VERSION
+        ):
+            return PREVIOUS_NO_MATCH_PLANNING_RULES_VERSION
         blueprint = workspace.get("blueprint")
         if (
             type(blueprint) is dict
@@ -9170,6 +9942,16 @@ class ProductPlanner:
             == PREVIOUS_REQUIREMENT_COVERAGE_WORKSPACE_SCHEMA_VERSION
         ):
             return PREVIOUS_REQUIREMENT_COVERAGE_PROMPT_VERSION
+        if (
+            workspace["schema_version"]
+            == PREVIOUS_EXPERIENCE_WORKSPACE_SCHEMA_VERSION
+        ):
+            return PLANNING_PROMPT_VERSION
+        if (
+            workspace["schema_version"]
+            == PREVIOUS_NO_MATCH_WORKSPACE_SCHEMA_VERSION
+        ):
+            return PLANNING_PROMPT_VERSION
         if (
             workspace["schema_version"]
             == DIRECT_BLUEPRINT_WORKSPACE_SCHEMA_VERSION
@@ -9567,13 +10349,56 @@ class ProductPlanner:
         result["digest"] = _digest(result)
         return result
 
+    @staticmethod
+    def _capability_gap_target_context_digest(
+        workspace: dict[str, Any],
+    ) -> str:
+        if (
+            _WORKSPACE_ID.fullmatch(str(workspace.get("workspace_id"))) is None
+            or _DIGEST.fullmatch(str(workspace.get("goal_digest"))) is None
+            or _DIGEST.fullmatch(
+                str(workspace.get("outline_response_digest"))
+            )
+            is None
+            or _DIGEST.fullmatch(
+                str(workspace.get("composition_selection_response_digest"))
+            )
+            is None
+        ):
+            raise ProductPlanningError("product_workspace_corrupt")
+        return _digest(
+            {
+                "schema_version": "product_capability_gap_target_context.v1",
+                "workspace_schema_version": workspace["schema_version"],
+                "workspace_id": workspace["workspace_id"],
+                "goal_digest": workspace["goal_digest"],
+                "planning_answers_digest": _digest(
+                    ProductPlanner._planning_answers(workspace)
+                ),
+                "outline_response_digest": workspace[
+                    "outline_response_digest"
+                ],
+                "composition_selection_response_digest": workspace[
+                    "composition_selection_response_digest"
+                ],
+            }
+        )
+
     @classmethod
     def _capability_gap_target_question_set(
         cls,
         candidates: list[dict[str, Any]],
         catalog: dict[str, Any],
+        target_context_digest: str | None = None,
     ) -> dict[str, Any]:
-        if not 2 <= len(candidates) <= 3:
+        if not (
+            2 <= len(candidates) <= 3
+            if target_context_digest is None
+            else (
+                1 <= len(candidates) <= 3
+                and _DIGEST.fullmatch(target_context_digest) is not None
+            )
+        ):
             raise ProductPlanningError(
                 "product_plan_capability_gap_target_ambiguous"
             )
@@ -9614,28 +10439,60 @@ class ProductPlanner:
                     "forms_gap": True,
                 }
             )
+        if target_context_digest is not None:
+            options.append(
+                {
+                    "option_id": "option_"
+                    + _digest(
+                        {
+                            "catalog_digest": catalog_digest,
+                            "target_context_digest": target_context_digest,
+                            "outcome": "no_match",
+                        }
+                    )[:20],
+                    "label": "以上都不是",
+                    "impact": (
+                        "当前正式候选均不符合本次目标；停止规划，"
+                        "不创建正式 capability gap。"
+                    ),
+                    "recommended": False,
+                    "forms_gap": False,
+                }
+            )
         question = {
             "question_id": "question_"
             + _digest(
                 {
                     "purpose": "capability_gap_target",
                     "catalog_digest": catalog_digest,
+                    "target_context_digest": target_context_digest,
                     "option_ids": [
                         option["option_id"] for option in options
                     ],
                 }
             )[:20],
-            "prompt": "当前正式能力中有多个可补齐的计算缺口，请选择本次要完成的业务能力。",
+            "prompt": (
+                "请选择本次要完成的业务能力；若都不符合，"
+                "请选择“以上都不是”。"
+                if target_context_digest is not None
+                else "当前正式能力中有多个可补齐的计算缺口，请选择本次要完成的业务能力。"
+            ),
             "options": options,
             "allow_custom": False,
         }
         body = {
-            "schema_version": "product_plan_question_set.v3",
+            "schema_version": (
+                "product_plan_question_set.v3"
+                if target_context_digest is None
+                else "product_plan_question_set.v4"
+            ),
             "purpose": "capability_gap_target",
             "warehouse_revision": catalog["warehouse_revision"],
             "catalog_digest": catalog_digest,
             "questions": [question],
         }
+        if target_context_digest is not None:
+            body["target_context_digest"] = target_context_digest
         return {**body, "digest": _digest(body)}
 
     def _answers(
@@ -9693,9 +10550,11 @@ class ProductPlanner:
     ) -> dict[str, Any] | None:
         if value is None:
             return None
-        row = _stored_exact(
-            value,
-            {
+        if type(value) is not dict:
+            raise ProductPlanningError("product_workspace_corrupt")
+        schema_version = value.get("schema_version")
+        if schema_version == LEGACY_CAPABILITY_GAP_TARGET_SELECTION_VERSION:
+            keys = {
                 "schema_version",
                 "question_set_digest",
                 "option_id",
@@ -9704,7 +10563,25 @@ class ProductPlanner:
                 "catalog_digest",
                 "user_answer_digest",
                 "canonical_digest",
-            },
+            }
+        elif schema_version == CAPABILITY_GAP_TARGET_SELECTION_VERSION:
+            keys = {
+                "schema_version",
+                "outcome",
+                "question_set_digest",
+                "target_context_digest",
+                "option_id",
+                "candidate_digest",
+                "warehouse_revision",
+                "catalog_digest",
+                "user_answer_digest",
+                "canonical_digest",
+            }
+        else:
+            raise ProductPlanningError("product_workspace_corrupt")
+        row = _stored_exact(
+            value,
+            keys,
         )
         body = {
             key: item
@@ -9712,22 +10589,114 @@ class ProductPlanner:
             if key != "canonical_digest"
         }
         if (
-            row["schema_version"]
-            != CAPABILITY_GAP_TARGET_SELECTION_VERSION
-            or _DIGEST.fullmatch(str(row["question_set_digest"])) is None
+            _DIGEST.fullmatch(str(row["question_set_digest"])) is None
             or not str(row["option_id"]).startswith("option_")
-            or _DIGEST.fullmatch(str(row["candidate_digest"])) is None
             or type(row["warehouse_revision"]) is not int
             or row["warehouse_revision"] < 0
             or _DIGEST.fullmatch(str(row["catalog_digest"])) is None
             or _DIGEST.fullmatch(str(row["user_answer_digest"])) is None
             or row["canonical_digest"] != _digest(body)
+            or (
+                schema_version
+                == LEGACY_CAPABILITY_GAP_TARGET_SELECTION_VERSION
+                and _DIGEST.fullmatch(str(row["candidate_digest"])) is None
+            )
+            or (
+                schema_version == CAPABILITY_GAP_TARGET_SELECTION_VERSION
+                and (
+                    row["outcome"]
+                    not in {"selected_candidate", "no_match"}
+                    or _DIGEST.fullmatch(
+                        str(row["target_context_digest"])
+                    )
+                    is None
+                    or (
+                        row["outcome"] == "selected_candidate"
+                        and _DIGEST.fullmatch(
+                            str(row["candidate_digest"])
+                        )
+                        is None
+                    )
+                    or (
+                        row["outcome"] == "no_match"
+                        and row["candidate_digest"] is not None
+                    )
+                )
+            )
         ):
             raise ProductPlanningError("product_workspace_corrupt")
         return copy.deepcopy(row)
 
-    @classmethod
     def _capability_gap_target_selection(
+        self,
+        workspace: dict[str, Any],
+        question_set: dict[str, Any],
+        answers: list[dict[str, Any]],
+        catalog: dict[str, Any],
+    ) -> dict[str, Any]:
+        if question_set["schema_version"] == "product_plan_question_set.v3":
+            return self._legacy_capability_gap_target_selection(
+                question_set,
+                answers,
+                catalog,
+            )
+        if question_set["schema_version"] != "product_plan_question_set.v4":
+            raise ProductPlanningError(
+                "product_plan_capability_gap_target_stale"
+            )
+        target_context_digest = (
+            self._capability_gap_target_context_digest(workspace)
+        )
+        candidates = sorted(
+            self._capability_gap_candidates(catalog),
+            key=lambda item: _digest(item),
+        )
+        current = self._capability_gap_target_question_set(
+            candidates,
+            catalog,
+            target_context_digest,
+        )
+        if current != question_set:
+            raise ProductPlanningError(
+                "product_plan_capability_gap_target_stale"
+            )
+        if len(answers) != 1 or answers[0]["source"] != "option":
+            raise ProductPlanningError("product_plan_answers_invalid")
+        option_id = answers[0]["value"]
+        candidate_options = current["questions"][0]["options"][:-1]
+        option_ids = [
+            option["option_id"] for option in candidate_options
+        ]
+        no_match_option_id = current["questions"][0]["options"][-1][
+            "option_id"
+        ]
+        if option_id == no_match_option_id:
+            outcome = "no_match"
+            candidate_digest = None
+        else:
+            try:
+                candidate = candidates[option_ids.index(option_id)]
+            except (ValueError, IndexError) as exc:
+                raise ProductPlanningError(
+                    "product_plan_answers_invalid"
+                ) from exc
+            outcome = "selected_candidate"
+            candidate_digest = _digest(candidate)
+        body = {
+            "schema_version": CAPABILITY_GAP_TARGET_SELECTION_VERSION,
+            "outcome": outcome,
+            "question_set_digest": question_set["digest"],
+            "target_context_digest": target_context_digest,
+            "option_id": option_id,
+            "candidate_digest": candidate_digest,
+            "warehouse_revision": catalog["warehouse_revision"],
+            "catalog_digest": _digest(catalog),
+            "user_answer_digest": _digest(answers),
+        }
+        return {**body, "canonical_digest": _digest(body)}
+
+    @classmethod
+    def _legacy_capability_gap_target_selection(
         cls,
         question_set: dict[str, Any],
         answers: list[dict[str, Any]],
@@ -9741,10 +10710,7 @@ class ProductPlanner:
             raise ProductPlanningError(
                 "product_plan_capability_gap_target_stale"
             )
-        if (
-            len(answers) != 1
-            or answers[0]["source"] != "option"
-        ):
+        if len(answers) != 1 or answers[0]["source"] != "option":
             raise ProductPlanningError("product_plan_answers_invalid")
         option_id = answers[0]["value"]
         candidates = sorted(
@@ -9762,7 +10728,7 @@ class ProductPlanner:
                 "product_plan_answers_invalid"
             ) from exc
         body = {
-            "schema_version": CAPABILITY_GAP_TARGET_SELECTION_VERSION,
+            "schema_version": LEGACY_CAPABILITY_GAP_TARGET_SELECTION_VERSION,
             "question_set_digest": question_set["digest"],
             "option_id": option_id,
             "candidate_digest": _digest(candidate),
@@ -9778,6 +10744,14 @@ class ProductPlanner:
         selection: dict[str, Any],
         catalog: dict[str, Any],
     ) -> dict[str, Any]:
+        if (
+            selection["schema_version"]
+            == CAPABILITY_GAP_TARGET_SELECTION_VERSION
+            and selection["outcome"] != "selected_candidate"
+        ):
+            raise ProductPlanningError(
+                "product_plan_capability_gap_target_unmatched"
+            )
         if (
             selection["warehouse_revision"]
             != catalog["warehouse_revision"]
@@ -10726,10 +11700,10 @@ class ProductPlanner:
             raise ProductPlanningError(
                 "capability_replan_handoff_conflict"
             ) from exc
-        if successor["plan_token"] != handoff["successor_plan_token"]:
-            raise ProductPlanningError(
-                "capability_replan_handoff_conflict"
-            )
+        self._validate_capability_replan_successor(
+            successor,
+            handoff,
+        )
         return successor
 
     def _validate_capability_replan_current(
@@ -10773,6 +11747,30 @@ class ProductPlanner:
             or projection["gap_id"] != handoff["source_gap_id"]
             or projection["projection_digest"]
             != handoff["projection_digest"]
+        ):
+            raise ProductPlanningError(
+                "capability_replan_handoff_conflict"
+            )
+        if (
+            handoff["schema_version"]
+            == CAPABILITY_REPLAN_HANDOFF_VERSION
+            and (
+                handoff["source_goal_answers_digest"]
+                != _digest(
+                    {
+                        "goal": source["goal"],
+                        "confirmed_answers": self._planning_answers(
+                            source
+                        ),
+                    }
+                )
+                or handoff["successor_workspace_binding"]["goal"]
+                != source["goal"]
+                or handoff["successor_workspace_binding"][
+                    "confirmed_answers"
+                ]
+                != self._planning_answers(source)
+            )
         ):
             raise ProductPlanningError(
                 "capability_replan_handoff_conflict"
@@ -11003,12 +12001,61 @@ class ProductPlanner:
         }
 
     @classmethod
+    def _bounded_string_enum_gap_adapter(
+        cls,
+        input_contract: dict[str, Any],
+        output_contract: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        input_properties = input_contract.get("properties")
+        output_properties = output_contract.get("properties")
+        if (
+            input_contract.get("type") != "object"
+            or output_contract.get("type") != "object"
+            or input_contract.get("additional_properties") is not False
+            or output_contract.get("additional_properties") is not False
+            or type(input_properties) is not dict
+            or len(input_properties) != 1
+            or type(output_properties) is not dict
+            or len(output_properties) != 1
+            or input_contract.get("required") != sorted(input_properties)
+            or output_contract.get("required") != sorted(output_properties)
+        ):
+            return None
+        _input_field, input_field_contract = next(iter(input_properties.items()))
+        if (
+            set(input_field_contract) != {"type", "min_length", "max_length"}
+            or input_field_contract.get("type") != "string"
+            or type(input_field_contract.get("min_length")) is not int
+            or type(input_field_contract.get("max_length")) is not int
+            or not 0
+            <= input_field_contract["min_length"]
+            <= input_field_contract["max_length"]
+            <= 10_000
+        ):
+            return None
+        result_field = next(iter(output_properties))
+        result_enum = cls._finite_enum_values(output_properties[result_field])
+        if result_enum is None:
+            return None
+        return {
+            "adapter_contract_version": "computation_adapter.v5",
+            "capture_mapping_schema": "computation_capture_mapping.v5",
+            "proof_schema": "source_graph_proof.v3",
+            "result_field": result_field,
+            "result_enum": result_enum,
+            "passthrough_fields": [],
+        }
+
+    @classmethod
     def _gap_adapter(
         cls,
         input_contract: dict[str, Any],
         output_contract: dict[str, Any],
     ) -> dict[str, Any] | None:
         return cls._integer_gap_adapter(
+            input_contract,
+            output_contract,
+        ) or cls._bounded_string_enum_gap_adapter(
             input_contract,
             output_contract,
         ) or cls._finite_enum_gap_adapter(
@@ -11293,10 +12340,15 @@ class ProductPlanner:
         )
         return {
             "schema_version": (
-                "product_capability_gap_blueprint_lock.v2"
+                "product_capability_gap_blueprint_lock.v3"
                 if candidate["adapter_contract_version"]
-                == "computation_adapter.v4"
-                else "product_capability_gap_blueprint_lock.v1"
+                == "computation_adapter.v5"
+                else (
+                    "product_capability_gap_blueprint_lock.v2"
+                    if candidate["adapter_contract_version"]
+                    == "computation_adapter.v4"
+                    else "product_capability_gap_blueprint_lock.v1"
+                )
             ),
             "capability_key": candidate["capability_key"],
             "capability_group_display_name": candidate[
@@ -11345,10 +12397,15 @@ class ProductPlanner:
         gap = gaps[0]
         body = {
             "schema_version": (
-                CAPABILITY_GAP_PROJECTION_V2
+                CAPABILITY_GAP_PROJECTION_V3
                 if candidate["adapter_contract_version"]
-                == "computation_adapter.v4"
-                else CAPABILITY_GAP_PROJECTION_VERSION
+                == "computation_adapter.v5"
+                else (
+                    CAPABILITY_GAP_PROJECTION_V2
+                    if candidate["adapter_contract_version"]
+                    == "computation_adapter.v4"
+                    else CAPABILITY_GAP_PROJECTION_VERSION
+                )
             ),
             "plan_id": plan["plan_id"],
             "plan_version": plan["plan_version"],
@@ -11360,7 +12417,10 @@ class ProductPlanner:
             "catalog_digest": _digest(catalog),
             "projection_source": "deterministic_unique_serial_gap",
         }
-        if candidate["adapter_contract_version"] == "computation_adapter.v4":
+        if candidate["adapter_contract_version"] in {
+            "computation_adapter.v4",
+            "computation_adapter.v5",
+        }:
             body["proof_schema"] = candidate["proof_schema"]
             body["result_enum"] = copy.deepcopy(candidate["result_enum"])
         return {**body, "projection_digest": _digest(body)}, "available"
@@ -11551,8 +12611,18 @@ class ProductPlanner:
             == PREVIOUS_REQUIREMENT_COVERAGE_WORKSPACE_SCHEMA_VERSION
         ):
             input_schema = "product_plan_blueprint_input.v6"
-        elif workspace["schema_version"] == WORKSPACE_SCHEMA_VERSION:
+        elif (
+            workspace["schema_version"]
+            == PREVIOUS_EXPERIENCE_WORKSPACE_SCHEMA_VERSION
+        ):
             input_schema = "product_plan_blueprint_input.v7"
+        elif (
+            workspace["schema_version"]
+            == PREVIOUS_NO_MATCH_WORKSPACE_SCHEMA_VERSION
+        ):
+            input_schema = "product_plan_blueprint_input.v8"
+        elif workspace["schema_version"] == WORKSPACE_SCHEMA_VERSION:
+            input_schema = "product_plan_blueprint_input.v9"
         body = {
             "schema_version": input_schema,
             "goal_digest": workspace["goal_digest"],
@@ -11969,7 +13039,79 @@ class ProductPlanner:
                 and workspace["schema_version"] in GAP_WORKSPACE_SCHEMA_VERSIONS
             ):
                 gap_candidates = self._capability_gap_candidates(catalog)
-                if len(gap_candidates) == 1:
+                if (
+                    workspace["schema_version"]
+                    in {
+                        PREVIOUS_NO_MATCH_WORKSPACE_SCHEMA_VERSION,
+                        WORKSPACE_SCHEMA_VERSION,
+                    }
+                    and 1 <= len(gap_candidates) <= 3
+                ):
+                    target_context_digest = (
+                        self._capability_gap_target_context_digest(workspace)
+                    )
+                    target_selection = (
+                        self._validate_capability_gap_target_selection(
+                            workspace[
+                                "capability_gap_target_selection"
+                            ]
+                        )
+                    )
+                    if target_selection is None:
+                        question_set = (
+                            self._capability_gap_target_question_set(
+                                gap_candidates,
+                                catalog,
+                                target_context_digest,
+                            )
+                        )
+                        if (
+                            question_set["digest"]
+                            in workspace["question_history"]
+                        ):
+                            raise ProductPlanningError(
+                                "product_plan_question_repeated"
+                            )
+                        workspace["question_history"].append(
+                            question_set["digest"]
+                        )
+                        workspace["current_question_set"] = question_set
+                        workspace["status"] = "needs_clarification"
+                        workspace["phase"] = None
+                        workspace["updated_at"] = _now()
+                        with self._lock:
+                            self._save_workspace(workspace)
+                        return None, []
+                    if (
+                        target_selection["schema_version"]
+                        != CAPABILITY_GAP_TARGET_SELECTION_VERSION
+                        or target_selection["target_context_digest"]
+                        != target_context_digest
+                    ):
+                        raise ProductPlanningError(
+                            "product_plan_capability_gap_target_stale"
+                        )
+                    capability_gap_lock = (
+                        self._capability_gap_blueprint_lock(
+                            self._selected_capability_gap_candidate(
+                                target_selection,
+                                catalog,
+                            ),
+                            candidate_map,
+                        )
+                    )
+                elif (
+                    workspace["schema_version"]
+                    in {
+                        PREVIOUS_NO_MATCH_WORKSPACE_SCHEMA_VERSION,
+                        WORKSPACE_SCHEMA_VERSION,
+                    }
+                    and len(gap_candidates) > 3
+                ):
+                    raise ProductPlanningError(
+                        "product_plan_capability_gap_target_ambiguous"
+                    )
+                elif len(gap_candidates) == 1:
                     capability_gap_lock = (
                         self._capability_gap_blueprint_lock(
                             gap_candidates[0],
@@ -12578,6 +13720,14 @@ class ProductPlanner:
                     (
                         PREVIOUS_REQUIREMENT_COVERAGE_PLANNING_RULES_VERSION,
                         PREVIOUS_REQUIREMENT_COVERAGE_PROMPT_VERSION,
+                    ),
+                    (
+                        PREVIOUS_EXPERIENCE_PLANNING_RULES_VERSION,
+                        PLANNING_PROMPT_VERSION,
+                    ),
+                    (
+                        PREVIOUS_NO_MATCH_PLANNING_RULES_VERSION,
+                        PLANNING_PROMPT_VERSION,
                     ),
                     (PLANNING_RULES_VERSION, PLANNING_PROMPT_VERSION),
                 }

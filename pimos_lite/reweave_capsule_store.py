@@ -44,6 +44,11 @@ _RETENTION = {"auto": 7, "upgrade": 3}
 # Normal operations share it; migration and restore hold it across atomic replacement.
 _STORE_OPERATION_LOCK = threading.RLock()
 _EXCLUSIVE_DATABASES: set[str] = set()
+_DATABASE_OPERATION_HANDLES: dict[str, dict[str, Any]] = {}
+_STATE_ROOT_LEASE_LOCK = threading.RLock()
+_STATE_ROOT_LEASES: dict[str, dict[str, Any]] = {}
+_DATABASE_OPERATION_LOCK_FILENAME = ".capsule_warehouse.operation.lock"
+_STATE_ROOT_LEASE_FILENAME = ".reweave_state_root.lock"
 _SCHEMA_FINGERPRINT_SHA256 = {
     1: "31ca94b97ad9e6539f9d62f5938759232aa1a6f3cdac49950962f03555b48bd1",
     2: "2f5c245eee172d57abc065d1c63ad76e11925aec6a021d586a9384c4cbde2ada",
@@ -109,6 +114,12 @@ class CapsuleStoreError(RuntimeError):
 
 class SchemaVersionError(CapsuleStoreError):
     """The database schema is unsupported or incomplete."""
+
+
+class WarehouseSnapshotRevisionError(CapsuleStoreError):
+    """A requested immutable warehouse snapshot no longer matches its revision."""
+
+    code = "warehouse_snapshot_revision_stale"
 
 
 SCHEMA_SQL_V1 = r"""
@@ -1894,13 +1905,139 @@ def _database_operation_key(path: Path) -> str:
     return str(path.resolve())
 
 
+def _open_lock_file(path: Path) -> int:
+    _ensure_private_directory(path.parent)
+    flags = (
+        os.O_RDWR
+        | os.O_CREAT
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        details = os.fstat(descriptor)
+        path_details = path.lstat()
+        if (
+            not stat.S_ISREG(details.st_mode)
+            or stat.S_ISLNK(path_details.st_mode)
+            or not stat.S_ISREG(path_details.st_mode)
+            or (details.st_dev, details.st_ino)
+            != (path_details.st_dev, path_details.st_ino)
+        ):
+            raise CapsuleStoreError("reweave_state_lock_unsafe")
+        if os.name == "posix":
+            os.fchmod(descriptor, 0o600)
+        elif os.name == "nt" and details.st_size == 0:
+            os.write(descriptor, b"\0")
+            os.fsync(descriptor)
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _verify_lock_file_identity(path: Path, descriptor: int) -> None:
+    details = os.fstat(descriptor)
+    path_details = path.lstat()
+    if (
+        not stat.S_ISREG(details.st_mode)
+        or stat.S_ISLNK(path_details.st_mode)
+        or not stat.S_ISREG(path_details.st_mode)
+        or (details.st_dev, details.st_ino)
+        != (path_details.st_dev, path_details.st_ino)
+    ):
+        raise CapsuleStoreError("reweave_state_lock_unsafe")
+
+
+def _try_lock_descriptor(
+    descriptor: int,
+    *,
+    shared: bool,
+) -> bool:
+    try:
+        if os.name == "posix":
+            import fcntl
+
+            operation = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
+            fcntl.flock(descriptor, operation | fcntl.LOCK_NB)
+        elif os.name == "nt":
+            import msvcrt
+
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+        else:
+            return False
+    except OSError:
+        return False
+    return True
+
+
+def _unlock_descriptor(descriptor: int) -> None:
+    if os.name == "posix":
+        import fcntl
+
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+    elif os.name == "nt":
+        import msvcrt
+
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+
+
+@contextmanager
+def _cross_process_database_operation(
+    path: Path,
+    *,
+    exclusive: bool,
+) -> Iterator[None]:
+    key = _database_operation_key(path)
+    current = _DATABASE_OPERATION_HANDLES.get(key)
+    if current is not None:
+        if exclusive and not current["exclusive"]:
+            raise CapsuleStoreError("exclusive warehouse operation in progress")
+        current["depth"] += 1
+        try:
+            yield
+        finally:
+            current["depth"] -= 1
+        return
+
+    lock_path = path.parent / _DATABASE_OPERATION_LOCK_FILENAME
+    descriptor = _open_lock_file(lock_path)
+    if not _try_lock_descriptor(descriptor, shared=not exclusive):
+        os.close(descriptor)
+        raise CapsuleStoreError("exclusive warehouse operation in progress")
+    try:
+        _verify_lock_file_identity(lock_path, descriptor)
+    except BaseException:
+        try:
+            _unlock_descriptor(descriptor)
+        finally:
+            os.close(descriptor)
+        raise
+    _DATABASE_OPERATION_HANDLES[key] = {
+        "descriptor": descriptor,
+        "depth": 1,
+        "exclusive": exclusive,
+    }
+    try:
+        yield
+    finally:
+        current = _DATABASE_OPERATION_HANDLES.pop(key)
+        try:
+            _unlock_descriptor(current["descriptor"])
+        finally:
+            os.close(current["descriptor"])
+
+
 @contextmanager
 def _normal_database_operation(path: Path) -> Iterator[None]:
     key = _database_operation_key(path)
     with _STORE_OPERATION_LOCK:
         if key in _EXCLUSIVE_DATABASES:
             raise CapsuleStoreError("exclusive warehouse operation in progress")
-        yield
+        with _cross_process_database_operation(path, exclusive=False):
+            yield
 
 
 @contextmanager
@@ -1911,9 +2048,65 @@ def _exclusive_database_operation(path: Path) -> Iterator[None]:
             raise CapsuleStoreError("exclusive warehouse operation in progress")
         _EXCLUSIVE_DATABASES.add(key)
         try:
-            yield
+            with _cross_process_database_operation(path, exclusive=True):
+                yield
         finally:
             _EXCLUSIVE_DATABASES.remove(key)
+
+
+class StateRootLease:
+    """One process-wide owner for one Reweave state root."""
+
+    def __init__(self, key: str, *, primary_owner: bool) -> None:
+        self._key = key
+        self.primary_owner = primary_owner
+        self._closed = False
+
+    def close(self) -> None:
+        with _STATE_ROOT_LEASE_LOCK:
+            if self._closed:
+                return
+            self._closed = True
+            current = _STATE_ROOT_LEASES.get(self._key)
+            if current is None:
+                return
+            current["references"] -= 1
+            if current["references"]:
+                return
+            descriptor = current["descriptor"]
+            _STATE_ROOT_LEASES.pop(self._key, None)
+            try:
+                _unlock_descriptor(descriptor)
+            finally:
+                os.close(descriptor)
+
+
+def acquire_state_root_lease(state_root: str | Path) -> StateRootLease:
+    root = Path(state_root).expanduser().resolve()
+    key = str(root)
+    with _STATE_ROOT_LEASE_LOCK:
+        current = _STATE_ROOT_LEASES.get(key)
+        if current is not None:
+            current["references"] += 1
+            return StateRootLease(key, primary_owner=False)
+        lock_path = root / _STATE_ROOT_LEASE_FILENAME
+        descriptor = _open_lock_file(lock_path)
+        if not _try_lock_descriptor(descriptor, shared=False):
+            os.close(descriptor)
+            raise CapsuleStoreError("reweave_state_root_in_use")
+        try:
+            _verify_lock_file_identity(lock_path, descriptor)
+        except BaseException:
+            try:
+                _unlock_descriptor(descriptor)
+            finally:
+                os.close(descriptor)
+            raise
+        _STATE_ROOT_LEASES[key] = {
+            "descriptor": descriptor,
+            "references": 1,
+        }
+        return StateRootLease(key, primary_owner=True)
 
 
 class CapsuleWarehouseStore:
@@ -1923,7 +2116,7 @@ class CapsuleWarehouseStore:
         self.path = Path(path).expanduser().resolve() if path else capsule_database_path()
 
     def initialize(self) -> Path:
-        with _STORE_OPERATION_LOCK:
+        with _normal_database_operation(self.path):
             _ensure_private_directory(self.path.parent)
             connection = self._connect()
             try:
@@ -2003,6 +2196,106 @@ class CapsuleWarehouseStore:
                 "SELECT warehouse_revision FROM warehouse_state WHERE singleton_id = 1"
             ).fetchone()
             return int(row[0])
+
+    def create_consistent_snapshot(
+        self,
+        target_path: str | Path,
+        *,
+        expected_revision: int,
+    ) -> dict[str, Any]:
+        """Create one validated SQLite backup image without mutating the source."""
+
+        if type(expected_revision) is not int or expected_revision < 0:
+            raise ValueError("expected_revision_invalid")
+        target = Path(
+            os.path.abspath(os.path.expanduser(str(target_path)))
+        )
+        if target == self.path:
+            raise CapsuleStoreError("warehouse_snapshot_target_invalid")
+        with _normal_database_operation(self.path):
+            source_info = _verify_database(self.path)
+            if int(source_info["warehouse_revision"]) != expected_revision:
+                raise WarehouseSnapshotRevisionError(
+                    "warehouse_snapshot_revision_stale"
+                )
+            _ensure_private_directory(target.parent)
+            parent_details = target.parent.lstat()
+            if (
+                stat.S_ISLNK(parent_details.st_mode)
+                or not stat.S_ISDIR(parent_details.st_mode)
+                or target.exists()
+                or target.is_symlink()
+            ):
+                raise CapsuleStoreError("warehouse_snapshot_target_invalid")
+            candidate = _temporary_database_path(
+                target.parent,
+                "consistent-snapshot",
+            )
+            published = completed = False
+            try:
+                source = _open_read_only(self.path)
+                destination = sqlite3.connect(
+                    str(candidate),
+                    isolation_level=None,
+                )
+                try:
+                    source.backup(destination)
+                finally:
+                    destination.close()
+                    source.close()
+                _ensure_private_file(candidate)
+                _fsync_file(candidate)
+                snapshot_info = _verify_database(
+                    candidate,
+                    expected_version=int(source_info["user_version"]),
+                )
+                if (
+                    int(snapshot_info["warehouse_revision"])
+                    != expected_revision
+                ):
+                    raise WarehouseSnapshotRevisionError(
+                        "warehouse_snapshot_revision_stale"
+                    )
+                _fsync_directory(candidate.parent)
+                try:
+                    os.link(candidate, target)
+                    published = True
+                except FileExistsError as exc:
+                    raise CapsuleStoreError(
+                        "warehouse_snapshot_target_invalid"
+                    ) from exc
+                candidate_details = candidate.lstat()
+                target_details = target.lstat()
+                if (
+                    stat.S_ISLNK(target_details.st_mode)
+                    or not stat.S_ISREG(target_details.st_mode)
+                    or (candidate_details.st_dev, candidate_details.st_ino)
+                    != (target_details.st_dev, target_details.st_ino)
+                ):
+                    raise CapsuleStoreError(
+                        "warehouse_snapshot_target_invalid"
+                    )
+                _ensure_private_file(target)
+                _fsync_file(target)
+                _fsync_directory(target.parent)
+                result = {
+                    "path": str(target),
+                    "sha256": _sha256_file(target),
+                    "user_version": snapshot_info["user_version"],
+                    "schema_fingerprint_sha256": (
+                        _SCHEMA_FINGERPRINT_SHA256[
+                            int(snapshot_info["user_version"])
+                        ]
+                    ),
+                    "warehouse_revision": expected_revision,
+                    "integrity_check": "ok",
+                }
+                completed = True
+                return result
+            finally:
+                candidate.unlink(missing_ok=True)
+                if published and not completed:
+                    target.unlink(missing_ok=True)
 
     @staticmethod
     def bump_revision(connection: sqlite3.Connection) -> int:
@@ -2135,36 +2428,61 @@ class CapsuleWarehouseStore:
         path = backup_root / (
             f"capsule_warehouse.{kind}.{stamp}.{uuid.uuid4().hex[:8]}.sqlite3"
         )
-        source = self._connect()
-        destination = sqlite3.connect(str(path))
+        temporary = _temporary_database_path(
+            backup_root,
+            f"backup-{kind}",
+        )
+        published = completed = False
         try:
-            source.backup(destination)
+            source = self._connect()
+            try:
+                destination = sqlite3.connect(str(temporary))
+                try:
+                    source.backup(destination)
+                finally:
+                    destination.close()
+            finally:
+                source.close()
+            _ensure_private_file(temporary)
+            info = _verify_database(temporary)
+            revision = int(info["warehouse_revision"])
+            _fsync_file(temporary)
+            digest = _sha256_file(temporary)
+            if path.exists() or path.is_symlink():
+                raise CapsuleStoreError("backup target already exists")
+            os.replace(temporary, path)
+            published = True
+            _fsync_directory(backup_root)
+            details = path.lstat()
+            if (
+                stat.S_ISLNK(details.st_mode)
+                or not stat.S_ISREG(details.st_mode)
+                or _sha256_file(path) != digest
+            ):
+                raise CapsuleStoreError("published backup verification failed")
+            if kind not in {"pre_restore", "upgrade"}:
+                with self.transaction() as connection:
+                    connection.execute(
+                        "UPDATE warehouse_state "
+                        "SET last_backed_up_revision = "
+                        "MAX(last_backed_up_revision, MIN(warehouse_revision, ?)) "
+                        "WHERE singleton_id = 1",
+                        (revision,),
+                    )
+            self._apply_retention(kind)
+            completed = True
+            return {
+                "path": str(path),
+                "kind": kind,
+                "sha256": digest,
+                "user_version": info["user_version"],
+                "warehouse_revision": revision,
+            }
         finally:
-            destination.close()
-            source.close()
-        _ensure_private_file(path)
-        _fsync_file(path)
-        _fsync_directory(path.parent)
-        info = _verify_database(path)
-        revision = int(info["warehouse_revision"])
-        digest = _sha256_file(path)
-        if kind not in {"pre_restore", "upgrade"}:
-            with self.transaction() as connection:
-                connection.execute(
-                    "UPDATE warehouse_state "
-                    "SET last_backed_up_revision = "
-                    "MAX(last_backed_up_revision, MIN(warehouse_revision, ?)) "
-                    "WHERE singleton_id = 1",
-                    (revision,),
-                )
-        self._apply_retention(kind)
-        return {
-            "path": str(path),
-            "kind": kind,
-            "sha256": digest,
-            "user_version": info["user_version"],
-            "warehouse_revision": revision,
-        }
+            temporary.unlink(missing_ok=True)
+            if published and not completed:
+                path.unlink(missing_ok=True)
+                _fsync_directory(backup_root)
 
     def list_backups(self) -> list[dict[str, Any]]:
         backup_root = self.path.parent / BACKUP_DIRECTORY
@@ -3025,6 +3343,11 @@ def _warehouse_revisions(connection: sqlite3.Connection) -> tuple[int, int]:
 
 def _resolve_backup_path(path: str | Path, database_path: Path) -> Path:
     raw = Path(path).expanduser()
+    if (
+        raw.name.startswith(f".{DATABASE_FILENAME}.backup-")
+        and raw.name.endswith(".tmp")
+    ):
+        raise CapsuleStoreError("backup is not published")
     if raw.is_symlink():
         raise CapsuleStoreError("backup symlinks are forbidden")
     resolved = raw.resolve()

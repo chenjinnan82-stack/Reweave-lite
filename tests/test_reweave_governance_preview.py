@@ -70,6 +70,9 @@ class ReweaveGovernancePreviewTest(unittest.TestCase):
         self._env.start()
 
     def tearDown(self) -> None:
+        service = getattr(self, "service", None)
+        if service is not None:
+            service.close()
         self._env.stop()
         self._tmpdir.cleanup()
 
@@ -202,8 +205,9 @@ class ReweaveAppServiceGovernancePreviewTest(unittest.TestCase):
         }
         mock_client_cls.return_value = mock_client
 
-        service = ReweaveAppService()
-        result = service.preview_governance_for_source(source_id)
+        self.service.close()
+        self.service = ReweaveAppService()
+        result = self.service.preview_governance_for_source(source_id)
         self.assertTrue(result["ok"])
         self.assertIn("luna_governance_preview_failed", result.get("warnings") or [])
 

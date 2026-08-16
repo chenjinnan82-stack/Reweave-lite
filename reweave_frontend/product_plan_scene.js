@@ -151,6 +151,8 @@
             goalPassed: "用户确认的验收例已通过",
             failedTitle: "这一步未能完成",
             failedCopy: "系统已安全停止，没有写入正式产品或用户项目。",
+            gapTargetUnmatched:
+              "当前正式能力及可补齐缺口均不符合本次目标，Reweave 已停止规划，未创建正式 capability gap。",
             retry: "重新开始",
             capability: "复用能力",
             gap: "能力缺口",
@@ -311,6 +313,8 @@
             goalPassed: "User-confirmed cases passed",
             failedTitle: "This step could not be completed",
             failedCopy: "Reweave stopped safely. No formal product or user project was written.",
+            gapTargetUnmatched:
+              "The current formal capabilities and fillable gaps do not match this goal. Reweave stopped planning and did not create a formal capability gap.",
             retry: "Start again",
             capability: "Reusable capability",
             gap: "Capability gap",
@@ -1874,7 +1878,12 @@
             label.appendChild(element("span", "", title));
             var input = document.createElement("input");
             input.type = "text";
-            input.inputMode = "decimal";
+            input.inputMode =
+              field.contract && field.contract.type === "integer"
+                ? "numeric"
+                : field.contract && field.contract.type === "decimal"
+                ? "decimal"
+                : "text";
             var values = row[group.name] || {};
             input.value =
               values[field.key] === undefined
@@ -2153,7 +2162,12 @@
       setText("btn-preview-product-candidate", c.preview);
       setText("btn-save-product-candidate", c.save);
       setText("product-plan-failed-title", c.failedTitle);
-      setText("product-plan-failed-copy", c.failedCopy);
+      setText(
+        "product-plan-failed-copy",
+        state.error === "product_plan_capability_gap_target_unmatched"
+          ? c.gapTargetUnmatched
+          : c.failedCopy
+      );
       setText("btn-retry-product-flow", c.retry);
       setText("btn-product-plan-section-back", c.sectionBack);
       if (els.goal) {
@@ -2271,7 +2285,12 @@
         restoreConfirmedCandidate();
         return;
       } else if (workspace.status === "failed") {
-        fail("product_plan_failed");
+        fail(
+          workspace.failure_code ||
+            (workspace.developer_evidence &&
+              workspace.developer_evidence.failure_code) ||
+            "product_plan_failed"
+        );
         return;
       } else {
         fail("product_plan_interrupted");
@@ -2493,10 +2512,12 @@
           !runtimeInput.properties ||
           !computationOutput.properties ||
           inputKeys.some(function (key) {
-            return !runtimeInput.properties[key];
+            return !acceptanceScalarSupported(runtimeInput.properties[key]);
           }) ||
           outputKeys.some(function (key) {
-            return !computationOutput.properties[key];
+            return !acceptanceScalarSupported(
+              computationOutput.properties[key]
+            );
           })
         ) {
           state.acceptanceShape = null;
@@ -2521,39 +2542,144 @@
       });
     }
 
+    function canonicalDecimal(text) {
+      var value = String(text).trim();
+      if (!/^-?\d+(?:\.\d+)?$/.test(value)) throw new Error("decimal");
+      var negative = value.charAt(0) === "-";
+      var unsigned = negative ? value.slice(1) : value;
+      var pieces = unsigned.split(".");
+      var integer = pieces[0].replace(/^0+(?=\d)/, "");
+      var fraction = (pieces[1] || "").replace(/0+$/, "");
+      if (integer.length > 18) throw new Error("decimal");
+      if (negative && /^0+$/.test(integer) && !/[1-9]/.test(fraction)) {
+        throw new Error("decimal");
+      }
+      var canonical = integer + (fraction ? "." + fraction : "");
+      return negative ? "-" + canonical : canonical;
+    }
+
+    function compareDecimals(left, right) {
+      var leftNegative = left.charAt(0) === "-";
+      var rightNegative = right.charAt(0) === "-";
+      if (leftNegative !== rightNegative) return leftNegative ? -1 : 1;
+      var leftParts = (leftNegative ? left.slice(1) : left).split(".");
+      var rightParts = (rightNegative ? right.slice(1) : right).split(".");
+      var magnitude = 0;
+      if (leftParts[0].length !== rightParts[0].length) {
+        magnitude = leftParts[0].length < rightParts[0].length ? -1 : 1;
+      } else if (leftParts[0] !== rightParts[0]) {
+        magnitude = leftParts[0] < rightParts[0] ? -1 : 1;
+      } else {
+        var width = Math.max(
+          (leftParts[1] || "").length,
+          (rightParts[1] || "").length
+        );
+        var leftFraction = (leftParts[1] || "").padEnd(width, "0");
+        var rightFraction = (rightParts[1] || "").padEnd(width, "0");
+        magnitude =
+          leftFraction === rightFraction
+            ? 0
+            : leftFraction < rightFraction
+            ? -1
+            : 1;
+      }
+      return leftNegative ? -magnitude : magnitude;
+    }
+
+    function acceptanceScalarSupported(contract) {
+      if (!contract || typeof contract !== "object") return false;
+      if (contract.type === "boolean") return true;
+      if (contract.type === "integer") {
+        return (
+          Number.isSafeInteger(contract.minimum) &&
+          Number.isSafeInteger(contract.maximum) &&
+          contract.minimum <= contract.maximum &&
+          (!("enum" in contract) ||
+            (Array.isArray(contract.enum) &&
+              contract.enum.every(Number.isSafeInteger)))
+        );
+      }
+      if (contract.type === "string") {
+        return (
+          Number.isInteger(contract.min_length) &&
+          Number.isInteger(contract.max_length) &&
+          contract.min_length >= 0 &&
+          contract.min_length <= contract.max_length &&
+          contract.max_length <= 10000 &&
+          (!("enum" in contract) ||
+            (Array.isArray(contract.enum) &&
+              contract.enum.every(function (item) {
+                return typeof item === "string";
+              })))
+        );
+      }
+      if (contract.type !== "decimal") return false;
+      try {
+        return (
+          Number.isInteger(contract.max_scale) &&
+          contract.max_scale >= 0 &&
+          contract.max_scale <= 18 &&
+          canonicalDecimal(contract.minimum) === contract.minimum &&
+          canonicalDecimal(contract.maximum) === contract.maximum &&
+          compareDecimals(contract.minimum, contract.maximum) <= 0 &&
+          (!("enum" in contract) ||
+            (Array.isArray(contract.enum) &&
+              contract.enum.every(function (item) {
+                return canonicalDecimal(item) === item;
+              })))
+        );
+      } catch (_error) {
+        return false;
+      }
+    }
+
     function parseValue(text, contract) {
-      var value = String(text || "").trim();
-      if (!value) throw new Error("empty");
-      if (contract && contract.type === "integer") {
+      var raw = text === undefined || text === null ? "" : String(text);
+      if (!acceptanceScalarSupported(contract)) throw new Error("unsupported");
+      if (contract.type === "integer") {
+        var value = raw.trim();
         if (!/^-?\d+$/.test(value)) throw new Error("integer");
         var integer = Number(value);
         if (
           !Number.isSafeInteger(integer) ||
-          (Number.isInteger(contract.minimum) && integer < contract.minimum) ||
-          (Number.isInteger(contract.maximum) && integer > contract.maximum)
+          integer < contract.minimum ||
+          integer > contract.maximum ||
+          (Array.isArray(contract.enum) &&
+            contract.enum.indexOf(integer) === -1)
         ) {
           throw new Error("range");
         }
         return integer;
       }
-      if (contract && contract.type === "number") {
-        var number = Number(value);
+      if (contract.type === "decimal") {
+        var decimal = canonicalDecimal(raw);
+        var scale = decimal.includes(".")
+          ? decimal.length - decimal.indexOf(".") - 1
+          : 0;
         if (
-          !Number.isFinite(number) ||
-          (typeof contract.minimum === "number" && number < contract.minimum) ||
-          (typeof contract.maximum === "number" && number > contract.maximum)
+          scale > contract.max_scale ||
+          compareDecimals(decimal, contract.minimum) < 0 ||
+          compareDecimals(decimal, contract.maximum) > 0 ||
+          (Array.isArray(contract.enum) &&
+            contract.enum.indexOf(decimal) === -1)
         ) {
-          throw new Error("number");
+          throw new Error("decimal");
         }
-        return number;
+        return decimal;
       }
-      if (contract && contract.type === "boolean") {
-        if (value === "true") return true;
-        if (value === "false") return false;
+      if (contract.type === "boolean") {
+        if (raw === "true") return true;
+        if (raw === "false") return false;
         throw new Error("boolean");
       }
-      if (!contract || contract.type === "string") return value;
-      throw new Error("unsupported");
+      if (
+        raw.length < contract.min_length ||
+        raw.length > contract.max_length ||
+        (Array.isArray(contract.enum) && contract.enum.indexOf(raw) === -1)
+      ) {
+        throw new Error("string");
+      }
+      return raw;
     }
 
     function acceptanceCases() {

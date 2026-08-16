@@ -25,8 +25,14 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
         self._root = Path(self._tmpdir.name)
         self._runtime_state = self._root / "frontend_runtime_state.json"
         self._reweave_state = self._root / "reweave-state"
+        self._state_env = patch.dict(
+            os.environ,
+            {"REWEAVE_STATE_DIR": str(self._reweave_state)},
+        )
+        self._state_env.start()
 
     def tearDown(self) -> None:
+        self._state_env.stop()
         self._tmpdir.cleanup()
 
     def _write_runtime_state(self) -> None:
@@ -988,22 +994,29 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
                 QFileDialog.called = True
                 return str(source)
 
-        service = ReweaveAppService(engine=LumoLiteReweaveEngine(runtime_state_path=str(self._runtime_state)))
-
         with (
             patch.dict(os.environ, {"REWEAVE_STATE_DIR": str(self._reweave_state)}),
             patch.object(desktop, "import_qt_bridge", return_value=(QObject, Slot, object)),
             patch.object(desktop, "import_qt_webengine", return_value=(object, object, object, object, object, QFileDialog)),
         ):
+            service = ReweaveAppService(
+                engine=LumoLiteReweaveEngine(
+                    runtime_state_path=str(self._runtime_state)
+                )
+            )
             desktop.ReweaveBridge._qobject_cls = None
             try:
                 bridge = desktop.ReweaveBridge.create(service)
-                bound = json.loads(bridge.choose_source_folder())
-                scanned = json.loads(bridge.scan_source_box(bound["source"]["id"]))
-                drafted = json.loads(bridge.draft_capsules(bound["source"]["id"]))
-                stored = json.loads(bridge.promote_source_drafts(bound["source"]["id"]))
+                discovered = json.loads(bridge.choose_source_root())
+                for retired in (
+                    "choose_source_folder",
+                    "scan_source_box",
+                    "draft_capsules",
+                    "promote_source_drafts",
+                ):
+                    self.assertFalse(hasattr(bridge, retired))
                 generated = json.loads(
-                    bridge.notify_generate(
+                    bridge.generate_product(
                         json.dumps(
                             {
                                 "task": "Build a desktop small project pack",
@@ -1015,13 +1028,10 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
                 )
             finally:
                 desktop.ReweaveBridge._qobject_cls = None
+                service.close()
 
         self.assertTrue(QFileDialog.called)
-        self.assertTrue(bound["ok"])
-        self.assertTrue(scanned["ok"])
-        self.assertTrue(drafted["ok"])
-        self.assertTrue(stored["ok"])
-        self.assertEqual(stored["capsules"], [])
+        self.assertTrue(discovered["ok"])
         self.assertFalse(generated["ok"])
         self.assertEqual(
             generated["error"]["code"], "formal_capsule_selection_required"
@@ -1146,7 +1156,7 @@ class LumoLiteLocalStateAdapterTest(unittest.TestCase):
             try:
                 bridge = desktop.ReweaveBridge.create(service)
                 result = json.loads(
-                    bridge.notify_generate(
+                    bridge.generate_product(
                         json.dumps(
                             {
                                 "taskText": "x",

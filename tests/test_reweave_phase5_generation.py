@@ -11,6 +11,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from contextlib import contextmanager
@@ -19,6 +20,7 @@ from unittest.mock import patch
 
 from pimos_lite.composer.module_native import (
     ADAPTER_V4_FORMAL_PRODUCT_COMPOSER_VERSION,
+    ADAPTER_V5_FORMAL_PRODUCT_COMPOSER_VERSION,
     _bundle_formal_capsule,
     _normalize_formal_capsule,
     compose_capsule_product,
@@ -39,6 +41,7 @@ from pimos_lite.reweave_capsule_stage3 import (
     generate_computation_adapter_v2,
     generate_computation_adapter_v3,
     generate_computation_adapter_v4,
+    generate_computation_adapter_v5,
 )
 from pimos_lite.reweave_canonical import canonical_json_digest
 from pimos_lite.reweave_capsule_store import (
@@ -1320,6 +1323,79 @@ for name in sys.modules:
             },
         )
 
+    def test_formal_generation_cancel_cleans_product_before_usage_commit(self) -> None:
+        runtime_entered = threading.Event()
+        release_runtime = threading.Event()
+
+        def cancellable_composition(**kwargs: object) -> dict[str, object]:
+            self.assertTrue(callable(kwargs.get("cancel_check")))
+            return _composition_stub(**kwargs)
+
+        def blocked_runtime(_root: Path) -> dict[str, object]:
+            runtime_entered.set()
+            self.assertTrue(release_runtime.wait(5))
+            return _runtime_receipt(_root)
+
+        with (
+            patch(
+                "pimos_lite.reweave_app_service.compose_capsule_product",
+                side_effect=cancellable_composition,
+            ),
+            patch(
+                "pimos_lite.reweave_app_service._validate_product_static",
+                side_effect=_quality_receipt,
+            ),
+            patch(
+                "pimos_lite.reweave_app_service._validate_product_runtime",
+                side_effect=blocked_runtime,
+            ),
+        ):
+            started = self._start_all()
+            self.assertTrue(runtime_entered.wait(5))
+            cancelled = self.service.cancel_intake_run(
+                {"run_id": started["run_id"]}
+            )
+            self.assertTrue(cancelled.get("ok"), cancelled)
+            release_runtime.set()
+            state = self._wait(started)
+
+        self.assertEqual(state["status"], "cancelled")
+        products = self.state / "products"
+        self.assertEqual(
+            [] if not products.exists() else list(products.iterdir()),
+            [],
+        )
+        with self.store.read_connection() as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM product_capsule_usage"
+                ).fetchone()[0],
+                0,
+            )
+
+    def test_formal_bundle_checks_cancel_between_bounded_subprocesses(self) -> None:
+        cancelled = threading.Event()
+
+        def analyzer(_payload: dict[str, object]) -> None:
+            cancelled.set()
+
+        def check_cancelled() -> None:
+            if cancelled.is_set():
+                raise ProductGenerationError("cancelled_by_user")
+
+        with (
+            patch(
+                "pimos_lite.composer.module_native._run_formal_analyzer",
+                side_effect=analyzer,
+            ),
+            self.assertRaisesRegex(ProductGenerationError, "cancelled_by_user"),
+        ):
+            _bundle_formal_capsule(
+                _capsule_payload("presentation"),
+                "ReweaveCancellationProbe",
+                cancel_check=check_cancelled,
+            )
+
     def test_formal_composer_is_deterministic_and_input_order_independent(self) -> None:
         if not (ROOT / "node_modules" / "esbuild" / "package.json").is_file():
             self.skipTest("npm ci is required for the formal composer")
@@ -1333,7 +1409,13 @@ for name in sys.modules:
         second = compose_capsule_product(
             **arguments, capsules=list(reversed(capsules))
         )
+        cancellable = compose_capsule_product(
+            **arguments,
+            capsules=capsules,
+            cancel_check=lambda: None,
+        )
         self.assertEqual(first, second)
+        self.assertEqual(first, cancellable)
         self.assertNotIn("reweave-formal-compose-", first["files"]["app.js"])
         self.assertIn(
             '<div id="reweave-1234567890abcdef-root" '
@@ -1780,7 +1862,9 @@ export function compute(input) {
         with self.assertRaisesRegex(ValueError, "formal_capsule_object_invalid"):
             _normalize_formal_capsule(mapping_tampered)
 
-    def test_formal_composer_v6_accepts_v4_evidence_and_rejects_tampering(self) -> None:
+    def test_formal_composer_v6_and_v7_accept_exact_evidence_and_reject_tampering(
+        self,
+    ) -> None:
         input_contract = _object_contract(
             {
                 "urgent": {"type": "boolean"},
@@ -2043,6 +2127,191 @@ export function compute(input) {
                     generated_at="2026-08-12T00:00:00Z",
                     capsules=[presentation, changed],
                 )
+
+        string_input = _object_contract(
+            {
+                "message": {
+                    "type": "string",
+                    "min_length": 1,
+                    "max_length": 1000,
+                }
+            }
+        )
+        string_output = _object_contract(
+            {
+                "classification": {
+                    "type": "string",
+                    "min_length": 6,
+                    "max_length": 6,
+                    "enum": ["normal", "urgent"],
+                }
+            }
+        )
+        string_source = (
+            "export function __selected(message) { "
+            'return message.includes("urgent") ? "urgent" : "normal"; }\n'
+        )
+        string_computation = copy.deepcopy(computation)
+        string_computation.update(
+            capsule_id="capsule_message_computation",
+            version_id="version_message_computation",
+            capability_key="message_classification",
+            role_key="classify_message",
+            adapter_contract_version="computation_adapter.v5",
+            input_contract=string_input,
+            output_contract=string_output,
+        )
+        string_computation["javascript_modules"] = [
+            {
+                "path": "__reweave_adapter__/compute.js",
+                "source": generate_computation_adapter_v5(
+                    ["message"],
+                    string_input,
+                    string_output,
+                ),
+            },
+            {
+                "path": "__reweave_capture__/selected.js",
+                "source": string_source,
+            },
+        ]
+        string_canonical = canonicalize_capsule(
+            {
+                key: string_computation[key]
+                for key in (
+                    "capability_kind",
+                    "activation",
+                    "input_contract",
+                    "output_contract",
+                    "error_contract",
+                    "runtime_allowlist",
+                    "dom_scope",
+                    "usage_scope",
+                    "html",
+                    "css",
+                    "javascript_modules",
+                    "assets",
+                )
+            }
+        )
+        string_computation["canonical_hash"] = string_canonical.sha256
+        string_binding = "9" * 64
+        string_target = "8" * 64
+        string_mapping = {
+            "schema": "computation_capture_mapping.v5",
+            "arguments": [
+                {
+                    "parameter_binding_id": string_binding,
+                    "input_field": "message",
+                    "kind": "string",
+                    "min_length": 1,
+                    "max_length": 1000,
+                }
+            ],
+            "result_field": "classification",
+            "result_enum": ["normal", "urgent"],
+            "proof_schema": "source_graph_proof.v3",
+            "examples": [
+                {
+                    "input": {"message": "routine task"},
+                    "expected": {"classification": "normal"},
+                },
+                {
+                    "input": {"message": "urgent task"},
+                    "expected": {"classification": "urgent"},
+                },
+            ],
+        }
+        string_closure = {
+            "module_paths": ["message.js"],
+            "binding_ids": [string_binding, string_target],
+        }
+        string_proof = {
+            "schema": "source_graph_proof.v3",
+            "target_binding_id": string_target,
+            "parameter_domains": [
+                {
+                    "parameter_binding_id": string_binding,
+                    "domain": {
+                        "kind": "string",
+                        "min_length": 1,
+                        "max_length": 1000,
+                    },
+                }
+            ],
+            "result_domain": {
+                "kind": "enum",
+                "values": ["normal", "urgent"],
+            },
+            "closure": string_closure,
+            "closure_sha256": canonical_json_digest(string_closure),
+            "dependency_evidence_sha256": "7" * 64,
+            "module_evidence_sha256": "6" * 64,
+            "top_level_evidence_sha256": "5" * 64,
+        }
+        string_evidence = copy.deepcopy(evidence)
+        string_evidence.update(
+            adapter_contract_version="computation_adapter.v5",
+            selected_function={
+                "module_relpath": "message.js",
+                "export_name": "classifyMessage",
+                "target_binding_id": string_target,
+                "selected_bundle_sha256": hashlib.sha256(
+                    string_source.encode("utf-8")
+                ).hexdigest(),
+                "capture_entry_sha256": "3" * 64,
+            },
+            mapping=string_mapping,
+            mapping_sha256=canonical_json_digest(string_mapping),
+            examples={
+                "count": 2,
+                "canonical_sha256": canonical_json_digest(
+                    string_mapping["examples"]
+                ),
+            },
+            rule_versions={
+                "source_graph_version": "source_graph.v1",
+                "adapter_contract_version": "computation_adapter.v5",
+            },
+            canonical_candidate=string_canonical.payload,
+            source_graph_proof=string_proof,
+            source_graph_proof_sha256=canonical_json_digest(string_proof),
+        )
+        string_computation["adapter_evidence"] = string_evidence
+        string_presentation = copy.deepcopy(presentation)
+        string_presentation.update(
+            capsule_id="capsule_message_presentation",
+            version_id="version_message_presentation",
+            capability_key="message_classification",
+            role_key="message_result",
+            input_contract=string_output,
+        )
+        string_presentation["javascript_modules"][0]["source"] = (
+            """export function render(root, input) {
+  const total = root.querySelector("[data-ref='total']");
+  total.textContent = String(input.classification);
+}
+"""
+        )
+        string_composed = compose_capsule_product(
+            task="Show classification",
+            product_id="product_1234567890abcdef",
+            generated_at="2026-08-12T00:00:00Z",
+            capsules=[string_presentation, string_computation],
+        )
+        self.assertEqual(
+            string_composed["composer_version"],
+            ADAPTER_V5_FORMAL_PRODUCT_COMPOSER_VERSION,
+        )
+        tampered_v5 = copy.deepcopy(string_computation)
+        tampered_v5["adapter_evidence"]["source_graph_proof_sha256"] = "0" * 64
+        with self.assertRaisesRegex(ValueError, "formal_adapter_v4_evidence_invalid"):
+            compose_capsule_product(
+                task="Show classification",
+                product_id="product_1234567890abcdef",
+                generated_at="2026-08-12T00:00:00Z",
+                capsules=[string_presentation, tampered_v5],
+            )
 
     def test_formal_composer_does_not_apply_v2_module_rule_to_plain_computation(self) -> None:
         capsule = _capsule_payload("computation")

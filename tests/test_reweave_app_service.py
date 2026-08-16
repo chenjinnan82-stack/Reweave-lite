@@ -7,9 +7,13 @@ import hashlib
 import io
 import json
 import os
+import subprocess
+import sys
 import tempfile
 import threading
+import time
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -29,6 +33,11 @@ from pimos_lite.reweave_app_service import (
 from pimos_lite.reweave_agent_stdio import (
     AGENT_PROTOCOL_VERSION,
     serve_jsonl,
+)
+from pimos_lite.reweave_capsule_store import (
+    CapsuleStoreError,
+    CapsuleWarehouseStore,
+    WarehouseSnapshotRevisionError,
 )
 from pimos_lite.reweave_engine.local import LocalReweaveEngine
 from pimos_lite.reweave_engine.lumo_lite import LumoLiteReweaveEngine
@@ -61,20 +70,30 @@ class ReweaveAppServiceTest(unittest.TestCase):
             self.assertEqual(fsync.call_count, 1)
 
     def test_get_initial_state_includes_app_service_and_engine_status(self) -> None:
-        service = ReweaveAppService(engine=LocalReweaveEngine())
-        state = service.get_initial_state()
-        self.assertEqual(state["appService"], APP_SERVICE_VERSION)
-        self.assertEqual(state["engine"], "sqlite_capsule_warehouse")
-        self.assertIn("engineStatus", state)
-        self.assertTrue(state["engineStatus"]["available"])
-        self.assertTrue(state["canGenerateProduct"])
-        self.assertTrue(state["canPlanProduct"])
-        self.assertFalse(state["canGeneratePreview"])
-        self.assertEqual(
-            state["productPlanning"]["schema_version"],
-            "product_planning_state.v1",
-        )
-        self.assertEqual(state["productPlanning"]["workspaces"], [])
+        with tempfile.TemporaryDirectory() as directory:
+            store = CapsuleWarehouseStore(
+                Path(directory) / "capsule_warehouse.sqlite3"
+            )
+            service = ReweaveAppService(
+                engine=LocalReweaveEngine(),
+                capsule_store=store,
+            )
+            try:
+                state = service.get_initial_state()
+                self.assertEqual(state["appService"], APP_SERVICE_VERSION)
+                self.assertEqual(state["engine"], "sqlite_capsule_warehouse")
+                self.assertIn("engineStatus", state)
+                self.assertTrue(state["engineStatus"]["available"])
+                self.assertTrue(state["canGenerateProduct"])
+                self.assertTrue(state["canPlanProduct"])
+                self.assertFalse(state["canGeneratePreview"])
+                self.assertEqual(
+                    state["productPlanning"]["schema_version"],
+                    "product_planning_state.v1",
+                )
+                self.assertEqual(state["productPlanning"]["workspaces"], [])
+            finally:
+                service.close()
 
     def test_lumo_engine_via_service_when_env_set(self) -> None:
         class DownClient:
@@ -86,23 +105,45 @@ class ReweaveAppServiceTest(unittest.TestCase):
                     "error": "down",
                 }
 
-        with patch.dict(os.environ, {"REWEAVE_ENGINE": "lumo"}):
+        with (
+            tempfile.TemporaryDirectory() as directory,
+            patch.dict(os.environ, {"REWEAVE_ENGINE": "lumo"}),
+        ):
             from pimos_lite.reweave_engine.lumo import LumoReweaveEngine
 
-            service = ReweaveAppService(engine=LumoReweaveEngine(luna_client=DownClient()))
-            state = service.get_initial_state()
-            self.assertEqual(state["backend"], "sqlite_capsule_warehouse")
-            self.assertTrue(state["engineStatus"]["available"])
+            service = ReweaveAppService(
+                engine=LumoReweaveEngine(luna_client=DownClient()),
+                capsule_store=CapsuleWarehouseStore(
+                    Path(directory) / "capsule_warehouse.sqlite3"
+                ),
+            )
+            try:
+                state = service.get_initial_state()
+                self.assertEqual(state["backend"], "sqlite_capsule_warehouse")
+                self.assertTrue(state["engineStatus"]["available"])
+            finally:
+                service.close()
 
     def test_lumo_lite_blocked_service_actions_share_release_boundary_shape(self) -> None:
-        service = ReweaveAppService(engine=LumoLiteReweaveEngine())
-        results = [
-            service.create_review_queue_for_source("source_alpha"),
-            service.promote_review_item("source_alpha", "review_alpha"),
-            service.list_warehouse_capsules(),
-            service.update_capsule_status("capsule_alpha", "disabled"),
-            service.export_preview_package("package_alpha", "/tmp/export", "zip"),
-        ]
+        with tempfile.TemporaryDirectory() as directory:
+            service = ReweaveAppService(
+                engine=LumoLiteReweaveEngine(),
+                capsule_store=CapsuleWarehouseStore(
+                    Path(directory) / "capsule_warehouse.sqlite3"
+                ),
+            )
+            try:
+                results = [
+                    service.create_review_queue_for_source("source_alpha"),
+                    service.promote_review_item("source_alpha", "review_alpha"),
+                    service.list_warehouse_capsules(),
+                    service.update_capsule_status("capsule_alpha", "disabled"),
+                    service.export_preview_package(
+                        "package_alpha", "/tmp/export", "zip"
+                    ),
+                ]
+            finally:
+                service.close()
 
         self.assertEqual(
             {item["action"] for item in results},
@@ -119,6 +160,290 @@ class ReweaveAppServiceTest(unittest.TestCase):
         self.assertTrue(all(item["mode"] == "source_read_only_preview_write" for item in results))
         self.assertTrue(all(item["error"] == "lumo_lite_read_only" for item in results))
         self.assertTrue(all(item["release_boundary"] == "legacy_workbench" for item in results))
+
+    def test_state_root_has_one_cross_process_owner(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            state = root / "state"
+            gate = root / "gate"
+            release = root / "release"
+            script = (
+                "import sys,time\n"
+                "from pathlib import Path\n"
+                "from pimos_lite.reweave_app_service import ReweaveAppService\n"
+                "from pimos_lite.reweave_capsule_store import "
+                "CapsuleStoreError,CapsuleWarehouseStore\n"
+                "from pimos_lite.reweave_engine.local import LocalReweaveEngine\n"
+                "state,gate,ready,result,release=map(Path,sys.argv[1:])\n"
+                "ready.write_text('ready',encoding='utf-8')\n"
+                "while not gate.exists(): time.sleep(0.01)\n"
+                "try:\n"
+                " service=ReweaveAppService("
+                "engine=LocalReweaveEngine(),"
+                "capsule_store=CapsuleWarehouseStore("
+                "state/'capsule_warehouse.sqlite3'))\n"
+                "except CapsuleStoreError as exc:\n"
+                " result.write_text(str(exc),encoding='utf-8')\n"
+                "else:\n"
+                " result.write_text('owner',encoding='utf-8')\n"
+                " while not release.exists(): time.sleep(0.01)\n"
+                " service.close()\n"
+            )
+            processes = []
+            results = []
+            for index in range(2):
+                ready = root / f"ready-{index}"
+                result = root / f"result-{index}"
+                results.append(result)
+                processes.append(
+                    subprocess.Popen(
+                        [
+                            sys.executable,
+                            "-c",
+                            script,
+                            str(state),
+                            str(gate),
+                            str(ready),
+                            str(result),
+                            str(release),
+                        ],
+                        cwd=Path(__file__).resolve().parents[1],
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.PIPE,
+                        text=True,
+                    )
+                )
+            deadline = time.monotonic() + 10
+            while not all((root / f"ready-{index}").is_file() for index in range(2)):
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(0.01)
+            gate.touch()
+            while not all(result.is_file() for result in results):
+                self.assertLess(time.monotonic(), deadline)
+                time.sleep(0.01)
+            self.assertEqual(
+                sorted(result.read_text(encoding="utf-8") for result in results),
+                ["owner", "reweave_state_root_in_use"],
+            )
+            release.touch()
+            for process in processes:
+                _stdout, stderr = process.communicate(timeout=10)
+                self.assertEqual(process.returncode, 0, stderr)
+            self.assertEqual(
+                {path.name for path in state.iterdir()},
+                {".reweave_state_root.lock"},
+            )
+
+    def test_state_root_has_one_app_service_owner_in_process(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            store_path = Path(directory) / "state" / "capsule_warehouse.sqlite3"
+            first = ReweaveAppService(
+                engine=LocalReweaveEngine(),
+                capsule_store=CapsuleWarehouseStore(store_path),
+            )
+            try:
+                with self.assertRaisesRegex(
+                    CapsuleStoreError,
+                    "reweave_state_root_in_use",
+                ):
+                    ReweaveAppService(
+                        engine=LocalReweaveEngine(),
+                        capsule_store=CapsuleWarehouseStore(store_path),
+                    )
+                self.assertEqual(
+                    first.get_initial_state()["backend"],
+                    "sqlite_capsule_warehouse",
+                )
+            finally:
+                first.close()
+
+            replacement = ReweaveAppService(
+                engine=LocalReweaveEngine(),
+                capsule_store=CapsuleWarehouseStore(store_path),
+            )
+            replacement.close()
+
+    def test_services_with_distinct_state_roots_can_coexist(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            services = [
+                ReweaveAppService(
+                    engine=LocalReweaveEngine(),
+                    capsule_store=CapsuleWarehouseStore(
+                        root / name / "capsule_warehouse.sqlite3"
+                    ),
+                )
+                for name in ("first", "second")
+            ]
+            try:
+                self.assertNotEqual(
+                    services[0]._state_root,
+                    services[1]._state_root,
+                )
+            finally:
+                for service in services:
+                    service.close()
+
+    def test_startup_cleans_only_exact_safe_product_staging(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "state"
+            candidate_root = state / "product_candidates"
+            product_root = state / "products"
+            candidate_root.mkdir(parents=True)
+            product_root.mkdir()
+            candidate_staging = [
+                candidate_root / (
+                    f".candidate_{value * 32}-{suffix}"
+                )
+                for value, suffix in (
+                    ("1", "abcdefgh"),
+                    ("2", "abc_def0"),
+                )
+            ]
+            product_staging = product_root / (
+                f".product_{'3' * 32}-1234abcd"
+            )
+            for staging in [*candidate_staging, product_staging]:
+                (staging / "nested").mkdir(parents=True)
+                (staging / "nested" / "partial").write_text(
+                    "partial",
+                    encoding="utf-8",
+                )
+            final_candidate = candidate_root / f"candidate_{'4' * 32}"
+            final_product = product_root / f"product_{'5' * 32}"
+            recoverable_product = product_root / f"product_{'6' * 32}"
+            unknown = candidate_root / ".candidate_unknown"
+            for preserved in (
+                final_candidate,
+                final_product,
+                recoverable_product,
+                unknown,
+            ):
+                preserved.mkdir()
+
+            for _ in range(2):
+                service = ReweaveAppService(
+                    engine=LocalReweaveEngine(),
+                    capsule_store=CapsuleWarehouseStore(
+                        state / "capsule_warehouse.sqlite3"
+                    ),
+                )
+                service.close()
+
+            self.assertTrue(
+                all(not staging.exists() for staging in candidate_staging)
+            )
+            self.assertFalse(product_staging.exists())
+            self.assertTrue(final_candidate.is_dir())
+            self.assertTrue(final_product.is_dir())
+            self.assertTrue(recoverable_product.is_dir())
+            self.assertTrue(unknown.is_dir())
+
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "state"
+            service = ReweaveAppService(
+                engine=LocalReweaveEngine(),
+                capsule_store=CapsuleWarehouseStore(
+                    state / "capsule_warehouse.sqlite3"
+                ),
+            )
+            service.close()
+            self.assertFalse((state / "product_candidates").exists())
+            self.assertFalse((state / "products").exists())
+
+    def test_startup_staging_cleanup_fails_closed_before_deletion(self) -> None:
+        for unsafe_kind in ("matching_symlink", "matching_file", "nested_symlink"):
+            with self.subTest(unsafe_kind=unsafe_kind):
+                with tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    state = root / "state"
+                    candidates = state / "product_candidates"
+                    candidates.mkdir(parents=True)
+                    safe = candidates / (
+                        f".candidate_{'1' * 32}-abcdefgh"
+                    )
+                    safe.mkdir()
+                    outside = root / "outside"
+                    outside.mkdir()
+                    unsafe = candidates / (
+                        f".candidate_{'2' * 32}-1234abcd"
+                    )
+                    if unsafe_kind == "matching_symlink":
+                        os.symlink(outside, unsafe)
+                    elif unsafe_kind == "matching_file":
+                        unsafe.write_text("not a directory", encoding="utf-8")
+                    else:
+                        unsafe.mkdir()
+                        os.symlink(outside, unsafe / "escape")
+
+                    with self.assertRaisesRegex(
+                        CapsuleStoreError,
+                        "product_staging_recovery_conflict",
+                    ):
+                        ReweaveAppService(
+                            engine=LocalReweaveEngine(),
+                            capsule_store=CapsuleWarehouseStore(
+                                state / "capsule_warehouse.sqlite3"
+                            ),
+                        )
+
+                    self.assertTrue(safe.is_dir())
+                    self.assertTrue(outside.is_dir())
+
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "state"
+            staging = state / "products" / (
+                f".product_{'3' * 32}-abcdefgh"
+            )
+            staging.mkdir(parents=True)
+            with (
+                patch.object(
+                    app_service_module.shutil,
+                    "rmtree",
+                    side_effect=OSError("sentinel"),
+                ),
+                self.assertRaisesRegex(
+                    CapsuleStoreError,
+                    "product_staging_recovery_failed",
+                ),
+            ):
+                ReweaveAppService(
+                    engine=LocalReweaveEngine(),
+                    capsule_store=CapsuleWarehouseStore(
+                        state / "capsule_warehouse.sqlite3"
+                    ),
+                )
+            self.assertTrue(staging.is_dir())
+
+    def test_custom_store_freezes_all_app_service_state_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            state = Path(directory) / "custom-state"
+            service = ReweaveAppService(
+                engine=LocalReweaveEngine(),
+                capsule_store=CapsuleWarehouseStore(
+                    state / "capsule_warehouse.sqlite3"
+                ),
+            )
+            try:
+                with patch.dict(
+                    os.environ,
+                    {"REWEAVE_STATE_DIR": str(Path(directory) / "other-state")},
+                ):
+                    self.assertEqual(service._state_root, state.resolve())
+                    self.assertEqual(
+                        service._product_planner.root,
+                        state.resolve() / "product_workspaces",
+                    )
+                    self.assertEqual(
+                        service._product_candidate_root(),
+                        state.resolve() / "product_candidates",
+                    )
+                    self.assertEqual(
+                        service._formal_product_root(),
+                        state.resolve() / "products",
+                    )
+            finally:
+                service.close()
 
     def test_release_boundaries_are_explicit_and_disjoint(self) -> None:
         self.assertFalse(PUBLIC_PRODUCT_ACTIONS & LEGACY_WORKBENCH_ACTIONS)
@@ -147,6 +472,8 @@ class ReweaveAppServiceTest(unittest.TestCase):
             "create_local_agent_handoff",
             "revoke_local_agent_handoff",
             "list_reusable_product_capabilities",
+            "get_confirmed_product_plan",
+            "start_confirmed_product_candidate",
             "start_product_candidate",
             "get_product_candidate_run",
             "get_product_candidate",
@@ -210,6 +537,11 @@ class ReweaveAppServiceTest(unittest.TestCase):
         self.assertIn("revoke_local_agent_handoff", public_product_actions())
         self.assertIn(
             "list_reusable_product_capabilities",
+            public_product_actions(),
+        )
+        self.assertIn("get_confirmed_product_plan", public_product_actions())
+        self.assertIn(
+            "start_confirmed_product_candidate",
             public_product_actions(),
         )
         self.assertIn("start_product_candidate", public_product_actions())
@@ -375,6 +707,7 @@ class ReweaveAppServiceTest(unittest.TestCase):
                 self.confirmation = None
                 self.experience_records: list[tuple] = []
                 self.retrieval_calls: list[tuple] = []
+                self.experience_error = False
 
             def confirm(self, *args):
                 self.calls.append(args)
@@ -389,6 +722,8 @@ class ReweaveAppServiceTest(unittest.TestCase):
                 }
 
             def record_product_experience(self, *args, **kwargs):
+                if self.experience_error:
+                    raise RuntimeError("/private/customer-secret")
                 self.experience_records.append((args, kwargs))
                 return {"recorded": True}
 
@@ -411,6 +746,9 @@ class ReweaveAppServiceTest(unittest.TestCase):
         service = object.__new__(ReweaveAppService)
         planner = Planner()
         service._product_planner = planner
+        service._management_lock = threading.RLock()
+        service._management_closed = False
+        service._restore_pending = False
         service._capsule_operation_lock = threading.RLock()
         service._product_planning_catalog = lambda: {
             "warehouse_revision": 1,
@@ -450,7 +788,12 @@ class ReweaveAppServiceTest(unittest.TestCase):
             "plan_digest": "b" * 64,
             "reviewed_plan": reviewed_plan,
         }
-        self.assertTrue(service.confirm_product_plan(base)["ok"])
+        confirmed = service.confirm_product_plan(base)
+        self.assertTrue(confirmed["ok"])
+        self.assertEqual(
+            confirmed["data"]["experience_record_status"],
+            "recorded",
+        )
         self.assertEqual(
             planner.experience_records[-1][0][2],
             "plan_confirmed",
@@ -485,10 +828,28 @@ class ReweaveAppServiceTest(unittest.TestCase):
                 {"binding_id": "parameter_binding_public", "value": 10}
             ],
         }
-        self.assertTrue(
-            service.confirm_product_plan(
-                {**base, "parameter_confirmation": confirmation}
-            )["ok"]
+        planner.experience_error = True
+        confirmed_without_experience = service.confirm_product_plan(
+            {**base, "parameter_confirmation": confirmation}
+        )
+        self.assertTrue(confirmed_without_experience["ok"])
+        self.assertEqual(
+            confirmed_without_experience["data"]["status"],
+            "confirmed",
+        )
+        self.assertEqual(
+            confirmed_without_experience["data"]["experience_record_status"],
+            "failed",
+        )
+        self.assertEqual(
+            confirmed_without_experience["data"][
+                "experience_record_error_code"
+            ],
+            "project_experience_record_failed",
+        )
+        self.assertNotIn(
+            "customer-secret",
+            json.dumps(confirmed_without_experience),
         )
         self.assertEqual(planner.calls[-1][5], confirmation)
         self.assertEqual(
@@ -531,6 +892,62 @@ class ReweaveAppServiceTest(unittest.TestCase):
             ],
         )
 
+    def test_experience_failure_preserves_each_committed_primary_result(self) -> None:
+        service = object.__new__(ReweaveAppService)
+
+        def fail_record(*_args, **_kwargs):
+            raise RuntimeError("/private/customer-secret")
+
+        service._record_product_experience = fail_record
+        with tempfile.TemporaryDirectory() as directory:
+            for milestone, data in (
+                ("plan_confirmed", {"status": "confirmed"}),
+                (
+                    "candidate_terminal",
+                    {"status": "review_ready", "candidate_token": "opaque"},
+                ),
+                ("export_terminal", {"status": "saved"}),
+            ):
+                with self.subTest(milestone=milestone):
+                    durable = Path(directory) / f"{milestone}.json"
+                    durable.write_text(
+                        json.dumps(data, sort_keys=True),
+                        encoding="utf-8",
+                    )
+                    enriched = service._with_experience_record(
+                        data,
+                        "plan_token_public",
+                        milestone,
+                    )
+                    response = (
+                        service._candidate_task_result(enriched)
+                        if milestone == "candidate_terminal"
+                        else service._ok(enriched)
+                    )
+                    self.assertTrue(response["ok"])
+                    self.assertEqual(
+                        response["data"]["status"],
+                        data["status"],
+                    )
+                    status = (
+                        response
+                        if milestone == "candidate_terminal"
+                        else response["data"]
+                    )
+                    self.assertEqual(
+                        status["experience_record_status"],
+                        "failed",
+                    )
+                    self.assertEqual(
+                        status["experience_record_error_code"],
+                        "project_experience_record_failed",
+                    )
+                    self.assertNotIn("customer-secret", json.dumps(response))
+                    self.assertEqual(
+                        json.loads(durable.read_text(encoding="utf-8")),
+                        data,
+                    )
+
     def test_capability_gap_decision_action_forwards_only_client_decision(
         self,
     ) -> None:
@@ -546,6 +963,9 @@ class ReweaveAppServiceTest(unittest.TestCase):
         planner = Planner()
         catalog = {"warehouse_revision": 41, "capsules": []}
         service._product_planner = planner
+        service._management_lock = threading.RLock()
+        service._management_closed = False
+        service._restore_pending = False
         service._capsule_operation_lock = threading.RLock()
         service._product_planning_catalog = lambda: catalog
         request = {
@@ -607,6 +1027,9 @@ class ReweaveAppServiceTest(unittest.TestCase):
         planner = Planner()
         catalog = {"warehouse_revision": 67, "capsules": []}
         service._product_planner = planner
+        service._management_lock = threading.RLock()
+        service._management_closed = False
+        service._restore_pending = False
         service._capsule_operation_lock = threading.RLock()
         service._product_planning_catalog = lambda: catalog
         request = {
@@ -666,6 +1089,18 @@ class ReweaveAppServiceTest(unittest.TestCase):
 
         def submit(kind, action, **options):
             self.assertEqual(kind, "product_plan_capability_replan")
+            self.assertEqual(
+                options["run_id"],
+                "run_"
+                + app_service_module.canonical_json_digest(
+                    {
+                        "schema_version": (
+                            "capability_replan_management_run.v1"
+                        ),
+                        **request,
+                    }
+                )[:32],
+            )
             self.assertTrue(options["cancellable"])
             self.assertTrue(options["read_only_planning"])
             self.assertTrue(options["planning_progress"])
@@ -693,6 +1128,92 @@ class ReweaveAppServiceTest(unittest.TestCase):
             )["error"]["code"],
             "capability_replan_unavailable",
         )
+
+    def test_capability_replan_same_request_uses_one_management_run(
+        self,
+    ) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+
+        class Planner:
+            calls = 0
+
+            @staticmethod
+            def _workspace_by_token(_token):
+                return {"plan": {"canonical_digest": "a" * 64}}
+
+            @staticmethod
+            def _read_capability_replan_handoff(_workspace):
+                return None
+
+            def start_capability_replan(self, *_args, **_kwargs):
+                self.calls += 1
+                entered.set()
+                release.wait(5)
+                return {
+                    "ok": True,
+                    "data": {
+                        "plan_token": "plan_token_successor",
+                        "status": "plan_review",
+                    },
+                }
+
+        with tempfile.TemporaryDirectory() as directory:
+            store = CapsuleWarehouseStore(
+                Path(directory) / "state" / "capsule_warehouse.sqlite3"
+            )
+            service = ReweaveAppService(capsule_store=store)
+            planner = Planner()
+            service._product_planner = planner
+            service._product_planning_catalog = lambda: {
+                "warehouse_revision": 57,
+                "capsules": [],
+            }
+            service._resolve_product_capability_replan = (
+                lambda *_args: (
+                    {"publication_revision": 57},
+                    {"members": []},
+                    {},
+                )
+            )
+            request = {
+                "plan_token": "plan_token_source",
+                "plan_digest": "a" * 64,
+                "projection_digest": "b" * 64,
+            }
+            try:
+                first = service.start_product_capability_replan(request)
+                self.assertTrue(entered.wait(2))
+                with ThreadPoolExecutor(max_workers=19) as executor:
+                    repeated = list(
+                        executor.map(
+                            lambda _index: (
+                                service.start_product_capability_replan(
+                                    request
+                                )
+                            ),
+                            range(19),
+                        )
+                    )
+                run_ids = {
+                    row["run_id"] for row in [first, *repeated]
+                }
+                self.assertEqual(len(run_ids), 1)
+                self.assertEqual(len(service._management_tasks), 1)
+                self.assertEqual(planner.calls, 1)
+                release.set()
+                service._management_tasks[
+                    next(iter(run_ids))
+                ]["future"].result(timeout=5)
+                self.assertEqual(
+                    service._management_tasks[
+                        next(iter(run_ids))
+                    ]["status"],
+                    "completed",
+                )
+            finally:
+                release.set()
+                service.close()
 
     def test_capability_replan_projection_starts_after_source_review_publication(
         self,
@@ -793,6 +1314,9 @@ class ReweaveAppServiceTest(unittest.TestCase):
         planner = Planner()
         catalog = {"warehouse_revision": 42, "capsules": []}
         service._product_planner = planner
+        service._management_lock = threading.RLock()
+        service._management_closed = False
+        service._restore_pending = False
         service._capsule_operation_lock = threading.RLock()
         service._product_planning_catalog = lambda: catalog
         request = {
@@ -860,6 +1384,9 @@ class ReweaveAppServiceTest(unittest.TestCase):
             ]
             service = object.__new__(ReweaveAppService)
             service._product_planner = planner
+            service._management_lock = threading.RLock()
+            service._management_closed = False
+            service._restore_pending = False
             service._capsule_operation_lock = threading.RLock()
             service._product_planning_catalog = lambda: catalog
             result = service.prepare_product_capability_source_proposal(
@@ -1006,6 +1533,111 @@ class ReweaveAppServiceTest(unittest.TestCase):
                 proposal,
             )
 
+    def test_source_proposal_capture_v5_preserves_string_bounds_and_enum(
+        self,
+    ) -> None:
+        authorization = {
+            "schema_version": "capability_source_proposal_authorization.v3",
+            "input_contract": {
+                "schema": "data_contract.v1",
+                "type": "object",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "min_length": 1,
+                        "max_length": 1000,
+                    }
+                },
+                "required": ["message"],
+                "additional_properties": False,
+            },
+            "output_contract": {
+                "schema": "data_contract.v1",
+                "type": "object",
+                "properties": {
+                    "classification": {
+                        "type": "string",
+                        "min_length": 6,
+                        "max_length": 6,
+                        "enum": ["normal", "urgent"],
+                    }
+                },
+                "required": ["classification"],
+                "additional_properties": False,
+            },
+            "error_contract": {"schema": "error_contract.v1", "errors": {}},
+            "adapter_contract_version": "computation_adapter.v5",
+            "capture_mapping_schema": "computation_capture_mapping.v5",
+            "proof_schema": "source_graph_proof.v3",
+            "result_field": "classification",
+            "result_enum": ["normal", "urgent"],
+            "passthrough_fields": [],
+            "acceptance_cases": [
+                {
+                    "input": {"message": "urgent task"},
+                    "expected_output": {"classification": "urgent"},
+                }
+            ],
+        }
+        proposal = {
+            "schema": "capability_source_proposal.v2",
+            "witnesses": [
+                {
+                    "input": {"message": "routine task"},
+                    "expected_scalar_result": "normal",
+                },
+                {
+                    "input": {"message": "urgent task"},
+                    "expected_scalar_result": "urgent",
+                },
+            ],
+        }
+        offer = {
+            "module_relpath": "capability.js",
+            "export_name": "compute",
+            "target_binding_id": "a" * 64,
+            "parameters": [
+                {"parameter_binding_id": "b" * 64, "name": "arg0"},
+            ],
+        }
+        selection, mapping = (
+            ReweaveAppService._capability_source_proposal_capture_request(
+                authorization,
+                offer,
+                proposal,
+            )
+        )
+        self.assertEqual(selection["target_binding_id"], "a" * 64)
+        self.assertEqual(
+            mapping["arguments"],
+            [
+                {
+                    "parameter_binding_id": "b" * 64,
+                    "input_field": "message",
+                    "kind": "string",
+                    "min_length": 1,
+                    "max_length": 1000,
+                }
+            ],
+        )
+        self.assertEqual(mapping["schema"], "computation_capture_mapping.v5")
+        self.assertEqual(mapping["proof_schema"], "source_graph_proof.v3")
+        self.assertEqual(
+            [item["expected"]["classification"] for item in mapping["examples"]],
+            ["normal", "urgent"],
+        )
+        invalid = copy.deepcopy(proposal)
+        invalid["witnesses"][0]["input"]["message"] = "x" * 1001
+        with self.assertRaisesRegex(
+            Exception,
+            "capability_source_proposal_capture_invalid",
+        ):
+            ReweaveAppService._capability_source_proposal_capture_request(
+                authorization,
+                offer,
+                invalid,
+            )
+
     def test_source_proposal_run_action_uses_frozen_server_identities(
         self,
     ) -> None:
@@ -1085,6 +1717,112 @@ class ReweaveAppServiceTest(unittest.TestCase):
                 {**request, "source": "client-must-not-submit"}
             )["error"]["code"],
             "capability_source_proposal_run_invalid",
+        )
+
+    def test_source_proposal_snapshot_revision_stops_before_intake(
+        self,
+    ) -> None:
+        run_id = "run_" + "4" * 32
+
+        class Planner:
+            def __init__(self) -> None:
+                self.events: list[dict] = []
+
+            def append_capability_source_proposal_run_event(
+                self,
+                _run_id,
+                *,
+                status,
+                stage,
+                evidence=None,
+                error_code=None,
+            ):
+                event = {
+                    "status": status,
+                    "stage": stage,
+                    "evidence": evidence or {},
+                    "error_code": error_code,
+                }
+                self.events.append(event)
+                return event
+
+            @staticmethod
+            def run_capability_source_proposal_model(_run_id, _cancel):
+                return {
+                    "proposal": {
+                        "files": [
+                            {
+                                "content": (
+                                    "export function compute(arg0) "
+                                    "{ return arg0; }"
+                                )
+                            }
+                        ]
+                    },
+                    "evidence": {"response_digest": "a" * 64},
+                }
+
+            @staticmethod
+            def write_capability_source_proposal(_run_id, _content):
+                return {
+                    "source_sha256": "b" * 64,
+                    "source_relpath": "capability.js",
+                }
+
+            @staticmethod
+            def capability_source_proposal_run_context(_run_id):
+                return {
+                    "authorization": {},
+                    "identity": {"warehouse_revision": 41},
+                }
+
+            @staticmethod
+            def capability_source_proposal_run_paths(_run_id):
+                return {
+                    "validation_database": root / "validation.sqlite3",
+                }
+
+        class Store:
+            calls: list[tuple[Path, int]] = []
+
+            def create_consistent_snapshot(
+                self,
+                target,
+                *,
+                expected_revision,
+            ):
+                self.calls.append((target, expected_revision))
+                raise WarehouseSnapshotRevisionError(
+                    "warehouse_snapshot_revision_stale"
+                )
+
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            service = object.__new__(ReweaveAppService)
+            planner = Planner()
+            store = Store()
+            service._product_planner = planner
+            service._capsule_store = store
+            with patch.object(
+                app_service_module,
+                "ReweaveCapsuleIntake",
+                side_effect=AssertionError("intake_must_not_start"),
+            ) as intake:
+                result = service._run_product_capability_source_proposal(
+                    run_id,
+                    threading.Event(),
+                )
+
+        self.assertEqual(
+            store.calls,
+            [(root / "validation.sqlite3", 41)],
+        )
+        intake.assert_not_called()
+        self.assertEqual(result["status"], "failed")
+        self.assertEqual(result["stage"], "intake")
+        self.assertEqual(
+            result["error_code"],
+            "warehouse_snapshot_revision_stale",
         )
 
     def test_prepared_review_runtime_digests_hash_stage3_bytes(self) -> None:
@@ -1321,7 +2059,7 @@ class ReweaveAppServiceTest(unittest.TestCase):
                     raise AssertionError(f"unbounded_read:{size}")
 
         binary_requests = (
-            b"x" * (1024 * 1024 + 1)
+            b"x" * (1024 * 1024)
             + b"\n"
             + b"\xff\n"
             + b"{not-json\n"
@@ -1351,6 +2089,90 @@ class ReweaveAppServiceTest(unittest.TestCase):
             binary_rows[3]["data"],
             {"status": "bound"},
         )
+
+        deep_output = io.StringIO()
+        serve_jsonl(
+            Service(),
+            BoundedBytesIO(
+                b"[" * 2000
+                + b"0"
+                + b"]" * 2000
+                + b"\n"
+                + valid_bind
+                + b"\n"
+            ),
+            deep_output,
+        )
+        deep_rows = [
+            json.loads(line)
+            for line in deep_output.getvalue().splitlines()
+        ]
+        self.assertEqual(
+            deep_rows[0]["error"]["code"],
+            "agent_json_invalid",
+        )
+        self.assertTrue(deep_rows[1]["ok"], deep_rows[1])
+
+        depth_output = io.StringIO()
+        serve_jsonl(
+            Service(),
+            BoundedBytesIO(
+                b"[" * 64
+                + b"0"
+                + b"]" * 64
+                + b"\n"
+                + b"[" * 65
+                + b"0"
+                + b"]" * 65
+                + b"\n"
+                + valid_bind
+                + b"\n"
+            ),
+            depth_output,
+        )
+        depth_rows = [
+            json.loads(line)
+            for line in depth_output.getvalue().splitlines()
+        ]
+        self.assertEqual(
+            depth_rows[0]["error"]["code"],
+            "agent_request_invalid",
+        )
+        self.assertEqual(
+            depth_rows[1]["error"]["code"],
+            "agent_json_invalid",
+        )
+        self.assertTrue(depth_rows[2]["ok"], depth_rows[2])
+
+        class OneReadOnly:
+            def __init__(self, value):
+                self.value = value
+                self.calls = 0
+
+            def readline(self, size=-1):
+                self.calls += 1
+                if self.calls != 1:
+                    raise AssertionError("unexpected_frame_drain")
+                if not 0 < size <= 1024 * 1024 + 1:
+                    raise AssertionError(f"unbounded_read:{size}")
+                return self.value[:size]
+
+        for raw, code in (
+            (b"x" * (1024 * 1024 + 1), "agent_request_too_large"),
+            (b"\xff", "agent_json_invalid"),
+        ):
+            with self.subTest(code=code):
+                source = OneReadOnly(raw)
+                closed_output = io.StringIO()
+                serve_jsonl(Service(), source, closed_output)
+                closed_rows = [
+                    json.loads(line)
+                    for line in closed_output.getvalue().splitlines()
+                ]
+                self.assertEqual(len(closed_rows), 1)
+                self.assertEqual(closed_rows[0]["error"]["code"], code)
+                self.assertEqual(source.calls, 1)
+                self.assertNotIn("xxxxx", closed_output.getvalue())
 
 
 if __name__ == "__main__":
