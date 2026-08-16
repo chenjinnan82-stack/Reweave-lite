@@ -487,6 +487,7 @@ console.log(JSON.stringify(result));
         check=True,
         capture_output=True,
         text=True,
+        encoding="utf-8",
     )
     parsed = json.loads(result.stdout)
     assert parsed == {

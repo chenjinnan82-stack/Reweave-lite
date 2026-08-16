@@ -40,6 +40,7 @@ def _governance_preview() -> dict:
 class ReweaveWarehouseManagementTest(unittest.TestCase):
     def setUp(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()
+        self._services: list[ReweaveAppService] = []
         self._state_dir = Path(self._tmpdir.name)
         self._source_dir = self._state_dir / "user_project"
         self._source_dir.mkdir()
@@ -58,6 +59,8 @@ class ReweaveWarehouseManagementTest(unittest.TestCase):
         self.capsule_id = str(result["capsule_id"])
 
     def tearDown(self) -> None:
+        for service in reversed(self._services):
+            service.close()
         self._env.stop()
         self._tmpdir.cleanup()
 
@@ -73,6 +76,7 @@ class ReweaveWarehouseManagementTest(unittest.TestCase):
 
     def test_get_initial_state_includes_warehouse_capsules(self) -> None:
         service = ReweaveAppService(engine=LocalReweaveEngine())
+        self._services.append(service)
         state = service.get_initial_state()
         self.assertIn("warehouseCapsules", state)
         self.assertEqual(state["warehouseCapsules"], [])
@@ -167,6 +171,7 @@ class ReweaveWarehouseManagementTest(unittest.TestCase):
 
     def test_local_engine_still_available(self) -> None:
         service = ReweaveAppService(engine=LocalReweaveEngine())
+        self._services.append(service)
         result = service.list_warehouse_capsules()
         self.assertTrue(result["ok"])
         self.assertEqual(result["count"], 1)
@@ -216,6 +221,7 @@ class ReweaveWarehouseManagementTest(unittest.TestCase):
 
     def test_app_service_update_capsule_status(self) -> None:
         service = ReweaveAppService(engine=LocalReweaveEngine())
+        self._services.append(service)
         result = service.update_capsule_status(self.capsule_id, "disabled")
         self.assertTrue(result["ok"])
         self.assertEqual(result["status"], "disabled")

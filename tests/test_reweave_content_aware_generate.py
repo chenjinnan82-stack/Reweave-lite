@@ -43,6 +43,7 @@ def _governance_preview() -> dict:
 class ReweaveContentAwareGenerateTest(unittest.TestCase):
     def setUp(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()
+        self._services: list[ReweaveAppService] = []
         self._state_dir = Path(self._tmpdir.name)
         self._source_dir = self._state_dir / "user_project"
         self._source_dir.mkdir()
@@ -68,6 +69,8 @@ class ReweaveContentAwareGenerateTest(unittest.TestCase):
         enrich_capsule_content(self.capsule_id)
 
     def tearDown(self) -> None:
+        for service in reversed(self._services):
+            service.close()
         self._env.stop()
         self._tmpdir.cleanup()
 
@@ -271,6 +274,7 @@ class ReweaveContentAwareGenerateTest(unittest.TestCase):
 
     def test_app_service_generate_with_enriched_flag(self) -> None:
         service = ReweaveAppService(engine=LocalReweaveEngine())
+        self._services.append(service)
         result = service.generate_preview(
             {"taskText": "Tool", "capsuleIds": [self.capsule_id], "useEnrichedContent": True}
         )
