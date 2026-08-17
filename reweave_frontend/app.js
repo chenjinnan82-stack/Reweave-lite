@@ -13,6 +13,7 @@
     available: false,
     loaded: false,
     loading: false,
+    refreshPending: false,
     projects: [],
     discovery: null,
     models: [],
@@ -4423,7 +4424,10 @@
       setManagementStatus("managementUnavailable");
       return Promise.resolve();
     }
-    if (ingestionManagement.loading) return Promise.resolve();
+    if (ingestionManagement.loading) {
+      ingestionManagement.refreshPending = true;
+      return Promise.resolve();
+    }
     ingestionManagement.loading = true;
     setManagementStatus("managementLoading");
     return Promise.all([
@@ -4461,6 +4465,10 @@
           ? "sourceRootSelectionStale"
           : "");
       renderIngestionManagement();
+      if (ingestionManagement.refreshPending) {
+        ingestionManagement.refreshPending = false;
+        return refreshIngestionManagement();
+      }
     });
   }
 
