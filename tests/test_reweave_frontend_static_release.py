@@ -939,7 +939,14 @@ def test_management_run_failure_reaches_project_row_callback() -> None:
     end = app.index("\n  function inspectAndRestoreBackup(", start)
     script = """
 var seen = {refreshed: false};
-function bridgeCall() {
+var ingestionManagement = {sourceRootSelectionStale: false};
+function bridgeCall(method, payload) {
+  if (JSON.parse(payload).run_id === 'run-3') {
+    return Promise.resolve(JSON.stringify({
+      ok: false,
+      error: {code: 'source_unavailable'}
+    }));
+  }
   return Promise.resolve(JSON.stringify({
     ok: true,
     data: {run: {status: 'failed', error: {code: 'source_unavailable'}}}
@@ -959,15 +966,28 @@ function refreshIngestionManagement() { seen.refreshed = true; }
 function collectRunIds() { return []; }
 """ + app[start:end] + """
 pollManagementRun('run-1', null, false, function (key) { seen.row = key; });
-setTimeout(function () { console.log(JSON.stringify(seen)); }, 0);
+setTimeout(function () {
+  seen.firstGlobal = seen.global;
+  ingestionManagement.sourceRootSelectionStale = true;
+  pollManagementRun('run-2', null, false, function (key) { seen.staleRow = key; });
+  setTimeout(function () {
+    pollManagementRun('run-3', null, false, function (key) {
+      seen.missingPayloadRow = key;
+    });
+    setTimeout(function () { console.log(JSON.stringify(seen)); }, 0);
+  }, 0);
+}, 0);
 """
     result = subprocess.run(
         [node, "-e", script], check=True, capture_output=True, text=True
     )
     assert json.loads(result.stdout) == {
         "refreshed": False,
-        "global": "projectScanSourceMissing",
+        "global": "sourceRootSelectionStale",
         "row": "projectScanSourceMissing",
+        "firstGlobal": "projectScanSourceMissing",
+        "staleRow": "projectScanSourceMissing",
+        "missingPayloadRow": "projectScanSourceMissing",
     }
 
 
@@ -980,6 +1000,7 @@ def test_management_run_failure_uses_safe_projected_error_code() -> None:
     end = app.index("\n  function inspectAndRestoreBackup(", start)
     script = """
 var seen = {};
+var ingestionManagement = {sourceRootSelectionStale: false};
 function bridgeCall() {
   return Promise.resolve(JSON.stringify({
     ok: true,

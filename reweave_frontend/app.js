@@ -4503,7 +4503,11 @@
       if (!payload) {
         var missingPayloadKey = managementError(result);
         rememberManagementRun(runId, { status: "failed" });
-        setManagementStatus(missingPayloadKey);
+        setManagementStatus(
+          ingestionManagement.sourceRootSelectionStale
+            ? "sourceRootSelectionStale"
+            : missingPayloadKey
+        );
         if (typeof onFailure === "function") onFailure(missingPayloadKey);
         renderManagementRuns();
         return;
@@ -4525,7 +4529,11 @@
             : run.error_code
               ? managementError({ error: { code: run.error_code } })
             : "managementOperationFailed";
-          setManagementStatus(failureKey);
+          setManagementStatus(
+            ingestionManagement.sourceRootSelectionStale
+              ? "sourceRootSelectionStale"
+              : failureKey
+          );
           if (typeof onFailure === "function") onFailure(failureKey);
         }
         if (refreshAfter !== false) refreshIngestionManagement();

@@ -597,6 +597,34 @@ def test_simple_mode_scans_multiply_without_creating_candidate(
                 )
             assert counts == (0, 0, 0, 0)
             assert source_snapshot() == source_before
+            failed_model_run_id = "run_" + ("f" * 32)
+            original_get_intake_run = service.get_intake_run
+
+            def failed_model_listing(_payload=None):
+                return {
+                    "ok": True,
+                    "run_id": failed_model_run_id,
+                    "status": "failed",
+                }
+
+            def intake_run_with_failed_model(payload=None):
+                if (payload == {"run_id": failed_model_run_id}):
+                    return {
+                        "ok": True,
+                        "data": {
+                            "run_id": failed_model_run_id,
+                            "status": "failed",
+                            "error_code": "list_supervision_models_failed",
+                        },
+                    }
+                return original_get_intake_run(payload)
+
+            monkeypatch.setattr(
+                service, "list_supervision_models", failed_model_listing
+            )
+            monkeypatch.setattr(
+                service, "get_intake_run", intake_run_with_failed_model
+            )
             with service._capsule_store.transaction() as connection:
                 connection.execute(
                     "UPDATE source_roots SET status = 'source_missing' "
@@ -605,10 +633,13 @@ def test_simple_mode_scans_multiply_without_creating_candidate(
                 )
                 service._capsule_store.bump_revision(connection)
             js("document.getElementById('btn-supervision-model-refresh').click(); true")
+            pump(0.2)
             wait_js(
                 "Array.from(document.querySelectorAll("
                 "'#warehouse-projects select[data-source-root-selector=\"session\"]'))"
                 ".every(item => item.value === '') && "
+                "document.getElementById('warehouse-runs').textContent.includes("
+                f"'{failed_model_run_id} · failed') && "
                 "document.getElementById('capsule-warehouse-status').textContent.includes("
                 "'未改用其他来源')",
                 30,
