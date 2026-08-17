@@ -22,6 +22,7 @@ from pimos_lite.reweave_capsule_store import CapsuleWarehouseStore
 from pimos_lite.reweave_engine.local import LocalReweaveEngine
 from pimos_lite.reweave_javascript_source import (
     _descriptor_relative_snapshot_supported,
+    javascript_source_snapshot_supported,
 )
 from pimos_lite.reweave_source_derivation import (
     get_source_derived_run,
@@ -176,6 +177,50 @@ class Phase4ManagementTest(unittest.TestCase):
                 ),
             )
 
+    def _source_derived_platform_supported(
+        self,
+        payload: dict[str, object],
+    ) -> bool:
+        state = self.state / "source_derived_computations"
+        model_guard = patch.object(
+            self.service._product_planner,
+            "_selected_model",
+            side_effect=AssertionError("source model must not be read"),
+        )
+        supervisor_guard = patch.object(
+            self.service._capsule_supervisor,
+            "selected_model",
+            side_effect=AssertionError("supervisor must not be read"),
+        )
+        with patch(
+            "pimos_lite.reweave_app_service.javascript_source_snapshot_supported",
+            return_value=False,
+        ), model_guard, supervisor_guard:
+            result = (
+                self.service
+                .authorize_and_start_source_derived_computation(payload)
+            )
+        self.assertFalse(result["ok"])
+        self.assertEqual(
+            result["error"]["code"],
+            "source_platform_unsupported_v1",
+        )
+        self.assertFalse(state.exists())
+        if javascript_source_snapshot_supported():
+            return True
+        with model_guard, supervisor_guard:
+            result = (
+                self.service
+                .authorize_and_start_source_derived_computation(payload)
+            )
+        self.assertFalse(result["ok"])
+        self.assertEqual(
+            result["error"]["code"],
+            "source_platform_unsupported_v1",
+        )
+        self.assertFalse(state.exists())
+        return False
+
     def test_source_derived_developer_run_reaches_only_isolated_review(
         self,
     ) -> None:
@@ -282,6 +327,8 @@ class Phase4ManagementTest(unittest.TestCase):
                 },
             ],
         }
+        if not self._source_derived_platform_supported(payload):
+            return
         with self.store.read_connection() as connection:
             formal_before = {
                 table: int(
@@ -480,6 +527,9 @@ class Phase4ManagementTest(unittest.TestCase):
             self.service._product_planner,
             "_selected_model",
             return_value=model,
+        ), patch(
+            "pimos_lite.reweave_app_service.javascript_source_snapshot_supported",
+            return_value=True,
         ), patch.object(
             self.service,
             "_submit_management_task",
@@ -580,15 +630,16 @@ class Phase4ManagementTest(unittest.TestCase):
             )
             run = json.loads(run_path.read_text(encoding="utf-8"))
             run["attempt_count"] = 2
-            run_path.write_text(
-                json.dumps(
-                    run,
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    separators=(",", ":"),
-                )
-                + "\n",
-                encoding="utf-8",
+            run_path.write_bytes(
+                (
+                    json.dumps(
+                        run,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    + "\n"
+                ).encode("utf-8")
             )
             if os.name == "posix":
                 run_path.chmod(0o600)
@@ -603,10 +654,14 @@ class Phase4ManagementTest(unittest.TestCase):
 
         invalid = dict(payload)
         invalid["source_relpath"] = "../rules.ts"
-        rejected = (
-            self.service
-            .authorize_and_start_source_derived_computation(invalid)
-        )
+        with patch(
+            "pimos_lite.reweave_app_service.javascript_source_snapshot_supported",
+            return_value=True,
+        ):
+            rejected = (
+                self.service
+                .authorize_and_start_source_derived_computation(invalid)
+            )
         self.assertFalse(rejected["ok"])
         self.assertEqual(
             rejected["error"]["code"],
@@ -694,6 +749,8 @@ class Phase4ManagementTest(unittest.TestCase):
                 },
             ],
         }
+        if not self._source_derived_platform_supported(payload):
+            return
         with patch.object(
             self.service._product_planner,
             "_selected_model",
@@ -2555,11 +2612,55 @@ class Phase4ManagementTest(unittest.TestCase):
                 },
             )
 
+        original_runtime = self.service._capsule_stage3._runtime_validation
+
+        def layered_runtime(prepared):
+            kind = prepared.artifact.canonical_payload["capability_kind"]
+            if kind == "computation":
+                return original_runtime(prepared)
+            normal = len(prepared.fixtures["normal"])
+            boundary = len(prepared.fixtures["boundary"])
+            result = {
+                "schema_version": "qweb_validation.v1",
+                "status": "passed",
+                "normal_cases": normal,
+                "boundary_cases": boundary,
+                "invalid_cases": len(prepared.fixtures["invalid"]),
+                "repeated_render": kind == "presentation",
+                "dispose_idempotent": kind == "interaction",
+                "remount_checked": (
+                    kind == "interaction" and normal + boundary > 1
+                ),
+                "acceptance_scope": (
+                    "real_qwebengine_interaction"
+                    if kind == "interaction"
+                    else "real_qwebengine_render"
+                ),
+            }
+            if kind == "interaction":
+                names = sorted(
+                    prepared.artifact.canonical_payload[
+                        "output_contract"
+                    ]["events"]
+                )
+                result.update(
+                    {
+                        "emission_count": len(names),
+                        "emission_names": names,
+                    }
+                )
+            return result
+
         with patch.object(
             self.service._capsule_supervisor,
             "supervise",
             side_effect=approve,
+        ), patch.object(
+            self.service._capsule_stage3,
+            "_runtime_validation",
+            side_effect=layered_runtime,
         ):
+            # Layer isolation only: the 29-node process gate remains the QWeb authority.
             started = self.service._start_authorized_source_intake(binding)
             repeated = self.service._start_authorized_source_intake(binding)
             self.assertTrue(started["ok"], started)

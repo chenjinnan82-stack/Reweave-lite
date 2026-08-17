@@ -1001,6 +1001,21 @@ def test_snapshot_fails_closed_without_descriptor_relative_primitives() -> None:
         assert _index_state(store, project_id) == old_state
 
 
+def test_snapshot_support_helper_delegates_to_descriptor_primitives() -> None:
+    with patch.object(
+        javascript_source,
+        "_descriptor_relative_snapshot_supported",
+        return_value=False,
+    ):
+        assert not javascript_source.javascript_source_snapshot_supported()
+    with patch.object(
+        javascript_source,
+        "_descriptor_relative_snapshot_supported",
+        return_value=True,
+    ):
+        assert javascript_source.javascript_source_snapshot_supported()
+
+
 @pytest.mark.skipif(
     not javascript_source._descriptor_relative_snapshot_supported(),
     reason="descriptor-relative snapshot primitives are unavailable",

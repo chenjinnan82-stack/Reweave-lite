@@ -120,6 +120,7 @@ from pimos_lite.reweave_javascript_source import (
     JavascriptScopeSnapshot,
     JavascriptSourceError,
     JavascriptSourceService,
+    javascript_source_snapshot_supported,
 )
 from pimos_lite.reweave_page_capability_contract import (
     verify_formal_capsule_identity,
@@ -6258,6 +6259,8 @@ class ReweaveAppService:
             raise SourceDerivationError(
                 "source_derivation_request_invalid"
             )
+        if not javascript_source_snapshot_supported():
+            raise SourceDerivationError("source_platform_unsupported_v1")
         root = self._capsule_intake.get_source_root(source_root_id)
         if root.get("status") != "bound":
             raise SourceDerivationError("source_derivation_source_stale")

@@ -934,6 +934,10 @@ def _descriptor_relative_snapshot_supported() -> bool:
     )
 
 
+def javascript_source_snapshot_supported() -> bool:
+    return _descriptor_relative_snapshot_supported()
+
+
 def _open_flags(*, directory: bool) -> int:
     flags = os.O_RDONLY | os.O_NOFOLLOW
     if directory:
