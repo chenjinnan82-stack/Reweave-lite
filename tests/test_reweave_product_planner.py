@@ -36,6 +36,10 @@ from pimos_lite.reweave_product_planner import (
     SECTION_PLANNING_RULES_VERSION,
     SECTION_IDS,
 )
+from pimos_lite.reweave_source_derivation import (
+    build_source_derived_authorization,
+    build_source_derived_request,
+)
 from tests.test_reweave_phase5_generation import _capsule_payload
 
 
@@ -1066,6 +1070,147 @@ def select_small(planner: StubPlanner) -> None:
     planner.generation_outputs.append(probe())
     selected = planner.select_model("small:1.5b", SMALL_DIGEST)
     assert selected["ok"] is True
+
+
+def test_source_derived_model_uses_existing_single_generate_path(
+    tmp_path: Path,
+) -> None:
+    planner = StubPlanner(tmp_path / "planner")
+    select_small(planner)
+    source = 'export const words = ["urgent"];\n'
+    encoded = source.encode("utf-8")
+    evidence = [
+        {
+            "logical_path": "src/rules.ts",
+            "sha256": hashlib.sha256(encoded).hexdigest(),
+            "size_bytes": len(encoded),
+            "content": source,
+        }
+    ]
+    details = {
+        "schema": "data_contract.v1",
+        "type": "object",
+        "properties": {},
+        "required": [],
+        "additional_properties": False,
+    }
+    authorization = build_source_derived_authorization(
+        source_snapshot_sha256=evidence[0]["sha256"],
+        project_graph_digest="c" * 64,
+        evidence=[
+            {
+                key: evidence[0][key]
+                for key in ("logical_path", "sha256", "size_bytes")
+            }
+        ],
+        behavior_intent="Classify bounded text.",
+        input_contract={
+            "schema": "data_contract.v1",
+            "type": "object",
+            "properties": {
+                "message": {
+                    "type": "string",
+                    "min_length": 1,
+                    "max_length": 1000,
+                }
+            },
+            "required": ["message"],
+            "additional_properties": False,
+        },
+        output_contract={
+            "schema": "data_contract.v1",
+            "type": "object",
+            "properties": {
+                "result": {
+                    "type": "string",
+                    "min_length": 6,
+                    "max_length": 6,
+                    "enum": ["normal", "urgent"],
+                }
+            },
+            "required": ["result"],
+            "additional_properties": False,
+        },
+        error_contract={
+            "schema": "error_contract.v1",
+            "errors": {
+                code: {"field": None, "details": details}
+                for code in (
+                    "INPUT_CONTRACT_VIOLATION",
+                    "OUTPUT_CONTRACT_VIOLATION",
+                )
+            },
+        },
+        result_field="result",
+        acceptance_cases=[
+            {
+                "input": {"message": "routine"},
+                "expected_output": {"result": "normal"},
+            },
+            {
+                "input": {"message": "urgent"},
+                "expected_output": {"result": "urgent"},
+            },
+        ],
+        source_proposal_model={
+            "name": "small:1.5b",
+            "digest": SMALL_DIGEST,
+        },
+        warehouse_revision=73,
+        catalog_digest="d" * 64,
+        authorized_at="2026-08-17T00:00:00Z",
+    )
+    request = build_source_derived_request(authorization, evidence)
+    proposal = {
+        "schema": "capability_source_proposal.v2",
+        "entry": {
+            "module_relpath": "capability.js",
+            "export_name": "compute",
+        },
+        "files": [
+            {
+                "path": "capability.js",
+                "content": (
+                    "export function compute(arg0) { "
+                    'return arg0.includes("urgent") '
+                    '? "urgent" : "normal"; }\n'
+                ),
+            }
+        ],
+        "witnesses": [
+            {
+                "input": {"message": "routine"},
+                "expected_scalar_result": "normal",
+            },
+            {
+                "input": {"message": "urgent"},
+                "expected_scalar_result": "urgent",
+            },
+        ],
+    }
+    before = sum(path == "/api/generate" for path, _ in planner.requests)
+    planner.generation_outputs.append(proposal)
+    result = planner.run_source_derived_capability_source_proposal(
+        request,
+        authorization,
+        evidence,
+        {
+            "name": "small:1.5b",
+            "digest": SMALL_DIGEST,
+            "parameter_count": 1_543_714_304,
+            "parameter_size": "1.5b",
+        },
+    )
+    generated = [
+        payload
+        for path, payload in planner.requests
+        if path == "/api/generate"
+    ]
+    assert len(generated) == before + 1
+    assert generated[-1]["stream"] is False
+    assert generated[-1]["think"] is False
+    assert generated[-1]["options"] == {"temperature": 0}
+    assert result["response"] == proposal
 
 
 def queue_plan(planner: StubPlanner, *, with_capsule: bool = True) -> None:

@@ -1456,16 +1456,30 @@ class ReweaveCapsuleIntake:
         project_id: str,
         *,
         cancel_check: Callable[[], bool] | None = None,
+        run_id: str | None = None,
+        expected_snapshot_sha256: str | None = None,
     ) -> dict[str, Any]:
+        if run_id is not None:
+            self._validate_preallocated_run_id(run_id)
+        if expected_snapshot_sha256 is not None and (
+            type(expected_snapshot_sha256) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", expected_snapshot_sha256) is None
+        ):
+            raise IntakeError("intake_expected_snapshot_invalid")
         with _project_guard(project_id):
             context = self._project_context(project_id)
             if context.project["project_state"] != "ready":
                 raise IntakeError("project_not_ready")
-            run_id = self._create_run(project_id)
+            before = None
+            if expected_snapshot_sha256 is not None:
+                before = self.snapshot_project(project_id)
+                if before.digest != expected_snapshot_sha256:
+                    raise IntakeError("intake_snapshot_mismatch")
+            run_id = self._create_run(project_id, run_id=run_id)
             try:
                 self._set_run(run_id, "running", started_at=_now())
                 self._cancel_if_requested(run_id, cancel_check)
-                before = self.snapshot_project(project_id)
+                before = before or self.snapshot_project(project_id)
                 profile = self._effective_brand_profile(context.project, context.source_root)
                 if self._is_no_change(
                     project_id,
@@ -2826,10 +2840,22 @@ class ReweaveCapsuleIntake:
             "terms": sorted(set(terms)),
         }
 
-    def _create_run(self, project_id: str) -> str:
-        run_id = _uuid()
+    @staticmethod
+    def _validate_preallocated_run_id(run_id: str) -> None:
+        if type(run_id) is not str or re.fullmatch(r"run_[0-9a-f]{32}", run_id) is None:
+            raise IntakeError("intake_run_id_invalid")
+
+    def _create_run(self, project_id: str, *, run_id: str | None = None) -> str:
+        if run_id is None:
+            run_id = _uuid()
+        else:
+            self._validate_preallocated_run_id(run_id)
         now = _now()
         with self.store.transaction() as connection:
+            if connection.execute(
+                "SELECT 1 FROM intake_runs WHERE run_id = ?", (run_id,)
+            ).fetchone():
+                raise IntakeError("intake_run_id_conflict")
             connection.execute(
                 "INSERT INTO intake_runs (run_id, project_id, run_kind, status, "
                 "extraction_contract_version, redaction_rules_version, security_rules_version, "

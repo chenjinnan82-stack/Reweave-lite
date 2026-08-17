@@ -20,7 +20,35 @@ AGENT_ACTIONS = frozenset(
         "get_product_candidate_run",
         "get_product_candidate",
         "read_product_candidate_file",
+        "start_source_intake",
+        "get_source_intake_run",
+        "get_source_review_summaries",
     }
+)
+_CANDIDATE_ACTION_PROFILE = "product_candidate_agent.v1"
+_SOURCE_ACTION_PROFILE = "source_intake_agent.v1"
+_PROFILE_ACTIONS = {
+    _CANDIDATE_ACTION_PROFILE: frozenset(
+        {
+            "list_reusable_product_capabilities",
+            "get_confirmed_product_plan",
+            "start_confirmed_product_candidate",
+            "get_product_candidate_run",
+            "get_product_candidate",
+            "read_product_candidate_file",
+        }
+    ),
+    _SOURCE_ACTION_PROFILE: frozenset(
+        {
+            "start_source_intake",
+            "get_source_intake_run",
+            "get_source_review_summaries",
+        }
+    ),
+}
+_CANDIDATE_HANDOFF_TOKEN = re.compile(r"handoff_token_[0-9a-f]{48}\Z")
+_SOURCE_HANDOFF_TOKEN = re.compile(
+    r"source_handoff_token_[0-9a-f]{48}\Z"
 )
 _REQUEST_ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
 _MAX_REQUEST_BYTES = 1024 * 1024
@@ -242,6 +270,85 @@ def _file_projection(value: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _safe_error_code(value: Any) -> str | None:
+    return (
+        value
+        if type(value) is str
+        and re.fullmatch(r"[a-z][a-z0-9_]{1,95}", value)
+        else None
+    )
+
+
+def _source_run_projection(value: dict[str, Any]) -> dict[str, Any]:
+    error = value.get("error")
+    error_code = (
+        _safe_error_code(value.get("error_code"))
+        or _safe_error_code(error.get("code"))
+        if type(error) is dict
+        else _safe_error_code(value.get("error_code"))
+    )
+    result = {
+        key: value.get(key)
+        for key in (
+            "run_id",
+            "status",
+            "created_at",
+            "started_at",
+            "completed_at",
+        )
+        if value.get(key) is not None
+    }
+    if error_code is not None:
+        result["reason_code"] = error_code
+    return result
+
+
+def _source_review_projection(value: dict[str, Any]) -> dict[str, Any]:
+    items = value.get("items")
+    if type(items) is not list:
+        items = []
+    projected = []
+    for item in items:
+        if type(item) is not dict:
+            continue
+        reason_code = (
+            _safe_error_code(item.get("reason_code"))
+            or _safe_error_code(item.get("error_code"))
+        )
+        row = {
+            key: item.get(key)
+            for key in ("status", "capability_kind")
+            if item.get(key) is not None
+        }
+        if reason_code is not None:
+            row["reason_code"] = reason_code
+        projected.append(row)
+    return {
+        "count": len(projected),
+        "items": projected,
+    }
+
+
+def _resolve_handoff(
+    service: ReweaveAppService,
+    handoff_token: str,
+) -> tuple[str, dict[str, Any]]:
+    if _CANDIDATE_HANDOFF_TOKEN.fullmatch(handoff_token) is not None:
+        return (
+            _CANDIDATE_ACTION_PROFILE,
+            service._resolve_local_agent_handoff(handoff_token),
+        )
+    if _SOURCE_HANDOFF_TOKEN.fullmatch(handoff_token) is not None:
+        binding = service._resolve_local_source_handoff(handoff_token)
+        if (
+            type(binding) is not dict
+            or binding.get("action_profile") != _SOURCE_ACTION_PROFILE
+        ):
+            raise ValueError("source_handoff_action_profile_invalid")
+        return _SOURCE_ACTION_PROFILE, binding
+    raise ValueError("agent_handoff_token_invalid")
+
+
 def dispatch_agent_request(
     service: ReweaveAppService,
     request: Any,
@@ -273,7 +380,10 @@ def dispatch_agent_request(
         ):
             return _error(request_id, "agent_handoff_request_invalid")
         try:
-            service._resolve_local_agent_handoff(payload["handoff_token"])
+            action_profile, _binding = _resolve_handoff(
+                service,
+                payload["handoff_token"],
+            )
         except Exception as exc:
             code = getattr(exc, "code", None)
             return _error(
@@ -287,6 +397,7 @@ def dispatch_agent_request(
         session.update(
             {
                 "handoff_token": payload["handoff_token"],
+                "action_profile": action_profile,
                 "run_ids": set(),
             }
         )
@@ -300,7 +411,10 @@ def dispatch_agent_request(
     if type(handoff_token) is not str:
         return _error(request_id, "agent_session_unbound")
     try:
-        binding = service._resolve_local_agent_handoff(handoff_token)
+        action_profile, binding = _resolve_handoff(
+            service,
+            handoff_token,
+        )
     except Exception as exc:
         code = getattr(exc, "code", None)
         return _error(
@@ -310,6 +424,11 @@ def dispatch_agent_request(
             and re.fullmatch(r"[a-z][a-z0-9_]{1,95}", code)
             else "agent_handoff_invalid",
         )
+    if (
+        session.get("action_profile") != action_profile
+        or action not in _PROFILE_ACTIONS[action_profile]
+    ):
+        return _error(request_id, "agent_action_not_allowed")
     expected_fields = {
         "list_reusable_product_capabilities": set(),
         "get_confirmed_product_plan": set(),
@@ -320,12 +439,17 @@ def dispatch_agent_request(
             "candidate_token",
             "relative_path",
         },
+        "start_source_intake": set(),
+        "get_source_intake_run": set(),
+        "get_source_review_summaries": set(),
     }[action]
     if set(payload) != expected_fields or any(
         type(payload[field]) is not str for field in expected_fields
     ):
         return _error(request_id, "agent_action_payload_invalid")
-    if action == "list_reusable_product_capabilities":
+    if action in _PROFILE_ACTIONS[_SOURCE_ACTION_PROFILE]:
+        method_payload = binding
+    elif action == "list_reusable_product_capabilities":
         method_payload = {}
     elif action == "get_confirmed_product_plan":
         method_payload = {"plan_token": binding["plan_token"]}
@@ -358,7 +482,17 @@ def dispatch_agent_request(
             != binding["plan_digest"]
         ):
             return _error(request_id, "agent_candidate_not_in_scope")
-    method = getattr(service, action)
+    source_method_names = {
+        "start_source_intake": "_start_authorized_source_intake",
+        "get_source_intake_run": "_get_authorized_source_intake_run",
+        "get_source_review_summaries": (
+            "_get_authorized_source_review_summaries"
+        ),
+    }
+    method = getattr(
+        service,
+        source_method_names.get(action, action),
+    )
     try:
         response = method(method_payload)
     except Exception:
@@ -410,6 +544,20 @@ def dispatch_agent_request(
         ):
             return _error(request_id, "agent_candidate_file_not_readable")
         data = _file_projection(data)
+    elif action == "start_source_intake":
+        run_id = response.get("run_id")
+        status = response.get("status")
+        if type(run_id) is not str or type(status) is not str:
+            return _error(request_id, "agent_internal_error")
+        data = {"run_id": run_id, "status": status}
+    elif action == "get_source_intake_run":
+        if type(data) is not dict:
+            return _error(request_id, "agent_internal_error")
+        data = _source_run_projection(data)
+    elif action == "get_source_review_summaries":
+        if type(data) is not dict or type(data.get("items")) is not list:
+            return _error(request_id, "agent_internal_error")
+        data = _source_review_projection(data)
     return {
         "protocol": AGENT_PROTOCOL_VERSION,
         "id": request_id,

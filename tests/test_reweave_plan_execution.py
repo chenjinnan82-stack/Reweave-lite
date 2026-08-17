@@ -7,6 +7,7 @@ import json
 import os
 import shutil
 import subprocess
+import sys
 import tempfile
 import time
 import unittest
@@ -28,6 +29,7 @@ from pimos_lite.reweave_app_service import (
     _validate_product_runtime,
 )
 from pimos_lite.reweave_agent_stdio import (
+    AGENT_ACTIONS,
     AGENT_PROTOCOL_VERSION,
     dispatch_agent_request,
 )
@@ -3562,6 +3564,318 @@ process.stdout.write(JSON.stringify({result, rendered: totalNode.textContent}));
             )
         finally:
             restarted.close()
+
+    def test_source_agent_session_is_closed_redacted_and_process_safe(
+        self,
+    ) -> None:
+        self.assertEqual(
+            AGENT_ACTIONS,
+            {
+                "bind_user_handoff",
+                "list_reusable_product_capabilities",
+                "get_confirmed_product_plan",
+                "start_confirmed_product_candidate",
+                "get_product_candidate_run",
+                "get_product_candidate",
+                "read_product_candidate_file",
+                "start_source_intake",
+                "get_source_intake_run",
+                "get_source_review_summaries",
+            },
+        )
+        source_token = "source_handoff_token_" + "2" * 48
+        candidate_token = "handoff_token_" + "3" * 48
+        source_binding = {
+            "action_profile": "source_intake_agent.v1",
+            "run_id": "run_source_test",
+            "project_id": "project_private",
+            "source_root_id": "root_private",
+            "source_snapshot_sha256": "a" * 64,
+        }
+
+        class Service:
+            source_resolutions = 0
+
+            def _resolve_local_source_handoff(self, token):
+                if token != source_token:
+                    raise ValueError("invalid_source_token")
+                self.source_resolutions += 1
+                return copy.deepcopy(source_binding)
+
+            @staticmethod
+            def _resolve_local_agent_handoff(token):
+                if token != candidate_token:
+                    raise ValueError("invalid_candidate_token")
+                return {
+                    "plan_token": "plan_private",
+                    "plan_digest": "b" * 64,
+                    "acceptance_confirmation_digest": "c" * 64,
+                }
+
+            @staticmethod
+            def _start_authorized_source_intake(binding):
+                if binding != source_binding:
+                    raise AssertionError("source_binding_changed")
+                return {
+                    "ok": True,
+                    "run_id": binding["run_id"],
+                    "status": "queued",
+                    "private_path": "/private/source",
+                }
+
+            @staticmethod
+            def _get_authorized_source_intake_run(binding):
+                if binding != source_binding:
+                    raise AssertionError("source_binding_changed")
+                return {
+                    "ok": True,
+                    "data": {
+                        "run_id": binding["run_id"],
+                        "status": "completed",
+                        "created_at": NOW,
+                        "completed_at": NOW,
+                        "error_code": None,
+                        "project_id": binding["project_id"],
+                        "source_path": "/private/source",
+                        "counts_json": {"private": 1},
+                    },
+                }
+
+            @staticmethod
+            def _get_authorized_source_review_summaries(binding):
+                if binding != source_binding:
+                    raise AssertionError("source_binding_changed")
+                return {
+                    "ok": True,
+                    "data": {
+                        "items": [
+                            {
+                                "status": "review_required",
+                                "capability_kind": "computation",
+                                "reason_code": "review_required",
+                                "review_id": "review_private",
+                                "candidate": {"source": "private"},
+                                "allowed_actions": ["publish_general"],
+                            }
+                        ],
+                        "project_id": binding["project_id"],
+                    },
+                }
+
+        service = Service()
+
+        def dispatch(
+            session: dict,
+            action: str,
+            payload: dict,
+            request_id: str,
+        ) -> dict:
+            return dispatch_agent_request(
+                service,
+                {
+                    "protocol": AGENT_PROTOCOL_VERSION,
+                    "id": request_id,
+                    "action": action,
+                    "payload": payload,
+                },
+                session,
+            )
+
+        source_session: dict = {}
+        bound = dispatch(
+            source_session,
+            "bind_user_handoff",
+            {"handoff_token": source_token},
+            "source-bind",
+        )
+        self.assertTrue(bound["ok"], bound)
+        self.assertEqual(bound["data"], {"status": "bound"})
+        self.assertEqual(
+            source_session["action_profile"],
+            "source_intake_agent.v1",
+        )
+        self.assertNotIn(source_token, json.dumps(bound))
+
+        self.assertEqual(
+            dispatch(
+                source_session,
+                "get_confirmed_product_plan",
+                {},
+                "source-cross-profile",
+            )["error"]["code"],
+            "agent_action_not_allowed",
+        )
+        self.assertEqual(
+            dispatch(
+                source_session,
+                "start_source_intake",
+                {"project_id": "project_private"},
+                "source-payload",
+            )["error"]["code"],
+            "agent_action_payload_invalid",
+        )
+        started = dispatch(
+            source_session,
+            "start_source_intake",
+            {},
+            "source-start",
+        )
+        self.assertEqual(
+            started["data"],
+            {"run_id": "run_source_test", "status": "queued"},
+        )
+        run = dispatch(
+            source_session,
+            "get_source_intake_run",
+            {},
+            "source-run",
+        )
+        self.assertEqual(
+            run["data"],
+            {
+                "run_id": "run_source_test",
+                "status": "completed",
+                "created_at": NOW,
+                "completed_at": NOW,
+            },
+        )
+        reviews = dispatch(
+            source_session,
+            "get_source_review_summaries",
+            {},
+            "source-reviews",
+        )
+        self.assertEqual(
+            reviews["data"],
+            {
+                "count": 1,
+                "items": [
+                    {
+                        "status": "review_required",
+                        "capability_kind": "computation",
+                        "reason_code": "review_required",
+                    }
+                ],
+            },
+        )
+        public = json.dumps(
+            {"started": started, "run": run, "reviews": reviews},
+            ensure_ascii=False,
+        )
+        for private in (
+            "project_private",
+            "root_private",
+            "/private/source",
+            "review_private",
+            "allowed_actions",
+            "publish_general",
+            "candidate",
+            source_token,
+        ):
+            self.assertNotIn(private, public)
+        self.assertGreaterEqual(service.source_resolutions, 5)
+
+        candidate_session: dict = {}
+        candidate_bound = dispatch(
+            candidate_session,
+            "bind_user_handoff",
+            {"handoff_token": candidate_token},
+            "candidate-bind",
+        )
+        self.assertTrue(candidate_bound["ok"], candidate_bound)
+        self.assertEqual(
+            candidate_session["action_profile"],
+            "product_candidate_agent.v1",
+        )
+        self.assertEqual(
+            dispatch(
+                candidate_session,
+                "start_source_intake",
+                {},
+                "candidate-cross-profile",
+            )["error"]["code"],
+            "agent_action_not_allowed",
+        )
+
+        process_program = "\n".join(
+            [
+                "import sys",
+                "from pimos_lite.reweave_agent_stdio import serve_jsonl",
+                "class Service:",
+                "    def _resolve_local_source_handoff(self, token):",
+                "        if token != 'source_handoff_token_' + '4' * 48:",
+                "            raise ValueError('invalid')",
+                "        return {'action_profile':'source_intake_agent.v1','run_id':'run_process'}",
+                "    def _start_authorized_source_intake(self, binding):",
+                "        return {'ok':True,'run_id':binding['run_id'],'status':'queued'}",
+                "service = Service()",
+                "serve_jsonl(service, sys.stdin.buffer, sys.stdout)",
+            ]
+        )
+        bind_request = json.dumps(
+            {
+                "protocol": AGENT_PROTOCOL_VERSION,
+                "id": "process-bind",
+                "action": "bind_user_handoff",
+                "payload": {
+                    "handoff_token": (
+                        "source_handoff_token_" + "4" * 48
+                    )
+                },
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        start_request = json.dumps(
+            {
+                "protocol": AGENT_PROTOCOL_VERSION,
+                "id": "process-start",
+                "action": "start_source_intake",
+                "payload": {},
+            },
+            separators=(",", ":"),
+        ).encode("utf-8")
+        process = subprocess.run(
+            [sys.executable, "-c", process_program],
+            input=(
+                b"x" * (1024 * 1024)
+                + b"\n"
+                + b"\xff\n"
+                + bind_request
+                + b"\n"
+                + start_request
+                + b"\n"
+            ),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            cwd=Path(__file__).resolve().parents[1],
+            timeout=30,
+            check=False,
+        )
+        self.assertEqual(
+            process.returncode,
+            0,
+            process.stderr.decode("utf-8", errors="replace"),
+        )
+        process_rows = [
+            json.loads(line)
+            for line in process.stdout.decode("utf-8").splitlines()
+        ]
+        self.assertEqual(
+            [
+                row.get("error", {}).get("code")
+                for row in process_rows[:2]
+            ],
+            ["agent_request_too_large", "agent_json_invalid"],
+        )
+        self.assertTrue(process_rows[2]["ok"], process_rows[2])
+        self.assertEqual(
+            process_rows[3]["data"],
+            {"run_id": "run_process", "status": "queued"},
+        )
+        self.assertNotIn(
+            "source_handoff_token_",
+            process.stdout.decode("utf-8"),
+        )
 
     def test_candidate_is_isolated_idempotent_and_recoverable(self) -> None:
         self.service._product_planner = _ConfirmedPlanner(

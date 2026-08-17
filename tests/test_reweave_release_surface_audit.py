@@ -135,6 +135,7 @@ def test_stage5_formal_and_historical_surfaces_are_separate() -> None:
         "pimos_lite/reweave_capsule_worker.py",
         "pimos_lite/reweave_data_contract.py",
         "pimos_lite/reweave_process_environment.py",
+        "pimos_lite/reweave_source_derivation.py",
         "pimos_lite/reweave_javascript_source.py",
         "pimos_lite/reweave_static_web_target.py",
         "scripts/analyze_reweave_extraction.mjs",

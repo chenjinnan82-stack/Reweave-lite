@@ -5768,6 +5768,107 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
                 30,
                 "confirmed project",
             )
+            js("document.getElementById('warehouse-developer-mode').click(); true")
+            wait_js(
+                "!!document.querySelector("
+                "'#warehouse-projects [data-action=\"authorize-source-derived\"]')",
+                30,
+                "source-derived developer form",
+            )
+            assert (
+                js(
+                    """(() => {
+                      const button = document.querySelector(
+                        '#warehouse-projects [data-action="authorize-source-derived"]'
+                      );
+                      if (!button) return false;
+                      button.focus();
+                      const panel = button.closest('fieldset');
+                      return document.activeElement === button
+                        && panel
+                        && panel.querySelectorAll('textarea').length >= 2
+                        && panel.querySelectorAll('input').length >= 7
+                        && panel.textContent.includes('失败后不会自动重试')
+                        && !panel.textContent.includes('review_id');
+                    })()"""
+                )
+                is True
+            )
+            wait_js(
+                "Array.from(document.querySelectorAll("
+                "'#warehouse-projects [data-action=\"authorize-source-agent\"]'))"
+                ".some(button => !button.disabled && "
+                "getComputedStyle(button).display !== 'none')",
+                30,
+                "source Agent authorization action",
+            )
+            assert (
+                js(
+                    """(() => {
+                      const button = Array.from(
+                        document.querySelectorAll(
+                          '#warehouse-projects [data-action="authorize-source-agent"]'
+                        )
+                      ).find(item => !item.disabled);
+                      if (!button) return false;
+                      button.click();
+                      return true;
+                    })()"""
+                )
+                is True
+            )
+            wait_js(
+                "Array.from(document.querySelectorAll("
+                "'#warehouse-projects [data-action=\"revoke-source-agent\"]'))"
+                ".some(button => !button.disabled)",
+                30,
+                "active source Agent authorization",
+            )
+            source_binding_line = app.clipboard().text()
+            source_bind_request = json.loads(source_binding_line)
+            source_handoff_token = source_bind_request["payload"]["handoff_token"]
+            assert re.fullmatch(
+                r"source_handoff_token_[0-9a-f]{48}",
+                source_handoff_token,
+            )
+            assert source_bind_request == {
+                "protocol": "reweave_agent_jsonl.v2",
+                "id": "bind-user-handoff",
+                "action": "bind_user_handoff",
+                "payload": {"handoff_token": source_handoff_token},
+            }
+            assert source_handoff_token not in str(
+                js("document.documentElement.outerHTML")
+            )
+            assert source_handoff_token not in str(js("document.body.innerText"))
+            assert source_handoff_token not in str(
+                js("JSON.stringify(window.ReweavePrototype.getState())")
+            )
+            assert (
+                js(
+                    """(() => {
+                      const button = Array.from(
+                        document.querySelectorAll(
+                          '#warehouse-projects [data-action="revoke-source-agent"]'
+                        )
+                      ).find(item => !item.disabled);
+                      if (!button) return false;
+                      button.click();
+                      return true;
+                    })()"""
+                )
+                is True
+            )
+            wait_js(
+                "Array.from(document.querySelectorAll("
+                "'#warehouse-projects [data-action=\"authorize-source-agent\"]'))"
+                ".some(button => !button.disabled) && "
+                "document.getElementById('warehouse-projects').textContent.includes("
+                "'Agent 入库授权已撤销')",
+                30,
+                "revoked source Agent authorization",
+            )
+            app.clipboard().clear()
             prepublication_backup = service._capsule_store.create_backup("manual")
             assert (
                 js(

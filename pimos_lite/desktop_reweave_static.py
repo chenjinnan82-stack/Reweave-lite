@@ -284,6 +284,15 @@ class ReweaveBridge:
                 return self._phase4_call("start_refresh_all", payload_json)
 
             @Slot(str, result=str)
+            def authorize_and_start_source_derived_computation(
+                self, payload_json: str = ""
+            ) -> str:
+                return self._phase4_call(
+                    "authorize_and_start_source_derived_computation",
+                    payload_json,
+                )
+
+            @Slot(str, result=str)
             def get_intake_run(self, payload_json: str = "") -> str:
                 return self._phase4_call("get_intake_run", payload_json)
 
@@ -495,6 +504,136 @@ class ReweaveBridge:
             ) -> str:
                 return self._phase4_call(
                     "revoke_local_agent_handoff", payload_json
+                )
+
+            @Slot(str, result=str)
+            def copy_local_source_handoff_binding(
+                self, payload_json: str = ""
+            ) -> str:
+                try:
+                    payload = json.loads(payload_json) if payload_json else {}
+                except json.JSONDecodeError:
+                    return self._phase4_error(
+                        "invalid_payload",
+                        "invalidPayload",
+                    )
+                if (
+                    type(payload) is not dict
+                    or set(payload) != {"project_id"}
+                    or type(payload["project_id"]) is not str
+                    or not payload["project_id"].strip()
+                ):
+                    return self._phase4_error(
+                        "source_handoff_request_invalid",
+                        "source_handoff_request_invalid",
+                    )
+                method = getattr(
+                    self._engine,
+                    "create_local_source_handoff",
+                    None,
+                )
+                revoke = getattr(
+                    self._engine,
+                    "revoke_local_source_handoff",
+                    None,
+                )
+                if not callable(method) or not callable(revoke):
+                    return self._phase4_error(
+                        "service_unavailable",
+                        "serviceUnavailable",
+                    )
+
+                def revoke_after_failure() -> bool:
+                    try:
+                        revoked = revoke(
+                            {"project_id": payload["project_id"]}
+                        )
+                    except BaseException:
+                        return False
+                    revoked_data = (
+                        revoked.get("data")
+                        if type(revoked) is dict
+                        else None
+                    )
+                    return (
+                        type(revoked) is dict
+                        and revoked.get("ok") is True
+                        and type(revoked_data) is dict
+                        and revoked_data.get("status")
+                        in {"revoked", "none"}
+                    )
+
+                result = method(payload)
+                if type(result) is not dict:
+                    return self._phase4_error(
+                        "internal_error",
+                        "internalError",
+                    )
+                data = result.get("data") if type(result) is dict else None
+                token = (
+                    data.get("source_handoff_token")
+                    if type(data) is dict
+                    else None
+                )
+                if (
+                    result.get("ok") is not True
+                    or type(token) is not str
+                    or re.fullmatch(
+                        r"source_handoff_token_[0-9a-f]{48}",
+                        token,
+                    )
+                    is None
+                ):
+                    if result.get("ok") is True:
+                        if not revoke_after_failure():
+                            return self._phase4_error(
+                                "source_handoff_clipboard_revoke_failed",
+                                "source_handoff_clipboard_revoke_failed",
+                            )
+                        return self._phase4_error(
+                            "internal_error",
+                            "internalError",
+                        )
+                    return json.dumps(result)
+                request_line = json.dumps(
+                    {
+                        "protocol": "reweave_agent_jsonl.v2",
+                        "id": "bind-user-handoff",
+                        "action": "bind_user_handoff",
+                        "payload": {"handoff_token": token},
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                try:
+                    _copy_to_system_clipboard(request_line)
+                except BaseException:
+                    if not revoke_after_failure():
+                        return self._phase4_error(
+                            "source_handoff_clipboard_revoke_failed",
+                            "source_handoff_clipboard_revoke_failed",
+                        )
+                    return self._phase4_error(
+                        "source_handoff_clipboard_failed",
+                        "source_handoff_clipboard_failed",
+                    )
+                return json.dumps(
+                    {
+                        "ok": True,
+                        "data": {
+                            "schema_version": "source_handoff_status.v1",
+                            "status": "active",
+                            "created_at": data.get("created_at"),
+                        },
+                    }
+                )
+
+            @Slot(str, result=str)
+            def revoke_local_source_handoff(
+                self, payload_json: str = ""
+            ) -> str:
+                return self._phase4_call(
+                    "revoke_local_source_handoff", payload_json
                 )
 
             @Slot(str, result=str)

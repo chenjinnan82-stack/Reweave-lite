@@ -53,6 +53,7 @@ REQUIRED_SURFACE_FILES = (
     "pimos_lite/reweave_data_contract.py",
     "pimos_lite/reweave_experience.py",
     "pimos_lite/reweave_process_environment.py",
+    "pimos_lite/reweave_source_derivation.py",
     "pimos_lite/reweave_javascript_source.py",
     "pimos_lite/reweave_static_web_target.py",
     "pimos_lite/reweave_source_registry.py",

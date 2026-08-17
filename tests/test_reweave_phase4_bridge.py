@@ -47,6 +47,7 @@ def test_phase4_bridge_forwards_json_payloads_to_app_service() -> None:
         "start_create_computation_adapter",
         "start_refresh_project",
         "start_refresh_all",
+        "authorize_and_start_source_derived_computation",
         "get_intake_run",
         "cancel_intake_run",
         "list_supervision_models",
@@ -61,6 +62,7 @@ def test_phase4_bridge_forwards_json_payloads_to_app_service() -> None:
         "cancel_product_plan_run",
         "get_product_plan_workspace",
         "confirm_product_plan",
+        "revoke_local_source_handoff",
         "list_review_items",
         "decide_review_item",
         "list_capability_groups",
@@ -155,6 +157,8 @@ def test_generation_slots_only_call_generate_product_with_strict_json() -> None:
             for index in range(meta.methodOffset(), meta.methodCount())
         }
         assert "generate_product(QString)" in signatures
+        assert "copy_local_source_handoff_binding(QString)" in signatures
+        assert "revoke_local_source_handoff(QString)" in signatures
         assert "notify_generate(QString)" not in signatures
         assert "generate_preview(QString)" not in signatures
         for retired in (
@@ -264,5 +268,131 @@ def test_static_web_target_bridge_is_review_only() -> None:
         assert not hasattr(bridge, "apply_static_web_patch")
         assert not hasattr(bridge, "commit_static_web_patch")
         assert not hasattr(bridge, "write_static_web_target")
+    finally:
+        desktop.ReweaveBridge._qobject_cls = None
+
+
+def test_source_handoff_bridge_copies_one_strict_binding_and_revokes_on_failure() -> None:
+    token = "source_handoff_token_" + "a" * 48
+
+    class Service:
+        def __init__(self) -> None:
+            self.created: list[dict] = []
+            self.revoked: list[dict] = []
+
+        def create_local_source_handoff(self, payload: dict):
+            self.created.append(payload)
+            return {
+                "ok": True,
+                "data": {
+                    "source_handoff_token": token,
+                    "created_at": "2026-08-16T10:00:00Z",
+                },
+            }
+
+        def revoke_local_source_handoff(self, payload: dict):
+            self.revoked.append(payload)
+            return {
+                "ok": True,
+                "data": {
+                    "schema_version": "source_handoff_status.v1",
+                    "status": "revoked",
+                },
+            }
+
+    service = Service()
+    bridge = _bridge(service)
+    copied: list[str] = []
+    try:
+        with patch.object(
+            desktop,
+            "_copy_to_system_clipboard",
+            side_effect=copied.append,
+        ):
+            raw = bridge.copy_local_source_handoff_binding(
+                json.dumps({"project_id": "project_static"})
+            )
+        result = json.loads(raw)
+        assert result == {
+            "ok": True,
+            "data": {
+                "schema_version": "source_handoff_status.v1",
+                "status": "active",
+                "created_at": "2026-08-16T10:00:00Z",
+            },
+        }
+        assert token not in raw
+        assert service.created == [{"project_id": "project_static"}]
+        assert json.loads(copied[0]) == {
+            "protocol": "reweave_agent_jsonl.v2",
+            "id": "bind-user-handoff",
+            "action": "bind_user_handoff",
+            "payload": {"handoff_token": token},
+        }
+
+        forwarded = json.loads(
+            bridge.revoke_local_source_handoff(
+                json.dumps({"project_id": "project_static"})
+            )
+        )
+        assert forwarded["data"]["status"] == "revoked"
+        assert service.revoked == [{"project_id": "project_static"}]
+
+        invalid = json.loads(
+            bridge.copy_local_source_handoff_binding(
+                json.dumps({"project_id": "project_static", "path": "/tmp/source"})
+            )
+        )
+        assert invalid["error"]["code"] == "source_handoff_request_invalid"
+
+        service.create_local_source_handoff = lambda _payload: {
+            "ok": True,
+            "data": {"source_handoff_token": "handoff_token_" + "b" * 48},
+        }
+        wrong_prefix = json.loads(
+            bridge.copy_local_source_handoff_binding(
+                json.dumps({"project_id": "project_static"})
+            )
+        )
+        assert wrong_prefix["error"]["code"] == "internal_error"
+        assert service.revoked[-1] == {"project_id": "project_static"}
+        service.create_local_source_handoff = lambda _payload: {
+            "ok": True,
+            "data": {
+                "source_handoff_token": token,
+                "created_at": "2026-08-16T10:00:00Z",
+            },
+        }
+        with patch.object(
+            desktop,
+            "_copy_to_system_clipboard",
+            side_effect=RuntimeError("clipboard denied"),
+        ):
+            failed = json.loads(
+                bridge.copy_local_source_handoff_binding(
+                    json.dumps({"project_id": "project_static"})
+                )
+            )
+        assert failed["error"]["code"] == "source_handoff_clipboard_failed"
+        assert service.revoked[-1] == {"project_id": "project_static"}
+
+        service.revoke_local_source_handoff = lambda _payload: {
+            "ok": False,
+            "error": {"code": "source_handoff_conflict"},
+        }
+        with patch.object(
+            desktop,
+            "_copy_to_system_clipboard",
+            side_effect=RuntimeError("clipboard denied"),
+        ):
+            revoke_failed = json.loads(
+                bridge.copy_local_source_handoff_binding(
+                    json.dumps({"project_id": "project_static"})
+                )
+            )
+        assert (
+            revoke_failed["error"]["code"]
+            == "source_handoff_clipboard_revoke_failed"
+        )
     finally:
         desktop.ReweaveBridge._qobject_cls = None

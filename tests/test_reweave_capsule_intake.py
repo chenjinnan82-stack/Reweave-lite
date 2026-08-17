@@ -309,6 +309,7 @@ class CapsuleIntakeStage2Test(unittest.TestCase):
         first = self.intake.run_intake(project["project_id"])
 
         self.assertEqual(first["status"], "completed")
+        self.assertEqual(str(uuid.UUID(first["run_id"])), first["run_id"])
         self.assertEqual(first["counts"]["extracted"], 3)
         rows = self._review_rows(first["run_id"])
         self.assertEqual(len(rows), 3)
@@ -342,6 +343,76 @@ class CapsuleIntakeStage2Test(unittest.TestCase):
         with self.store.read_connection() as connection:
             self.assertEqual(connection.execute("SELECT count(*) FROM capsules").fetchone()[0], 0)
             self.assertEqual(connection.execute("SELECT count(*) FROM capsule_versions").fetchone()[0], 0)
+
+    def test_preallocated_run_requires_exact_snapshot_and_unique_valid_id(self) -> None:
+        self._write_complete_project(self.source)
+        project = self._bind_discover_confirm(self.source)
+        project_id = str(project["project_id"])
+        snapshot = self.intake.snapshot_project(project_id)
+        run_id = f"run_{uuid.uuid4().hex}"
+
+        result = self.intake.run_intake(
+            project_id,
+            run_id=run_id,
+            expected_snapshot_sha256=snapshot.digest,
+        )
+
+        self.assertEqual(result["run_id"], run_id)
+        self.assertTrue(self._review_rows(run_id))
+        self.assertTrue(all(row["run_id"] == run_id for row in self._review_rows(run_id)))
+        with self.store.read_connection() as connection:
+            baseline_runs = connection.execute(
+                "SELECT count(*) FROM intake_runs"
+            ).fetchone()[0]
+            baseline_reviews = connection.execute(
+                "SELECT count(*) FROM review_items"
+            ).fetchone()[0]
+
+        with self.assertRaisesRegex(IntakeError, "intake_snapshot_mismatch"):
+            self.intake.run_intake(
+                project_id,
+                run_id=f"run_{uuid.uuid4().hex}",
+                expected_snapshot_sha256="0" * 64,
+            )
+        with self.assertRaisesRegex(IntakeError, "intake_run_id_conflict"):
+            self.intake.run_intake(
+                project_id,
+                run_id=run_id,
+                expected_snapshot_sha256=snapshot.digest,
+            )
+        for invalid_run_id in (
+            "",
+            str(uuid.uuid4()),
+            "run_" + "A" * 32,
+            "run_" + "0" * 31,
+        ):
+            with self.subTest(invalid_run_id=invalid_run_id), self.assertRaisesRegex(
+                IntakeError, "intake_run_id_invalid"
+            ):
+                self.intake.run_intake(
+                    project_id,
+                    run_id=invalid_run_id,
+                    expected_snapshot_sha256=snapshot.digest,
+                )
+        for invalid_snapshot in ("", "0" * 63, "A" * 64):
+            with self.subTest(invalid_snapshot=invalid_snapshot), self.assertRaisesRegex(
+                IntakeError, "intake_expected_snapshot_invalid"
+            ):
+                self.intake.run_intake(
+                    project_id,
+                    run_id=f"run_{uuid.uuid4().hex}",
+                    expected_snapshot_sha256=invalid_snapshot,
+                )
+
+        with self.store.read_connection() as connection:
+            self.assertEqual(
+                connection.execute("SELECT count(*) FROM intake_runs").fetchone()[0],
+                baseline_runs,
+            )
+            self.assertEqual(
+                connection.execute("SELECT count(*) FROM review_items").fetchone()[0],
+                baseline_reviews,
+            )
 
     def test_multiple_explicit_roots_reject_ui_but_not_computation(self) -> None:
         self._write_complete_project(self.source)

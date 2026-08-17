@@ -971,6 +971,46 @@ setTimeout(function () { console.log(JSON.stringify(seen)); }, 0);
     }
 
 
+def test_management_run_failure_uses_safe_projected_error_code() -> None:
+    node = shutil.which("node")
+    if not node:
+        return
+    app = (ROOT / "reweave_frontend" / "app.js").read_text(encoding="utf-8")
+    start = app.index("  function pollManagementRun(")
+    end = app.index("\n  function inspectAndRestoreBackup(", start)
+    script = """
+var seen = {};
+function bridgeCall() {
+  return Promise.resolve(JSON.stringify({
+    ok: true,
+    data: {run: {status: 'failed', error_code: 'source_derivation_run_stale'}}
+  }));
+}
+function parseBridgeJson(raw) { return JSON.parse(raw); }
+function managementPayload(result) { return result && result.ok !== false ? result.data : null; }
+function managementError(result) {
+  return result && result.error && result.error.code === 'source_derivation_run_stale'
+    ? 'source_derivation_run_stale'
+    : 'managementOperationFailed';
+}
+function rememberManagementRun() {}
+function renderManagementRuns() {}
+function setManagementStatus(key) { seen.global = key; }
+function refreshIngestionManagement() {}
+function collectRunIds() { return []; }
+""" + app[start:end] + """
+pollManagementRun('run-1', null, false, function (key) { seen.row = key; });
+setTimeout(function () { console.log(JSON.stringify(seen)); }, 0);
+"""
+    result = subprocess.run(
+        [node, "-e", script], check=True, capture_output=True, text=True
+    )
+    assert json.loads(result.stdout) == {
+        "global": "source_derivation_run_stale",
+        "row": "source_derivation_run_stale",
+    }
+
+
 def test_capability_rename_and_historical_product_diagnostics_are_wired() -> None:
     app = (ROOT / "reweave_frontend" / "app.js").read_text(encoding="utf-8")
     styles = (ROOT / "reweave_frontend" / "styles.css").read_text(encoding="utf-8")
@@ -1166,6 +1206,32 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert '"start_create_computation_adapter"' in app
     assert '"start_scan_javascript_computations"' in app
     assert 'bridgeCall("register_javascript_computation_source"' in app
+    assert (
+        '"authorize_and_start_source_derived_computation"' in app
+    )
+    assert 'dataset.action = "authorize-source-derived"' in app
+    assert "sourceDerivedNotice" in app
+    assert "input_text:" in app
+    assert "expected_result:" in app
+    assert 'run.status === "review_required"' in app
+    assert 'dataset.action = "authorize-source-agent"' in app
+    assert 'bridgeCall(\n              "copy_local_source_handoff_binding"' in app
+    assert 'dataset.action = "revoke-source-agent"' in app
+    assert 'bridgeCall(\n              "revoke_local_source_handoff"' in app
+    assert 'String(project.source_type || "") === "static_web"' in app
+    assert '"completed_with_pending",' in app
+    assert "source_handoff_token_" not in app
+    assert '"source_handoff_status.v1"' in app
+    assert (
+        'String(item.project_id || "") ===\n'
+        "            sourceHandoffContext.project_id" in app
+    )
+    assert (
+        'String(item.run_id || "") === sourceHandoffContext.run_id' in app
+    )
+    assert 'sourceMissing.dataset.errorCode = "source_handoff_review_missing"' in app
+    assert "unrelated Reviews are not shown" in app
+    assert "不会显示其他 Review" in app
     assert 'data-action", "inspect-computation-adapters"' not in app
     assert 'data-action", "create-computation-adapter"' not in app
     assert 'data-action", "scan-javascript-computations"' in app

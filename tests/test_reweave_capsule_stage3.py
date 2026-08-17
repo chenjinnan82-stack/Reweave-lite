@@ -57,6 +57,11 @@ from pimos_lite.reweave_javascript_source import (
     JavascriptSourceService,
     _descriptor_relative_snapshot_supported,
 )
+from pimos_lite.reweave_source_derivation import (
+    build_source_derived_authorization,
+    build_source_derived_request,
+    validate_source_derived_response,
+)
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -3192,6 +3197,185 @@ export function calculate(quantity, price) {
         )
         self.assertIsInstance(prepared, PreparedReview)
         return prepared, snapshot, mapping, selection
+
+    def test_source_derived_authorization_reuses_v5_capture_to_isolated_review(
+        self,
+    ) -> None:
+        evidence_source = (
+            'const urgentWords = ["urgent"];\n'
+            "export function classify(message) {\n"
+            "  return urgentWords.some((word) => message.includes(word)) "
+            '? "urgent" : "normal";\n'
+            "}\n"
+        )
+        evidence_bytes = evidence_source.encode("utf-8")
+        evidence = [
+            {
+                "logical_path": "src/classify.ts",
+                "sha256": hashlib.sha256(evidence_bytes).hexdigest(),
+                "size_bytes": len(evidence_bytes),
+                "content": evidence_source,
+            }
+        ]
+        authorization = build_source_derived_authorization(
+            source_snapshot_sha256="1" * 64,
+            project_graph_digest="2" * 64,
+            evidence=[
+                {
+                    key: evidence[0][key]
+                    for key in ("logical_path", "sha256", "size_bytes")
+                }
+            ],
+            behavior_intent="Classify one bounded message as normal or urgent.",
+            input_contract={
+                "schema": "data_contract.v1",
+                "type": "object",
+                "properties": {
+                    "message": {
+                        "type": "string",
+                        "min_length": 1,
+                        "max_length": 1000,
+                    }
+                },
+                "required": ["message"],
+                "additional_properties": False,
+            },
+            output_contract={
+                "schema": "data_contract.v1",
+                "type": "object",
+                "properties": {
+                    "classification": {
+                        "type": "string",
+                        "min_length": 6,
+                        "max_length": 6,
+                        "enum": ["normal", "urgent"],
+                    }
+                },
+                "required": ["classification"],
+                "additional_properties": False,
+            },
+            error_contract={"schema": "error_contract.v1", "errors": {}},
+            result_field="classification",
+            acceptance_cases=[
+                {
+                    "input": {"message": "routine task"},
+                    "expected_output": {"classification": "normal"},
+                },
+                {
+                    "input": {"message": "urgent task"},
+                    "expected_output": {"classification": "urgent"},
+                },
+            ],
+            source_proposal_model={
+                "name": "deterministic-test",
+                "digest": "3" * 64,
+            },
+            warehouse_revision=0,
+            catalog_digest="4" * 64,
+            authorized_at="2026-08-16T00:00:00Z",
+        )
+        request = build_source_derived_request(authorization, evidence)
+        source = (
+            "export function compute(arg0) {\n"
+            '  return arg0.includes("urgent") ? "urgent" : "normal";\n'
+            "}\n"
+        )
+        proposal = validate_source_derived_response(
+            {
+                "schema": "capability_source_proposal.v2",
+                "entry": {
+                    "module_relpath": "capability.js",
+                    "export_name": "compute",
+                },
+                "files": [{"path": "capability.js", "content": source}],
+                "witnesses": [
+                    {
+                        "input": {"message": "routine task"},
+                        "expected_scalar_result": "normal",
+                    },
+                    {
+                        "input": {"message": "urgent task"},
+                        "expected_scalar_result": "urgent",
+                    },
+                ],
+            },
+            request,
+            authorization,
+            evidence,
+        )
+        (self.source / "capability.js").write_text(
+            proposal["files"][0]["content"],
+            encoding="utf-8",
+        )
+        snapshot = self.source_service.scan(self.project_id)
+        selection, parameters = _stage_e_selection(
+            snapshot,
+            "capability.js",
+            "compute",
+        )
+        offer = {
+            **selection,
+            "parameters": [
+                {
+                    "parameter_binding_id": item["binding_id"],
+                    "name": f"arg{index}",
+                }
+                for index, item in enumerate(parameters)
+            ],
+        }
+        capture_request = (
+            app_service_module.ReweaveAppService
+            ._capability_source_proposal_capture_request
+        )
+        selected, mapping = capture_request(
+            authorization,
+            offer,
+            proposal,
+        )
+        changed_authorization = copy.deepcopy(authorization)
+        changed_authorization["result_enum"] = ["normal"]
+        with self.assertRaisesRegex(
+            Exception,
+            "capability_source_proposal_capture_invalid",
+        ):
+            capture_request(
+                changed_authorization,
+                offer,
+                proposal,
+            )
+        prepared = self.stage3.prepare_ephemeral_computation_capture_v5(
+            snapshot,
+            selected,
+            mapping,
+        )
+        self.assertIsInstance(prepared, PreparedReview)
+        with patch.object(
+            self.stage3.supervisor,
+            "supervise",
+            return_value=self._approved_supervision(),
+        ) as supervise:
+            result = self.stage3.process_ephemeral_capture(prepared)
+        self.assertEqual(result["status"], "review_required")
+        supervise.assert_called_once()
+        with self.store.read_connection() as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM review_items"
+                ).fetchone()[0],
+                1,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM capsules"
+                ).fetchone()[0],
+                0,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM capsule_versions"
+                ).fetchone()[0],
+                0,
+            )
 
     def test_capture_v2_adapter_and_digest_are_unchanged(self) -> None:
         prepared, _snapshot, _mapping = self._positive_capture()

@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from pimos_lite.reweave_app_service import ReweaveAppService
+from pimos_lite.reweave_canonical import canonical_json_digest
 from pimos_lite.reweave_capsule_intake import (
     COMPUTATION_ADAPTER_CONTRACT_VERSION,
     EXTRACTION_CONTRACT_VERSION,
@@ -21,6 +22,9 @@ from pimos_lite.reweave_capsule_store import CapsuleWarehouseStore
 from pimos_lite.reweave_engine.local import LocalReweaveEngine
 from pimos_lite.reweave_javascript_source import (
     _descriptor_relative_snapshot_supported,
+)
+from pimos_lite.reweave_source_derivation import (
+    get_source_derived_run,
 )
 
 
@@ -42,11 +46,16 @@ class Phase4ManagementTest(unittest.TestCase):
         self.temp.cleanup()
 
     def _wait(self, run_id: str) -> dict[str, object]:
-        for _ in range(300):
+        for _ in range(3_000):
             result = self.service.get_intake_run({"run_id": run_id})
             self.assertTrue(result["ok"])
             task = result["data"]
-            if task["status"] in {"completed", "failed", "cancelled"}:
+            if task["status"] in {
+                "completed",
+                "review_required",
+                "failed",
+                "cancelled",
+            }:
                 return task
             time.sleep(0.01)
         self.fail("management task did not finish")
@@ -75,6 +84,734 @@ class Phase4ManagementTest(unittest.TestCase):
             str(discovered[0]["project_id"])
         )
         return str(project["project_id"])
+
+    def _ready_complete_project(self) -> tuple[str, Path]:
+        source = self.root / "complete-project"
+        source.mkdir()
+        (source / "index.html").write_text(
+            """<!doctype html>
+<html><body>
+<main data-capsule-root>
+  <span data-ref="title"></span>
+  <input data-ref="quantity" type="number" min="1" max="10" step="1">
+  <button data-action="calculate" type="button">Calculate</button>
+</main>
+<script type="module" src="./presentation.js"></script>
+<script type="module" src="./interaction.js"></script>
+<script type="module" src="./compute.js"></script>
+</body></html>
+""",
+            encoding="utf-8",
+        )
+        (source / "presentation.js").write_text(
+            """export function render(root, input) {
+  if (typeof input.title !== "string" || input.title.length > 40) {
+    return {ok: false, error: {code: "INVALID_TITLE"}};
+  }
+  const title = root.querySelector("[data-ref='title']");
+  title.textContent = input.title;
+}
+""",
+            encoding="utf-8",
+        )
+        (source / "interaction.js").write_text(
+            """export function mount(root, ports) {
+  const quantity = root.querySelector("[data-ref='quantity']");
+  const button = root.querySelector("[data-action='calculate']");
+  const onClick = (event) => {
+    event.preventDefault();
+    const value = Number(quantity.value);
+    if (!Number.isInteger(value) || value < 1 || value > 10) return;
+    ports.emit("calculate_requested", {quantity: value});
+  };
+  button.addEventListener("click", onClick);
+  return () => { button.removeEventListener("click", onClick); };
+}
+""",
+            encoding="utf-8",
+        )
+        (source / "compute.js").write_text(
+            """export function compute(input) {
+  if (!input || typeof input !== "object" || Object.keys(input).length !== 1) {
+    return {ok: false, error: {code: "INVALID_INPUT", field: null, details: {}}};
+  }
+  if (!Number.isInteger(input.quantity) || input.quantity < 1 || input.quantity > 10) {
+    return {ok: false, error: {code: "INVALID_QUANTITY", field: "quantity", details: {}}};
+  }
+  return {ok: true, value: {total: input.quantity * 2}};
+}
+""",
+            encoding="utf-8",
+        )
+        root = self.service._capsule_intake.bind_source_root(
+            source,
+            root_kind="single_project",
+        )
+        project = self.service._capsule_intake.discover_projects(
+            str(root["root_id"])
+        )[0]
+        confirmed = self.service._capsule_intake.confirm_project(
+            str(project["project_id"])
+        )
+        return str(confirmed["project_id"]), source
+
+    def _select_test_supervision_model(self) -> None:
+        selected = {
+            "base_url": "http://127.0.0.1:11434",
+            "name": "source-handoff-test-model",
+            "digest": "b" * 64,
+            "selected_at": "2026-08-16T00:00:00Z",
+        }
+        with self.store.transaction() as connection:
+            connection.execute(
+                "INSERT INTO app_settings(setting_key, value_json, updated_at) "
+                "VALUES ('capsule_supervision_model', ?, ?)",
+                (
+                    json.dumps(
+                        selected,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    selected["selected_at"],
+                ),
+            )
+
+    def test_source_derived_developer_run_reaches_only_isolated_review(
+        self,
+    ) -> None:
+        source = self.root / "source-derived"
+        evidence_file = source / "src" / "rules.ts"
+        evidence_file.parent.mkdir(parents=True)
+        evidence_file.write_text(
+            'export function classify(value: string) { return value; }\n',
+            encoding="utf-8",
+        )
+        self.store.initialize()
+        self.store.migrate_v1_to_v2()
+        root = self.service._capsule_intake.bind_source_root(
+            source,
+            root_kind="project_collection",
+        )
+        self._select_test_supervision_model()
+        source_model = {
+            "name": "source-derived-test:1b",
+            "digest": "a" * 64,
+            "parameter_count": 1_000_000_000,
+            "parameter_size": "1B",
+        }
+        proposal = {
+            "schema": "capability_source_proposal.v2",
+            "entry": {
+                "module_relpath": "capability.js",
+                "export_name": "compute",
+            },
+            "files": [
+                {
+                    "path": "capability.js",
+                    "content": (
+                        "export function compute(arg0) {\n"
+                        '  return arg0.includes("urgent") '
+                        '? "urgent" : "normal";\n'
+                        "}\n"
+                    ),
+                }
+            ],
+            "witnesses": [
+                {
+                    "input": {"message": "routine"},
+                    "expected_scalar_result": "normal",
+                },
+                {
+                    "input": {"message": "urgent"},
+                    "expected_scalar_result": "urgent",
+                },
+            ],
+        }
+        source_calls: list[str] = []
+        supervisor_calls: list[str] = []
+
+        def generate(*_args, **_kwargs):
+            source_calls.append("generate")
+            return {
+                "response": proposal,
+                "evidence": {"response_digest": "c" * 64},
+            }
+
+        def approve(_self, _summary, capability_kind):
+            supervisor_calls.append(capability_kind)
+            return (
+                {
+                    "schema_version": "capsule_supervision.v1",
+                    "verdict": "approve",
+                    "capability_kind": capability_kind,
+                    "semantic_summary": "Bounded local computation.",
+                    "keep_reason_codes": [
+                        "DECLARED_LOCAL_CAPABILITY"
+                    ],
+                    "remove_reason_codes": [],
+                    "brand_signals": [],
+                    "sensitive_data_status": "clear",
+                    "hidden_dependency_codes": [],
+                    "duplicate_suggestions": [],
+                    "review_required": False,
+                },
+                "d" * 64,
+                {
+                    "name": "source-handoff-test-model",
+                    "digest": "b" * 64,
+                },
+            )
+
+        payload = {
+            "source_root_id": str(root["root_id"]),
+            "source_relpath": "src/rules.ts",
+            "behavior_intent": "Classify bounded text.",
+            "input_field": "message",
+            "input_min_length": 1,
+            "input_max_length": 1000,
+            "result_field": "classification",
+            "result_enum": ["normal", "urgent"],
+            "acceptance_cases": [
+                {
+                    "input_text": "routine task",
+                    "expected_result": "normal",
+                },
+                {
+                    "input_text": "urgent task",
+                    "expected_result": "urgent",
+                },
+            ],
+        }
+        with self.store.read_connection() as connection:
+            formal_before = {
+                table: int(
+                    connection.execute(
+                        f"SELECT COUNT(*) FROM {table}"
+                    ).fetchone()[0]
+                )
+                for table in ("review_items", "capsules", "capsule_versions")
+            }
+        revision_before = self.store.current_revision()
+        with patch.object(
+            self.service._product_planner,
+            "_selected_model",
+            return_value=source_model,
+        ), patch.object(
+            self.service._product_planner,
+            "run_source_derived_capability_source_proposal",
+            side_effect=generate,
+        ), patch(
+            "pimos_lite.reweave_capsule_stage3.OllamaSupervisor.supervise",
+            new=approve,
+        ):
+            gate = threading.Barrier(3)
+            starts: list[dict[str, object]] = []
+
+            def start() -> None:
+                gate.wait()
+                starts.append(
+                    self.service.authorize_and_start_source_derived_computation(
+                        payload
+                    )
+                )
+
+            threads = [threading.Thread(target=start) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            gate.wait()
+            for thread in threads:
+                thread.join(5)
+                self.assertFalse(thread.is_alive())
+            self.assertEqual(len(starts), 2)
+            self.assertTrue(all(item["ok"] for item in starts), starts)
+            run_ids = {
+                str(item.get("run_id") or item["data"]["run_id"])
+                for item in starts
+            }
+            self.assertEqual(len(run_ids), 1)
+            run_id = run_ids.pop()
+            result = self._wait(run_id)
+            self.assertEqual(
+                result["status"],
+                "review_required",
+                result,
+            )
+            self.assertEqual(result["review_scope"], "isolated")
+            self.assertEqual(result["attempt_count"], 1)
+            self.assertNotIn("review_id", result)
+            self.assertNotIn("source_relpath", result)
+            self.assertNotIn("source_root_id", result)
+            self.assertNotIn("model", result)
+            repeated = (
+                self.service
+                .authorize_and_start_source_derived_computation(payload)
+            )
+            self.assertTrue(repeated["ok"], repeated)
+            self.assertEqual(repeated["data"]["run_id"], run_id)
+            self.assertEqual(
+                repeated["data"]["status"],
+                "review_required",
+            )
+
+        self.assertEqual(source_calls, ["generate"])
+        self.assertEqual(supervisor_calls, ["computation"])
+        self.assertEqual(self.store.current_revision(), revision_before)
+        with self.store.read_connection() as connection:
+            formal_after = {
+                table: int(
+                    connection.execute(
+                        f"SELECT COUNT(*) FROM {table}"
+                    ).fetchone()[0]
+                )
+                for table in ("review_items", "capsules", "capsule_versions")
+            }
+        self.assertEqual(formal_after, formal_before)
+        run_directories = list(
+            (self.state / "source_derived_computations").glob(
+                "[0-9a-f]" * 64
+            )
+        )
+        self.assertEqual(len(run_directories), 1)
+        durable = get_source_derived_run(self.service._state_root, run_id)
+        self.assertEqual(
+            [
+                (event["status"], event["stage"])
+                for event in durable["events"]
+            ],
+            [
+                ("pending", "source_proposal"),
+                ("running", "source_proposal"),
+                ("running", "intake"),
+                ("running", "security"),
+                ("running", "runtime"),
+                ("running", "supervision"),
+                ("review_required", "supervision"),
+            ],
+        )
+        validation_database = (
+            run_directories[0]
+            / "validation"
+            / "capsule_warehouse.sqlite3"
+        )
+        isolated = CapsuleWarehouseStore(validation_database)
+        with isolated.read_connection() as connection:
+            self.assertEqual(
+                int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM review_items "
+                        "WHERE candidate_status = 'review_required'"
+                    ).fetchone()[0]
+                ),
+                formal_before["review_items"] + 1,
+            )
+            self.assertEqual(
+                int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM capsules"
+                    ).fetchone()[0]
+                ),
+                formal_before["capsules"],
+            )
+            self.assertEqual(
+                int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM capsule_versions"
+                    ).fetchone()[0]
+                ),
+                formal_before["capsule_versions"],
+            )
+        database_bytes = validation_database.read_bytes()
+        validation_database.write_bytes(database_bytes + b"tampered")
+        if os.name == "posix":
+            validation_database.chmod(0o600)
+        tampered = self.service.get_intake_run({"run_id": run_id})
+        self.assertFalse(tampered["ok"])
+        self.assertEqual(
+            tampered["error"]["code"],
+            "source_derivation_validation_conflict",
+        )
+        validation_database.write_bytes(database_bytes)
+        if os.name == "posix":
+            validation_database.chmod(0o600)
+
+    def test_source_derived_run_fails_closed_on_restart_and_tamper(
+        self,
+    ) -> None:
+        source = self.root / "source-derived-recovery"
+        source.mkdir()
+        (source / "rules.ts").write_text(
+            'export const rules = ["urgent"];\n',
+            encoding="utf-8",
+        )
+        self.store.initialize()
+        self.store.migrate_v1_to_v2()
+        root = self.service._capsule_intake.bind_source_root(
+            source,
+            root_kind="project_collection",
+        )
+        self._select_test_supervision_model()
+        model = {
+            "name": "source-derived-test:1b",
+            "digest": "a" * 64,
+            "parameter_count": 1_000_000_000,
+            "parameter_size": "1B",
+        }
+        payload = {
+            "source_root_id": str(root["root_id"]),
+            "source_relpath": "rules.ts",
+            "behavior_intent": "Classify bounded text.",
+            "input_field": "message",
+            "input_min_length": 1,
+            "input_max_length": 1000,
+            "result_field": "classification",
+            "result_enum": ["normal", "urgent"],
+            "acceptance_cases": [
+                {
+                    "input_text": "routine",
+                    "expected_result": "normal",
+                },
+                {
+                    "input_text": "urgent",
+                    "expected_result": "urgent",
+                },
+            ],
+        }
+        with patch.object(
+            self.service._product_planner,
+            "_selected_model",
+            return_value=model,
+        ), patch.object(
+            self.service,
+            "_submit_management_task",
+            side_effect=lambda _kind, _action, **kwargs: {
+                "ok": True,
+                "run_id": kwargs["run_id"],
+                "status": "queued",
+            },
+        ):
+            started = (
+                self.service
+                .authorize_and_start_source_derived_computation(payload)
+            )
+            self.assertTrue(started["ok"], started)
+            recovered = self.service.get_intake_run(
+                {"run_id": started["run_id"]}
+            )
+            self.assertTrue(recovered["ok"], recovered)
+            self.assertEqual(
+                recovered["data"]["error_code"],
+                "manual_recovery_required",
+            )
+            repeated = (
+                self.service
+                .authorize_and_start_source_derived_computation(payload)
+            )
+            self.assertEqual(
+                repeated["data"]["run_id"],
+                started["run_id"],
+            )
+            self.assertEqual(repeated["data"]["status"], "failed")
+
+            original_source = (source / "rules.ts").read_bytes()
+            (source / "rules.ts").write_bytes(original_source + b"\n")
+            source_stale = (
+                self.service
+                .authorize_and_start_source_derived_computation(payload)
+            )
+            self.assertFalse(source_stale["ok"])
+            self.assertEqual(
+                source_stale["error"]["code"],
+                "source_derivation_run_stale",
+            )
+            (source / "rules.ts").write_bytes(original_source)
+
+            changed_model = {**model, "digest": "f" * 64}
+            with patch.object(
+                self.service._product_planner,
+                "_selected_model",
+                return_value=changed_model,
+            ):
+                model_stale = (
+                    self.service
+                    .authorize_and_start_source_derived_computation(payload)
+                )
+            self.assertFalse(model_stale["ok"])
+            self.assertEqual(
+                model_stale["error"]["code"],
+                "source_derivation_run_stale",
+            )
+
+            catalog = self.service._product_planning_catalog()
+            changed_catalog = {
+                **catalog,
+                "warehouse_revision": catalog["warehouse_revision"] + 1,
+            }
+            with patch.object(
+                self.service,
+                "_product_planning_catalog",
+                return_value=changed_catalog,
+            ):
+                catalog_stale = (
+                    self.service
+                    .authorize_and_start_source_derived_computation(payload)
+                )
+            self.assertFalse(catalog_stale["ok"])
+            self.assertEqual(
+                catalog_stale["error"]["code"],
+                "source_derivation_run_stale",
+            )
+            self.assertEqual(
+                len(
+                    list(
+                        (
+                            self.state
+                            / "source_derived_computations"
+                        ).glob("[0-9a-f]" * 64)
+                    )
+                ),
+                1,
+            )
+
+            run_path = next(
+                (
+                    self.state
+                    / "source_derived_computations"
+                ).glob("*/run.json")
+            )
+            run = json.loads(run_path.read_text(encoding="utf-8"))
+            run["attempt_count"] = 2
+            run_path.write_text(
+                json.dumps(
+                    run,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            if os.name == "posix":
+                run_path.chmod(0o600)
+            conflict = self.service.get_intake_run(
+                {"run_id": started["run_id"]}
+            )
+            self.assertFalse(conflict["ok"])
+            self.assertEqual(
+                conflict["error"]["code"],
+                "source_derivation_run_conflict",
+            )
+
+        invalid = dict(payload)
+        invalid["source_relpath"] = "../rules.ts"
+        rejected = (
+            self.service
+            .authorize_and_start_source_derived_computation(invalid)
+        )
+        self.assertFalse(rejected["ok"])
+        self.assertEqual(
+            rejected["error"]["code"],
+            "source_derivation_evidence_invalid",
+        )
+
+    def test_source_derived_cancel_discards_model_result(
+        self,
+    ) -> None:
+        source = self.root / "source-derived-cancel"
+        source.mkdir()
+        (source / "rules.ts").write_text(
+            'export const rules = ["urgent"];\n',
+            encoding="utf-8",
+        )
+        self.store.initialize()
+        self.store.migrate_v1_to_v2()
+        root = self.service._capsule_intake.bind_source_root(
+            source,
+            root_kind="project_collection",
+        )
+        self._select_test_supervision_model()
+        model = {
+            "name": "source-derived-test:1b",
+            "digest": "a" * 64,
+            "parameter_count": 1_000_000_000,
+            "parameter_size": "1B",
+        }
+        entered = threading.Event()
+        release = threading.Event()
+        source_calls: list[str] = []
+
+        def generate(*_args, **_kwargs):
+            source_calls.append("generate")
+            entered.set()
+            self.assertTrue(release.wait(5))
+            return {
+                "response": {
+                    "schema": "capability_source_proposal.v2",
+                    "entry": {
+                        "module_relpath": "capability.js",
+                        "export_name": "compute",
+                    },
+                    "files": [
+                        {
+                            "path": "capability.js",
+                            "content": (
+                                "export function compute(arg0) { "
+                                'return arg0.includes("urgent") '
+                                '? "urgent" : "normal"; }\n'
+                            ),
+                        }
+                    ],
+                    "witnesses": [
+                        {
+                            "input": {"message": "routine"},
+                            "expected_scalar_result": "normal",
+                        },
+                        {
+                            "input": {"message": "urgent"},
+                            "expected_scalar_result": "urgent",
+                        },
+                    ],
+                },
+                "evidence": {"response_digest": "c" * 64},
+            }
+
+        payload = {
+            "source_root_id": str(root["root_id"]),
+            "source_relpath": "rules.ts",
+            "behavior_intent": "Classify bounded text.",
+            "input_field": "message",
+            "input_min_length": 1,
+            "input_max_length": 1000,
+            "result_field": "classification",
+            "result_enum": ["normal", "urgent"],
+            "acceptance_cases": [
+                {
+                    "input_text": "routine",
+                    "expected_result": "normal",
+                },
+                {
+                    "input_text": "urgent",
+                    "expected_result": "urgent",
+                },
+            ],
+        }
+        with patch.object(
+            self.service._product_planner,
+            "_selected_model",
+            return_value=model,
+        ), patch.object(
+            self.service._product_planner,
+            "run_source_derived_capability_source_proposal",
+            side_effect=generate,
+        ):
+            started = (
+                self.service
+                .authorize_and_start_source_derived_computation(payload)
+            )
+            self.assertTrue(started["ok"], started)
+            self.assertTrue(entered.wait(5))
+            cancelled = self.service.cancel_intake_run(
+                {"run_id": started["run_id"]}
+            )
+            self.assertTrue(cancelled["ok"], cancelled)
+            release.set()
+            result = self._wait(started["run_id"])
+        self.assertEqual(source_calls, ["generate"])
+        self.assertEqual(result["status"], "cancelled")
+        self.assertEqual(result["stage"], "source_proposal")
+        run_dir = next(
+            (
+                self.state / "source_derived_computations"
+            ).glob("[0-9a-f]" * 64)
+        )
+        self.assertFalse((run_dir / "source" / "capability.js").exists())
+        self.assertFalse(
+            (run_dir / "validation" / "capsule_warehouse.sqlite3").exists()
+        )
+
+        supervisor_entered = threading.Event()
+        supervisor_release = threading.Event()
+
+        def approve_after_cancel(_self, _summary, capability_kind):
+            supervisor_entered.set()
+            self.assertTrue(supervisor_release.wait(5))
+            return (
+                {
+                    "schema_version": "capsule_supervision.v1",
+                    "verdict": "approve",
+                    "capability_kind": capability_kind,
+                    "semantic_summary": "Bounded local computation.",
+                    "keep_reason_codes": ["DECLARED_LOCAL_CAPABILITY"],
+                    "remove_reason_codes": [],
+                    "brand_signals": [],
+                    "sensitive_data_status": "clear",
+                    "hidden_dependency_codes": [],
+                    "duplicate_suggestions": [],
+                    "review_required": False,
+                },
+                "d" * 64,
+                {
+                    "name": "source-handoff-test-model",
+                    "digest": "b" * 64,
+                },
+            )
+
+        second_payload = {
+            **payload,
+            "behavior_intent": "Classify another bounded text task.",
+        }
+        with patch.object(
+            self.service._product_planner,
+            "_selected_model",
+            return_value=model,
+        ), patch.object(
+            self.service._product_planner,
+            "run_source_derived_capability_source_proposal",
+            side_effect=generate,
+        ), patch(
+            "pimos_lite.reweave_capsule_stage3.OllamaSupervisor.supervise",
+            new=approve_after_cancel,
+        ):
+            second = (
+                self.service
+                .authorize_and_start_source_derived_computation(
+                    second_payload
+                )
+            )
+            self.assertTrue(second["ok"], second)
+            self.assertTrue(supervisor_entered.wait(15))
+            cancelled = self.service.cancel_intake_run(
+                {"run_id": second["run_id"]}
+            )
+            self.assertTrue(cancelled["ok"], cancelled)
+            supervisor_release.set()
+            second_result = self._wait(second["run_id"])
+        self.assertEqual(source_calls, ["generate", "generate"])
+        self.assertEqual(second_result["status"], "cancelled")
+        self.assertEqual(second_result["stage"], "supervision")
+        second_run_dir = next(
+            path
+            for path in (
+                self.state / "source_derived_computations"
+            ).glob("[0-9a-f]" * 64)
+            if json.loads(
+                (path / "run.json").read_text(encoding="utf-8")
+            )["run_id"]
+            == second["run_id"]
+        )
+        isolated = CapsuleWarehouseStore(
+            second_run_dir
+            / "validation"
+            / "capsule_warehouse.sqlite3"
+        )
+        with isolated.read_connection() as connection:
+            self.assertEqual(
+                int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM review_items"
+                    ).fetchone()[0]
+                ),
+                0,
+            )
 
     def _seed_project_contribution(
         self,
@@ -1739,6 +2476,445 @@ class Phase4ManagementTest(unittest.TestCase):
                 {"name": "local", "digest": "a" * 64}
             )
             self.assertEqual(self._wait(model["run_id"])["status"], "completed")
+
+    def test_source_handoff_is_single_scoped_recoverable_and_runs_real_gates(
+        self,
+    ) -> None:
+        project_id, source = self._ready_complete_project()
+        self._select_test_supervision_model()
+        source_before = {
+            path.relative_to(source).as_posix(): hashlib.sha256(
+                path.read_bytes()
+            ).hexdigest()
+            for path in sorted(source.iterdir())
+            if path.is_file()
+        }
+
+        created = self.service.create_local_source_handoff(
+            {"project_id": project_id}
+        )
+        self.assertTrue(created["ok"], created)
+        token = created["data"]["source_handoff_token"]
+        self.assertRegex(token, r"^source_handoff_token_[0-9a-f]{48}$")
+        duplicate = self.service.create_local_source_handoff(
+            {"project_id": project_id}
+        )
+        self.assertEqual(
+            duplicate["error"]["code"],
+            "source_handoff_already_active",
+        )
+        sidecars = list((self.state / "source_handoffs").glob("*.json"))
+        self.assertEqual(len(sidecars), 1)
+        sidecar_text = sidecars[0].read_text(encoding="utf-8")
+        self.assertNotIn(token, sidecar_text)
+        self.assertNotIn(str(source), sidecar_text)
+        safe_status = next(
+            project["source_handoff"]
+            for project in self.service._capsule_management_state()[
+                "projects"
+            ]
+            if project["project_id"] == project_id
+        )
+        self.assertEqual(
+            set(safe_status),
+            {
+                "schema_version",
+                "status",
+                "created_at",
+                "revoked_at",
+                "run_id",
+                "run_status",
+            },
+        )
+        self.assertEqual(safe_status["status"], "active")
+        self.assertNotIn(token, json.dumps(safe_status))
+
+        binding = self.service._resolve_local_source_handoff(token)
+        calls: list[str] = []
+
+        def approve(_summary, capability_kind):
+            calls.append(capability_kind)
+            return (
+                {
+                    "schema_version": "capsule_supervision.v1",
+                    "verdict": "approve",
+                    "capability_kind": capability_kind,
+                    "semantic_summary": "Bounded local capability.",
+                    "keep_reason_codes": ["DECLARED_LOCAL_CAPABILITY"],
+                    "remove_reason_codes": [],
+                    "brand_signals": [],
+                    "sensitive_data_status": "clear",
+                    "hidden_dependency_codes": [],
+                    "duplicate_suggestions": [],
+                    "review_required": False,
+                },
+                "a" * 64,
+                {
+                    "name": "source-handoff-test-model",
+                    "digest": "b" * 64,
+                },
+            )
+
+        with patch.object(
+            self.service._capsule_supervisor,
+            "supervise",
+            side_effect=approve,
+        ):
+            started = self.service._start_authorized_source_intake(binding)
+            repeated = self.service._start_authorized_source_intake(binding)
+            self.assertTrue(started["ok"], started)
+            self.assertEqual(repeated["run_id"], started["run_id"])
+            self.service._management_tasks[started["run_id"]][
+                "future"
+            ].result(timeout=30)
+
+        run = self.service._get_authorized_source_intake_run(binding)
+        reviews = self.service._get_authorized_source_review_summaries(
+            binding
+        )
+        self.assertTrue(run["ok"], run)
+        self.assertIn(
+            run["data"]["status"],
+            {"completed", "completed_with_pending"},
+        )
+        self.assertTrue(reviews["ok"], reviews)
+        self.assertEqual(
+            {item["status"] for item in reviews["data"]["items"]},
+            {"review_required"},
+        )
+        self.assertEqual(
+            {item["capability_kind"] for item in reviews["data"]["items"]},
+            {"interaction", "presentation", "computation"},
+        )
+        self.assertEqual(
+            sorted(calls),
+            ["computation", "interaction", "presentation"],
+        )
+        with self.store.transaction() as connection:
+            interrupted_review = connection.execute(
+                "SELECT review_id FROM review_items WHERE run_id = ? "
+                "ORDER BY review_id LIMIT 1",
+                (binding["run_id"],),
+            ).fetchone()[0]
+            connection.execute(
+                "UPDATE review_items SET candidate_status = "
+                "'waiting_validation' WHERE review_id = ?",
+                (interrupted_review,),
+            )
+        interrupted = self.service._get_authorized_source_intake_run(
+            binding
+        )
+        self.assertEqual(interrupted["data"]["status"], "interrupted")
+        self.assertEqual(
+            interrupted["data"]["error_code"],
+            "manual_recovery_required",
+        )
+        with self.store.transaction() as connection:
+            connection.execute(
+                "UPDATE review_items SET candidate_status = "
+                "'review_required' WHERE review_id = ?",
+                (interrupted_review,),
+            )
+        with self.store.read_connection() as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT count(*) FROM intake_runs WHERE run_id = ?",
+                    (binding["run_id"],),
+                ).fetchone()[0],
+                1,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT count(*) FROM review_items WHERE run_id = ?",
+                    (binding["run_id"],),
+                ).fetchone()[0],
+                3,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT count(*) FROM capsules"
+                ).fetchone()[0],
+                0,
+            )
+        self.assertEqual(
+            source_before,
+            {
+                path.relative_to(source).as_posix(): hashlib.sha256(
+                    path.read_bytes()
+                ).hexdigest()
+                for path in sorted(source.iterdir())
+                if path.is_file()
+            },
+        )
+
+        self.service.close()
+        self.service = ReweaveAppService(
+            engine=LocalReweaveEngine(),
+            capsule_store=self.store,
+        )
+        restored = self.service._resolve_local_source_handoff(token)
+        self.assertEqual(restored, binding)
+        self.assertTrue(
+            self.service._get_authorized_source_intake_run(restored)["ok"]
+        )
+        self.assertEqual(
+            self.service._start_authorized_source_intake(restored)["run_id"],
+            binding["run_id"],
+        )
+        revoked = self.service.revoke_local_source_handoff(
+            {"project_id": project_id}
+        )
+        self.assertEqual(revoked["data"]["status"], "revoked")
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "source_handoff_revoked",
+        ):
+            self.service._resolve_local_source_handoff(token)
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "source_handoff_revoked",
+        ):
+            self.service._run_authorized_source_intake(
+                binding,
+                threading.Event(),
+            )
+        self.assertEqual(
+            self.service.revoke_local_source_handoff(
+                {"project_id": project_id}
+            )["data"]["status"],
+            "revoked",
+        )
+
+    def test_source_handoff_stale_tamper_and_multiple_active_fail_closed(
+        self,
+    ) -> None:
+        project_id = self._ready_project()
+        self._select_test_supervision_model()
+        source = self.root / "project" / "index.html"
+        original = source.read_bytes()
+        first = self.service.create_local_source_handoff(
+            {"project_id": project_id}
+        )
+        self.assertTrue(first["ok"], first)
+        first_token = first["data"]["source_handoff_token"]
+
+        source.write_bytes(original + b"\n")
+        stale_status = next(
+            project["source_handoff"]
+            for project in self.service._capsule_management_state()[
+                "projects"
+            ]
+            if project["project_id"] == project_id
+        )
+        self.assertEqual(stale_status["status"], "stale")
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "source_handoff_stale",
+        ):
+            self.service._resolve_local_source_handoff(first_token)
+        source.write_bytes(original)
+        self.assertTrue(
+            self.service.revoke_local_source_handoff(
+                {"project_id": project_id}
+            )["ok"]
+        )
+
+        model_bound = self.service.create_local_source_handoff(
+            {"project_id": project_id}
+        )
+        with patch.object(
+            self.service._capsule_supervisor,
+            "selected_model",
+            return_value={
+                "name": "changed-model",
+                "digest": "c" * 64,
+            },
+        ), self.assertRaisesRegex(
+            RuntimeError,
+            "source_handoff_stale",
+        ):
+            self.service._resolve_local_source_handoff(
+                model_bound["data"]["source_handoff_token"]
+            )
+        self.assertTrue(
+            self.service.revoke_local_source_handoff(
+                {"project_id": project_id}
+            )["ok"]
+        )
+
+        revision_bound = self.service.create_local_source_handoff(
+            {"project_id": project_id}
+        )
+        current_revision = self.store.current_revision()
+        with patch.object(
+            self.store,
+            "current_revision",
+            return_value=current_revision + 1,
+        ), self.assertRaisesRegex(
+            RuntimeError,
+            "source_handoff_stale",
+        ):
+            self.service._resolve_local_source_handoff(
+                revision_bound["data"]["source_handoff_token"]
+            )
+        self.assertTrue(
+            self.service.revoke_local_source_handoff(
+                {"project_id": project_id}
+            )["ok"]
+        )
+
+        brand_bound = self.service.create_local_source_handoff(
+            {"project_id": project_id}
+        )
+        with patch.object(
+            self.service,
+            "_source_handoff_brand_identity",
+            return_value={
+                "profile_id": "changed",
+                "profile_digest": "d" * 64,
+                "profile_version": 1,
+            },
+        ), self.assertRaisesRegex(
+            RuntimeError,
+            "source_handoff_stale",
+        ):
+            self.service._resolve_local_source_handoff(
+                brand_bound["data"]["source_handoff_token"]
+            )
+        self.assertTrue(
+            self.service.revoke_local_source_handoff(
+                {"project_id": project_id}
+            )["ok"]
+        )
+
+        second = self.service.create_local_source_handoff(
+            {"project_id": project_id}
+        )
+        second_token = second["data"]["source_handoff_token"]
+        second_digest = hashlib.sha256(
+            second_token.encode("utf-8")
+        ).hexdigest()
+        directory = self.state / "source_handoffs"
+        second_path = (
+            directory / f"source_handoff_v1_{second_digest}.json"
+        )
+        record = json.loads(second_path.read_text(encoding="utf-8"))
+        valid_record = dict(record)
+        fake_token = "source_handoff_token_" + "c" * 48
+        fake_digest = hashlib.sha256(
+            fake_token.encode("utf-8")
+        ).hexdigest()
+        fake = {
+            **record,
+            "token_digest": fake_digest,
+            "run_id": "run_" + "c" * 32,
+        }
+        fake["canonical_digest"] = canonical_json_digest(
+            {
+                key: value
+                for key, value in fake.items()
+                if key != "canonical_digest"
+            }
+        )
+        fake_path = (
+            directory / f"source_handoff_v1_{fake_digest}.json"
+        )
+        fake_path.write_text(
+            json.dumps(
+                fake,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        if os.name == "posix":
+            fake_path.chmod(0o600)
+        for token in (second_token, fake_token):
+            with self.subTest(token=token), self.assertRaisesRegex(
+                RuntimeError,
+                "source_handoff_conflict",
+            ):
+                self.service._resolve_local_source_handoff(token)
+        fake_path.unlink()
+
+        record["snapshot_digest"] = "0" * 64
+        second_path.write_text(
+            json.dumps(
+                record,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        if os.name == "posix":
+            second_path.chmod(0o600)
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "source_handoff_conflict",
+        ):
+            self.service._resolve_local_source_handoff(second_token)
+        if os.name == "posix":
+            second_path.unlink()
+            symlink_target = self.root / "valid-source-handoff.json"
+            symlink_target.write_text(
+                json.dumps(
+                    valid_record,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            symlink_target.chmod(0o600)
+            second_path.symlink_to(symlink_target)
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "source_handoff_conflict",
+            ):
+                self.service._resolve_local_source_handoff(second_token)
+
+    def test_source_handoff_rejects_a_preexisting_run_with_wrong_snapshot(
+        self,
+    ) -> None:
+        project_id = self._ready_project()
+        self._select_test_supervision_model()
+        created = self.service.create_local_source_handoff(
+            {"project_id": project_id}
+        )
+        token = created["data"]["source_handoff_token"]
+        binding = self.service._resolve_local_source_handoff(token)
+        now = "2026-08-16T23:59:59.000Z"
+        with self.store.transaction() as connection:
+            connection.execute(
+                "INSERT INTO intake_runs (run_id, project_id, run_kind, "
+                "status, snapshot_before, snapshot_after, "
+                "extraction_contract_version, redaction_rules_version, "
+                "security_rules_version, supervision_rules_version, "
+                "validation_contract_version, canonicalization_version, "
+                "counts_json, completed_at, created_at) VALUES "
+                "(?, ?, 'refresh_project', 'completed', ?, ?, "
+                "'extraction_contract.v2', 'redaction_rules.v1', "
+                "'not_run.stage2', 'not_run.stage2', 'not_run.stage2', "
+                "1, '{}', ?, ?)",
+                (
+                    binding["run_id"],
+                    project_id,
+                    "0" * 64,
+                    "0" * 64,
+                    now,
+                    now,
+                ),
+            )
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "source_handoff_conflict",
+        ):
+            self.service._resolve_local_source_handoff(token)
 
     def test_completed_management_tasks_are_bounded(self) -> None:
         self.store.initialize()

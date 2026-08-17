@@ -37,6 +37,7 @@
     focusId: "",
     specimen: null,
     productReview: null,
+    sourceHandoffReview: null,
   };
 
   var STR = {
@@ -350,6 +351,38 @@
       brandProfileInvalid: "品牌配置必须是 JSON 对象。",
       projectConfirmationPartial: "部分项目未能确认，请查看项目状态。",
       refreshProject: "刷新项目",
+      authorizeSourceAgent: "授权 Agent 入库",
+      authorizeSourceAgentHelp: "复制一次性绑定请求。只写 Reweave Intake 与 Review 状态，不写来源项目；关闭桌面后再启动梭子。",
+      sourceAgentBindingCopied: "绑定请求已复制。请勿粘贴到聊天 Prompt；关闭桌面后写入梭子 stdin。",
+      sourceAgentActive: "Agent 入库已授权；必须先关闭 Reweave Desktop，再启动梭子。",
+      sourceAgentRevoked: "Agent 入库授权已撤销。",
+      sourceAgentStale: "来源或正式状态已变化；旧授权不可继续使用。",
+      sourceAgentConflict: "发现冲突的来源授权；已失败关闭。",
+      revokeSourceAgent: "撤销 Agent 入库授权",
+      reviewSourceAgent: "查看本次 Agent Review",
+      sourceAgentReviewMissing: "未找到与本次 Agent 入库精确绑定的 Review；不会显示其他 Review。",
+      source_handoff_request_invalid: "来源 Agent 授权请求无效。",
+      source_handoff_clipboard_failed: "剪贴板写入失败，来源 Agent 授权已撤销。",
+      source_handoff_clipboard_revoke_failed: "剪贴板写入失败，且授权撤销未能确认。请关闭梭子并刷新状态。",
+      sourceDerivedTitle: "从单一证据文件生成隔离计算提案",
+      sourceDerivedNotice: "将分别调用一次冻结源码提案模型和监督模型；失败后不会自动重试。本次只生成隔离 Review，不写正式能力仓库。",
+      sourceDerivedRelpath: "JS/TS 证据文件相对路径",
+      sourceDerivedBehavior: "行为说明",
+      sourceDerivedInputField: "输入字段",
+      sourceDerivedInputMin: "输入最短长度",
+      sourceDerivedInputMax: "输入最长长度",
+      sourceDerivedResultField: "输出字段",
+      sourceDerivedEnum: "输出枚举（每行一个）",
+      sourceDerivedCases: "业务验收例",
+      sourceDerivedCaseInput: "输入文本",
+      sourceDerivedCaseExpected: "期望枚举结果",
+      sourceDerivedAddCase: "增加验收例",
+      sourceDerivedRemoveCase: "移除此验收例",
+      sourceDerivedStart: "授权并生成隔离能力提案",
+      sourceDerivedReviewReady: "隔离验证已通过并到达 review_required；尚未正式接纳或发布。",
+      source_derivation_request_invalid: "单文件来源授权信息无效。",
+      source_derivation_evidence_invalid: "证据文件不安全、不可读取、超限或包含疑似秘密。",
+      source_derivation_run_stale: "来源、模型或正式 catalog 已变化；运行已失败关闭。",
       registerJavascriptSource: "登记 JavaScript 计算来源",
       registerJavascriptSourceHelp: "把所选来源根或子目录登记为只读 JavaScript 计算来源。",
       javascriptSourceRoot: "来源根",
@@ -833,6 +866,38 @@
       brandProfileInvalid: "Brand profile must be a JSON object.",
       projectConfirmationPartial: "Some projects could not be confirmed; review their status.",
       refreshProject: "Refresh project",
+      authorizeSourceAgent: "Authorize Agent intake",
+      authorizeSourceAgentHelp: "Copy a one-time binding request. It writes only Reweave Intake and Review state, never the source project; close Desktop before starting the shuttle.",
+      sourceAgentBindingCopied: "The binding request was copied. Do not paste it into a chat prompt; close Desktop, then write it to the shuttle stdin.",
+      sourceAgentActive: "Agent intake is authorized. Close Reweave Desktop before starting the shuttle.",
+      sourceAgentRevoked: "Agent intake authorization was revoked.",
+      sourceAgentStale: "The source or formal state changed; the old authorization cannot be used.",
+      sourceAgentConflict: "Conflicting source authorizations were found and failed closed.",
+      revokeSourceAgent: "Revoke Agent intake",
+      reviewSourceAgent: "View this Agent review",
+      sourceAgentReviewMissing: "No Review is bound to this exact Agent intake; unrelated Reviews are not shown.",
+      source_handoff_request_invalid: "The source Agent authorization request is invalid.",
+      source_handoff_clipboard_failed: "Clipboard write failed and the source Agent authorization was revoked.",
+      source_handoff_clipboard_revoke_failed: "Clipboard write failed and revocation could not be confirmed. Keep the Shuttle closed and refresh state.",
+      sourceDerivedTitle: "Generate an isolated computation from one evidence file",
+      sourceDerivedNotice: "This calls the frozen source-proposal model once and the supervisor once. Failures are not retried. It creates only an isolated Review and does not write the formal capability warehouse.",
+      sourceDerivedRelpath: "Relative JS/TS evidence path",
+      sourceDerivedBehavior: "Behavior intent",
+      sourceDerivedInputField: "Input field",
+      sourceDerivedInputMin: "Minimum input length",
+      sourceDerivedInputMax: "Maximum input length",
+      sourceDerivedResultField: "Result field",
+      sourceDerivedEnum: "Result enum (one per line)",
+      sourceDerivedCases: "Acceptance cases",
+      sourceDerivedCaseInput: "Input text",
+      sourceDerivedCaseExpected: "Expected enum result",
+      sourceDerivedAddCase: "Add acceptance case",
+      sourceDerivedRemoveCase: "Remove this acceptance case",
+      sourceDerivedStart: "Authorize and generate isolated capability proposal",
+      sourceDerivedReviewReady: "Isolated validation reached review_required; no formal admission or publication occurred.",
+      source_derivation_request_invalid: "The one-file source authorization is invalid.",
+      source_derivation_evidence_invalid: "The evidence file is unsafe, unreadable, oversized, or contains a possible secret.",
+      source_derivation_run_stale: "The source, model, or formal catalog changed; the run failed closed.",
       registerJavascriptSource: "Register JavaScript computation source",
       registerJavascriptSourceHelp: "Register a source root or subdirectory as a read-only JavaScript computation source.",
       javascriptSourceRoot: "Source root",
@@ -1786,6 +1851,8 @@
       "captureDuplicate",
       "restoreComplete",
       "importStarted",
+      "sourceAgentBindingCopied",
+      "sourceAgentRevoked",
     ].indexOf(key) < 0);
   }
 
@@ -1983,6 +2050,7 @@
           }
         : null;
     ingestionNavigation.productReview = productReview;
+    ingestionNavigation.sourceHandoffReview = null;
     ingestionNavigation.station = productReview ? "review" : "source";
     ingestionNavigation.specimen = !productReview &&
       specimenContext && typeof specimenContext === "object"
@@ -2036,6 +2104,7 @@
       }
     }
     ingestionNavigation.productReview = null;
+    ingestionNavigation.sourceHandoffReview = null;
     window.setTimeout(function () {
       var target =
         !productReview && ingestionNavigation.focusId
@@ -2674,6 +2743,61 @@
     return { enabled: false, messageKey: "projectScanUnknownState" };
   }
 
+  function sourceHandoffStatusProjection(value) {
+    var raw = value && typeof value === "object" && !Array.isArray(value)
+      ? (value.source_handoff && typeof value.source_handoff === "object"
+        ? value.source_handoff
+        : value)
+      : null;
+    if (!raw) return null;
+    var statuses = ["none", "active", "revoked", "stale", "conflict"];
+    if (
+      raw.schema_version !== "source_handoff_status.v1" ||
+      statuses.indexOf(String(raw.status || "")) < 0
+    ) {
+      return {
+        schema_version: "source_handoff_status.v1",
+        status: "conflict",
+        created_at: null,
+        revoked_at: null,
+        run_id: null,
+        run_status: null,
+      };
+    }
+    return {
+      schema_version: "source_handoff_status.v1",
+      status: String(raw.status),
+      created_at: typeof raw.created_at === "string" ? raw.created_at : null,
+      revoked_at: typeof raw.revoked_at === "string" ? raw.revoked_at : null,
+      run_id: typeof raw.run_id === "string" ? raw.run_id : null,
+      run_status: typeof raw.run_status === "string" ? raw.run_status : null,
+    };
+  }
+
+  function updateProjectSourceHandoff(projectId, value, fallbackStatus) {
+    var projection = sourceHandoffStatusProjection(value);
+    if (!projection && fallbackStatus) {
+      projection = sourceHandoffStatusProjection({
+        schema_version: "source_handoff_status.v1",
+        status: fallbackStatus,
+      });
+    }
+    ingestionManagement.projects.forEach(function (project) {
+      if (String(project.project_id || "") === String(projectId || "")) {
+        project.source_handoff = projection;
+      }
+    });
+  }
+
+  function sourceHandoffStatusKey(status) {
+    return {
+      active: "sourceAgentActive",
+      revoked: "sourceAgentRevoked",
+      stale: "sourceAgentStale",
+      conflict: "sourceAgentConflict",
+    }[String(status || "")] || "";
+  }
+
   function renderManagementProjects() {
     var container = $("warehouse-projects");
     if (!container) return;
@@ -2747,6 +2871,174 @@
       registration.appendChild(displayNameLabel);
       registration.appendChild(register);
       container.appendChild(registration);
+
+      var sourceDerived = document.createElement("fieldset");
+      sourceDerived.className = "warehouse-project-config warehouse-developer-only";
+      var sourceDerivedLegend = document.createElement("legend");
+      sourceDerivedLegend.textContent = t("sourceDerivedTitle");
+      sourceDerived.appendChild(sourceDerivedLegend);
+      var sourceDerivedNotice = document.createElement("p");
+      sourceDerivedNotice.className = "warehouse-meta";
+      sourceDerivedNotice.textContent = t("sourceDerivedNotice");
+      sourceDerived.appendChild(sourceDerivedNotice);
+
+      function sourceDerivedField(labelKey, element) {
+        var label = document.createElement("label");
+        label.className = "warehouse-field";
+        label.textContent = t(labelKey);
+        label.appendChild(element);
+        sourceDerived.appendChild(label);
+        return element;
+      }
+
+      var derivedRootSelect = document.createElement("select");
+      ingestionManagement.sourceRoots.forEach(function (root) {
+        var option = document.createElement("option");
+        option.value = String(root.root_id || "");
+        option.textContent = managementDisplayLabel(
+          root.label,
+          root.root_id,
+          "javascriptSourceRoot"
+        );
+        derivedRootSelect.appendChild(option);
+      });
+      sourceDerivedField("javascriptSourceRoot", derivedRootSelect);
+      var derivedRelpath = sourceDerivedField(
+        "sourceDerivedRelpath",
+        document.createElement("input")
+      );
+      derivedRelpath.type = "text";
+      derivedRelpath.maxLength = 1024;
+      derivedRelpath.placeholder = "src/utils/extractor.ts";
+      var derivedBehavior = sourceDerivedField(
+        "sourceDerivedBehavior",
+        document.createElement("textarea")
+      );
+      derivedBehavior.maxLength = 2000;
+      var derivedInputField = sourceDerivedField(
+        "sourceDerivedInputField",
+        document.createElement("input")
+      );
+      derivedInputField.type = "text";
+      derivedInputField.maxLength = 64;
+      derivedInputField.value = "message";
+      var derivedMinimum = sourceDerivedField(
+        "sourceDerivedInputMin",
+        document.createElement("input")
+      );
+      derivedMinimum.type = "number";
+      derivedMinimum.min = "0";
+      derivedMinimum.max = "10000";
+      derivedMinimum.value = "1";
+      var derivedMaximum = sourceDerivedField(
+        "sourceDerivedInputMax",
+        document.createElement("input")
+      );
+      derivedMaximum.type = "number";
+      derivedMaximum.min = "0";
+      derivedMaximum.max = "10000";
+      derivedMaximum.value = "1000";
+      var derivedResultField = sourceDerivedField(
+        "sourceDerivedResultField",
+        document.createElement("input")
+      );
+      derivedResultField.type = "text";
+      derivedResultField.maxLength = 64;
+      derivedResultField.value = "result";
+      var derivedEnum = sourceDerivedField(
+        "sourceDerivedEnum",
+        document.createElement("textarea")
+      );
+      var caseHeading = document.createElement("p");
+      caseHeading.className = "warehouse-meta";
+      caseHeading.textContent = t("sourceDerivedCases");
+      sourceDerived.appendChild(caseHeading);
+      var caseRows = document.createElement("div");
+      sourceDerived.appendChild(caseRows);
+
+      function addSourceDerivedCase() {
+        if (caseRows.children.length >= 16) return;
+        var row = document.createElement("div");
+        row.className = "warehouse-row";
+        var inputLabel = document.createElement("label");
+        inputLabel.className = "warehouse-field";
+        inputLabel.textContent = t("sourceDerivedCaseInput");
+        var input = document.createElement("input");
+        input.type = "text";
+        input.maxLength = 10000;
+        inputLabel.appendChild(input);
+        row.appendChild(inputLabel);
+        var expectedLabel = document.createElement("label");
+        expectedLabel.className = "warehouse-field";
+        expectedLabel.textContent = t("sourceDerivedCaseExpected");
+        var expected = document.createElement("input");
+        expected.type = "text";
+        expected.maxLength = 10000;
+        expectedLabel.appendChild(expected);
+        row.appendChild(expectedLabel);
+        var remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "btn-ghost";
+        remove.textContent = t("sourceDerivedRemoveCase");
+        remove.addEventListener("click", function () {
+          if (caseRows.children.length > 1) row.remove();
+        });
+        row.appendChild(remove);
+        caseRows.appendChild(row);
+      }
+      addSourceDerivedCase();
+      var addCase = document.createElement("button");
+      addCase.type = "button";
+      addCase.className = "btn-ghost";
+      addCase.textContent = t("sourceDerivedAddCase");
+      addCase.addEventListener("click", addSourceDerivedCase);
+      sourceDerived.appendChild(addCase);
+      var startDerived = document.createElement("button");
+      startDerived.type = "button";
+      startDerived.className = "btn-primary";
+      startDerived.dataset.action = "authorize-source-derived";
+      startDerived.textContent = t("sourceDerivedStart");
+      startDerived.addEventListener("click", function () {
+        var acceptanceCases = Array.prototype.slice.call(
+          caseRows.children
+        ).map(function (row) {
+          var fields = row.querySelectorAll("input");
+          return {
+            input_text: String(fields[0] ? fields[0].value : ""),
+            expected_result: String(fields[1] ? fields[1].value : ""),
+          };
+        });
+        startDerived.disabled = true;
+        startManagementRun(
+          "authorize_and_start_source_derived_computation",
+          {
+            source_root_id: String(derivedRootSelect.value || ""),
+            source_relpath: String(derivedRelpath.value || "").trim(),
+            behavior_intent: String(derivedBehavior.value || "").trim(),
+            input_field: String(derivedInputField.value || "").trim(),
+            input_min_length: Number(derivedMinimum.value),
+            input_max_length: Number(derivedMaximum.value),
+            result_field: String(derivedResultField.value || "").trim(),
+            result_enum: String(derivedEnum.value || "")
+              .split(/\r?\n/)
+              .map(function (value) { return value.trim(); })
+              .filter(Boolean),
+            acceptance_cases: acceptanceCases,
+          },
+          function (run) {
+            startDerived.disabled = false;
+            if (run.status === "review_required") {
+              setManagementStatus("sourceDerivedReviewReady");
+            }
+          },
+          false,
+          function () {
+            startDerived.disabled = false;
+          }
+        );
+      });
+      sourceDerived.appendChild(startDerived);
+      container.appendChild(sourceDerived);
     }
     var discovery = ingestionManagement.discovery;
     var discovered = discovery && Array.isArray(discovery.projects) ? discovery.projects : [];
@@ -2865,6 +3157,128 @@
         startManagementRun("start_refresh_project", { project_id: project.project_id });
       });
       row.appendChild(refresh);
+      var sourceHandoff = sourceHandoffStatusProjection(project.source_handoff);
+      var sourceHandoffEligible =
+        String(project.source_type || "") === "static_web" &&
+        projectStatus === "ready";
+      if (sourceHandoffEligible) {
+        var sourceHandoffStatus = sourceHandoff
+          ? String(sourceHandoff.status || "none")
+          : "none";
+        var sourceHandoffNote = document.createElement("span");
+        sourceHandoffNote.className = "warehouse-meta warehouse-developer-only";
+        sourceHandoffNote.setAttribute("role", "status");
+        sourceHandoffNote.textContent = t(
+          sourceHandoffStatusKey(sourceHandoffStatus) ||
+          "authorizeSourceAgentHelp"
+        );
+        row.appendChild(sourceHandoffNote);
+        if (
+          sourceHandoffStatus === "none" ||
+          sourceHandoffStatus === "revoked"
+        ) {
+          var authorizeSourceAgent = document.createElement("button");
+          authorizeSourceAgent.type = "button";
+          authorizeSourceAgent.className = "btn-ghost warehouse-developer-only";
+          authorizeSourceAgent.dataset.action = "authorize-source-agent";
+          authorizeSourceAgent.textContent = t("authorizeSourceAgent");
+          authorizeSourceAgent.title = t("authorizeSourceAgentHelp");
+          authorizeSourceAgent.addEventListener("click", function () {
+            authorizeSourceAgent.disabled = true;
+            bridgeCall(
+              "copy_local_source_handoff_binding",
+              JSON.stringify({ project_id: project.project_id })
+            ).then(function (raw) {
+              var result = parseBridgeJson(raw);
+              var payload = managementPayload(result);
+              if (!payload) {
+                var errorKey = managementError(result);
+                if (errorKey === "source_handoff_clipboard_failed") {
+                  updateProjectSourceHandoff(
+                    project.project_id,
+                    null,
+                    "revoked"
+                  );
+                  renderManagementProjects();
+                } else {
+                  authorizeSourceAgent.disabled = false;
+                }
+                setManagementStatus(errorKey);
+                return;
+              }
+              updateProjectSourceHandoff(
+                project.project_id,
+                payload,
+                "active"
+              );
+              setManagementStatus("sourceAgentBindingCopied");
+              renderManagementProjects();
+            });
+          });
+          row.appendChild(authorizeSourceAgent);
+        }
+        if (
+          ["active", "stale", "conflict"].indexOf(sourceHandoffStatus) >= 0
+        ) {
+          var revokeSourceAgent = document.createElement("button");
+          revokeSourceAgent.type = "button";
+          revokeSourceAgent.className = "btn-ghost warehouse-developer-only";
+          revokeSourceAgent.dataset.action = "revoke-source-agent";
+          revokeSourceAgent.textContent = t("revokeSourceAgent");
+          revokeSourceAgent.addEventListener("click", function () {
+            revokeSourceAgent.disabled = true;
+            bridgeCall(
+              "revoke_local_source_handoff",
+              JSON.stringify({ project_id: project.project_id })
+            ).then(function (raw) {
+              var result = parseBridgeJson(raw);
+              var payload = managementPayload(result);
+              if (!payload) {
+                revokeSourceAgent.disabled = false;
+                setManagementStatus(managementError(result));
+                return;
+              }
+              updateProjectSourceHandoff(
+                project.project_id,
+                payload,
+                "revoked"
+              );
+              setManagementStatus("sourceAgentRevoked");
+              renderManagementProjects();
+            });
+          });
+          row.appendChild(revokeSourceAgent);
+        }
+        if (
+          sourceHandoff &&
+          sourceHandoff.run_id &&
+          [
+            "completed",
+            "completed_with_pending",
+            "no_change",
+            "failed",
+            "cancelled",
+            "interrupted",
+          ].indexOf(sourceHandoff.run_status) >= 0
+        ) {
+          var reviewSourceAgent = document.createElement("button");
+          reviewSourceAgent.type = "button";
+          reviewSourceAgent.className = "btn-ghost warehouse-developer-only";
+          reviewSourceAgent.dataset.action = "review-source-agent";
+          reviewSourceAgent.textContent = t("reviewSourceAgent");
+          reviewSourceAgent.addEventListener("click", function () {
+            ingestionNavigation.productReview = null;
+            ingestionNavigation.sourceHandoffReview = {
+              project_id: String(project.project_id || ""),
+              run_id: String(sourceHandoff.run_id || ""),
+            };
+            ingestionNavigation.station = "review";
+            renderManagementReviews();
+            syncIngestionStation();
+          });
+          row.appendChild(reviewSourceAgent);
+        }
+      }
       var scanJavascript = document.createElement("button");
       scanJavascript.type = "button";
       scanJavascript.className = "btn-ghost";
@@ -3017,10 +3431,19 @@
     var count = $("warehouse-review-count");
     if (!container || !count) return;
     var productContext = ingestionNavigation.productReview;
+    var sourceHandoffContext = ingestionNavigation.sourceHandoffReview;
     var reviewItems = ingestionManagement.reviewItems;
     if (productContext) {
       reviewItems = reviewItems.filter(function (item) {
         return String(item.review_id || "") === productContext.review_id;
+      });
+    } else if (sourceHandoffContext) {
+      reviewItems = reviewItems.filter(function (item) {
+        return (
+          String(item.project_id || "") ===
+            sourceHandoffContext.project_id &&
+          String(item.run_id || "") === sourceHandoffContext.run_id
+        );
       });
     }
     count.textContent = String(reviewItems.length);
@@ -3033,6 +3456,13 @@
         missing.dataset.errorCode = "target_review_missing";
         missing.textContent = "target_review_missing";
         container.appendChild(missing);
+      } else if (sourceHandoffContext) {
+        var sourceMissing = document.createElement("p");
+        sourceMissing.className = "warehouse-status is-error";
+        sourceMissing.setAttribute("role", "status");
+        sourceMissing.dataset.errorCode = "source_handoff_review_missing";
+        sourceMissing.textContent = t("sourceAgentReviewMissing");
+        container.appendChild(sourceMissing);
       } else {
         emptyManagementList(container, "noReviews");
       }
@@ -3049,6 +3479,8 @@
       var summary = document.createElement("summary");
       if (productContext) {
         summary.id = "target-review-summary-" + String(item.review_id || "");
+      } else if (sourceHandoffContext) {
+        summary.dataset.sourceHandoffReview = "true";
       }
       var reviewName = reviewContext.offer_name || item.display_name || item.suggested_name || candidate.suggested_display_name || t("captureReview");
       var hasServerDecisions = Array.isArray(item.allowed_decisions) && item.allowed_decisions.length > 0;
@@ -3064,7 +3496,7 @@
       reviewId.textContent = " · " + String(item.review_id || "");
       summary.appendChild(reviewId);
       details.appendChild(summary);
-      details.open = !!productContext;
+      details.open = !!productContext || !!sourceHandoffContext;
       var meta = document.createElement("p");
       meta.className = "warehouse-meta warehouse-developer-only";
       meta.textContent = [item.capability_kind || candidate.capability_kind, item.reason_code || item.error_code].filter(Boolean).join(" · ");
@@ -3302,6 +3734,13 @@
       window.setTimeout(function () {
         var summary = $(
           "target-review-summary-" + productContext.review_id
+        );
+        if (summary) summary.focus({ preventScroll: true });
+      }, 0);
+    } else if (sourceHandoffContext) {
+      window.setTimeout(function () {
+        var summary = container.querySelector(
+          "[data-source-handoff-review]"
         );
         if (summary) summary.focus({ preventScroll: true });
       }, 0);
@@ -3814,11 +4253,16 @@
       if (run.status === "queued" || run.status === "running") {
         setTimeout(function () { pollManagementRun(runId, onComplete, refreshAfter, onFailure); }, 750);
       } else {
-        if (run.status === "completed") {
+        if (
+          run.status === "completed" ||
+          run.status === "review_required"
+        ) {
           if (typeof onComplete === "function") onComplete(run);
         } else {
           var failureKey = run.error
             ? managementError({ error: run.error })
+            : run.error_code
+              ? managementError({ error: { code: run.error_code } })
             : "managementOperationFailed";
           setManagementStatus(failureKey);
           if (typeof onFailure === "function") onFailure(failureKey);
@@ -3877,7 +4321,9 @@
   function bindIngestionManagementEvents() {
     document.querySelectorAll("[data-ingestion-station]").forEach(function (button) {
       button.addEventListener("click", function () {
+        ingestionNavigation.sourceHandoffReview = null;
         ingestionNavigation.station = String(button.dataset.ingestionStation || "source");
+        renderManagementReviews();
         syncIngestionStation();
         window.requestAnimationFrame(function () {
           window.scrollTo(0, 0);
@@ -3894,7 +4340,9 @@
         else if (event.key === "ArrowLeft") index = (index - 1 + tabs.length) % tabs.length;
         else index = (index + 1) % tabs.length;
         var next = tabs[index];
+        ingestionNavigation.sourceHandoffReview = null;
         ingestionNavigation.station = String(next.dataset.ingestionStation || "source");
+        renderManagementReviews();
         syncIngestionStation();
         next.focus({ preventScroll: true });
       });

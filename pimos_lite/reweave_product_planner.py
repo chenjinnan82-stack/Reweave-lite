@@ -2892,6 +2892,87 @@ class ProductPlanner:
             },
         }
 
+    def run_source_derived_capability_source_proposal(
+        self,
+        request_value: dict[str, Any],
+        authorization: dict[str, Any],
+        evidence: list[dict[str, Any]],
+        expected_model: dict[str, Any],
+        cancel_check: Callable[[], bool] | None = None,
+    ) -> dict[str, Any]:
+        """Run the existing proposal model once for a frozen source request."""
+
+        self._cancelled(cancel_check)
+        current = self._model_identity(
+            self._selected_model(
+                check_current=True,
+                cancel_check=cancel_check,
+            )
+        )
+        if (
+            type(expected_model) is not dict
+            or current != expected_model
+            or type(request_value) is not dict
+            or type(authorization) is not dict
+            or type(evidence) is not list
+            or request_value.get("stream") is not False
+            or request_value.get("formal_binding", {}).get(
+                "source_proposal_model"
+            )
+            != {
+                "name": current["name"],
+                "digest": current["digest"],
+            }
+        ):
+            raise ProductPlanningError(
+                "source_derivation_model_changed"
+            )
+        payload = {
+            "model": current["name"],
+            "prompt": request_value["prompt"],
+            "stream": False,
+            "think": False,
+            "format": request_value["format_schema"],
+            "options": {"temperature": 0},
+        }
+        response, http = self._request(
+            "/api/generate",
+            payload,
+            timeout_seconds=FORMAL_MODEL_TIMEOUT_SECONDS,
+        )
+        after = self._model_identity(
+            self._selected_model(check_current=True)
+        )
+        if after != expected_model:
+            raise ProductPlanningError(
+                "source_derivation_model_changed"
+            )
+        raw_output = response.get("response")
+        if type(raw_output) is not str:
+            raise ProductPlanningError(
+                "source_derivation_response_invalid"
+            )
+        encoded = raw_output.encode("utf-8")
+        if len(encoded) > MAX_HTTP_RESPONSE_BYTES:
+            raise ProductPlanningError("ollama_response_too_large")
+        try:
+            value = _strict_json(encoded)
+        except (UnicodeError, ValueError, json.JSONDecodeError) as exc:
+            raise ProductPlanningError(
+                "source_derivation_response_invalid"
+            ) from exc
+        self._cancelled(cancel_check)
+        return {
+            "response": value,
+            "evidence": {
+                "request_digest": request_value["request_digest"],
+                "input_bytes": http["input_bytes"],
+                "output_bytes": len(encoded),
+                "duration_ms": http["duration_ms"],
+                "response_digest": hashlib.sha256(encoded).hexdigest(),
+            },
+        }
+
     @_public_call
     def confirm(
         self,
