@@ -1204,6 +1204,25 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert 'bridgeCall("get_intake_run", JSON.stringify({ run_id: runId }))' in app
     assert '"start_inspect_computation_adapters"' not in app
     assert '"start_create_computation_adapter"' in app
+    assert 'selectedSourceRootId: ""' in app
+    assert 'sourceRootSelectionStale: false' in app
+    assert 'option.value = String(index);' in app
+    assert 'option.textContent = sourceRootDisplayLabel(root);' in app
+    assert 'select.dataset.sourceRootSelector = "session";' in app
+    assert 'source_root_id: String(selected.root_id)' in app
+    assert '"computation_capture_mapping.v5"' in app
+    assert '"source_graph_proof.v3"' in app
+    assert "captureUsesBoundedString()" in app
+    assert "uniqueResults.size !== enumResults.length" in app
+    assert "witnessControls.length !== enumResults.length" in app
+    assert "text.length < minimumWitnessLength" in app
+    assert "text.length > maximumWitnessLength" in app
+    assert "capturePayload.examples = witnessControls.map" in app
+    assert "passthrough_fields" not in app[
+        app.index("function renderJavascriptComputationOffers") : app.index(
+            "\n  function sourceHandoffStatusProjection"
+        )
+    ]
     assert '"start_scan_javascript_computations"' in app
     assert 'bridgeCall("register_javascript_computation_source"' in app
     assert (

@@ -1514,6 +1514,82 @@ export function compute(input) {
             },
         )
 
+    def test_interaction_bounded_string_value_contract_is_extracted(self) -> None:
+        (self.source / "index.html").write_text(
+            """<!doctype html>
+<html><body>
+<main data-capsule-root>
+  <textarea data-ref="question" minlength="1" maxlength="500" required></textarea>
+  <button data-action="classify" type="button">Classify</button>
+</main>
+<script type="module" src="./interaction.js"></script>
+</body></html>
+""",
+            encoding="utf-8",
+        )
+        (self.source / "interaction.js").write_text(
+            """export function mount(root, ports) {
+  const question = root.querySelector("[data-ref='question']");
+  const button = root.querySelector("[data-action='classify']");
+  const onClick = (event) => {
+    event.preventDefault();
+    const value = question.value;
+    if (typeof value !== "string" || value.length < 1 || value.length > 500) return;
+    ports.emit("knowledge_category_requested", {question: value});
+  };
+  button.addEventListener("click", onClick);
+  return () => { button.removeEventListener("click", onClick); };
+}
+""",
+            encoding="utf-8",
+        )
+        project = self._bind_discover_confirm(self.source)
+
+        result = self.intake.run_intake(project["project_id"])
+
+        row = self._review_rows(result["run_id"])[0]
+        self.assertEqual(row["candidate_status"], "extracted")
+        candidate = json.loads(row["sanitized_candidate_json"])
+        self.assertEqual(
+            candidate["output_contract"],
+            {
+                "schema": "event_outputs.v1",
+                "events": {
+                    "knowledge_category_requested": {
+                        "schema": "data_contract.v1",
+                        "type": "object",
+                        "properties": {
+                            "question": {
+                                "type": "string",
+                                "min_length": 1,
+                                "max_length": 500,
+                            }
+                        },
+                        "required": ["question"],
+                        "additional_properties": False,
+                    }
+                },
+            },
+        )
+
+        missing_bound = self.root / "missing-bound"
+        missing_bound.mkdir()
+        for name in ("index.html", "interaction.js"):
+            (missing_bound / name).write_bytes((self.source / name).read_bytes())
+        index = missing_bound / "index.html"
+        index.write_text(
+            index.read_text(encoding="utf-8").replace(' maxlength="500"', ""),
+            encoding="utf-8",
+        )
+        rejected_project = self._bind_discover_confirm(missing_bound)
+        rejected = self.intake.run_intake(rejected_project["project_id"])
+        rejected_row = self._review_rows(rejected["run_id"])[0]
+        self.assertEqual(rejected_row["candidate_status"], "rejected")
+        self.assertIn(
+            "unresolved_static_dependency_v1",
+            rejected_row["redaction_summary_json"],
+        )
+
     def test_presentation_finite_string_enum_guard_fails_closed(self) -> None:
         too_many = ", ".join(json.dumps(f"value_{index}") for index in range(101))
         guards = {

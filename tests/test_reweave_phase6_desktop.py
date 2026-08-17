@@ -162,6 +162,12 @@ def test_simple_mode_scans_multiply_without_creating_candidate(
         "export function Multiply(x, y) { return x * y; }\n",
         encoding="utf-8",
     )
+    (source / "classify.js").write_text(
+        'export function Classify(question) {\n'
+        '  return question.includes("urgent") ? "urgent" : "normal";\n'
+        "}\n",
+        encoding="utf-8",
+    )
     monkeypatch.setenv("REWEAVE_STATE_DIR", str(state))
 
     def source_snapshot() -> list[tuple[str, int, int, str]]:
@@ -195,6 +201,15 @@ def test_simple_mode_scans_multiply_without_creating_candidate(
         }
     )
     assert registered.get("ok") is True, registered
+    captured_mapping_requests: list[dict[str, object]] = []
+
+    def capture_mapping_request(payload: dict[str, object]) -> dict[str, object]:
+        captured_mapping_requests.append(payload)
+        return {"ok": False, "error": {"code": "capture_request_observed"}}
+
+    monkeypatch.setattr(
+        service, "start_create_computation_adapter", capture_mapping_request
+    )
 
     original_get_initial_state = service.get_initial_state
 
@@ -297,6 +312,53 @@ def test_simple_mode_scans_multiply_without_creating_candidate(
                 "document.getElementById('warehouse-projects').textContent.includes('Multiply source')",
                 30,
                 "project_row",
+            )
+            root_id = str(root["root_id"])
+            root_selection = json.loads(
+                str(
+                    js(
+                        """JSON.stringify((() => {
+                          const controls = Array.from(document.querySelectorAll(
+                            '#warehouse-projects select[data-source-root-selector="session"]'
+                          ));
+                          const html = document.getElementById('warehouse-projects').outerHTML;
+                          return {
+                            count: controls.length,
+                            values: controls.map(item => item.value),
+                            labels: controls.map(item => item.options[1]?.textContent || ''),
+                            registration_disabled: document.querySelector(
+                              '#warehouse-projects [data-action="register-javascript-computation-source"]'
+                            )?.disabled ?? false,
+                            html
+                          };
+                        })())"""
+                    )
+                )
+            )
+            assert root_selection["count"] == 2
+            assert root_selection["values"] == ["", ""]
+            assert all(
+                re.fullmatch(r"source · [0-9a-f]{6}", label)
+                for label in root_selection["labels"]
+            )
+            assert root_selection["registration_disabled"] is True
+            assert str(source) not in root_selection["html"]
+            assert root_id not in root_selection["html"]
+            assert (
+                js(
+                    """(() => {
+                      const controls = Array.from(document.querySelectorAll(
+                        '#warehouse-projects select[data-source-root-selector="session"]'
+                      ));
+                      controls[0].value = '0';
+                      controls[0].dispatchEvent(new Event('change', {bubbles:true}));
+                      return controls.every(item => item.value === '0') &&
+                        !document.querySelector(
+                          '#warehouse-projects [data-action="register-javascript-computation-source"]'
+                        ).disabled;
+                    })()"""
+                )
+                is True
             )
             assert js(
                 "(() => { const block = Array.from(document.querySelectorAll("
@@ -402,7 +464,7 @@ def test_simple_mode_scans_multiply_without_creating_candidate(
                             .find(item => item.querySelector('summary')?.textContent.includes('Multiply'));
                           if (details) details.open = true;
                           return {
-                            found: block?.textContent.includes('找到 1 个可进一步验证的计算功能。') || false,
+                            found: block?.textContent.includes('找到 2 个可进一步验证的计算功能。') || false,
                             input_1: details?.textContent.includes('输入 1（源码参数：x）') || false,
                             input_2: details?.textContent.includes('输入 2（源码参数：y）') || false,
                             input_help: details?.textContent.includes('这是该输入在新产品中的名称。例如 quantity 可以表示数量。') || false,
@@ -419,6 +481,110 @@ def test_simple_mode_scans_multiply_without_creating_candidate(
                 "input_help": True,
                 "result_help": True,
             }
+            wait_js(
+                "Array.from(document.querySelectorAll('#warehouse-projects details summary'))"
+                ".some(item => item.textContent.includes('Classify'))",
+                60,
+                "classify_offer",
+            )
+            witnesses = [
+                ("half package urgent", "urgent"),
+                ("regular task", "normal"),
+            ]
+            configured = json.loads(
+                str(
+                    js(
+                        """JSON.stringify((() => {
+                  const details = Array.from(document.querySelectorAll(
+                    '#warehouse-projects details'
+                  )).find(item => item.querySelector('summary')?.textContent.includes('Classify'));
+                  if (!details) return {ok:false, reason:'details'};
+                  details.open = true;
+                  const inputRow = Array.from(details.querySelectorAll('.warehouse-actions'))
+                    .find(item => item.textContent.includes('源码参数：question'));
+                  const resultRow = Array.from(details.querySelectorAll('.warehouse-actions'))
+                    .find(item => item.textContent.includes('输出字段'));
+                  const kind = inputRow?.querySelector('select');
+                  const numbers = inputRow?.querySelectorAll('input[type="number"]');
+                  const field = inputRow?.querySelector('input[type="text"]');
+                  const resultField = resultRow?.querySelector('input[type="text"]');
+                  const resultEnum = Array.from(resultRow?.querySelectorAll('textarea') || [])
+                    .find(item => item.parentElement?.textContent.includes('输出枚举'));
+                  if (!kind || !numbers || numbers.length !== 2 || !field ||
+                      !resultField || !resultEnum) return {
+                        ok:false,
+                        reason:'controls',
+                        numbers:numbers?.length || 0,
+                        input_row:!!inputRow,
+                        result_row:!!resultRow,
+                        kind:!!kind,
+                        field:!!field,
+                        result_field:!!resultField,
+                        result_enum:!!resultEnum
+                      };
+                  kind.value = 'string';
+                  kind.dispatchEvent(new Event('change', {bubbles:true}));
+                  field.value = 'question';
+                  numbers[0].value = '1';
+                  numbers[1].value = '500';
+                  resultField.value = 'knowledge_category';
+                  resultEnum.value = 'urgent\\nnormal';
+                  resultEnum.dispatchEvent(new Event('input', {bubbles:true}));
+                  const witnesses = Array.from(details.querySelectorAll('label'))
+                    .filter(item => item.textContent.includes('的验收输入'))
+                    .map(item => item.querySelector('input[type="text"]'))
+                    .filter(Boolean);
+                  if (witnesses.length !== 2) return {
+                    ok:false, reason:'witnesses', count:witnesses.length
+                  };
+                  witnesses[0].value = 'half package urgent';
+                  witnesses[1].value = 'regular task';
+                  details.querySelector('input[type="checkbox"]').checked = true;
+                  details.querySelector(
+                    '[data-action="create-javascript-computation-capture"]'
+                  ).click();
+                  return {ok:true};
+                })())"""
+                    )
+                )
+            )
+            assert configured == {"ok": True}
+            deadline = time.monotonic() + 10
+            while not captured_mapping_requests and time.monotonic() < deadline:
+                pump()
+            assert len(captured_mapping_requests) == 1
+            mapping_request = captured_mapping_requests[0]
+            assert mapping_request == {
+                "schema": "computation_capture_mapping.v5",
+                "project_id": str(registered["data"]["project_id"]),
+                "offer_id": mapping_request["offer_id"],
+                "review_id": None,
+                "arguments": [
+                    {
+                        "parameter_binding_id": mapping_request["arguments"][0][
+                            "parameter_binding_id"
+                        ],
+                        "input_field": "question",
+                        "kind": "string",
+                        "min_length": 1,
+                        "max_length": 500,
+                    }
+                ],
+                "result_field": "knowledge_category",
+                "result_enum": ["urgent", "normal"],
+                "proof_schema": "source_graph_proof.v3",
+                "examples": [
+                    {
+                        "input": {"question": input_text},
+                        "expected": {"knowledge_category": expected},
+                    }
+                    for input_text, expected in witnesses
+                ],
+            }
+            assert re.fullmatch(
+                r"[0-9a-f]{64}",
+                str(mapping_request["arguments"][0]["parameter_binding_id"]),
+            )
             with service._capsule_store.read_connection() as connection:
                 counts = tuple(
                     connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
@@ -431,6 +597,28 @@ def test_simple_mode_scans_multiply_without_creating_candidate(
                 )
             assert counts == (0, 0, 0, 0)
             assert source_snapshot() == source_before
+            with service._capsule_store.transaction() as connection:
+                connection.execute(
+                    "UPDATE source_roots SET status = 'source_missing' "
+                    "WHERE root_id = ?",
+                    (root_id,),
+                )
+                service._capsule_store.bump_revision(connection)
+            js("document.getElementById('btn-supervision-model-refresh').click(); true")
+            wait_js(
+                "Array.from(document.querySelectorAll("
+                "'#warehouse-projects select[data-source-root-selector=\"session\"]'))"
+                ".every(item => item.value === '') && "
+                "document.getElementById('capsule-warehouse-status').textContent.includes("
+                "'未改用其他来源')",
+                30,
+                "missing source root fails closed",
+            )
+            assert js(
+                "document.querySelector("
+                "'#warehouse-projects [data-action=\"register-javascript-computation-source\"]'"
+                ").disabled"
+            )
     finally:
         if window is not None:
             window.close()
@@ -5747,6 +5935,40 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
                 30,
                 "source discovery",
             )
+            with service._capsule_store.read_connection() as connection:
+                discovered_root = connection.execute(
+                    "SELECT root_id FROM source_roots WHERE current_path = ?",
+                    (str(source.resolve()),),
+                ).fetchone()
+            assert discovered_root is not None
+            discovered_root_id = str(discovered_root["root_id"])
+            selected_root = json.loads(
+                str(
+                    js(
+                        """JSON.stringify((() => {
+                          const controls = Array.from(document.querySelectorAll(
+                            '#warehouse-projects select[data-source-root-selector="session"]'
+                          ));
+                          return {
+                            count: controls.length,
+                            selected: controls.map(item => item.value),
+                            labels: controls.map(
+                              item => item.options[item.selectedIndex]?.textContent || ''
+                            ),
+                            html: document.getElementById('warehouse-projects').outerHTML
+                          };
+                        })())"""
+                    )
+                )
+            )
+            assert selected_root["count"] == 2
+            assert selected_root["selected"] == ["0", "0"]
+            assert all(
+                re.fullmatch(r"source · [0-9a-f]{6}", label)
+                for label in selected_root["labels"]
+            )
+            assert str(source) not in selected_root["html"]
+            assert discovered_root_id not in selected_root["html"]
             assert (
                 js(
                     """(() => {
@@ -5774,6 +5996,11 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
                 "'#warehouse-projects [data-action=\"authorize-source-derived\"]')",
                 30,
                 "source-derived developer form",
+            )
+            assert js(
+                "Array.from(document.querySelectorAll("
+                "'#warehouse-projects select[data-source-root-selector=\"session\"]'))"
+                ".every(item => item.value === '0')"
             )
             assert (
                 js(

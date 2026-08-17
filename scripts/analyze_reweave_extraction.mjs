@@ -1607,6 +1607,7 @@ function interactionCandidate(record, fn, modules, activationEntrypoint) {
   for (const [binding, selector] of bindings) {
     const control = htmlControls[selector];
     if (control?.checked_contract) propertyContracts.set(`${binding}.checked`, control.checked_contract);
+    if (control?.value_contract?.type === "string") propertyContracts.set(`${binding}.value`, control.value_contract);
   }
   for (const handlerName of new Set([...added.values()].map((item) => item.handler))) {
     for (const { name, contract } of handlerEmits(

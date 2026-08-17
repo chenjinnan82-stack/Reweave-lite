@@ -28,6 +28,8 @@
     captureReviewContext: {},
     developerMode: false,
     sourceRoots: [],
+    selectedSourceRootId: "",
+    sourceRootSelectionStale: false,
     runs: {},
     errorKey: "",
   };
@@ -387,6 +389,8 @@
       registerJavascriptSourceHelp: "把所选来源根或子目录登记为只读 JavaScript 计算来源。",
       javascriptSourceRoot: "来源根",
       javascriptSourceRootHelp: "选择已经绑定的只读来源目录。",
+      sourceRootSelectionRequired: "请选择来源根。",
+      sourceRootSelectionStale: "先前选择的来源根已不可用，请重新选择；未改用其他来源。",
       javascriptProjectRelpath: "项目或子目录（. 表示整个来源根）",
       javascriptProjectRelpathHelp: "限定计算函数扫描范围；不会修改该目录。",
       javascriptDisplayName: "计算来源名称",
@@ -409,7 +413,7 @@
       projectScanUnknownType: "来源类型无法识别，请重新发现或登记该项目。",
       projectScanUnknownState: "项目状态未知，请刷新项目列表后重试。",
       adapterInputKind: "输入类型",
-      adapterInputKindHelp: "简单模式固定为整数；布尔和枚举只在开发者模式配置。",
+      adapterInputKindHelp: "简单模式固定为整数；布尔、枚举和有界字符串只在开发者模式配置。",
       adapterEnumValues: "枚举值（每行一个）",
       adapterEnumValuesHelp: "列出允许的精确字符串值，每行一个。",
       captureNeedsDecision: "等待你的安全确认；模型监督和运行验证尚未执行。",
@@ -426,6 +430,12 @@
       adapterMinimumHelp: "该输入允许的最小安全整数。必须依据实际业务填写。",
       adapterMaximum: "最大值",
       adapterMaximumHelp: "该输入允许的最大安全整数。必须依据实际业务填写。",
+      adapterMinimumLength: "最短长度",
+      adapterMaximumLength: "最长长度",
+      adapterResultEnum: "输出枚举（每行一个）",
+      adapterResultEnumHelp: "列出计算函数允许返回的全部精确字符串值，每行一个。",
+      adapterWitness: "{value} 的验收输入",
+      adapterWitnessHelp: "该输入必须让旧函数精确返回对应枚举值，并满足声明的 UTF-16 长度边界。",
       adapterResultField: "输出字段",
       adapterResultFieldHelp: "产品接收计算结果时使用的字段名，例如 total。",
       adapterResultFieldVisibleHelp: "这是计算结果在新产品中的名称。例如 total 可以表示总价。",
@@ -439,7 +449,7 @@
       adapterMappingConfirmShort: "我确认",
       createComputationAdapter: "创建计算胶囊候选",
       continueCaptureValidation: "继续验证",
-      adapterMappingInvalid: "请填写合法、唯一的 snake_case 字段和安全整数范围。",
+      adapterMappingInvalid: "请填写合法、唯一的字段、边界、枚举与逐枚举验收输入。",
       adapterInspectionComplete: "计算函数检查完成。",
       adapterCandidateCreated: "计算胶囊候选已创建，请继续复核。",
       captureWaitingModel: "等待本地监督模型；尚未完成验证。",
@@ -902,6 +912,8 @@
       registerJavascriptSourceHelp: "Register a source root or subdirectory as a read-only JavaScript computation source.",
       javascriptSourceRoot: "Source root",
       javascriptSourceRootHelp: "Choose an already bound read-only source directory.",
+      sourceRootSelectionRequired: "Select a source root.",
+      sourceRootSelectionStale: "The previously selected source root is unavailable. Select it again; no other source was substituted.",
       javascriptProjectRelpath: "Project or subdirectory (. means source root)",
       javascriptProjectRelpathHelp: "Limit the computation scan scope; this directory is never modified.",
       javascriptDisplayName: "Computation source name",
@@ -924,7 +936,7 @@
       projectScanUnknownType: "The source type is unknown. Discover or register the project again.",
       projectScanUnknownState: "The project state is unknown. Refresh the project list and try again.",
       adapterInputKind: "Input type",
-      adapterInputKindHelp: "Simple mode uses integers; configure booleans and enums in developer mode.",
+      adapterInputKindHelp: "Simple mode uses integers; configure booleans, enums, and bounded strings in developer mode.",
       adapterEnumValues: "Enum values (one per line)",
       adapterEnumValuesHelp: "List exact allowed string values, one per line.",
       captureNeedsDecision: "Waiting for your safety decision; model supervision and runtime validation have not run.",
@@ -941,6 +953,12 @@
       adapterMinimumHelp: "The smallest allowed safe integer. Enter a real business limit.",
       adapterMaximum: "Maximum",
       adapterMaximumHelp: "The largest allowed safe integer. Enter a real business limit.",
+      adapterMinimumLength: "Minimum length",
+      adapterMaximumLength: "Maximum length",
+      adapterResultEnum: "Result enum (one per line)",
+      adapterResultEnumHelp: "List every exact string value the computation may return, one per line.",
+      adapterWitness: "Acceptance input for {value}",
+      adapterWitnessHelp: "This input must make the old function return the matching enum value and satisfy the declared UTF-16 length bounds.",
       adapterResultField: "Result field",
       adapterResultFieldHelp: "The field used by products to receive this result, for example total.",
       adapterResultFieldVisibleHelp: "This is the result name used by the new product. For example, total can mean a total price.",
@@ -954,7 +972,7 @@
       adapterMappingConfirmShort: "I confirm",
       createComputationAdapter: "Create computation candidate",
       continueCaptureValidation: "Continue validation",
-      adapterMappingInvalid: "Enter unique snake_case fields and safe integer ranges.",
+      adapterMappingInvalid: "Enter valid unique fields, bounds, enums, and one acceptance input per result.",
       adapterInspectionComplete: "Computation function inspection completed.",
       adapterCandidateCreated: "Computation candidate created; continue review.",
       captureWaitingModel: "Waiting for the local supervision model; validation is incomplete.",
@@ -1811,7 +1829,20 @@
     if (!block || typeof block !== "object") return;
     var payload = block.data && typeof block.data === "object" ? block.data : block;
     ingestionManagement.available = payload.available !== false;
-    if (Array.isArray(payload.sourceRoots)) ingestionManagement.sourceRoots = payload.sourceRoots.slice();
+    if (Array.isArray(payload.sourceRoots)) {
+      ingestionManagement.sourceRoots = payload.sourceRoots.slice();
+      if (
+        ingestionManagement.selectedSourceRootId &&
+        !ingestionManagement.sourceRoots.some(function (root) {
+          return String(root.root_id || "") === ingestionManagement.selectedSourceRootId &&
+            String(root.status || "") === "bound";
+        })
+      ) {
+        ingestionManagement.selectedSourceRootId = "";
+        ingestionManagement.sourceRootSelectionStale = true;
+        ingestionManagement.errorKey = "sourceRootSelectionStale";
+      }
+    }
     if (Array.isArray(payload.projects)) ingestionManagement.projects = payload.projects.slice();
     if (Array.isArray(payload.review_items)) ingestionManagement.reviewItems = payload.review_items.slice();
     if (Array.isArray(payload.capability_groups)) ingestionManagement.capabilityGroups = payload.capability_groups.slice();
@@ -2185,6 +2216,41 @@
     return t(fallbackKey) + " · " + managementFingerprint(identity || label || fallbackKey);
   }
 
+  function sourceRootDisplayLabel(root) {
+    var path = String(root && root.current_path || "").replace(/[\\/]+$/, "");
+    var basename = path.split(/[\\/]/).filter(Boolean).pop() || "";
+    if (!basename || basename === "." || basename === ".." || looksPrivateManagementValue(basename)) {
+      basename = t("javascriptSourceRoot");
+    }
+    return basename + " · " + managementFingerprint(root && root.root_id);
+  }
+
+  function selectDiscoveredSourceRoot(value) {
+    var payload = value && typeof value === "object" ? value : {};
+    var root = payload.source_root ||
+      (payload.discovery && payload.discovery.source_root) ||
+      null;
+    if (
+      !root ||
+      typeof root !== "object" ||
+      String(root.root_id || "") === "" ||
+      String(root.status || "") !== "bound"
+    ) {
+      return false;
+    }
+    if (!ingestionManagement.sourceRoots.some(function (item) {
+      return String(item.root_id || "") === String(root.root_id);
+    })) {
+      ingestionManagement.sourceRoots.push(root);
+    }
+    ingestionManagement.selectedSourceRootId = String(root.root_id);
+    ingestionManagement.sourceRootSelectionStale = false;
+    if (ingestionManagement.errorKey === "sourceRootSelectionStale") {
+      ingestionManagement.errorKey = "";
+    }
+    return true;
+  }
+
   function reviewIdentityDefaults(item, candidate, reviewName) {
     var payload = candidate && candidate.ephemeral_capture_payload;
     var selected = payload && payload.selected_function;
@@ -2423,7 +2489,9 @@
         row.appendChild(fieldHelp);
 
         var kind = controlHelp(document.createElement("select"), "adapterInputKindHelp");
-        [["integer", "integer"], ["boolean", "boolean"], ["enum", "enum"]].forEach(function (entry) {
+        var inputKinds = [["integer", "integer"], ["boolean", "boolean"], ["enum", "enum"]];
+        if (parameters.length === 1) inputKinds.push(["string", "string"]);
+        inputKinds.forEach(function (entry) {
           var option = document.createElement("option");
           option.value = entry[0];
           option.textContent = entry[1];
@@ -2486,16 +2554,20 @@
           values: values,
           valuesLabel: valuesLabel,
           example: example,
+          exampleLabel: exampleLabel,
         };
         function syncKind() {
           var integer = kind.value === "integer";
           var enumeration = kind.value === "enum";
-          minimumLabel.classList.toggle("hidden", !integer);
-          maximumLabel.classList.toggle("hidden", !integer);
+          var boundedString = kind.value === "string";
+          minimumLabel.classList.toggle("hidden", !integer && !boundedString);
+          maximumLabel.classList.toggle("hidden", !integer && !boundedString);
           valuesLabel.classList.toggle("hidden", !enumeration);
-          minimum.required = integer;
-          maximum.required = integer;
+          exampleLabel.classList.toggle("hidden", boundedString);
+          minimum.required = integer || boundedString;
+          maximum.required = integer || boundedString;
           values.required = enumeration;
+          example.required = !boundedString;
         }
         kind.addEventListener("change", syncKind);
         syncKind();
@@ -2533,21 +2605,90 @@
       expectedLabel.title = t("adapterExpectedHelp");
       expectedLabel.appendChild(expected);
       resultRow.appendChild(expectedLabel);
+      var resultEnum = controlHelp(document.createElement("textarea"), "adapterResultEnumHelp");
+      resultEnum.rows = 3;
+      var resultEnumLabel = document.createElement("label");
+      resultEnumLabel.className = "warehouse-field warehouse-developer-only hidden";
+      resultEnumLabel.textContent = t("adapterResultEnum");
+      resultEnumLabel.title = t("adapterResultEnumHelp");
+      resultEnumLabel.appendChild(resultEnum);
+      resultRow.appendChild(resultEnumLabel);
       details.appendChild(resultRow);
+      var witnessRows = document.createElement("div");
+      witnessRows.className = "warehouse-project-config warehouse-developer-only hidden";
+      details.appendChild(witnessRows);
+      var witnessControls = [];
+      function captureUsesBoundedString() {
+        return argumentControls.length === 1 &&
+          argumentControls[0].kind.value === "string";
+      }
+      function resultEnumValues() {
+        return String(resultEnum.value || "")
+          .split(/\r?\n/)
+          .map(function (value) { return value.trim(); })
+          .filter(Boolean);
+      }
+      function renderWitnessRows() {
+        var previous = {};
+        witnessControls.forEach(function (control) {
+          previous[control.result] = String(control.input.value || "");
+        });
+        witnessControls = [];
+        witnessRows.innerHTML = "";
+        resultEnumValues().forEach(function (value) {
+          var label = document.createElement("label");
+          label.className = "warehouse-field";
+          label.textContent = formatText("adapterWitness", { value: value });
+          label.title = t("adapterWitnessHelp");
+          var input = controlHelp(document.createElement("input"), "adapterWitnessHelp");
+          input.type = "text";
+          input.maxLength = 10000;
+          input.value = previous[value] || "";
+          label.appendChild(input);
+          witnessRows.appendChild(label);
+          witnessControls.push({ result: value, input: input });
+        });
+      }
+      function syncCaptureMode() {
+        var boundedString = captureUsesBoundedString();
+        expectedLabel.classList.toggle("hidden", boundedString);
+        expected.required = !boundedString;
+        resultEnumLabel.classList.toggle("hidden", !boundedString);
+        resultEnum.required = boundedString;
+        witnessRows.classList.toggle("hidden", !boundedString);
+        argumentControls.forEach(function (control) {
+          if (control.minimumLabel.firstChild) {
+            control.minimumLabel.firstChild.nodeValue =
+              t(boundedString ? "adapterMinimumLength" : "adapterMinimum");
+          }
+          if (control.maximumLabel.firstChild) {
+            control.maximumLabel.firstChild.nodeValue =
+              t(boundedString ? "adapterMaximumLength" : "adapterMaximum");
+          }
+        });
+        if (boundedString) renderWitnessRows();
+      }
 
       var preview = document.createElement("p");
       preview.className = "warehouse-meta warehouse-mapping-preview warehouse-developer-only";
       preview.title = t("adapterSimpleHelp");
       details.appendChild(preview);
       function updatePreview() {
+        var boundedString = captureUsesBoundedString();
         var parts = argumentControls.map(function (control) {
           var fieldName = String(control.field.value || "?").trim() || "?";
           var domain = control.kind.value === "integer"
             ? String(control.minimum.value || "?") + "…" + String(control.maximum.value || "?")
-            : (control.kind.value === "enum" ? String(control.values.value || "?").split(/\r?\n/).filter(Boolean).join("|") : "boolean");
-          return control.source_name + " → " + fieldName + " [" + domain + "] = " + String(control.example.value || "?");
+            : (control.kind.value === "enum"
+              ? String(control.values.value || "?").split(/\r?\n/).filter(Boolean).join("|")
+              : (control.kind.value === "string"
+                ? "string " + String(control.minimum.value || "?") + "…" + String(control.maximum.value || "?")
+                : "boolean"));
+          return control.source_name + " → " + fieldName + " [" + domain + "]" +
+            (boundedString ? "" : " = " + String(control.example.value || "?"));
         });
-        parts.push(String(resultField.value || "result") + " = " + String(expected.value || "?"));
+        parts.push(String(resultField.value || "result") + " = " +
+          (boundedString ? resultEnumValues().join("|") || "?" : String(expected.value || "?")));
         preview.textContent = formatText("adapterMappingPreview", { mapping: parts.join("；") });
       }
       argumentControls.forEach(function (control) {
@@ -2557,6 +2698,17 @@
         });
       });
       [resultField, expected].forEach(function (input) { input.addEventListener("input", updatePreview); });
+      argumentControls.forEach(function (control) {
+        control.kind.addEventListener("change", function () {
+          syncCaptureMode();
+          updatePreview();
+        });
+      });
+      resultEnum.addEventListener("input", function () {
+        renderWitnessRows();
+        updatePreview();
+      });
+      syncCaptureMode();
       updatePreview();
 
       var confirmationLabel = document.createElement("label");
@@ -2616,6 +2768,7 @@
         var argumentsPayload = [];
         var exampleInput = {};
         var fields = {};
+        var boundedString = captureUsesBoundedString();
         for (var index = 0; index < argumentControls.length; index += 1) {
           var control = argumentControls[index];
           var fieldName = String(control.field.value || "").trim();
@@ -2655,28 +2808,82 @@
               return;
             }
             argument.values = enumValues;
+          } else if (kindName === "string" && boundedString) {
+            var minimumLength = adapterSafeInteger(control.minimum);
+            var maximumLength = adapterSafeInteger(control.maximum);
+            if (
+              minimumLength === null ||
+              maximumLength === null ||
+              minimumLength < 0 ||
+              minimumLength > maximumLength ||
+              maximumLength > 10000
+            ) {
+              setManagementStatus("adapterMappingInvalid");
+              return;
+            }
+            argument.min_length = minimumLength;
+            argument.max_length = maximumLength;
           } else {
             setManagementStatus("adapterMappingInvalid");
             return;
           }
           fields[fieldName] = true;
           argumentsPayload.push(argument);
-          exampleInput[fieldName] = exampleValue;
+          if (!boundedString) exampleInput[fieldName] = exampleValue;
         }
         var resultName = String(resultField.value || "").trim();
-        var expectedValue = adapterSafeInteger(expected);
-        if (!resultField.checkValidity() || fields[resultName] || expectedValue === null) {
+        if (!resultField.checkValidity() || fields[resultName]) {
           setManagementStatus("adapterMappingInvalid");
           return;
         }
-        startManagementRun("start_create_computation_adapter", {
+        var capturePayload = {
           project_id: String(inspection.project_id || project.project_id || ""),
           offer_id: String(offer.offer_id || ""),
           review_id: String(resumeReview.value || "") || null,
           arguments: argumentsPayload,
           result_field: resultName,
-          examples: [{ input: exampleInput, expected: expectedValue }],
-        }, function (run) {
+        };
+        if (boundedString) {
+          var enumResults = resultEnumValues();
+          var uniqueResults = new Set(enumResults);
+          var argumentField = argumentsPayload[0] && argumentsPayload[0].input_field;
+          var minimumWitnessLength = argumentsPayload[0] && argumentsPayload[0].min_length;
+          var maximumWitnessLength = argumentsPayload[0] && argumentsPayload[0].max_length;
+          if (
+            !resultEnum.checkValidity() ||
+            !enumResults.length ||
+            enumResults.length > 32 ||
+            uniqueResults.size !== enumResults.length ||
+            witnessControls.length !== enumResults.length ||
+            witnessControls.some(function (control, witnessIndex) {
+              var text = String(control.input.value || "");
+              return control.result !== enumResults[witnessIndex] ||
+                text.length < minimumWitnessLength ||
+                text.length > maximumWitnessLength;
+            })
+          ) {
+            setManagementStatus("adapterMappingInvalid");
+            return;
+          }
+          capturePayload.schema = "computation_capture_mapping.v5";
+          capturePayload.result_enum = enumResults;
+          capturePayload.proof_schema = "source_graph_proof.v3";
+          capturePayload.examples = witnessControls.map(function (control) {
+            var input = {};
+            var output = {};
+            input[argumentField] = String(control.input.value || "");
+            output[resultName] = control.result;
+            return { input: input, expected: output };
+          });
+        } else {
+          var expectedValue = adapterSafeInteger(expected);
+          if (expectedValue === null) {
+            setManagementStatus("adapterMappingInvalid");
+            return;
+          }
+          capturePayload.examples = [{ input: exampleInput, expected: expectedValue }];
+        }
+        startManagementRun("start_create_computation_adapter", capturePayload, function (run) {
           var outcome = run && run.data && typeof run.data === "object" ? run.data : {};
           var statusKey = captureOutcomeStatusKey(outcome);
           offerStatus.textContent = t(statusKey);
@@ -2803,19 +3010,58 @@
     if (!container) return;
     container.innerHTML = "";
     if (ingestionManagement.sourceRoots.length) {
+      var boundSourceRoots = ingestionManagement.sourceRoots.filter(function (root) {
+        return String(root.status || "") === "bound" && String(root.root_id || "") !== "";
+      });
+      var sourceRootControls = [];
+      var sourceRootActions = [];
+      function selectedSourceRoot() {
+        return boundSourceRoots.find(function (root) {
+          return String(root.root_id || "") === ingestionManagement.selectedSourceRootId;
+        }) || null;
+      }
+      function syncSourceRootControls() {
+        var selected = selectedSourceRoot();
+        sourceRootControls.forEach(function (select) {
+          var index = selected ? boundSourceRoots.indexOf(selected) : -1;
+          select.value = index >= 0 ? String(index) : "";
+        });
+        sourceRootActions.forEach(function (button) {
+          button.disabled = !selected;
+        });
+      }
+      function sourceRootSelect() {
+        var select = controlHelp(document.createElement("select"), "javascriptSourceRootHelp");
+        select.dataset.sourceRootSelector = "session";
+        var placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = t("sourceRootSelectionRequired");
+        select.appendChild(placeholder);
+        boundSourceRoots.forEach(function (root, index) {
+          var option = document.createElement("option");
+          option.value = String(index);
+          option.textContent = sourceRootDisplayLabel(root);
+          select.appendChild(option);
+        });
+        select.addEventListener("change", function () {
+          var index = Number(select.value);
+          var root = Number.isInteger(index) ? boundSourceRoots[index] : null;
+          ingestionManagement.selectedSourceRootId = root ? String(root.root_id) : "";
+          ingestionManagement.sourceRootSelectionStale = false;
+          if (
+            ingestionManagement.errorKey === "sourceRootSelectionRequired" ||
+            ingestionManagement.errorKey === "sourceRootSelectionStale"
+          ) {
+            setManagementStatus("");
+          }
+          syncSourceRootControls();
+        });
+        sourceRootControls.push(select);
+        return select;
+      }
       var registration = document.createElement("div");
       registration.className = "warehouse-project-config";
-      var rootSelect = controlHelp(document.createElement("select"), "javascriptSourceRootHelp");
-      ingestionManagement.sourceRoots.forEach(function (root) {
-        var option = document.createElement("option");
-        option.value = String(root.root_id || "");
-        option.textContent = managementDisplayLabel(
-          root.label,
-          root.root_id,
-          "javascriptSourceRoot"
-        );
-        rootSelect.appendChild(option);
-      });
+      var rootSelect = sourceRootSelect();
       var rootLabel = document.createElement("label");
       rootLabel.className = "warehouse-field";
       rootLabel.textContent = t("javascriptSourceRoot");
@@ -2845,16 +3091,20 @@
       register.setAttribute("data-action", "register-javascript-computation-source");
       register.textContent = t("registerJavascriptSource");
       register.addEventListener("click", function () {
+        var selected = selectedSourceRoot();
+        if (!selected) {
+          setManagementStatus("sourceRootSelectionRequired");
+          syncSourceRootControls();
+          return;
+        }
         var relpathValue = String(relpath.value || ".").trim() || ".";
-        var rootName = rootSelect.options[rootSelect.selectedIndex]
-          ? String(rootSelect.options[rootSelect.selectedIndex].textContent || "source")
-          : "source";
+        var rootName = sourceRootDisplayLabel(selected).split(" · ")[0];
         var inferredName = relpathValue === "."
           ? rootName.split(/[\\/]/).filter(Boolean).pop()
           : relpathValue.split("/").filter(Boolean).pop();
         var name = String(displayName.value || inferredName || "source").trim();
         bridgeCall("register_javascript_computation_source", JSON.stringify({
-          source_root_id: String(rootSelect.value || ""),
+          source_root_id: String(selected.root_id),
           project_relpath: relpathValue,
           display_name: name,
         })).then(function (raw) {
@@ -2870,6 +3120,7 @@
       registration.appendChild(relpathLabel);
       registration.appendChild(displayNameLabel);
       registration.appendChild(register);
+      sourceRootActions.push(register);
       container.appendChild(registration);
 
       var sourceDerived = document.createElement("fieldset");
@@ -2891,17 +3142,7 @@
         return element;
       }
 
-      var derivedRootSelect = document.createElement("select");
-      ingestionManagement.sourceRoots.forEach(function (root) {
-        var option = document.createElement("option");
-        option.value = String(root.root_id || "");
-        option.textContent = managementDisplayLabel(
-          root.label,
-          root.root_id,
-          "javascriptSourceRoot"
-        );
-        derivedRootSelect.appendChild(option);
-      });
+      var derivedRootSelect = sourceRootSelect();
       sourceDerivedField("javascriptSourceRoot", derivedRootSelect);
       var derivedRelpath = sourceDerivedField(
         "sourceDerivedRelpath",
@@ -2999,6 +3240,12 @@
       startDerived.dataset.action = "authorize-source-derived";
       startDerived.textContent = t("sourceDerivedStart");
       startDerived.addEventListener("click", function () {
+        var selected = selectedSourceRoot();
+        if (!selected) {
+          setManagementStatus("sourceRootSelectionRequired");
+          syncSourceRootControls();
+          return;
+        }
         var acceptanceCases = Array.prototype.slice.call(
           caseRows.children
         ).map(function (row) {
@@ -3012,7 +3259,7 @@
         startManagementRun(
           "authorize_and_start_source_derived_computation",
           {
-            source_root_id: String(derivedRootSelect.value || ""),
+            source_root_id: String(selected.root_id),
             source_relpath: String(derivedRelpath.value || "").trim(),
             behavior_intent: String(derivedBehavior.value || "").trim(),
             input_field: String(derivedInputField.value || "").trim(),
@@ -3038,7 +3285,9 @@
         );
       });
       sourceDerived.appendChild(startDerived);
+      sourceRootActions.push(startDerived);
       container.appendChild(sourceDerived);
+      syncSourceRootControls();
     }
     var discovery = ingestionManagement.discovery;
     var discovered = discovery && Array.isArray(discovery.projects) ? discovery.projects : [];
@@ -4206,7 +4455,11 @@
       var failed = results.slice(2).find(function (result) {
         return !result || result.ok === false;
       });
-      ingestionManagement.errorKey = failed ? managementError(failed) : "";
+      ingestionManagement.errorKey = failed
+        ? managementError(failed)
+        : (ingestionManagement.sourceRootSelectionStale
+          ? "sourceRootSelectionStale"
+          : "");
       renderIngestionManagement();
     });
   }
@@ -4395,10 +4648,12 @@
           return;
         }
         if (!trackManagementRuns(result, function (run) {
+          selectDiscoveredSourceRoot(run.data);
           ingestionManagement.discovery = run.data || null;
           renderManagementProjects();
         }, false)) {
           ingestionManagement.discovery = payload.discovery || payload;
+          selectDiscoveredSourceRoot(ingestionManagement.discovery);
           renderManagementProjects();
         }
       });
