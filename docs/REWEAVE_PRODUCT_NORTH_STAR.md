@@ -2,7 +2,7 @@
 
 文档性质：长期产品方向与演进指引
 
-更新时间：2026-08-14
+更新时间：2026-08-18
 
 ## 1. 文档定位
 
@@ -188,8 +188,8 @@ flowchart LR
   QWeb 门固定逐进程运行 29 个桌面、Stage 3、Candidate/Product 节点。应用状态由单一 state-root
   owner 持有，SQLite backup 验证后原子发布，Candidate/Product 孤儿 staging 在启动时安全清理。
   Legacy JSON Source Box 写入口已退役；正式 Intake / Stage 3、`generate_product`、Agent Candidate
-  handoff 和有界公开 CLI 仍按各自权限边界可达。Agent Integration 文档仍是未冻结的本地设计草案，
-  不构成当前产品承诺或发布事实。
+  handoff、Agent Source handoff、开发者级 source-derived 隔离提案和有界公开 CLI
+  仍按各自权限边界可达。Agent Integration 文档仍是未冻结的本地设计草案，不构成当前产品承诺或发布事实。
 
 历史计划、workspace、执行、Composer、manifest 和导出继续按自身精确版本验证，不迁移、不重算。
 更细的职责与兼容矩阵见 `ARCHITECTURE.md`。
@@ -226,9 +226,10 @@ flowchart LR
 candidate digest 锁定正式 gap；“以上都不是”在 Blueprint 前以 no-match 终止，零个候选不产生正式投影，
 超过三个继续失败关闭。模型不参与正式 gap 选择。
 真实验证的结果类型包括受控整数以及有限字符串枚举；后者由 `source_graph_proof.v2`、capture/adapter v4 和精确
-枚举 witness 共同约束。当前代码还以 `source_graph_proof.v3`、capture/adapter v5 确定性验证了
-“有界字符串 `includes` → 有限枚举”的纵向路径，但尚未取得真实模型生成或正式发布授权；两者都不等于任意字符串、
-任意对象返回或通用类型系统。
+枚举 witness 共同约束。围绕 `source_graph_proof.v3`、capture/adapter v5 的分立验收已经分别证明：
+“有界字符串 `includes` → 有限枚举”的真实模型源码提案和监督、受控正式发布，以及后续普通任务从正式 catalog
+零 gap 复用到 `review_ready` Candidate。该证据仍只覆盖固定字面量 `includes`、有限枚举和唯一串联，
+不等于任意字符串、任意对象返回或通用类型系统。
 
 它不证明 presentation、interaction、Data、同时创建多个 gap、跨 `capability_key`、网络、文件系统或数据库写入，
 也不证明其他有副作用能力的创建。
@@ -374,6 +375,24 @@ Candidate 仍是审阅候选，不等于 products 晋升或完整产品版本历
    - 模型身份：A/B 使用 `qwen3:14b-q4_K_M` /
      `bdbd181c33f2ed1b31c972991882db3cf4d192569092138a7d29e973cd9debe8`；
      结果只授权新 v10 workspace 默认启用，不构成模型资格、训练授权或广泛任务分布证明。
+
+9. **有界字符串正式供给与后续复用**
+   - 代码身份：`source_graph_request.v2`、`source_graph_proof.v3`、
+     `computation_capture_mapping.v5`、`computation_adapter.v5`、
+     `source_derived_computation_authorization.v1`、`source_derived_computation_run.v1`、
+     `module_native_formal_product.v7`。
+   - 冻结记录：真实模型隔离 Review
+     `c8f54931fa381129bbae69cce344f0af76f5bbfd039c1d4867310b6d21823dc1`；
+     开发者级持久隔离运行
+     `dccc3932b9778a9834d2f86efa1c0dfb5989b7119d7ec3b2a7c9b18a58f1a204`；
+     三胶囊正式发布
+     `abc2e5d95962e45faf6b320d158f03c8b393cea701d2c7a3ea68589340dfde3a`；
+     普通任务正式 catalog 消费
+     `55df455752b4bdab92b6842b838670e5340c31618f5da7c14567e8240fdec00d`。
+   - 模型身份：源码提案与规划使用 `qwen3:14b-q4_K_M` /
+     `bdbd181c33f2ed1b31c972991882db3cf4d192569092138a7d29e973cd9debe8`；
+     监督使用 `qwen2.5-coder:7b` /
+     `dae161e27b0e90dd1856c8bb3209201fd6736d8eb66298e75ed87571486f4364`。
 
 ### 5.5 当前尚不存在的能力
 
