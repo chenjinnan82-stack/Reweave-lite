@@ -839,8 +839,12 @@ class Phase4ManagementTest(unittest.TestCase):
                 formal_before,
             )
 
+    @patch(
+        "pimos_lite.reweave_app_service.javascript_source_snapshot_supported",
+        return_value=True,
+    )
     def test_source_derived_handoff_recovers_and_rejects_drift(
-        self,
+        self, _snapshot_supported
     ) -> None:
         source = self.root / "source-derived-handoff-recovery"
         source.mkdir()
