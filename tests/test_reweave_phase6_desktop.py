@@ -6291,6 +6291,82 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
                 30,
                 "revoked source-derived Agent authorization",
             )
+            assert (
+                js(
+                    """(() => {
+                      const button = document.querySelector(
+                        '#warehouse-projects [data-action="authorize-source-derived-ui-agent"]'
+                      );
+                      if (!button) return false;
+                      button.focus();
+                      if (document.activeElement !== button) return false;
+                      button.click();
+                      return true;
+                    })()"""
+                )
+                is True
+            )
+            wait_js(
+                "document.querySelector("
+                "'#warehouse-projects [data-action=\"authorize-source-derived-ui-agent\"]'"
+                ")?.disabled === true",
+                30,
+                "locked standard UI Agent authorization action",
+            )
+            ui_binding_request = json.loads(app.clipboard().text())
+            ui_handoff_token = ui_binding_request["payload"][
+                "handoff_token"
+            ]
+            assert re.fullmatch(
+                r"source_derived_ui_handoff_token_[0-9a-f]{48}",
+                ui_handoff_token,
+            )
+            ui_dom = str(
+                js(
+                    "document.getElementById('warehouse-projects').outerHTML"
+                )
+            )
+            assert ui_handoff_token not in ui_dom
+            assert str(source) not in ui_dom
+            assert (
+                js(
+                    """(() => {
+                      const refresh = document.getElementById(
+                        'btn-supervision-model-refresh'
+                      );
+                      if (!refresh) return false;
+                      refresh.click();
+                      return true;
+                    })()"""
+                )
+                is True
+            )
+            wait_js(
+                "!!document.querySelector("
+                "'#warehouse-projects [data-action=\"revoke-source-derived-agent\"]')",
+                30,
+                "refreshed standard UI Agent authorization",
+            )
+            assert (
+                js(
+                    """(() => {
+                      const button = document.querySelector(
+                        '#warehouse-projects [data-action="revoke-source-derived-agent"]'
+                      );
+                      if (!button) return false;
+                      window.confirm = () => true;
+                      button.click();
+                      return true;
+                    })()"""
+                )
+                is True
+            )
+            wait_js(
+                "!!document.querySelector("
+                "'#warehouse-projects [data-action=\"authorize-source-derived-ui-agent\"]')",
+                30,
+                "revoked standard UI Agent authorization",
+            )
             wait_js(
                 "Array.from(document.querySelectorAll("
                 "'#warehouse-projects [data-action=\"authorize-source-agent\"]'))"

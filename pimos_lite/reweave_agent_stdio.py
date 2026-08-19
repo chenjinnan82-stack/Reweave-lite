@@ -29,11 +29,18 @@ AGENT_ACTIONS = frozenset(
         "get_source_derived_run",
         "cancel_source_derived_run",
         "get_source_derived_review_summary",
+        "prepare_source_derived_standard_ui",
+        "get_source_derived_standard_ui_authorization",
+        "start_source_derived_standard_ui",
+        "get_source_derived_standard_ui_run",
+        "cancel_source_derived_standard_ui_run",
+        "get_source_derived_standard_ui_review_summary",
     }
 )
 _CANDIDATE_ACTION_PROFILE = "product_candidate_agent.v1"
 _SOURCE_ACTION_PROFILE = "source_intake_agent.v1"
 _SOURCE_DERIVED_ACTION_PROFILE = "source_derived_agent.v1"
+_SOURCE_DERIVED_UI_ACTION_PROFILE = "source_derived_ui_agent.v1"
 _PROFILE_ACTIONS = {
     _CANDIDATE_ACTION_PROFILE: frozenset(
         {
@@ -62,6 +69,16 @@ _PROFILE_ACTIONS = {
             "get_source_derived_review_summary",
         }
     ),
+    _SOURCE_DERIVED_UI_ACTION_PROFILE: frozenset(
+        {
+            "prepare_source_derived_standard_ui",
+            "get_source_derived_standard_ui_authorization",
+            "start_source_derived_standard_ui",
+            "get_source_derived_standard_ui_run",
+            "cancel_source_derived_standard_ui_run",
+            "get_source_derived_standard_ui_review_summary",
+        }
+    ),
 }
 _CANDIDATE_HANDOFF_TOKEN = re.compile(r"handoff_token_[0-9a-f]{48}\Z")
 _SOURCE_HANDOFF_TOKEN = re.compile(
@@ -69,6 +86,9 @@ _SOURCE_HANDOFF_TOKEN = re.compile(
 )
 _SOURCE_DERIVED_HANDOFF_TOKEN = re.compile(
     r"source_derived_handoff_token_[0-9a-f]{48}\Z"
+)
+_SOURCE_DERIVED_UI_HANDOFF_TOKEN = re.compile(
+    r"source_derived_ui_handoff_token_[0-9a-f]{48}\Z"
 )
 _REQUEST_ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
 _MAX_REQUEST_BYTES = 1024 * 1024
@@ -367,6 +387,22 @@ def _resolve_handoff(
             raise ValueError("source_handoff_action_profile_invalid")
         return _SOURCE_ACTION_PROFILE, binding
     if (
+        _SOURCE_DERIVED_UI_HANDOFF_TOKEN.fullmatch(handoff_token)
+        is not None
+    ):
+        binding = service._resolve_local_source_derived_handoff(
+            handoff_token
+        )
+        if (
+            type(binding) is not dict
+            or binding.get("action_profile")
+            != _SOURCE_DERIVED_UI_ACTION_PROFILE
+        ):
+            raise ValueError(
+                "source_derived_ui_handoff_action_profile_invalid"
+            )
+        return _SOURCE_DERIVED_UI_ACTION_PROFILE, binding
+    if (
         _SOURCE_DERIVED_HANDOFF_TOKEN.fullmatch(handoff_token)
         is not None
     ):
@@ -493,9 +529,30 @@ def dispatch_agent_request(
         "get_source_derived_run": set(),
         "cancel_source_derived_run": set(),
         "get_source_derived_review_summary": set(),
+        "prepare_source_derived_standard_ui": {
+            "evidence_relpaths",
+            "behavior_intent",
+            "input_field",
+            "event_name",
+            "input_min_length",
+            "input_max_length",
+            "result_field",
+            "result_enum",
+            "visible_text",
+            "acceptance_cases",
+        },
+        "get_source_derived_standard_ui_authorization": set(),
+        "start_source_derived_standard_ui": set(),
+        "get_source_derived_standard_ui_run": set(),
+        "cancel_source_derived_standard_ui_run": set(),
+        "get_source_derived_standard_ui_review_summary": set(),
     }[action]
     if set(payload) != expected_fields or (
-        action != "prepare_source_derived_computation"
+        action
+        not in {
+            "prepare_source_derived_computation",
+            "prepare_source_derived_standard_ui",
+        }
         and any(
             type(payload[field]) is not str for field in expected_fields
         )
@@ -503,10 +560,17 @@ def dispatch_agent_request(
         return _error(request_id, "agent_action_payload_invalid")
     if action in _PROFILE_ACTIONS[_SOURCE_ACTION_PROFILE]:
         method_payload = binding
-    elif action in _PROFILE_ACTIONS[_SOURCE_DERIVED_ACTION_PROFILE]:
+    elif action in (
+        _PROFILE_ACTIONS[_SOURCE_DERIVED_ACTION_PROFILE]
+        | _PROFILE_ACTIONS[_SOURCE_DERIVED_UI_ACTION_PROFILE]
+    ):
         method_payload = (
             (binding, payload)
-            if action == "prepare_source_derived_computation"
+            if action
+            in {
+                "prepare_source_derived_computation",
+                "prepare_source_derived_standard_ui",
+            }
             else binding
         )
     elif action == "list_reusable_product_capabilities":
@@ -566,6 +630,24 @@ def dispatch_agent_request(
         "get_source_derived_review_summary": (
             "_get_authorized_source_derived_review_summary"
         ),
+        "prepare_source_derived_standard_ui": (
+            "_prepare_authorized_source_derived_standard_ui"
+        ),
+        "get_source_derived_standard_ui_authorization": (
+            "_get_authorized_source_derived_authorization"
+        ),
+        "start_source_derived_standard_ui": (
+            "_start_authorized_source_derived_standard_ui"
+        ),
+        "get_source_derived_standard_ui_run": (
+            "_get_authorized_source_derived_standard_ui_run"
+        ),
+        "cancel_source_derived_standard_ui_run": (
+            "_cancel_authorized_source_derived_standard_ui_run"
+        ),
+        "get_source_derived_standard_ui_review_summary": (
+            "_get_authorized_source_derived_standard_ui_review_summary"
+        ),
     }
     method = getattr(
         service,
@@ -583,13 +665,20 @@ def dispatch_agent_request(
             request_id,
             code
             if action
-            in _PROFILE_ACTIONS[_SOURCE_DERIVED_ACTION_PROFILE]
+            in (
+                _PROFILE_ACTIONS[_SOURCE_DERIVED_ACTION_PROFILE]
+                | _PROFILE_ACTIONS[_SOURCE_DERIVED_UI_ACTION_PROFILE]
+            )
             and type(code) is str
             and re.fullmatch(r"[a-z][a-z0-9_]{1,95}", code)
             else "agent_internal_error",
         )
     if (
-        action in _PROFILE_ACTIONS[_SOURCE_DERIVED_ACTION_PROFILE]
+        action
+        in (
+            _PROFILE_ACTIONS[_SOURCE_DERIVED_ACTION_PROFILE]
+            | _PROFILE_ACTIONS[_SOURCE_DERIVED_UI_ACTION_PROFILE]
+        )
         and (
             type(response) is not dict
             or type(response.get("ok")) is not bool
@@ -662,6 +751,10 @@ def dispatch_agent_request(
         "get_source_derived_authorization",
         "get_source_derived_run",
         "get_source_derived_review_summary",
+        "prepare_source_derived_standard_ui",
+        "get_source_derived_standard_ui_authorization",
+        "get_source_derived_standard_ui_run",
+        "get_source_derived_standard_ui_review_summary",
     }:
         if type(data) is not dict:
             return _error(request_id, "agent_internal_error")
@@ -673,7 +766,18 @@ def dispatch_agent_request(
             "run_id": run_id,
             "status": response.get("status"),
         }
-    elif action == "cancel_source_derived_run":
+    elif action == "start_source_derived_standard_ui":
+        run_id = response.get("run_id")
+        if type(run_id) is not str:
+            return _error(request_id, "agent_internal_error")
+        data = {
+            "run_id": run_id,
+            "status": response.get("status"),
+        }
+    elif action in {
+        "cancel_source_derived_run",
+        "cancel_source_derived_standard_ui_run",
+    }:
         if type(data) is not dict:
             return _error(request_id, "agent_internal_error")
     return {

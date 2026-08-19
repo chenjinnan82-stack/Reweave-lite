@@ -1134,6 +1134,222 @@ class Phase4ManagementTest(unittest.TestCase):
                 formal_before,
             )
 
+    def test_standard_ui_handoff_assembles_two_isolated_reviews(
+        self,
+    ) -> None:
+        source = self.root / "standard-ui-agent"
+        (source / "src").mkdir(parents=True)
+        (source / "src" / "Panel.tsx").write_text(
+            "export const Panel = () => null;\n",
+            encoding="utf-8",
+        )
+        (source / "src" / "styles.css").write_text(
+            ".panel { display: grid; }\n",
+            encoding="utf-8",
+        )
+        self.store.initialize()
+        self.store.migrate_v1_to_v2()
+        root = self.service._capsule_intake.bind_source_root(
+            source,
+            root_kind="project_collection",
+        )
+        root_id = str(root["root_id"])
+        self._select_test_supervision_model()
+        payload = {
+            "evidence_relpaths": [
+                "src/Panel.tsx",
+                "src/styles.css",
+            ],
+            "behavior_intent": "提交报修消息并展示紧急程度",
+            "input_field": "message",
+            "event_name": "classification_requested",
+            "input_min_length": 1,
+            "input_max_length": 1000,
+            "result_field": "urgency",
+            "result_enum": ["普通", "紧急"],
+            "visible_text": {
+                "input_label": "输入报修消息",
+                "submit_label": "整理成工单",
+                "result_label": "紧急程度",
+            },
+            "acceptance_cases": [
+                {
+                    "input_text": "升降平台漏油",
+                    "expected_result": "紧急",
+                }
+            ],
+        }
+        supervisor_calls: list[str] = []
+
+        def approve(_self, _summary, capability_kind):
+            supervisor_calls.append(capability_kind)
+            return (
+                {
+                    "schema_version": "capsule_supervision.v1",
+                    "verdict": "approve",
+                    "capability_kind": capability_kind,
+                    "semantic_summary": "Bounded local UI.",
+                    "keep_reason_codes": ["DECLARED_LOCAL_CAPABILITY"],
+                    "remove_reason_codes": [],
+                    "brand_signals": [],
+                    "sensitive_data_status": "clear",
+                    "hidden_dependency_codes": [],
+                    "duplicate_suggestions": [],
+                    "review_required": False,
+                },
+                "d" * 64,
+                {
+                    "name": "source-handoff-test-model",
+                    "digest": "b" * 64,
+                },
+            )
+
+        def request(
+            session: dict[str, object],
+            action: str,
+            action_payload: dict[str, object],
+        ) -> dict[str, object]:
+            return dispatch_agent_request(
+                self.service,
+                {
+                    "protocol": AGENT_PROTOCOL_VERSION,
+                    "id": action,
+                    "action": action,
+                    "payload": action_payload,
+                },
+                session,
+            )
+
+        with patch(
+            "pimos_lite.reweave_capsule_stage3.OllamaSupervisor.supervise",
+            new=approve,
+        ), patch(
+            "pimos_lite.reweave_capsule_stage3.ReweaveCapsuleStage3._runtime_validation",
+            return_value={"status": "passed"},
+        ), patch.object(
+            self.service._product_planner,
+            "_selected_model",
+            side_effect=AssertionError("source model must not be selected"),
+        ):
+            created = self.service.create_local_source_derived_handoff(
+                {
+                    "source_root_id": root_id,
+                    "action_profile": "source_derived_ui_agent.v1",
+                }
+            )
+            self.assertTrue(created["ok"], created)
+            duplicate_profile = (
+                self.service.create_local_source_derived_handoff(
+                    {"source_root_id": root_id}
+                )
+            )
+            self.assertFalse(duplicate_profile["ok"])
+            self.assertEqual(
+                duplicate_profile["error"]["code"],
+                "source_derived_handoff_already_active",
+            )
+            token = created["data"][
+                "source_derived_ui_handoff_token"
+            ]
+            session: dict[str, object] = {}
+            self.assertTrue(
+                request(
+                    session,
+                    "bind_user_handoff",
+                    {"handoff_token": token},
+                )["ok"]
+            )
+            prepared = request(
+                session,
+                "prepare_source_derived_standard_ui",
+                payload,
+            )
+            self.assertTrue(prepared["ok"], prepared)
+            self.assertEqual(
+                prepared["data"]["proposal_status"], "pending"
+            )
+            self.assertFalse(
+                request(
+                    session,
+                    "start_source_derived_standard_ui",
+                    {},
+                )["ok"]
+            )
+            approved = (
+                self.service
+                .decide_local_source_derived_handoff_proposal(
+                    {
+                        "source_root_id": root_id,
+                        "decision": "approve",
+                    }
+                )
+            )
+            self.assertTrue(approved["ok"], approved)
+            started = request(
+                session,
+                "start_source_derived_standard_ui",
+                {},
+            )
+            self.assertTrue(started["ok"], started)
+            run_id = str(started["data"]["run_id"])
+            for _ in range(3_000):
+                current = request(
+                    session,
+                    "get_source_derived_standard_ui_run",
+                    {},
+                )
+                self.assertTrue(current["ok"], current)
+                if current["data"]["status"] in {
+                    "review_required",
+                    "failed",
+                    "cancelled",
+                }:
+                    break
+                time.sleep(0.01)
+            else:
+                self.fail("standard UI run did not finish")
+            self.assertEqual(
+                current["data"]["status"], "review_required", current
+            )
+            self.assertEqual(current["data"]["review_count"], 2)
+            self.assertEqual(
+                supervisor_calls, ["interaction", "presentation"]
+            )
+            repeated = request(
+                session,
+                "start_source_derived_standard_ui",
+                {},
+            )
+            self.assertTrue(repeated["ok"], repeated)
+            self.assertEqual(repeated["data"]["run_id"], run_id)
+            self.assertEqual(
+                supervisor_calls, ["interaction", "presentation"]
+            )
+            denied = request(
+                session,
+                "start_source_derived_computation",
+                {},
+            )
+            self.assertFalse(denied["ok"])
+            self.assertEqual(
+                denied["error"]["code"], "agent_action_not_allowed"
+            )
+            (
+                self.service._source_derived_ui_workspace(run_id)
+                / "source"
+                / "interaction.js"
+            ).write_text("export const tampered = true;\n", encoding="utf-8")
+            conflicted = request(
+                session,
+                "get_source_derived_standard_ui_run",
+                {},
+            )
+            self.assertFalse(conflicted["ok"])
+            self.assertEqual(
+                conflicted["error"]["code"],
+                "source_derived_ui_run_conflict",
+            )
+
     @patch(
         "pimos_lite.reweave_app_service.javascript_source_snapshot_supported",
         return_value=True,

@@ -20,15 +20,19 @@ from pimos_lite.reweave_source_derivation import (
     SOURCE_DERIVATION_REQUEST_VERSION,
     SourceDerivationError,
     _is_reparse_point,
+    assemble_source_derived_standard_ui,
     append_source_derived_run_event,
     build_source_derived_authorization,
     build_source_derived_request,
+    build_source_derived_standard_ui_proposal,
     get_source_derived_run,
     prepare_source_derived_run,
     read_source_derived_evidence,
+    read_source_derived_ui_evidence,
     source_derived_project_graph_digest,
     source_derived_run_projection,
     validate_source_derived_response,
+    validate_source_derived_standard_ui_proposal,
     write_source_derived_proposal,
 )
 
@@ -36,6 +40,82 @@ from pimos_lite.reweave_source_derivation import (
 ROOT = Path(__file__).resolve().parents[1]
 SOURCE_GRAPH = ROOT / "scripts" / "analyze_reweave_source_graph.mjs"
 NODE = shutil.which("node")
+
+
+def test_standard_ui_proposal_is_closed_and_deterministic(
+    tmp_path: Path,
+) -> None:
+    source = tmp_path / "source"
+    source.mkdir()
+    (source / "panel.tsx").write_text(
+        "export const Panel = () => null;\n",
+        encoding="utf-8",
+    )
+    (source / "styles.css").write_text(
+        ".panel { display: grid; }\n",
+        encoding="utf-8",
+    )
+    evidence = read_source_derived_ui_evidence(
+        source,
+        ["styles.css", "panel.tsx"],
+    )
+    request = {
+        "evidence_relpaths": ["panel.tsx", "styles.css"],
+        "behavior_intent": "提交报修消息并展示紧急程度",
+        "input_field": "message",
+        "event_name": "classification_requested",
+        "input_min_length": 1,
+        "input_max_length": 1000,
+        "result_field": "urgency",
+        "result_enum": ["普通", "紧急"],
+        "visible_text": {
+            "input_label": "输入报修消息",
+            "submit_label": "整理成工单",
+            "result_label": "紧急程度",
+        },
+        "acceptance_cases": [
+            {"input_text": "设备漏油", "expected_result": "紧急"}
+        ],
+    }
+    proposal = build_source_derived_standard_ui_proposal(
+        handoff_binding_digest="a" * 64,
+        request=request,
+        evidence=evidence,
+        supervision_model={"name": "supervisor", "digest": "b" * 64},
+        warehouse_revision=91,
+        catalog_digest="c" * 64,
+        prepared_at="2026-08-20T00:00:00Z",
+    )
+    assert validate_source_derived_standard_ui_proposal(proposal) == proposal
+    first = assemble_source_derived_standard_ui(proposal)
+    second = assemble_source_derived_standard_ui(copy.deepcopy(proposal))
+    assert first == second
+    assert set(first) == {
+        "index.html",
+        "interaction.js",
+        "presentation.js",
+        "styles.css",
+    }
+    assert "classification_requested" in first["interaction.js"]
+    assert "普通" not in first["interaction.js"]
+    assert "紧急" not in first["interaction.js"]
+    for name in ("interaction.js", "presentation.js"):
+        module = tmp_path / name.replace(".js", ".mjs")
+        module.write_text(first[name], encoding="utf-8")
+        checked = subprocess.run(
+            ["node", "--check", str(module)],
+            text=True,
+            capture_output=True,
+            check=False,
+        )
+        assert checked.returncode == 0, checked.stderr
+    changed = copy.deepcopy(proposal)
+    changed["request"]["input_max_length"] = 999
+    with pytest.raises(
+        SourceDerivationError,
+        match="source_derived_ui_proposal_invalid",
+    ):
+        validate_source_derived_standard_ui_proposal(changed)
 
 
 def test_source_derived_reparse_point_metadata_is_rejected() -> None:

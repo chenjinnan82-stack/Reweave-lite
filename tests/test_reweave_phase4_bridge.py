@@ -414,17 +414,29 @@ def test_source_handoff_bridge_copies_one_strict_binding_and_revokes_on_failure(
 
 def test_source_derived_handoff_clipboard_never_returns_token() -> None:
     token = "source_derived_handoff_token_" + "c" * 48
+    ui_token = "source_derived_ui_handoff_token_" + "d" * 48
 
     class Service:
         def __init__(self) -> None:
             self.revoked: list[dict] = []
 
         @staticmethod
-        def create_local_source_derived_handoff(_payload: dict):
+        def create_local_source_derived_handoff(payload: dict):
+            token_key = (
+                "source_derived_ui_handoff_token"
+                if payload.get("action_profile")
+                == "source_derived_ui_agent.v1"
+                else "source_derived_handoff_token"
+            )
             return {
                 "ok": True,
                 "data": {
-                    "source_derived_handoff_token": token,
+                    token_key: (
+                        ui_token
+                        if token_key
+                        == "source_derived_ui_handoff_token"
+                        else token
+                    ),
                     "created_at": "2026-08-19T00:00:00Z",
                 },
             }
@@ -457,12 +469,35 @@ def test_source_derived_handoff_clipboard_never_returns_token() -> None:
         result = json.loads(raw)
         assert result["data"] == {
             "schema_version": "source_derived_handoff_status.v1",
+            "action_profile": "source_derived_agent.v1",
             "status": "active",
             "created_at": "2026-08-19T00:00:00Z",
         }
         assert token not in raw
         assert json.loads(copied[0])["payload"] == {
             "handoff_token": token
+        }
+
+        with patch.object(
+            desktop,
+            "_copy_to_system_clipboard",
+            side_effect=copied.append,
+        ):
+            ui_raw = bridge.copy_local_source_derived_handoff_binding(
+                json.dumps(
+                    {
+                        **payload,
+                        "action_profile": "source_derived_ui_agent.v1",
+                    }
+                )
+            )
+        ui_result = json.loads(ui_raw)
+        assert ui_result["data"]["action_profile"] == (
+            "source_derived_ui_agent.v1"
+        )
+        assert ui_token not in ui_raw
+        assert json.loads(copied[1])["payload"] == {
+            "handoff_token": ui_token
         }
 
         with patch.object(

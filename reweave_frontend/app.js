@@ -383,6 +383,10 @@
       sourceDerivedAgentStale: "来源、模型或正式仓库已漂移；只能撤销。",
       sourceDerivedAgentConflict: "Agent 授权状态冲突；只能安全撤销。",
       sourceDerivedAgentModelNotice: "批准后仍不会调用模型；Agent 启动时才会各调用一次源码模型和监督模型。",
+      sourceDerivedUiAgentAuthorize: "授权 Agent 准备标准输入和展示",
+      sourceDerivedUiAgentModelNotice: "批准不会调用模型或创建运行；Agent 启动后由 Reweave 确定性生成界面，并按输入、展示顺序监督两次。",
+      sourceDerivedUiEvidence: "证据文件",
+      sourceDerivedUiVisibleText: "可见文案",
       source_derived_handoff_clipboard_failed: "剪贴板写入失败，授权已撤销。",
       source_derived_handoff_clipboard_revoke_failed: "剪贴板写入失败且撤销未确认。请保持梭子关闭并刷新。",
       sourceDerivedTitle: "从单一证据文件生成隔离计算提案",
@@ -928,6 +932,10 @@
       sourceDerivedAgentStale: "The source, model, or formal warehouse drifted; only revocation is allowed.",
       sourceDerivedAgentConflict: "Agent authorization state conflicts; only safe revocation is allowed.",
       sourceDerivedAgentModelNotice: "Approval still does not call a model. The Agent run later calls the source model and supervisor once each.",
+      sourceDerivedUiAgentAuthorize: "Authorize Agent to prepare standard input and display",
+      sourceDerivedUiAgentModelNotice: "Approval calls no model and creates no run. The Agent then asks Reweave to assemble deterministically and supervise input, then display.",
+      sourceDerivedUiEvidence: "Evidence files",
+      sourceDerivedUiVisibleText: "Visible text",
       source_derived_handoff_clipboard_failed: "Clipboard write failed and the authorization was revoked.",
       source_derived_handoff_clipboard_revoke_failed: "Clipboard write failed and revocation was not confirmed. Keep the Shuttle closed and refresh.",
       sourceDerivedTitle: "Generate an isolated computation from one evidence file",
@@ -3069,6 +3077,7 @@
     ) {
       return {
         schema_version: "source_derived_handoff_status.v1",
+        action_profile: null,
         status: raw ? "conflict" : "none",
         proposal_status: "none",
         proposal: null,
@@ -3076,6 +3085,12 @@
     }
     return {
       schema_version: "source_derived_handoff_status.v1",
+      action_profile: [
+        "source_derived_agent.v1",
+        "source_derived_ui_agent.v1",
+      ].indexOf(String(raw.action_profile || "")) >= 0
+        ? String(raw.action_profile)
+        : null,
       status: String(raw.status),
       proposal_status: String(raw.proposal_status),
       proposal: raw.proposal && typeof raw.proposal === "object"
@@ -3245,7 +3260,49 @@
         ) {
           var proposal = projection.proposal;
           var summary = document.createElement("dl");
-          [
+          var proposalRows = proposal.proposal_kind === "standard_ui_pair"
+            ? [
+              [
+                t("sourceDerivedUiEvidence"),
+                Array.isArray(proposal.evidence_relpaths)
+                  ? proposal.evidence_relpaths.join("、")
+                  : "",
+              ],
+              [t("sourceDerivedBehavior"), proposal.behavior_intent],
+              [
+                t("sourceDerivedInputMin") + "–" + t("sourceDerivedInputMax"),
+                proposal.input
+                  ? String(proposal.input.min_length) + "–" +
+                    String(proposal.input.max_length)
+                  : "",
+              ],
+              [
+                t("sourceDerivedEnum"),
+                Array.isArray(proposal.result_enum)
+                  ? proposal.result_enum.join("、")
+                  : "",
+              ],
+              [
+                t("sourceDerivedUiVisibleText"),
+                proposal.visible_text
+                  ? [
+                    proposal.visible_text.input_label,
+                    proposal.visible_text.submit_label,
+                    proposal.visible_text.result_label,
+                  ].join("、")
+                  : "",
+              ],
+              [
+                t("sourceDerivedCases"),
+                Array.isArray(proposal.acceptance_cases)
+                  ? proposal.acceptance_cases.map(function (item) {
+                    return String(item.input_text || "") + " → " +
+                      String(item.expected_result || "");
+                  }).join("；")
+                  : "",
+              ],
+            ]
+            : [
             [t("sourceDerivedRelpath"), proposal.source_relpath],
             [t("sourceDerivedBehavior"), proposal.behavior_intent],
             [
@@ -3270,7 +3327,8 @@
                   }).join("；")
                 : "",
             ],
-          ].forEach(function (item) {
+          ];
+          proposalRows.forEach(function (item) {
             var term = document.createElement("dt");
             term.textContent = String(item[0] || "");
             var description = document.createElement("dd");
@@ -3281,7 +3339,11 @@
           row.appendChild(summary);
           var notice = document.createElement("p");
           notice.className = "warehouse-meta";
-          notice.textContent = t("sourceDerivedAgentModelNotice");
+          notice.textContent = t(
+            proposal.proposal_kind === "standard_ui_pair"
+              ? "sourceDerivedUiAgentModelNotice"
+              : "sourceDerivedAgentModelNotice"
+          );
           row.appendChild(notice);
           ["approve", "reject"].forEach(function (decision) {
             var decide = document.createElement("button");
@@ -3316,29 +3378,44 @@
         }
 
         if (projection.status === "none" || projection.status === "revoked") {
-          var authorizeAgent = document.createElement("button");
-          authorizeAgent.type = "button";
-          authorizeAgent.className = "btn-ghost";
-          authorizeAgent.dataset.action = "authorize-source-derived-agent";
-          authorizeAgent.textContent = t("sourceDerivedAgentAuthorize");
-          authorizeAgent.addEventListener("click", function () {
-            authorizeAgent.disabled = true;
-            bridgeCall(
-              "copy_local_source_derived_handoff_binding",
-              JSON.stringify({ source_root_id: rootId })
-            ).then(function (raw) {
-              var result = parseBridgeJson(raw);
-              if (!managementPayload(result)) {
-                authorizeAgent.disabled = false;
-                authorizeAgent.textContent = t("sourceDerivedAgentAuthorize");
-                setManagementStatus(managementError(result));
-                return;
-              }
-              authorizeAgent.textContent = t("sourceDerivedAgentCopiedClose");
-              setManagementStatus("sourceDerivedAgentActive");
+          function appendSourceDerivedAuthorization(labelKey, profile, action) {
+            var authorizeAgent = document.createElement("button");
+            authorizeAgent.type = "button";
+            authorizeAgent.className = "btn-ghost";
+            authorizeAgent.dataset.action = action;
+            authorizeAgent.textContent = t(labelKey);
+            authorizeAgent.addEventListener("click", function () {
+              authorizeAgent.disabled = true;
+              bridgeCall(
+                "copy_local_source_derived_handoff_binding",
+                JSON.stringify({
+                  source_root_id: rootId,
+                  action_profile: profile,
+                })
+              ).then(function (raw) {
+                var result = parseBridgeJson(raw);
+                if (!managementPayload(result)) {
+                  authorizeAgent.disabled = false;
+                  authorizeAgent.textContent = t(labelKey);
+                  setManagementStatus(managementError(result));
+                  return;
+                }
+                authorizeAgent.textContent = t("sourceDerivedAgentCopiedClose");
+                setManagementStatus("sourceDerivedAgentActive");
+              });
             });
-          });
-          row.appendChild(authorizeAgent);
+            row.appendChild(authorizeAgent);
+          }
+          appendSourceDerivedAuthorization(
+            "sourceDerivedAgentAuthorize",
+            "source_derived_agent.v1",
+            "authorize-source-derived-agent"
+          );
+          appendSourceDerivedAuthorization(
+            "sourceDerivedUiAgentAuthorize",
+            "source_derived_ui_agent.v1",
+            "authorize-source-derived-ui-agent"
+          );
         } else {
           var revokeAgent = document.createElement("button");
           revokeAgent.type = "button";

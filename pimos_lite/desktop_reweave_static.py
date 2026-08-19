@@ -659,9 +659,21 @@ class ReweaveBridge:
                     )
                 if (
                     type(payload) is not dict
-                    or set(payload) != {"source_root_id"}
+                    or set(payload)
+                    not in (
+                        {"source_root_id"},
+                        {"source_root_id", "action_profile"},
+                    )
                     or type(payload["source_root_id"]) is not str
                     or not payload["source_root_id"].strip()
+                    or payload.get(
+                        "action_profile",
+                        "source_derived_agent.v1",
+                    )
+                    not in {
+                        "source_derived_agent.v1",
+                        "source_derived_ui_agent.v1",
+                    }
                 ):
                     return self._phase4_error(
                         "source_derived_handoff_request_invalid",
@@ -684,7 +696,13 @@ class ReweaveBridge:
 
                 def revoke_after_failure() -> bool:
                     try:
-                        result = revoke(payload)
+                        result = revoke(
+                            {
+                                "source_root_id": payload[
+                                    "source_root_id"
+                                ]
+                            }
+                        )
                     except BaseException:
                         return False
                     data = (
@@ -705,20 +723,26 @@ class ReweaveBridge:
                     if type(result) is dict
                     else None
                 )
-                token = (
-                    data.get("source_derived_handoff_token")
-                    if type(data) is dict
-                    else None
+                action_profile = payload.get(
+                    "action_profile",
+                    "source_derived_agent.v1",
+                )
+                token_key = (
+                    "source_derived_ui_handoff_token"
+                    if action_profile == "source_derived_ui_agent.v1"
+                    else "source_derived_handoff_token"
+                )
+                token = data.get(token_key) if type(data) is dict else None
+                token_pattern = (
+                    r"source_derived_ui_handoff_token_[0-9a-f]{48}"
+                    if action_profile == "source_derived_ui_agent.v1"
+                    else r"source_derived_handoff_token_[0-9a-f]{48}"
                 )
                 if (
                     type(result) is not dict
                     or result.get("ok") is not True
                     or type(token) is not str
-                    or re.fullmatch(
-                        r"source_derived_handoff_token_[0-9a-f]{48}",
-                        token,
-                    )
-                    is None
+                    or re.fullmatch(token_pattern, token) is None
                 ):
                     if (
                         type(result) is dict
@@ -765,6 +789,7 @@ class ReweaveBridge:
                             "schema_version": (
                                 "source_derived_handoff_status.v1"
                             ),
+                            "action_profile": action_profile,
                             "status": "active",
                             "created_at": data.get("created_at"),
                         },

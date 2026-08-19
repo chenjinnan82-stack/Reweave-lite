@@ -1270,10 +1270,13 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
         in app
     )
     source_derived_authorize_handler = app[
-        app.index('authorizeAgent.dataset.action = "authorize-source-derived-agent"') :
-        app.index('row.appendChild(authorizeAgent);')
+        app.index("function appendSourceDerivedAuthorization") :
+        app.index('appendSourceDerivedAuthorization(\n            "sourceDerivedAgentAuthorize"')
     ]
     assert "refreshIngestionManagement()" not in source_derived_authorize_handler
+    assert '"source_derived_ui_agent.v1"' in app
+    assert '"authorize-source-derived-ui-agent"' in app
+    assert "sourceDerivedUiAgentModelNotice" in app
     assert 'dataset.action = "authorize-source-derived"' in app
     assert "sourceDerivedNotice" in app
     assert "input_text:" in app

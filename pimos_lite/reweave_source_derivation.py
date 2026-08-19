@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import hashlib
+import html
 import json
 import os
 import re
@@ -45,6 +46,7 @@ SOURCE_DERIVATION_PROMPT_VERSION = (
     "source_derived_capability_source_proposal_prompt.v2"
 )
 MAX_EVIDENCE_FILES = 4
+MAX_UI_EVIDENCE_FILES = 8
 MAX_EVIDENCE_FILE_BYTES = 128 * 1024
 MAX_EVIDENCE_BYTES = 256 * 1024
 MAX_ACCEPTANCE_CASES = 16
@@ -57,6 +59,15 @@ SOURCE_DERIVED_RUN_STATUS_VERSION = (
 )
 SOURCE_DERIVED_AGENT_PROPOSAL_VERSION = (
     "source_derived_authorization_proposal.v1"
+)
+SOURCE_DERIVED_STANDARD_UI_PROPOSAL_VERSION = (
+    "source_derived_standard_ui_proposal.v1"
+)
+SOURCE_DERIVED_STANDARD_UI_RUN_VERSION = (
+    "source_derived_standard_ui_run.v1"
+)
+STANDARD_TEXT_SUBMIT_TWO_RESULT_VERSION = (
+    "standard_text_submit_two_result.v1"
 )
 SOURCE_DERIVED_REVIEW_ADMISSION_AUTHORIZATION_VERSION = (
     "source_derived_review_admission_authorization.v1"
@@ -85,6 +96,7 @@ _MODEL_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/+-]{0,199}\Z")
 _SAFE_ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
 _ERROR_CODE = re.compile(r"[a-z][a-z0-9_]{1,95}\Z")
 _SAFE_SUFFIXES = frozenset({".js", ".jsx", ".mjs", ".ts", ".tsx"})
+_UI_EVIDENCE_SUFFIXES = _SAFE_SUFFIXES | {".css"}
 _SECRET = re.compile(
     r"(?is)(?:api[_-]?key|secret|token|password|access[_-]?key|secret[_-]?key)"
     r"\s*['\"]?\s*[:=]\s*(?:['\"][^'\"]+['\"]|[^\s<;]+)|"
@@ -434,7 +446,11 @@ def _exact(value: Any, keys: set[str], code: str) -> dict[str, Any]:
     return value
 
 
-def _safe_relative(value: Any) -> str:
+def _safe_relative(
+    value: Any,
+    *,
+    suffixes: frozenset[str] = _SAFE_SUFFIXES,
+) -> str:
     try:
         encoded = value.encode("utf-8") if type(value) is str else b""
     except UnicodeEncodeError as exc:
@@ -452,16 +468,22 @@ def _safe_relative(value: Any) -> str:
     if (
         path.is_absolute()
         or any(part in {"", ".", ".."} for part in path.parts)
-        or path.suffix.lower() not in _SAFE_SUFFIXES
+        or path.suffix.lower() not in suffixes
     ):
         raise SourceDerivationError("source_derivation_evidence_invalid")
     return path.as_posix()
 
 
-def _evidence_rows(evidence: Any, *, include_content: bool) -> list[dict[str, Any]]:
+def _evidence_rows(
+    evidence: Any,
+    *,
+    include_content: bool,
+    suffixes: frozenset[str] = _SAFE_SUFFIXES,
+    maximum_files: int = MAX_EVIDENCE_FILES,
+) -> list[dict[str, Any]]:
     if (
         type(evidence) is not list
-        or not 1 <= len(evidence) <= MAX_EVIDENCE_FILES
+        or not 1 <= len(evidence) <= maximum_files
     ):
         raise SourceDerivationError("source_derivation_evidence_invalid")
     rows: list[dict[str, Any]] = []
@@ -476,7 +498,10 @@ def _evidence_rows(evidence: Any, *, include_content: bool) -> list[dict[str, An
             required,
             "source_derivation_evidence_invalid",
         )
-        logical_path = _safe_relative(row["logical_path"])
+        logical_path = _safe_relative(
+            row["logical_path"],
+            suffixes=suffixes,
+        )
         digest = row["sha256"]
         size = row["size_bytes"]
         if (
@@ -1066,6 +1091,255 @@ def validate_source_derived_agent_proposal(
     return copy.deepcopy(row)
 
 
+def build_source_derived_standard_ui_proposal(
+    *,
+    handoff_binding_digest: str,
+    request: dict[str, Any],
+    evidence: list[dict[str, Any]],
+    supervision_model: dict[str, str],
+    warehouse_revision: int,
+    catalog_digest: str,
+    prepared_at: str,
+) -> dict[str, Any]:
+    """Freeze one bounded business proposal; generated source is not accepted."""
+
+    identities = [
+        {key: row[key] for key in ("logical_path", "sha256", "size_bytes")}
+        for row in _evidence_rows(
+            evidence,
+            include_content=True,
+            suffixes=_UI_EVIDENCE_SUFFIXES,
+            maximum_files=MAX_UI_EVIDENCE_FILES,
+        )
+    ]
+    body = {
+        "schema_version": SOURCE_DERIVED_STANDARD_UI_PROPOSAL_VERSION,
+        "standard": STANDARD_TEXT_SUBMIT_TWO_RESULT_VERSION,
+        "handoff_binding_digest": handoff_binding_digest,
+        "request": copy.deepcopy(request),
+        "evidence": identities,
+        "evidence_digest": canonical_json_digest(identities),
+        "supervision_model": copy.deepcopy(supervision_model),
+        "warehouse_revision": warehouse_revision,
+        "catalog_digest": catalog_digest,
+        "prepared_at": prepared_at,
+    }
+    return validate_source_derived_standard_ui_proposal(
+        {**body, "canonical_digest": canonical_json_digest(body)}
+    )
+
+
+def validate_source_derived_standard_ui_proposal(
+    value: Any,
+) -> dict[str, Any]:
+    code = "source_derived_ui_proposal_invalid"
+    row = _exact(
+        value,
+        {
+            "schema_version",
+            "standard",
+            "handoff_binding_digest",
+            "request",
+            "evidence",
+            "evidence_digest",
+            "supervision_model",
+            "warehouse_revision",
+            "catalog_digest",
+            "prepared_at",
+            "canonical_digest",
+        },
+        code,
+    )
+    request = _exact(
+        row["request"],
+        {
+            "evidence_relpaths",
+            "behavior_intent",
+            "input_field",
+            "event_name",
+            "input_min_length",
+            "input_max_length",
+            "result_field",
+            "result_enum",
+            "visible_text",
+            "acceptance_cases",
+        },
+        code,
+    )
+    visible = _exact(
+        request["visible_text"],
+        {"input_label", "submit_label", "result_label"},
+        code,
+    )
+    field = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
+
+    def utf16_length(text: str) -> int:
+        try:
+            return len(text.encode("utf-16-le")) // 2
+        except UnicodeEncodeError as exc:
+            raise SourceDerivationError(code) from exc
+
+    def text_ok(text: Any, maximum: int) -> bool:
+        try:
+            return (
+                type(text) is str
+                and bool(text.strip())
+                and len(text.encode("utf-8")) <= maximum
+            )
+        except UnicodeEncodeError:
+            return False
+
+    evidence_rows = _evidence_rows(
+        row["evidence"],
+        include_content=False,
+        suffixes=_UI_EVIDENCE_SUFFIXES,
+        maximum_files=MAX_UI_EVIDENCE_FILES,
+    )
+    relpaths = request["evidence_relpaths"]
+    enum = request["result_enum"]
+    cases = request["acceptance_cases"]
+    body = {
+        key: copy.deepcopy(item)
+        for key, item in row.items()
+        if key != "canonical_digest"
+    }
+    if (
+        row["schema_version"] != SOURCE_DERIVED_STANDARD_UI_PROPOSAL_VERSION
+        or row["standard"] != STANDARD_TEXT_SUBMIT_TWO_RESULT_VERSION
+        or _DIGEST.fullmatch(str(row["handoff_binding_digest"])) is None
+        or type(relpaths) is not list
+        or not 1 <= len(relpaths) <= MAX_UI_EVIDENCE_FILES
+        or len(set(relpaths)) != len(relpaths)
+        or any(
+            _safe_relative(item, suffixes=_UI_EVIDENCE_SUFFIXES) != item
+            for item in relpaths
+        )
+        or relpaths
+        != sorted(relpaths, key=lambda item: item.encode("utf-8"))
+        or [item["logical_path"] for item in evidence_rows] != relpaths
+        or row["evidence_digest"] != canonical_json_digest(evidence_rows)
+        or not text_ok(request["behavior_intent"], 2_000)
+        or field.fullmatch(str(request["input_field"])) is None
+        or field.fullmatch(str(request["event_name"])) is None
+        or field.fullmatch(str(request["result_field"])) is None
+        or len(
+            {
+                request["input_field"],
+                request["event_name"],
+                request["result_field"],
+            }
+        )
+        != 3
+        or type(request["input_min_length"]) is not int
+        or type(request["input_max_length"]) is not int
+        or not 1
+        <= request["input_min_length"]
+        <= request["input_max_length"]
+        <= 1_000
+        or type(enum) is not list
+        or len(enum) != 2
+        or any(
+            type(item) is not str
+            or not item
+            or utf16_length(item) > 128
+            for item in enum
+        )
+        or len(set(enum)) != 2
+        or any(not text_ok(visible[key], 512) for key in visible)
+        or type(cases) is not list
+        or not 1 <= len(cases) <= 3
+        or any(
+            type(item) is not dict
+            or set(item) != {"input_text", "expected_result"}
+            or type(item["input_text"]) is not str
+            or not request["input_min_length"]
+            <= utf16_length(item["input_text"])
+            <= request["input_max_length"]
+            or item["expected_result"] not in enum
+            for item in cases
+        )
+        or _validate_supervision_model(row["supervision_model"])
+        != row["supervision_model"]
+        or type(row["warehouse_revision"]) is not int
+        or row["warehouse_revision"] < 0
+        or _DIGEST.fullmatch(str(row["catalog_digest"])) is None
+        or type(row["prepared_at"]) is not str
+        or not row["prepared_at"]
+        or row["canonical_digest"] != canonical_json_digest(body)
+    ):
+        raise SourceDerivationError(code)
+    return copy.deepcopy(row)
+
+
+def assemble_source_derived_standard_ui(
+    proposal: dict[str, Any],
+) -> dict[str, str]:
+    """Generate the one proven text-submit/two-result package."""
+
+    row = validate_source_derived_standard_ui_proposal(proposal)
+    request = row["request"]
+    visible = request["visible_text"]
+    input_field = request["input_field"]
+    event_name = request["event_name"]
+    result_field = request["result_field"]
+    result_enum = request["result_enum"]
+    minimum = request["input_min_length"]
+    maximum = request["input_max_length"]
+    first, second = (json.dumps(item, ensure_ascii=False) for item in result_enum)
+    index = f"""<!doctype html>
+<html lang="zh-CN"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<link rel="stylesheet" href="./styles.css"></head><body>
+<main data-capsule-root class="standard-text-ui">
+  <section class="standard-section"><h2>{html.escape(visible["input_label"])}</h2>
+    <label>{html.escape(visible["input_label"])}<textarea data-ref="standard-input" minlength="{minimum}" maxlength="{maximum}" required></textarea></label>
+    <button data-action="standard-submit" type="button">{html.escape(visible["submit_label"])}</button>
+  </section>
+  <section class="standard-section"><h2>{html.escape(visible["result_label"])}</h2><span class="standard-output" data-ref="standard-result"></span></section>
+</main>
+<script type="module" src="./interaction.js"></script>
+<script type="module" src="./presentation.js"></script>
+</body></html>
+"""
+    interaction = f"""export function mount(root, ports) {{
+  const input = root.querySelector("[data-ref='standard-input']");
+  const button = root.querySelector("[data-action='standard-submit']");
+  const onClick = (event) => {{
+    event.preventDefault();
+    const value = input.value;
+    if (typeof value !== "string" || value.length < {minimum} || value.length > {maximum}) return;
+    ports.emit({json.dumps(event_name)}, {{{input_field}: value}});
+  }};
+  button.addEventListener("click", onClick);
+  return () => {{ button.removeEventListener("click", onClick); }};
+}}
+"""
+    presentation = f"""export function render(root, input) {{
+  if (!input || typeof input !== "object" || Object.keys(input).length !== 1) {{
+    return {{ok: false, error: {{code: "INVALID_INPUT", field: null, details: {{}}}}}};
+  }}
+  if (
+    typeof input.{result_field} !== "string"
+    || ![{first}, {second}].includes(input.{result_field})
+  ) {{
+    return {{ok: false, error: {{code: "INVALID_RESULT", field: "{result_field}", details: {{}}}}}};
+  }}
+  const output = root.querySelector("[data-ref='standard-result']");
+  output.textContent = input.{result_field};
+}}
+"""
+    return {
+        "index.html": index,
+        "interaction.js": interaction,
+        "presentation.js": presentation,
+        "styles.css": (
+            ".standard-text-ui { display: grid; gap: 1rem; max-width: 44rem; }\n"
+            ".standard-section { display: grid; gap: .5rem; }\n"
+            ".standard-section textarea { min-height: 8rem; }\n"
+            ".standard-output { font-weight: 700; }\n"
+        ),
+    }
+
+
 def validate_source_derived_response(
     value: Any,
     request: dict[str, Any],
@@ -1209,10 +1483,15 @@ def _read_evidence_by_descriptor(root: Path, logical_path: str) -> bytes:
 def read_source_derived_evidence(
     source_root: str | Path,
     source_relpath: str,
+    *,
+    allowed_suffixes: frozenset[str] = _SAFE_SUFFIXES,
 ) -> list[dict[str, Any]]:
     """Read one authorized JS/TS evidence file without following links."""
 
-    logical_path = _safe_relative(source_relpath)
+    logical_path = _safe_relative(
+        source_relpath,
+        suffixes=allowed_suffixes,
+    )
     root = Path(source_root)
     if _descriptor_relative_reads_supported():
         raw = _read_evidence_by_descriptor(root, logical_path)
@@ -1232,6 +1511,7 @@ def read_source_derived_evidence(
                 }
             ],
             include_content=True,
+            suffixes=allowed_suffixes,
         )
     descriptor = -1
     try:
@@ -1305,7 +1585,34 @@ def read_source_derived_evidence(
             }
         ],
         include_content=True,
+        suffixes=allowed_suffixes,
     )
+
+
+def read_source_derived_ui_evidence(
+    source_root: str | Path,
+    source_relpaths: list[str],
+) -> list[dict[str, Any]]:
+    """Read one bounded set of UI evidence files through the existing guard."""
+
+    if (
+        type(source_relpaths) is not list
+        or not 1 <= len(source_relpaths) <= MAX_UI_EVIDENCE_FILES
+        or len(set(source_relpaths)) != len(source_relpaths)
+    ):
+        raise SourceDerivationError("source_derivation_evidence_invalid")
+    rows = [
+        read_source_derived_evidence(
+            source_root,
+            item,
+            allowed_suffixes=_UI_EVIDENCE_SUFFIXES,
+        )[0]
+        for item in source_relpaths
+    ]
+    rows.sort(key=lambda item: item["logical_path"].encode("utf-8"))
+    if sum(item["size_bytes"] for item in rows) > MAX_EVIDENCE_BYTES:
+        raise SourceDerivationError("source_derivation_evidence_invalid")
+    return rows
 
 
 def source_derived_project_graph_digest(
