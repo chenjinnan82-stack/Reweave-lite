@@ -127,18 +127,22 @@ from pimos_lite.reweave_page_capability_contract import (
 )
 from pimos_lite.reweave_source_derivation import (
     SOURCE_DERIVATION_AUTHORIZATION_VERSION,
+    SOURCE_DERIVED_REVIEW_ADMISSION_VERSION,
     SourceDerivationError,
     append_source_derived_run_event,
     build_source_derived_authorization,
     build_source_derived_agent_proposal,
+    build_source_derived_review_admission_authorization,
     build_source_derived_request,
     get_source_derived_run,
     prepare_source_derived_run,
     read_source_derived_evidence,
     source_derived_project_graph_digest,
+    source_derived_run_records,
     source_derived_run_projection,
     validate_source_derived_response,
     validate_source_derived_agent_proposal,
+    validate_source_derived_review_admission_authorization,
     write_source_derived_proposal,
     validate_source_derived_authorization,
 )
@@ -245,6 +249,7 @@ CAPSULE_MANAGEMENT_ACTIONS = frozenset(
         "start_refresh_project",
         "start_refresh_all",
         "authorize_and_start_source_derived_computation",
+        "admit_source_derived_review",
         "create_local_source_derived_handoff",
         "revoke_local_source_derived_handoff",
         "decide_local_source_derived_handoff_proposal",
@@ -2761,6 +2766,7 @@ class ReweaveAppService:
             "generationActive": True,
             "singleWarehouse": True,
             "singleComposer": True,
+            "sourceDerivedRuns": [],
             "legacy": legacy,
             "capabilities": {
                 "sourceManagement": True,
@@ -2940,6 +2946,34 @@ class ReweaveAppService:
                     "run_id": None,
                     "run_status": None,
                 }
+        try:
+            state["sourceDerivedRuns"] = [
+                self._source_derived_run_management_projection(record)
+                for record in source_derived_run_records(self._state_root)
+            ]
+        except (
+            CapsuleStoreError,
+            SourceDerivationError,
+            Stage3Error,
+            OSError,
+            ValueError,
+            sqlite3.Error,
+        ):
+            state["sourceDerivedRuns"] = [
+                {
+                    "schema_version": (
+                        "source_derived_run_management.v1"
+                    ),
+                    "run_id": None,
+                    "behavior_intent": "",
+                    "status": "conflict",
+                    "stage": "supervision",
+                    "review_scope": "isolated",
+                    "created_at": None,
+                    "updated_at": None,
+                    "formal_admission_status": "conflict",
+                }
+            ]
         return state
 
     @staticmethod
@@ -4970,8 +5004,15 @@ class ReweaveAppService:
             and candidate["frozen_ui_review_admission"].get("schema")
             == FROZEN_UI_REVIEW_ADMISSION_VERSION
         )
+        source_derived_review = (
+            type(candidate.get("source_derived_review_admission")) is dict
+            and candidate["source_derived_review_admission"].get("schema")
+            == SOURCE_DERIVED_REVIEW_ADMISSION_VERSION
+        )
         if current_status == "review_required" and (
-            frozen_product_review or frozen_ui_review
+            frozen_product_review
+            or frozen_ui_review
+            or source_derived_review
         ):
             allowed.extend(["publish_general", "reject"])
         elif (
@@ -7653,6 +7694,216 @@ class ReweaveAppService:
             **record,
             "evidence": evidence,
             "request": request,
+        }
+
+    def _source_derived_review_admission_context(
+        self,
+        run_id: str,
+    ) -> dict[str, Any]:
+        record = get_source_derived_run(self._state_root, run_id)
+        identity = record["identity"]
+        terminal = record["events"][-1]
+        if (
+            terminal["status"] != "review_required"
+            or terminal["stage"] != "supervision"
+        ):
+            raise SourceDerivationError(
+                "source_derivation_review_admission_not_ready"
+            )
+        root = self._capsule_intake.get_source_root(
+            identity["source_root_id"]
+        )
+        if root.get("status") != "bound":
+            raise SourceDerivationError(
+                "source_derivation_review_admission_stale"
+            )
+        evidence = read_source_derived_evidence(
+            str(root["current_path"]),
+            identity["source_relpath"],
+        )
+        request = build_source_derived_request(
+            record["authorization"],
+            evidence,
+        )
+        catalog = self._product_planning_catalog()
+        source_model = self._product_planner._model_identity(
+            self._product_planner._selected_model(check_current=False)
+        )
+        selected_supervisor = self._capsule_supervisor.selected_model()
+        supervisor = {
+            "name": selected_supervisor["name"],
+            "digest": selected_supervisor["digest"],
+        }
+        target_catalog_digest = canonical_json_digest(
+            {"capsules": catalog["capsules"]}
+        )
+        admission = (
+            build_source_derived_review_admission_authorization(
+                record,
+                target_catalog_digest=target_catalog_digest,
+            )
+        )
+        admission = validate_source_derived_review_admission_authorization(
+            admission
+        )
+        revision = catalog["warehouse_revision"]
+        if (
+            evidence[0]["sha256"]
+            != identity["source_snapshot_sha256"]
+            or source_derived_project_graph_digest(evidence)
+            != identity["project_graph_digest"]
+            or request["request_digest"] != identity["request_digest"]
+            or source_model != identity["source_proposal_model"]
+            or supervisor != identity["supervision_model"]
+            or revision
+            not in {
+                identity["warehouse_revision"],
+                identity["warehouse_revision"] + 1,
+            }
+            or (
+                revision == identity["warehouse_revision"]
+                and canonical_json_digest(catalog)
+                != identity["catalog_digest"]
+            )
+        ):
+            raise SourceDerivationError(
+                "source_derivation_review_admission_stale"
+            )
+        with self._capsule_store.read_connection() as connection:
+            formal = connection.execute(
+                "SELECT sanitized_candidate_json FROM review_items "
+                "WHERE review_id = ?",
+                (admission["isolated_review_id"],),
+            ).fetchone()
+        receipt = None
+        if formal is not None:
+            try:
+                summary = json.loads(formal["sanitized_candidate_json"])
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise SourceDerivationError(
+                    "source_derivation_review_admission_conflict"
+                ) from exc
+            if type(summary) is not dict:
+                raise SourceDerivationError(
+                    "source_derivation_review_admission_conflict"
+                )
+            receipt = summary.get("source_derived_review_admission")
+            if (
+                type(receipt) is not dict
+                or receipt.get("schema")
+                != SOURCE_DERIVED_REVIEW_ADMISSION_VERSION
+                or receipt.get("authorization_digest")
+                != admission["authorization_digest"]
+                or receipt.get("run_canonical_digest")
+                != admission["run_canonical_digest"]
+                or receipt.get("terminal_event_digest")
+                != admission["terminal_event_digest"]
+            ):
+                raise SourceDerivationError(
+                    "source_derivation_review_admission_conflict"
+                )
+        if (
+            revision == identity["warehouse_revision"] and receipt is not None
+        ) or (
+            revision == identity["warehouse_revision"] + 1
+            and receipt is None
+        ):
+            raise SourceDerivationError(
+                "source_derivation_review_admission_conflict"
+            )
+        return {
+            "record": record,
+            "authorization": admission,
+            "source_directory": record["paths"]["source_dir"],
+            "validation_database": record["paths"][
+                "validation_database"
+            ],
+            "warehouse_revision": revision,
+            "formal_admission_status": (
+                "admitted" if receipt is not None else "not_admitted"
+            ),
+        }
+
+    def _source_derived_run_management_projection(
+        self,
+        record: dict[str, Any],
+    ) -> dict[str, Any]:
+        authorization = record["authorization"]
+        current = source_derived_run_projection(record)
+        status = "not_admitted"
+        if current["status"] == "review_required":
+            try:
+                terminal = record["events"][-1]
+                with self._capsule_store.read_connection() as connection:
+                    formal = connection.execute(
+                        "SELECT sanitized_candidate_json FROM review_items "
+                        "WHERE review_id = ?",
+                        (terminal["evidence"]["review_id"],),
+                    ).fetchone()
+                if formal is not None:
+                    summary = json.loads(
+                        formal["sanitized_candidate_json"]
+                    )
+                    if type(summary) is not dict:
+                        raise SourceDerivationError(
+                            "source_derivation_review_admission_conflict"
+                        )
+                    receipt = summary.get(
+                        "source_derived_review_admission"
+                    )
+                    expected = (
+                        build_source_derived_review_admission_authorization(
+                            record,
+                            target_catalog_digest=str(
+                                (
+                                    receipt
+                                    if type(receipt) is dict
+                                    else {}
+                                ).get(
+                                    "target_catalog_digest_before"
+                                )
+                                or ""
+                            ),
+                        )
+                        if type(receipt) is dict
+                        else None
+                    )
+                    status = (
+                        "admitted"
+                        if (
+                            type(receipt) is dict
+                            and receipt.get("schema")
+                            == SOURCE_DERIVED_REVIEW_ADMISSION_VERSION
+                            and receipt.get("run_canonical_digest")
+                            == record["identity"]["canonical_digest"]
+                            and receipt.get("terminal_event_digest")
+                            == terminal["canonical_digest"]
+                            and receipt.get("authorization_digest")
+                            == expected["authorization_digest"]
+                        )
+                        else "conflict"
+                    )
+            except (
+                CapsuleStoreError,
+                SourceDerivationError,
+                Stage3Error,
+                TypeError,
+                json.JSONDecodeError,
+                OSError,
+                ValueError,
+                sqlite3.Error,
+            ):
+                status = "conflict"
+        return {
+            "schema_version": "source_derived_run_management.v1",
+            "run_id": current["run_id"],
+            "behavior_intent": authorization["behavior_intent"],
+            "status": current["status"],
+            "stage": current["stage"],
+            "review_scope": current["review_scope"],
+            "created_at": current["created_at"],
+            "updated_at": current["updated_at"],
+            "formal_admission_status": status,
         }
 
     @staticmethod
@@ -10743,6 +10994,55 @@ class ReweaveAppService:
             return self._ok({"items": items})
         except (CapsuleStoreError, OSError, ValueError, sqlite3.Error) as exc:
             return self._exception_error(exc, "list_review_items_failed")
+
+    @_serialized_management
+    def admit_source_derived_review(
+        self,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Admit one exact isolated source-derived Review after user consent."""
+
+        try:
+            self._ensure_capsule_management()
+            request = self._payload(payload)
+            if (
+                set(request) != {"run_id"}
+                or type(request.get("run_id")) is not str
+                or re.fullmatch(r"run_[0-9a-f]{32}", request["run_id"])
+                is None
+            ):
+                return self._error(
+                    "source_derivation_review_admission_invalid"
+                )
+            context = self._source_derived_review_admission_context(
+                request["run_id"]
+            )
+            authorization = context["authorization"]
+            result = self._capsule_stage3.admit_source_derived_review(
+                context["validation_database"],
+                context["source_directory"],
+                expected_source_sha256=authorization[
+                    "validation_database_sha256"
+                ],
+                expected_warehouse_revision=context[
+                    "warehouse_revision"
+                ],
+                authorization_binding=authorization,
+            )
+            return self._ok(result)
+        except (
+            CapsuleStoreError,
+            ProductPlanningError,
+            SourceDerivationError,
+            Stage3Error,
+            OSError,
+            ValueError,
+            sqlite3.Error,
+        ) as exc:
+            return self._exception_error(
+                exc,
+                "source_derivation_review_admission_failed",
+            )
 
     @_serialized_management
     def admit_frozen_review(

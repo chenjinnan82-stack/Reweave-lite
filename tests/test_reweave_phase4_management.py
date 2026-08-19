@@ -403,10 +403,232 @@ class Phase4ManagementTest(unittest.TestCase):
                 repeated["data"]["status"],
                 "review_required",
             )
+            state = self.service._capsule_management_state()
+            isolated_run = next(
+                item
+                for item in state["sourceDerivedRuns"]
+                if item["run_id"] == run_id
+            )
+            self.assertEqual(
+                isolated_run["formal_admission_status"],
+                "not_admitted",
+            )
+            invalid_admission = self.service.admit_source_derived_review(
+                {"run_id": run_id, "extra": True}
+            )
+            self.assertFalse(invalid_admission["ok"])
+            self.assertEqual(
+                invalid_admission["error"]["code"],
+                "source_derivation_review_admission_invalid",
+            )
+            current_catalog = self.service._product_planning_catalog()
+            with patch.object(
+                self.service,
+                "_product_planning_catalog",
+                return_value={
+                    **current_catalog,
+                    "warehouse_revision": (
+                        current_catalog["warehouse_revision"] + 1
+                    ),
+                },
+            ):
+                unrelated_revision = (
+                    self.service.admit_source_derived_review(
+                        {"run_id": run_id}
+                    )
+                )
+            self.assertFalse(unrelated_revision["ok"])
+            self.assertEqual(
+                unrelated_revision["error"]["code"],
+                "source_derivation_review_admission_conflict",
+            )
+            run_directory = next(
+                (
+                    self.state / "source_derived_computations"
+                ).glob("[0-9a-f]" * 64)
+            )
+            validation_path = (
+                run_directory
+                / "validation"
+                / "capsule_warehouse.sqlite3"
+            )
+            for state_path, field, expected_code in (
+                (
+                    run_directory / "authorization.json",
+                    "behavior_intent",
+                    "source_derivation_authorization_invalid",
+                ),
+                (
+                    run_directory / "run.json",
+                    "attempt_count",
+                    "source_derivation_run_conflict",
+                ),
+            ):
+                original = state_path.read_bytes()
+                value = json.loads(original)
+                value[field] = (
+                    "tampered"
+                    if field == "behavior_intent"
+                    else 2
+                )
+                state_path.write_bytes(
+                    (
+                        json.dumps(
+                            value,
+                            ensure_ascii=False,
+                            sort_keys=True,
+                            separators=(",", ":"),
+                        )
+                        + "\n"
+                    ).encode("utf-8")
+                )
+                if os.name == "posix":
+                    state_path.chmod(0o600)
+                tampered = self.service.admit_source_derived_review(
+                    {"run_id": run_id}
+                )
+                self.assertFalse(tampered["ok"])
+                self.assertEqual(
+                    tampered["error"]["code"],
+                    expected_code,
+                )
+                state_path.write_bytes(original)
+                if os.name == "posix":
+                    state_path.chmod(0o600)
+            event_path = sorted(
+                (run_directory / "events").glob("event_*.json")
+            )[-1]
+            event_bytes = event_path.read_bytes()
+            event = json.loads(event_bytes)
+            event["canonical_digest"] = "0" * 64
+            event_path.write_bytes(
+                (
+                    json.dumps(
+                        event,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    + "\n"
+                ).encode("utf-8")
+            )
+            if os.name == "posix":
+                event_path.chmod(0o600)
+            event_tampered = (
+                self.service.admit_source_derived_review(
+                    {"run_id": run_id}
+                )
+            )
+            self.assertFalse(event_tampered["ok"])
+            self.assertEqual(
+                event_tampered["error"]["code"],
+                "source_derivation_run_event_invalid",
+            )
+            event_path.write_bytes(event_bytes)
+            if os.name == "posix":
+                event_path.chmod(0o600)
+            capability_path = (
+                run_directory / "source" / "capability.js"
+            )
+            capability_bytes = capability_path.read_bytes()
+            capability_path.write_bytes(b"tampered")
+            if os.name == "posix":
+                capability_path.chmod(0o600)
+            capability_tampered = (
+                self.service.admit_source_derived_review(
+                    {"run_id": run_id}
+                )
+            )
+            self.assertFalse(capability_tampered["ok"])
+            self.assertEqual(
+                capability_tampered["error"]["code"],
+                "source_derivation_source_conflict",
+            )
+            capability_path.write_bytes(capability_bytes)
+            if os.name == "posix":
+                capability_path.chmod(0o600)
+            validation_bytes = validation_path.read_bytes()
+            validation_path.write_bytes(validation_bytes + b"tampered")
+            if os.name == "posix":
+                validation_path.chmod(0o600)
+            validation_tampered = (
+                self.service.admit_source_derived_review(
+                    {"run_id": run_id}
+                )
+            )
+            self.assertFalse(validation_tampered["ok"])
+            self.assertEqual(
+                validation_tampered["error"]["code"],
+                "source_derivation_validation_conflict",
+            )
+            validation_path.write_bytes(validation_bytes)
+            if os.name == "posix":
+                validation_path.chmod(0o600)
+            self.assertEqual(
+                self.store.current_revision(),
+                revision_before,
+            )
+            admission_gate = threading.Barrier(3)
+            admissions: list[dict[str, object]] = []
+
+            def admit() -> None:
+                admission_gate.wait()
+                admissions.append(
+                    self.service.admit_source_derived_review(
+                        {"run_id": run_id}
+                    )
+                )
+
+            admission_threads = [
+                threading.Thread(target=admit) for _ in range(2)
+            ]
+            for thread in admission_threads:
+                thread.start()
+            admission_gate.wait()
+            for thread in admission_threads:
+                thread.join(15)
+                self.assertFalse(thread.is_alive())
+            self.assertTrue(
+                all(item["ok"] for item in admissions),
+                admissions,
+            )
+            statuses = sorted(
+                item["data"]["status"] for item in admissions
+            )
+            self.assertEqual(
+                statuses,
+                ["already_admitted", "review_required"],
+            )
+            admitted = next(
+                item
+                for item in admissions
+                if item["data"]["status"] == "review_required"
+            )
+            self.assertEqual(
+                admitted["data"]["warehouse_revision"],
+                revision_before + 1,
+            )
+            repeated_admission = (
+                self.service.admit_source_derived_review(
+                    {"run_id": run_id}
+                )
+            )
+            self.assertTrue(repeated_admission["ok"], repeated_admission)
+            self.assertEqual(
+                repeated_admission["data"]["status"],
+                "already_admitted",
+            )
+            self.assertEqual(
+                repeated_admission["data"]["admission_digest"],
+                admitted["data"]["admission_digest"],
+            )
 
         self.assertEqual(source_calls, ["generate"])
         self.assertEqual(supervisor_calls, ["computation"])
-        self.assertEqual(self.store.current_revision(), revision_before)
+        self.assertEqual(
+            self.store.current_revision(),
+            revision_before + 1,
+        )
         with self.store.read_connection() as connection:
             formal_after = {
                 table: int(
@@ -416,7 +638,80 @@ class Phase4ManagementTest(unittest.TestCase):
                 )
                 for table in ("review_items", "capsules", "capsule_versions")
             }
-        self.assertEqual(formal_after, formal_before)
+        self.assertEqual(
+            formal_after,
+            {
+                **formal_before,
+                "review_items": formal_before["review_items"] + 1,
+            },
+        )
+        listed = self.service.list_review_items({})
+        admitted_item = next(
+            item
+            for item in listed["data"]["items"]
+            if (
+                (item.get("candidate") or {})
+                .get("source_derived_review_admission", {})
+                .get("schema")
+                == "source_derived_review_admission.v1"
+            )
+        )
+        self.assertEqual(
+            admitted_item["allowed_decisions"],
+            ["publish_general", "reject"],
+        )
+        self.assertEqual(
+            next(
+                item
+                for item in self.service._capsule_management_state()[
+                    "sourceDerivedRuns"
+                ]
+                if item["run_id"] == run_id
+            )["formal_admission_status"],
+            "admitted",
+        )
+        self.service.close()
+        self.service = ReweaveAppService(
+            engine=LocalReweaveEngine(),
+            capsule_store=self.store,
+        )
+        self.assertEqual(
+            next(
+                item
+                for item in self.service._capsule_management_state()[
+                    "sourceDerivedRuns"
+                ]
+                if item["run_id"] == run_id
+            )["formal_admission_status"],
+            "admitted",
+        )
+        with self.store.transaction() as connection:
+            formal_summary = connection.execute(
+                "SELECT sanitized_candidate_json FROM review_items "
+                "WHERE review_id = ?",
+                (admitted_item["review_id"],),
+            ).fetchone()[0]
+            connection.execute(
+                "UPDATE review_items SET sanitized_candidate_json = '[]' "
+                "WHERE review_id = ?",
+                (admitted_item["review_id"],),
+            )
+        self.assertEqual(
+            next(
+                item
+                for item in self.service._capsule_management_state()[
+                    "sourceDerivedRuns"
+                ]
+                if item["run_id"] == run_id
+            )["formal_admission_status"],
+            "conflict",
+        )
+        with self.store.transaction() as connection:
+            connection.execute(
+                "UPDATE review_items SET sanitized_candidate_json = ? "
+                "WHERE review_id = ?",
+                (formal_summary, admitted_item["review_id"]),
+            )
         run_directories = list(
             (self.state / "source_derived_computations").glob(
                 "[0-9a-f]" * 64

@@ -5823,6 +5823,44 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
     service = ReweaveAppService(
         ollama_base_url=f"http://127.0.0.1:{server.server_port}"
     )
+    admission_state = {"admitted": False, "calls": 0}
+    original_management_state = service._capsule_management_state
+
+    def management_state_with_isolated_review():
+        value = original_management_state()
+        value["sourceDerivedRuns"] = [
+            {
+                "schema_version": "source_derived_run_management.v1",
+                "run_id": "run_" + "7" * 32,
+                "behavior_intent": "Classify bounded text.",
+                "status": "review_required",
+                "stage": "supervision",
+                "review_scope": "isolated",
+                "created_at": "2026-08-19T00:00:00Z",
+                "updated_at": "2026-08-19T00:00:01Z",
+                "formal_admission_status": (
+                    "admitted"
+                    if admission_state["admitted"]
+                    else "not_admitted"
+                ),
+            }
+        ]
+        return value
+
+    def admit_isolated_review(payload):
+        assert payload == {"run_id": "run_" + "7" * 32}
+        admission_state["calls"] += 1
+        admission_state["admitted"] = True
+        return {
+            "ok": True,
+            "data": {
+                "status": "review_required",
+                "warehouse_revision": 1,
+            },
+        }
+
+    service._capsule_management_state = management_state_with_isolated_review
+    service.admit_source_derived_review = admit_isolated_review
     qt_parts = desktop.import_qt_webengine()
     QApplication = qt_parts[0]
 
@@ -6070,6 +6108,78 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
                         && panel.querySelectorAll('input').length >= 7
                         && panel.textContent.includes('失败后不会自动重试')
                         && !panel.textContent.includes('review_id');
+                    })()"""
+                )
+                is True
+            )
+            wait_js(
+                "!!document.querySelector("
+                "'#warehouse-projects [data-action=\"admit-source-derived-review\"]')",
+                30,
+                "isolated review admission action",
+            )
+            assert (
+                js(
+                    """(() => {
+                      const button = document.querySelector(
+                        '#warehouse-projects [data-action="admit-source-derived-review"]'
+                      );
+                      if (!button) return false;
+                      button.focus();
+                      let confirmed = 0;
+                      window.confirm = () => {
+                        confirmed += 1;
+                        return false;
+                      };
+                      button.click();
+                      return confirmed === 1
+                        && document.activeElement === button
+                        && !button.disabled;
+                    })()"""
+                )
+                is True
+            )
+            assert admission_state["calls"] == 0
+            assert (
+                js(
+                    """(() => {
+                      const button = document.querySelector(
+                        '#warehouse-projects [data-action="admit-source-derived-review"]'
+                      );
+                      if (!button) return false;
+                      window.confirm = () => true;
+                      button.click();
+                      return true;
+                    })()"""
+                )
+                is True
+            )
+            wait_js(
+                "document.querySelector("
+                "'[data-ingestion-panel=\"review\"]')"
+                "?.classList.contains('is-active') && "
+                "document.getElementById('warehouse-projects')"
+                ".textContent.includes('已进入正式 Review') && "
+                "!document.querySelector("
+                "'#warehouse-projects [data-action=\"admit-source-derived-review\"]')",
+                30,
+                "isolated review admitted navigation",
+            )
+            assert admission_state["calls"] == 1
+            assert "run_" + "7" * 32 not in str(
+                js(
+                    "document.getElementById('warehouse-projects').outerHTML"
+                )
+            )
+            assert (
+                js(
+                    """(() => {
+                      const button = document.querySelector(
+                        '[data-ingestion-station="source"]'
+                      );
+                      if (!button) return false;
+                      button.click();
+                      return true;
                     })()"""
                 )
                 is True

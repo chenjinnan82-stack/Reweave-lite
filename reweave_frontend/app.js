@@ -29,6 +29,7 @@
     captureReviewContext: {},
     developerMode: false,
     sourceRoots: [],
+    sourceDerivedRuns: [],
     selectedSourceRootId: "",
     sourceRootSelectionStale: false,
     runs: {},
@@ -400,6 +401,11 @@
       sourceDerivedRemoveCase: "移除此验收例",
       sourceDerivedStart: "授权并生成隔离能力提案",
       sourceDerivedReviewReady: "隔离验证已通过并到达 review_required；尚未正式接纳或发布。",
+      sourceDerivedAdmissionTitle: "隔离提案",
+      sourceDerivedAdmissionAction: "接纳到正式 Review",
+      sourceDerivedAdmissionConfirm: "确认将这个隔离提案接纳到正式 Review？此操作不会发布能力。",
+      sourceDerivedAdmissionAdmitted: "已进入正式 Review",
+      sourceDerivedAdmissionConflict: "接纳状态冲突，已失败关闭。",
       source_derivation_request_invalid: "单文件来源授权信息无效。",
       source_derivation_evidence_invalid: "证据文件不安全、不可读取、超限或包含疑似秘密。",
       source_derivation_run_stale: "来源、模型或正式 catalog 已变化；运行已失败关闭。",
@@ -940,6 +946,11 @@
       sourceDerivedRemoveCase: "Remove this acceptance case",
       sourceDerivedStart: "Authorize and generate isolated capability proposal",
       sourceDerivedReviewReady: "Isolated validation reached review_required; no formal admission or publication occurred.",
+      sourceDerivedAdmissionTitle: "Isolated proposals",
+      sourceDerivedAdmissionAction: "Admit to formal Review",
+      sourceDerivedAdmissionConfirm: "Admit this isolated proposal to formal Review? This does not publish a capability.",
+      sourceDerivedAdmissionAdmitted: "Admitted to formal Review",
+      sourceDerivedAdmissionConflict: "Admission state conflicts and failed closed.",
       source_derivation_request_invalid: "The one-file source authorization is invalid.",
       source_derivation_evidence_invalid: "The evidence file is unsafe, unreadable, oversized, or contains a possible secret.",
       source_derivation_run_stale: "The source, model, or formal catalog changed; the run failed closed.",
@@ -1877,6 +1888,10 @@
         ingestionManagement.sourceRootSelectionStale = true;
         ingestionManagement.errorKey = "sourceRootSelectionStale";
       }
+    }
+    if (Array.isArray(payload.sourceDerivedRuns)) {
+      ingestionManagement.sourceDerivedRuns =
+        payload.sourceDerivedRuns.slice();
     }
     if (Array.isArray(payload.projects)) ingestionManagement.projects = payload.projects.slice();
     if (Array.isArray(payload.review_items)) ingestionManagement.reviewItems = payload.review_items.slice();
@@ -3351,6 +3366,73 @@
         sourceDerivedAgent.appendChild(row);
       });
       container.appendChild(sourceDerivedAgent);
+
+      var isolatedRuns = ingestionManagement.sourceDerivedRuns.filter(function (run) {
+        return run && run.review_scope === "isolated";
+      });
+      if (isolatedRuns.length) {
+        var admissions = document.createElement("fieldset");
+        admissions.className = "warehouse-project-config warehouse-developer-only";
+        var admissionsLegend = document.createElement("legend");
+        admissionsLegend.textContent = t("sourceDerivedAdmissionTitle");
+        admissions.appendChild(admissionsLegend);
+        isolatedRuns.forEach(function (run) {
+          var row = document.createElement("div");
+          row.className = "warehouse-project-config";
+          var summary = document.createElement("strong");
+          summary.textContent = String(run.behavior_intent || "");
+          row.appendChild(summary);
+          var status = document.createElement("p");
+          status.className = "warehouse-meta";
+          if (run.formal_admission_status === "admitted") {
+            status.textContent = t("sourceDerivedAdmissionAdmitted");
+          } else if (run.formal_admission_status === "conflict") {
+            status.textContent = t("sourceDerivedAdmissionConflict");
+          } else {
+            status.textContent =
+              String(run.status || "") + " · " +
+              String(run.updated_at || "");
+          }
+          status.setAttribute("aria-live", "polite");
+          row.appendChild(status);
+          if (
+            run.status === "review_required" &&
+            run.formal_admission_status === "not_admitted" &&
+            typeof run.run_id === "string"
+          ) {
+            var admit = document.createElement("button");
+            admit.type = "button";
+            admit.className = "btn-primary";
+            admit.dataset.action = "admit-source-derived-review";
+            admit.textContent = t("sourceDerivedAdmissionAction");
+            admit.addEventListener("click", function () {
+              if (!window.confirm(t("sourceDerivedAdmissionConfirm"))) return;
+              admit.disabled = true;
+              bridgeCall(
+                "admit_source_derived_review",
+                JSON.stringify({ run_id: run.run_id })
+              ).then(function (raw) {
+                var result = parseBridgeJson(raw);
+                if (!managementPayload(result)) {
+                  admit.disabled = false;
+                  setManagementStatus(managementError(result));
+                  return;
+                }
+                return refreshIngestionManagement().then(function () {
+                  ingestionNavigation.productReview = null;
+                  ingestionNavigation.sourceHandoffReview = null;
+                  ingestionNavigation.station = "review";
+                  renderManagementReviews();
+                  syncIngestionStation();
+                });
+              });
+            });
+            row.appendChild(admit);
+          }
+          admissions.appendChild(row);
+        });
+        container.appendChild(admissions);
+      }
 
       var sourceDerived = document.createElement("fieldset");
       sourceDerived.className = "warehouse-project-config warehouse-developer-only";

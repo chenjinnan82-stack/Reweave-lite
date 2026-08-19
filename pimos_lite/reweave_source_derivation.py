@@ -58,6 +58,12 @@ SOURCE_DERIVED_RUN_STATUS_VERSION = (
 SOURCE_DERIVED_AGENT_PROPOSAL_VERSION = (
     "source_derived_authorization_proposal.v1"
 )
+SOURCE_DERIVED_REVIEW_ADMISSION_AUTHORIZATION_VERSION = (
+    "source_derived_review_admission_authorization.v1"
+)
+SOURCE_DERIVED_REVIEW_ADMISSION_VERSION = (
+    "source_derived_review_admission.v1"
+)
 SOURCE_DERIVED_STATE_DIRECTORY = "source_derived_computations"
 SOURCE_DERIVED_RUN_STATUSES = frozenset(
     {"pending", "running", "review_required", "failed", "cancelled"}
@@ -1808,6 +1814,197 @@ def source_derived_run_projection(
         "updated_at": latest["created_at"],
         "error_code": latest["error_code"],
     }
+
+
+def build_source_derived_review_admission_authorization(
+    record: dict[str, Any],
+    *,
+    target_catalog_digest: str,
+) -> dict[str, Any]:
+    """Bind one terminal isolated review to one human admission action."""
+
+    if type(record) is not dict:
+        raise SourceDerivationError(
+            "source_derivation_review_admission_invalid"
+        )
+    authorization = validate_source_derived_authorization(
+        record.get("authorization")
+    )
+    identity = _validate_run_identity(
+        authorization,
+        record.get("identity"),
+    )
+    events = record.get("events")
+    if type(events) is not list or not events:
+        raise SourceDerivationError(
+            "source_derivation_review_admission_invalid"
+        )
+    previous = None
+    validated_events = []
+    for value in events:
+        event = _validate_run_event(value, identity, previous)
+        validated_events.append(event)
+        previous = event
+    terminal = validated_events[-1]
+    source_hashes = {
+        event["evidence"]["source_sha256"]
+        for event in validated_events
+        if "source_sha256" in event["evidence"]
+    }
+    evidence = terminal["evidence"]
+    if (
+        terminal["status"] != "review_required"
+        or terminal["stage"] != "supervision"
+        or len(source_hashes) != 1
+        or _DIGEST.fullmatch(str(target_catalog_digest)) is None
+        or _DIGEST.fullmatch(
+            str(evidence.get("validation_database_sha256") or "")
+        )
+        is None
+        or _DIGEST.fullmatch(str(evidence.get("canonical_hash") or ""))
+        is None
+        or type(evidence.get("review_id")) is not str
+        or not evidence["review_id"]
+    ):
+        raise SourceDerivationError(
+            "source_derivation_review_admission_invalid"
+        )
+    action = {
+        "action": "admit_source_derived_review",
+        "run_id": identity["run_id"],
+    }
+    body = {
+        "schema_version": (
+            SOURCE_DERIVED_REVIEW_ADMISSION_AUTHORIZATION_VERSION
+        ),
+        "run_id": identity["run_id"],
+        "run_canonical_digest": identity["canonical_digest"],
+        "terminal_event_digest": terminal["canonical_digest"],
+        "request_digest": identity["request_digest"],
+        "source_snapshot_sha256": identity["source_snapshot_sha256"],
+        "project_graph_digest": identity["project_graph_digest"],
+        "source_file_sha256": next(iter(source_hashes)),
+        "validation_database_sha256": evidence[
+            "validation_database_sha256"
+        ],
+        "isolated_review_id": evidence["review_id"],
+        "isolated_canonical_hash": evidence["canonical_hash"],
+        "adapter_contract_version": authorization[
+            "adapter_contract_version"
+        ],
+        "input_contract": copy.deepcopy(authorization["input_contract"]),
+        "output_contract": copy.deepcopy(authorization["output_contract"]),
+        "error_contract": copy.deepcopy(authorization["error_contract"]),
+        "source_proposal_model": copy.deepcopy(
+            identity["source_proposal_model"]
+        ),
+        "supervision_model": copy.deepcopy(identity["supervision_model"]),
+        "authorization_warehouse_revision": identity[
+            "warehouse_revision"
+        ],
+        "authorization_catalog_digest": identity["catalog_digest"],
+        "target_catalog_digest": target_catalog_digest,
+        "admission_action_canonical_digest": canonical_json_digest(action),
+    }
+    return {
+        **body,
+        "authorization_digest": canonical_json_digest(body),
+    }
+
+
+def validate_source_derived_review_admission_authorization(
+    value: Any,
+) -> dict[str, Any]:
+    row = _exact(
+        value,
+        {
+            "schema_version",
+            "run_id",
+            "run_canonical_digest",
+            "terminal_event_digest",
+            "request_digest",
+            "source_snapshot_sha256",
+            "project_graph_digest",
+            "source_file_sha256",
+            "validation_database_sha256",
+            "isolated_review_id",
+            "isolated_canonical_hash",
+            "adapter_contract_version",
+            "input_contract",
+            "output_contract",
+            "error_contract",
+            "source_proposal_model",
+            "supervision_model",
+            "authorization_warehouse_revision",
+            "authorization_catalog_digest",
+            "target_catalog_digest",
+            "admission_action_canonical_digest",
+            "authorization_digest",
+        },
+        "source_derivation_review_admission_invalid",
+    )
+    body = {
+        key: copy.deepcopy(item)
+        for key, item in row.items()
+        if key != "authorization_digest"
+    }
+    try:
+        contracts = normalize_capsule_contracts(
+            "computation",
+            row["input_contract"],
+            row["output_contract"],
+            row["error_contract"],
+        )
+    except (DataContractError, TypeError) as exc:
+        raise SourceDerivationError(
+            "source_derivation_review_admission_invalid"
+        ) from exc
+    digest_fields = {
+        "run_canonical_digest",
+        "terminal_event_digest",
+        "request_digest",
+        "source_snapshot_sha256",
+        "project_graph_digest",
+        "source_file_sha256",
+        "validation_database_sha256",
+        "isolated_canonical_hash",
+        "authorization_catalog_digest",
+        "target_catalog_digest",
+        "admission_action_canonical_digest",
+    }
+    if (
+        row["schema_version"]
+        != SOURCE_DERIVED_REVIEW_ADMISSION_AUTHORIZATION_VERSION
+        or _RUN_ID.fullmatch(str(row["run_id"])) is None
+        or any(_DIGEST.fullmatch(str(row[field])) is None for field in digest_fields)
+        or type(row["isolated_review_id"]) is not str
+        or not row["isolated_review_id"]
+        or row["adapter_contract_version"] != "computation_adapter.v5"
+        or contracts
+        != (
+            row["input_contract"],
+            row["output_contract"],
+            row["error_contract"],
+        )
+        or _validate_model_identity(row["source_proposal_model"])
+        != row["source_proposal_model"]
+        or _validate_supervision_model(row["supervision_model"])
+        != row["supervision_model"]
+        or type(row["authorization_warehouse_revision"]) is not int
+        or row["authorization_warehouse_revision"] < 0
+        or row["admission_action_canonical_digest"]
+        != canonical_json_digest(
+            {
+                "action": "admit_source_derived_review",
+                "run_id": row["run_id"],
+            }
+        )
+        or row["authorization_digest"] != canonical_json_digest(body)
+    ):
+        raise SourceDerivationError(
+            "source_derivation_review_admission_invalid"
+        )
+    return copy.deepcopy(row)
 
 
 @_serialized_state

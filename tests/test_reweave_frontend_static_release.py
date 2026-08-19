@@ -1249,6 +1249,13 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert (
         '"authorize_and_start_source_derived_computation"' in app
     )
+    assert '"admit_source_derived_review"' in app
+    assert 'dataset.action = "admit-source-derived-review"' in app
+    assert (
+        'if (!window.confirm(t("sourceDerivedAdmissionConfirm"))) return;'
+        in app
+    )
+    assert "sourceDerivedRuns" in app
     assert (
         '"copy_local_source_derived_handoff_binding"' in app
     )
