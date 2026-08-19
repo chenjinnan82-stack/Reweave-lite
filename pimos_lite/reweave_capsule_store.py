@@ -13,13 +13,20 @@ import threading
 import unicodedata
 import uuid
 from contextlib import contextmanager
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from functools import cache
 from pathlib import Path
 from typing import Any, Iterator
 from urllib.parse import quote
 
+from pimos_lite.reweave_canonical import (
+    CanonicalCapsule,
+    canonicalize_capsule,
+    validate_logical_path,
+)
+from pimos_lite.reweave_page_capability_contract import (
+    verify_formal_capsule_identity,
+)
 from pimos_lite.reweave_source_registry import state_dir
 
 SCHEMA_VERSION = 1
@@ -37,28 +44,15 @@ _RETENTION = {"auto": 7, "upgrade": 3}
 # Normal operations share it; migration and restore hold it across atomic replacement.
 _STORE_OPERATION_LOCK = threading.RLock()
 _EXCLUSIVE_DATABASES: set[str] = set()
+_DATABASE_OPERATION_HANDLES: dict[str, dict[str, Any]] = {}
+_STATE_ROOT_LEASE_LOCK = threading.RLock()
+_STATE_ROOT_LEASES: dict[str, dict[str, Any]] = {}
+_DATABASE_OPERATION_LOCK_FILENAME = ".capsule_warehouse.operation.lock"
+_STATE_ROOT_LEASE_FILENAME = ".reweave_state_root.lock"
 _SCHEMA_FINGERPRINT_SHA256 = {
     1: "31ca94b97ad9e6539f9d62f5938759232aa1a6f3cdac49950962f03555b48bd1",
     2: "2f5c245eee172d57abc065d1c63ad76e11925aec6a021d586a9384c4cbde2ada",
 }
-_CANONICAL_FIELDS = frozenset(
-    {
-        "capability_kind",
-        "activation",
-        "input_contract",
-        "output_contract",
-        "error_contract",
-        "runtime_allowlist",
-        "dom_scope",
-        "usage_scope",
-        "html",
-        "css",
-        "javascript_modules",
-        "assets",
-    }
-)
-_CAPABILITY_KINDS = frozenset({"presentation", "interaction", "computation"})
-_MEDIA_TYPES = frozenset({"image/png", "image/jpeg", "image/webp"})
 _TABLES = frozenset(
     {
         "warehouse_state",
@@ -122,11 +116,10 @@ class SchemaVersionError(CapsuleStoreError):
     """The database schema is unsupported or incomplete."""
 
 
-@dataclass(frozen=True)
-class CanonicalCapsule:
-    payload: dict[str, Any]
-    json_bytes: bytes
-    sha256: str
+class WarehouseSnapshotRevisionError(CapsuleStoreError):
+    """A requested immutable warehouse snapshot no longer matches its revision."""
+
+    code = "warehouse_snapshot_revision_stale"
 
 
 SCHEMA_SQL_V1 = r"""
@@ -1908,194 +1901,133 @@ def capsule_backup_dir() -> Path:
     return state_dir() / BACKUP_DIRECTORY
 
 
-def canonicalize_capsule(payload: dict[str, Any]) -> CanonicalCapsule:
-    if type(payload) is not dict:
-        raise ValueError("canonical payload must be an object")
-    missing = _CANONICAL_FIELDS - payload.keys()
-    extra = payload.keys() - _CANONICAL_FIELDS
-    if missing or extra:
-        raise ValueError(
-            f"canonical payload fields mismatch: missing={sorted(missing)}, extra={sorted(extra)}"
-        )
-
-    normalized = _normalize_json(payload, "$")
-    if normalized["capability_kind"] not in _CAPABILITY_KINDS:
-        raise ValueError("invalid capability_kind")
-    for key in (
-        "activation",
-        "input_contract",
-        "output_contract",
-        "error_contract",
-        "dom_scope",
-        "usage_scope",
-    ):
-        if type(normalized[key]) is not dict:
-            raise ValueError(f"{key} must be an object")
-    for key in ("html", "css"):
-        if type(normalized[key]) is not str:
-            raise ValueError(f"{key} must be a string")
-        normalized[key] = _normalize_source_text(normalized[key])
-
-    normalized["runtime_allowlist"] = _sorted_unique_strings(
-        normalized["runtime_allowlist"], "runtime_allowlist"
-    )
-    dom_scope = normalized["dom_scope"]
-    for key in ("selectors", "classes", "attributes", "events"):
-        dom_scope[key] = _sorted_unique_strings(dom_scope.get(key, []), f"dom_scope.{key}")
-
-    entry_module = normalized["activation"].get("entry_module")
-    if entry_module is not None:
-        _validate_logical_path(entry_module, "activation.entry_module")
-
-    normalized["input_contract"] = _normalize_contract(normalized["input_contract"])
-    normalized["output_contract"] = _normalize_contract(normalized["output_contract"])
-    normalized["error_contract"] = _normalize_contract(normalized["error_contract"])
-    normalized["javascript_modules"] = _normalize_modules(normalized["javascript_modules"])
-    normalized["assets"] = _normalize_assets(normalized["assets"])
-
-    try:
-        json_bytes = json.dumps(
-            normalized,
-            ensure_ascii=False,
-            sort_keys=True,
-            separators=(",", ":"),
-            allow_nan=False,
-        ).encode("utf-8")
-    except (TypeError, UnicodeEncodeError, ValueError) as exc:
-        raise ValueError("canonical payload is not strict UTF-8 JSON") from exc
-    return CanonicalCapsule(
-        payload=normalized,
-        json_bytes=json_bytes,
-        sha256=hashlib.sha256(json_bytes).hexdigest(),
-    )
-
-
-def _normalize_json(value: Any, location: str) -> Any:
-    if value is None or type(value) is bool or type(value) is int:
-        return value
-    if type(value) is float:
-        raise ValueError(f"float is forbidden at {location}")
-    if type(value) is str:
-        return value
-    if type(value) is list:
-        return [_normalize_json(item, f"{location}[{index}]") for index, item in enumerate(value)]
-    if type(value) is dict:
-        out: dict[str, Any] = {}
-        for key, item in value.items():
-            if type(key) is not str:
-                raise ValueError(f"non-string key at {location}")
-            if _contains_forbidden_control(key):
-                raise ValueError(f"control character in key at {location}")
-            normalized_key = key.replace("\r\n", "\n").replace("\r", "\n")
-            if normalized_key in out:
-                raise ValueError(f"normalized key collision at {location}")
-            out[normalized_key] = _normalize_json(item, f"{location}.{normalized_key}")
-        return out
-    raise ValueError(f"non-JSON value at {location}: {type(value).__name__}")
-
-
-def _normalize_contract(value: Any) -> Any:
-    if type(value) is list:
-        return [_normalize_contract(item) for item in value]
-    if type(value) is not dict:
-        return value
-    out = {key: _normalize_contract(item) for key, item in value.items()}
-    if "required" in out:
-        out["required"] = _sorted_unique_strings(out["required"], "contract.required")
-    if "enum" in out:
-        if type(out["enum"]) is not list:
-            raise ValueError("contract.enum must be an array")
-        by_json: dict[str, Any] = {}
-        for item in out["enum"]:
-            encoded = json.dumps(item, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
-            by_json[encoded] = item
-        out["enum"] = [by_json[key] for key in sorted(by_json)]
-    return out
-
-
-def _sorted_unique_strings(value: Any, location: str) -> list[str]:
-    if type(value) is not list or any(type(item) is not str for item in value):
-        raise ValueError(f"{location} must be an array of strings")
-    if any(_contains_forbidden_control(item) for item in value):
-        raise ValueError(f"{location} contains a control character")
-    return sorted(set(value))
-
-
-def _contains_forbidden_control(value: str) -> bool:
-    return any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
-
-
-def _normalize_source_text(value: str) -> str:
-    return value.replace("\r\n", "\n").replace("\r", "\n")
-
-
-def _normalize_modules(value: Any) -> list[dict[str, str]]:
-    if type(value) is not list:
-        raise ValueError("javascript_modules must be an array")
-    modules: list[dict[str, str]] = []
-    paths: set[str] = set()
-    for item in value:
-        if type(item) is not dict or set(item) != {"path", "source"}:
-            raise ValueError("each JavaScript module must contain only path and source")
-        path = item["path"]
-        source = item["source"]
-        _validate_logical_path(path, "javascript_modules.path")
-        if type(source) is not str:
-            raise ValueError("javascript_modules.source must be a string")
-        if path in paths:
-            raise ValueError(f"duplicate JavaScript module path: {path}")
-        paths.add(path)
-        modules.append({"path": path, "source": _normalize_source_text(source)})
-    return sorted(modules, key=lambda item: item["path"])
-
-
-def _normalize_assets(value: Any) -> list[dict[str, str]]:
-    if type(value) is not list:
-        raise ValueError("assets must be an array")
-    assets: list[dict[str, str]] = []
-    paths: set[str] = set()
-    for item in value:
-        if type(item) is not dict or set(item) != {"logical_path", "media_type", "sha256"}:
-            raise ValueError("each asset must contain logical_path, media_type, and sha256")
-        logical_path = item["logical_path"]
-        media_type = item["media_type"]
-        digest = item["sha256"]
-        _validate_logical_path(logical_path, "assets.logical_path")
-        if media_type not in _MEDIA_TYPES:
-            raise ValueError(f"invalid asset media_type: {media_type}")
-        if (
-            type(digest) is not str
-            or len(digest) != 64
-            or any(char not in "0123456789abcdef" for char in digest)
-        ):
-            raise ValueError("asset sha256 must be 64 lowercase hexadecimal characters")
-        if logical_path in paths:
-            raise ValueError(f"duplicate asset path: {logical_path}")
-        paths.add(logical_path)
-        assets.append(
-            {"logical_path": logical_path, "media_type": media_type, "sha256": digest}
-        )
-    return sorted(
-        assets,
-        key=lambda item: (item["logical_path"], item["media_type"], item["sha256"]),
-    )
-
-
-def _validate_logical_path(value: Any, location: str) -> None:
-    if (
-        type(value) is not str
-        or not value
-        or _contains_forbidden_control(value)
-        or "\\" in value
-        or value.startswith("/")
-    ):
-        raise ValueError(f"invalid logical path at {location}")
-    if any(part in {"", ".", ".."} for part in value.split("/")):
-        raise ValueError(f"invalid logical path at {location}")
-
-
 def _database_operation_key(path: Path) -> str:
     return str(path.resolve())
+
+
+def _open_lock_file(path: Path) -> int:
+    _ensure_private_directory(path.parent)
+    flags = (
+        os.O_RDWR
+        | os.O_CREAT
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+    descriptor = os.open(path, flags, 0o600)
+    try:
+        details = os.fstat(descriptor)
+        path_details = path.lstat()
+        if (
+            not stat.S_ISREG(details.st_mode)
+            or stat.S_ISLNK(path_details.st_mode)
+            or not stat.S_ISREG(path_details.st_mode)
+            or (details.st_dev, details.st_ino)
+            != (path_details.st_dev, path_details.st_ino)
+        ):
+            raise CapsuleStoreError("reweave_state_lock_unsafe")
+        if os.name == "posix":
+            os.fchmod(descriptor, 0o600)
+        elif os.name == "nt" and details.st_size == 0:
+            os.write(descriptor, b"\0")
+            os.fsync(descriptor)
+        return descriptor
+    except BaseException:
+        os.close(descriptor)
+        raise
+
+
+def _verify_lock_file_identity(path: Path, descriptor: int) -> None:
+    details = os.fstat(descriptor)
+    path_details = path.lstat()
+    if (
+        not stat.S_ISREG(details.st_mode)
+        or stat.S_ISLNK(path_details.st_mode)
+        or not stat.S_ISREG(path_details.st_mode)
+        or (details.st_dev, details.st_ino)
+        != (path_details.st_dev, path_details.st_ino)
+    ):
+        raise CapsuleStoreError("reweave_state_lock_unsafe")
+
+
+def _try_lock_descriptor(
+    descriptor: int,
+    *,
+    shared: bool,
+) -> bool:
+    try:
+        if os.name == "posix":
+            import fcntl
+
+            operation = fcntl.LOCK_SH if shared else fcntl.LOCK_EX
+            fcntl.flock(descriptor, operation | fcntl.LOCK_NB)
+        elif os.name == "nt":
+            import msvcrt
+
+            os.lseek(descriptor, 0, os.SEEK_SET)
+            msvcrt.locking(descriptor, msvcrt.LK_NBLCK, 1)
+        else:
+            return False
+    except OSError:
+        return False
+    return True
+
+
+def _unlock_descriptor(descriptor: int) -> None:
+    if os.name == "posix":
+        import fcntl
+
+        fcntl.flock(descriptor, fcntl.LOCK_UN)
+    elif os.name == "nt":
+        import msvcrt
+
+        os.lseek(descriptor, 0, os.SEEK_SET)
+        msvcrt.locking(descriptor, msvcrt.LK_UNLCK, 1)
+
+
+@contextmanager
+def _cross_process_database_operation(
+    path: Path,
+    *,
+    exclusive: bool,
+) -> Iterator[None]:
+    key = _database_operation_key(path)
+    current = _DATABASE_OPERATION_HANDLES.get(key)
+    if current is not None:
+        if exclusive and not current["exclusive"]:
+            raise CapsuleStoreError("exclusive warehouse operation in progress")
+        current["depth"] += 1
+        try:
+            yield
+        finally:
+            current["depth"] -= 1
+        return
+
+    lock_path = path.parent / _DATABASE_OPERATION_LOCK_FILENAME
+    descriptor = _open_lock_file(lock_path)
+    if not _try_lock_descriptor(descriptor, shared=not exclusive):
+        os.close(descriptor)
+        raise CapsuleStoreError("exclusive warehouse operation in progress")
+    try:
+        _verify_lock_file_identity(lock_path, descriptor)
+    except BaseException:
+        try:
+            _unlock_descriptor(descriptor)
+        finally:
+            os.close(descriptor)
+        raise
+    _DATABASE_OPERATION_HANDLES[key] = {
+        "descriptor": descriptor,
+        "depth": 1,
+        "exclusive": exclusive,
+    }
+    try:
+        yield
+    finally:
+        current = _DATABASE_OPERATION_HANDLES.pop(key)
+        try:
+            _unlock_descriptor(current["descriptor"])
+        finally:
+            os.close(current["descriptor"])
 
 
 @contextmanager
@@ -2104,7 +2036,8 @@ def _normal_database_operation(path: Path) -> Iterator[None]:
     with _STORE_OPERATION_LOCK:
         if key in _EXCLUSIVE_DATABASES:
             raise CapsuleStoreError("exclusive warehouse operation in progress")
-        yield
+        with _cross_process_database_operation(path, exclusive=False):
+            yield
 
 
 @contextmanager
@@ -2115,9 +2048,65 @@ def _exclusive_database_operation(path: Path) -> Iterator[None]:
             raise CapsuleStoreError("exclusive warehouse operation in progress")
         _EXCLUSIVE_DATABASES.add(key)
         try:
-            yield
+            with _cross_process_database_operation(path, exclusive=True):
+                yield
         finally:
             _EXCLUSIVE_DATABASES.remove(key)
+
+
+class StateRootLease:
+    """One process-wide owner for one Reweave state root."""
+
+    def __init__(self, key: str, *, primary_owner: bool) -> None:
+        self._key = key
+        self.primary_owner = primary_owner
+        self._closed = False
+
+    def close(self) -> None:
+        with _STATE_ROOT_LEASE_LOCK:
+            if self._closed:
+                return
+            self._closed = True
+            current = _STATE_ROOT_LEASES.get(self._key)
+            if current is None:
+                return
+            current["references"] -= 1
+            if current["references"]:
+                return
+            descriptor = current["descriptor"]
+            _STATE_ROOT_LEASES.pop(self._key, None)
+            try:
+                _unlock_descriptor(descriptor)
+            finally:
+                os.close(descriptor)
+
+
+def acquire_state_root_lease(state_root: str | Path) -> StateRootLease:
+    root = Path(state_root).expanduser().resolve()
+    key = str(root)
+    with _STATE_ROOT_LEASE_LOCK:
+        current = _STATE_ROOT_LEASES.get(key)
+        if current is not None:
+            current["references"] += 1
+            return StateRootLease(key, primary_owner=False)
+        lock_path = root / _STATE_ROOT_LEASE_FILENAME
+        descriptor = _open_lock_file(lock_path)
+        if not _try_lock_descriptor(descriptor, shared=False):
+            os.close(descriptor)
+            raise CapsuleStoreError("reweave_state_root_in_use")
+        try:
+            _verify_lock_file_identity(lock_path, descriptor)
+        except BaseException:
+            try:
+                _unlock_descriptor(descriptor)
+            finally:
+                os.close(descriptor)
+            raise
+        _STATE_ROOT_LEASES[key] = {
+            "descriptor": descriptor,
+            "references": 1,
+        }
+        return StateRootLease(key, primary_owner=True)
 
 
 class CapsuleWarehouseStore:
@@ -2127,7 +2116,7 @@ class CapsuleWarehouseStore:
         self.path = Path(path).expanduser().resolve() if path else capsule_database_path()
 
     def initialize(self) -> Path:
-        with _STORE_OPERATION_LOCK:
+        with _normal_database_operation(self.path):
             _ensure_private_directory(self.path.parent)
             connection = self._connect()
             try:
@@ -2207,6 +2196,106 @@ class CapsuleWarehouseStore:
                 "SELECT warehouse_revision FROM warehouse_state WHERE singleton_id = 1"
             ).fetchone()
             return int(row[0])
+
+    def create_consistent_snapshot(
+        self,
+        target_path: str | Path,
+        *,
+        expected_revision: int,
+    ) -> dict[str, Any]:
+        """Create one validated SQLite backup image without mutating the source."""
+
+        if type(expected_revision) is not int or expected_revision < 0:
+            raise ValueError("expected_revision_invalid")
+        target = Path(
+            os.path.abspath(os.path.expanduser(str(target_path)))
+        )
+        if target == self.path:
+            raise CapsuleStoreError("warehouse_snapshot_target_invalid")
+        with _normal_database_operation(self.path):
+            source_info = _verify_database(self.path)
+            if int(source_info["warehouse_revision"]) != expected_revision:
+                raise WarehouseSnapshotRevisionError(
+                    "warehouse_snapshot_revision_stale"
+                )
+            _ensure_private_directory(target.parent)
+            parent_details = target.parent.lstat()
+            if (
+                stat.S_ISLNK(parent_details.st_mode)
+                or not stat.S_ISDIR(parent_details.st_mode)
+                or target.exists()
+                or target.is_symlink()
+            ):
+                raise CapsuleStoreError("warehouse_snapshot_target_invalid")
+            candidate = _temporary_database_path(
+                target.parent,
+                "consistent-snapshot",
+            )
+            published = completed = False
+            try:
+                source = _open_read_only(self.path)
+                destination = sqlite3.connect(
+                    str(candidate),
+                    isolation_level=None,
+                )
+                try:
+                    source.backup(destination)
+                finally:
+                    destination.close()
+                    source.close()
+                _ensure_private_file(candidate)
+                _fsync_file(candidate)
+                snapshot_info = _verify_database(
+                    candidate,
+                    expected_version=int(source_info["user_version"]),
+                )
+                if (
+                    int(snapshot_info["warehouse_revision"])
+                    != expected_revision
+                ):
+                    raise WarehouseSnapshotRevisionError(
+                        "warehouse_snapshot_revision_stale"
+                    )
+                _fsync_directory(candidate.parent)
+                try:
+                    os.link(candidate, target)
+                    published = True
+                except FileExistsError as exc:
+                    raise CapsuleStoreError(
+                        "warehouse_snapshot_target_invalid"
+                    ) from exc
+                candidate_details = candidate.lstat()
+                target_details = target.lstat()
+                if (
+                    stat.S_ISLNK(target_details.st_mode)
+                    or not stat.S_ISREG(target_details.st_mode)
+                    or (candidate_details.st_dev, candidate_details.st_ino)
+                    != (target_details.st_dev, target_details.st_ino)
+                ):
+                    raise CapsuleStoreError(
+                        "warehouse_snapshot_target_invalid"
+                    )
+                _ensure_private_file(target)
+                _fsync_file(target)
+                _fsync_directory(target.parent)
+                result = {
+                    "path": str(target),
+                    "sha256": _sha256_file(target),
+                    "user_version": snapshot_info["user_version"],
+                    "schema_fingerprint_sha256": (
+                        _SCHEMA_FINGERPRINT_SHA256[
+                            int(snapshot_info["user_version"])
+                        ]
+                    ),
+                    "warehouse_revision": expected_revision,
+                    "integrity_check": "ok",
+                }
+                completed = True
+                return result
+            finally:
+                candidate.unlink(missing_ok=True)
+                if published and not completed:
+                    target.unlink(missing_ok=True)
 
     @staticmethod
     def bump_revision(connection: sqlite3.Connection) -> int:
@@ -2339,36 +2428,61 @@ class CapsuleWarehouseStore:
         path = backup_root / (
             f"capsule_warehouse.{kind}.{stamp}.{uuid.uuid4().hex[:8]}.sqlite3"
         )
-        source = self._connect()
-        destination = sqlite3.connect(str(path))
+        temporary = _temporary_database_path(
+            backup_root,
+            f"backup-{kind}",
+        )
+        published = completed = False
         try:
-            source.backup(destination)
+            source = self._connect()
+            try:
+                destination = sqlite3.connect(str(temporary))
+                try:
+                    source.backup(destination)
+                finally:
+                    destination.close()
+            finally:
+                source.close()
+            _ensure_private_file(temporary)
+            info = _verify_database(temporary)
+            revision = int(info["warehouse_revision"])
+            _fsync_file(temporary)
+            digest = _sha256_file(temporary)
+            if path.exists() or path.is_symlink():
+                raise CapsuleStoreError("backup target already exists")
+            os.replace(temporary, path)
+            published = True
+            _fsync_directory(backup_root)
+            details = path.lstat()
+            if (
+                stat.S_ISLNK(details.st_mode)
+                or not stat.S_ISREG(details.st_mode)
+                or _sha256_file(path) != digest
+            ):
+                raise CapsuleStoreError("published backup verification failed")
+            if kind not in {"pre_restore", "upgrade"}:
+                with self.transaction() as connection:
+                    connection.execute(
+                        "UPDATE warehouse_state "
+                        "SET last_backed_up_revision = "
+                        "MAX(last_backed_up_revision, MIN(warehouse_revision, ?)) "
+                        "WHERE singleton_id = 1",
+                        (revision,),
+                    )
+            self._apply_retention(kind)
+            completed = True
+            return {
+                "path": str(path),
+                "kind": kind,
+                "sha256": digest,
+                "user_version": info["user_version"],
+                "warehouse_revision": revision,
+            }
         finally:
-            destination.close()
-            source.close()
-        _ensure_private_file(path)
-        _fsync_file(path)
-        _fsync_directory(path.parent)
-        info = _verify_database(path)
-        revision = int(info["warehouse_revision"])
-        digest = _sha256_file(path)
-        if kind not in {"pre_restore", "upgrade"}:
-            with self.transaction() as connection:
-                connection.execute(
-                    "UPDATE warehouse_state "
-                    "SET last_backed_up_revision = "
-                    "MAX(last_backed_up_revision, MIN(warehouse_revision, ?)) "
-                    "WHERE singleton_id = 1",
-                    (revision,),
-                )
-        self._apply_retention(kind)
-        return {
-            "path": str(path),
-            "kind": kind,
-            "sha256": digest,
-            "user_version": info["user_version"],
-            "warehouse_revision": revision,
-        }
+            temporary.unlink(missing_ok=True)
+            if published and not completed:
+                path.unlink(missing_ok=True)
+                _fsync_directory(backup_root)
 
     def list_backups(self) -> list[dict[str, Any]]:
         backup_root = self.path.parent / BACKUP_DIRECTORY
@@ -2985,7 +3099,10 @@ def _assert_project_file_index_invariants(connection: sqlite3.Connection) -> Non
         for row in sorted(rows, key=lambda item: str(item["logical_path"]).encode("utf-8")):
             logical_path = row["logical_path"]
             try:
-                _validate_logical_path(logical_path, "project_file_index.logical_path")
+                validate_logical_path(
+                    logical_path,
+                    "project_file_index.logical_path",
+                )
             except ValueError as exc:
                 raise CapsuleStoreError(
                     "persistent data invariant failed: project_file_index_path"
@@ -3130,6 +3247,7 @@ def _assert_canonical_versions(connection: sqlite3.Connection) -> None:
             )
 
         try:
+            extraction_summary = _load_strict_json(row["extraction_summary_json"])
             canonical = canonicalize_capsule(
                 {
                     "capability_kind": row["capability_kind"],
@@ -3152,10 +3270,24 @@ def _assert_canonical_versions(connection: sqlite3.Connection) -> None:
             raise CapsuleStoreError(
                 "persistent data invariant failed: capsule_version_canonical_payload"
             ) from exc
-        if type(row["canonical_hash"]) is not str or row["canonical_hash"] != canonical.sha256:
-            raise CapsuleStoreError(
-                "persistent data invariant failed: capsule_version_canonical_hash"
+        try:
+            verify_formal_capsule_identity(
+                capability_kind=str(row["capability_kind"]),
+                canonical_payload_digest=canonical.sha256,
+                stored_canonical_hash=row["canonical_hash"],
+                extraction_summary=extraction_summary,
             )
+        except (TypeError, ValueError) as exc:
+            invariant = (
+                "capsule_version_canonical_hash"
+                if type(extraction_summary) is dict
+                and "page_capability_declaration" not in extraction_summary
+                and "formal_identity_binding" not in extraction_summary
+                else "capsule_version_formal_identity"
+            )
+            raise CapsuleStoreError(
+                f"persistent data invariant failed: {invariant}"
+            ) from exc
 
 
 def _load_strict_json(raw: Any) -> Any:
@@ -3211,6 +3343,11 @@ def _warehouse_revisions(connection: sqlite3.Connection) -> tuple[int, int]:
 
 def _resolve_backup_path(path: str | Path, database_path: Path) -> Path:
     raw = Path(path).expanduser()
+    if (
+        raw.name.startswith(f".{DATABASE_FILENAME}.backup-")
+        and raw.name.endswith(".tmp")
+    ):
+        raise CapsuleStoreError("backup is not published")
     if raw.is_symlink():
         raise CapsuleStoreError("backup symlinks are forbidden")
     resolved = raw.resolve()

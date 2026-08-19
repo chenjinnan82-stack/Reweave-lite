@@ -58,6 +58,7 @@ def _governance_preview() -> dict:
 class ReweavePromoteTest(unittest.TestCase):
     def setUp(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()
+        self._services: list[ReweaveAppService] = []
         self._state_dir = Path(self._tmpdir.name)
         self._source_dir = self._state_dir / "user_project"
         self._source_dir.mkdir()
@@ -80,6 +81,8 @@ class ReweavePromoteTest(unittest.TestCase):
         self.review_id = self.queue["items"][0]["review_id"]
 
     def tearDown(self) -> None:
+        for service in reversed(self._services):
+            service.close()
         self._env.stop()
         self._tmpdir.cleanup()
 
@@ -194,6 +197,7 @@ class ReweavePromoteTest(unittest.TestCase):
     def test_app_service_promote_review_item(self) -> None:
         self._approve_first()
         svc = ReweaveAppService()
+        self._services.append(svc)
         result = svc.promote_review_item(self.source_id, self.review_id)
         self.assertTrue(result["ok"])
         self.assertIn("capsules", result)

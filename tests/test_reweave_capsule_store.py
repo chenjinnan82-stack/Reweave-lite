@@ -8,9 +8,12 @@ import json
 import os
 import shutil
 import sqlite3
+import subprocess
+import sys
 import tempfile
 import threading
 import unittest
+from datetime import datetime, timezone
 from pathlib import Path
 from unittest.mock import patch
 
@@ -19,7 +22,12 @@ from pimos_lite.reweave_capsule_store import (
     CapsuleStoreError,
     CapsuleWarehouseStore,
     SchemaVersionError,
+    WarehouseSnapshotRevisionError,
     canonicalize_capsule,
+)
+from pimos_lite.reweave_page_capability_contract import (
+    build_formal_identity_binding_v2,
+    build_page_capability_declaration_v2,
 )
 
 
@@ -265,6 +273,115 @@ class CapsuleWarehouseStoreTest(unittest.TestCase):
             )
             self.assertEqual(self.store.bump_revision(connection), 1)
         self.assertEqual(self.store.current_revision(), 1)
+
+    def test_consistent_snapshot_is_private_valid_and_source_unchanged(
+        self,
+    ) -> None:
+        self._write_setting("snapshot", "stable")
+        source_sha = hashlib.sha256(self.path.read_bytes()).hexdigest()
+        target = self.root / "isolated" / "validation.sqlite3"
+
+        result = self.store.create_consistent_snapshot(
+            target,
+            expected_revision=1,
+        )
+
+        self.assertEqual(result["warehouse_revision"], 1)
+        self.assertEqual(result["integrity_check"], "ok")
+        self.assertEqual(
+            result["schema_fingerprint_sha256"],
+            store_module._SCHEMA_FINGERPRINT_SHA256[
+                result["user_version"]
+            ],
+        )
+        self.assertEqual(
+            hashlib.sha256(target.read_bytes()).hexdigest(),
+            result["sha256"],
+        )
+        self.assertFalse(target.is_symlink())
+        self.assertTrue(target.is_file())
+        if os.name != "nt":
+            self.assertEqual(target.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(
+            hashlib.sha256(self.path.read_bytes()).hexdigest(),
+            source_sha,
+        )
+        self.assertEqual(self.store.current_revision(), 1)
+
+        stale_target = self.root / "isolated" / "stale.sqlite3"
+        with self.assertRaises(WarehouseSnapshotRevisionError):
+            self.store.create_consistent_snapshot(
+                stale_target,
+                expected_revision=0,
+            )
+        self.assertFalse(stale_target.exists())
+
+    def test_consistent_snapshot_never_mixes_an_open_writer_transaction(
+        self,
+    ) -> None:
+        self.store.initialize()
+        with self.store.transaction() as connection:
+            connection.executemany(
+                "INSERT INTO app_settings VALUES (?, ?, ?)",
+                (
+                    ("snapshot_left", '"old"', NOW),
+                    ("snapshot_right", '"old"', NOW),
+                ),
+            )
+            self.store.bump_revision(connection)
+
+        writer_ready = threading.Event()
+        writer_release = threading.Event()
+        writer_errors: list[BaseException] = []
+
+        def write_transaction() -> None:
+            connection = sqlite3.connect(self.path, isolation_level=None)
+            try:
+                connection.execute("BEGIN IMMEDIATE")
+                connection.execute(
+                    "UPDATE app_settings SET value_json = '\"new\"' "
+                    "WHERE setting_key IN ('snapshot_left', 'snapshot_right')"
+                )
+                connection.execute(
+                    "UPDATE warehouse_state SET warehouse_revision = 2 "
+                    "WHERE singleton_id = 1"
+                )
+                writer_ready.set()
+                if not writer_release.wait(10):
+                    raise RuntimeError("writer_release_timeout")
+                connection.commit()
+            except BaseException as exc:
+                writer_errors.append(exc)
+                if connection.in_transaction:
+                    connection.rollback()
+            finally:
+                connection.close()
+
+        writer = threading.Thread(target=write_transaction)
+        writer.start()
+        self.assertTrue(writer_ready.wait(10))
+        target = self.root / "isolated" / "writer-open.sqlite3"
+        try:
+            result = self.store.create_consistent_snapshot(
+                target,
+                expected_revision=1,
+            )
+        finally:
+            writer_release.set()
+            writer.join(10)
+
+        self.assertFalse(writer.is_alive())
+        self.assertEqual(writer_errors, [])
+        self.assertEqual(result["warehouse_revision"], 1)
+        self.assertEqual(
+            self._read_setting_from(target, "snapshot_left"),
+            "old",
+        )
+        self.assertEqual(
+            self._read_setting_from(target, "snapshot_right"),
+            "old",
+        )
+        self.assertEqual(self.store.current_revision(), 2)
 
     def test_database_constraints_close_stage_one_gaps(self) -> None:
         self._seed_project_and_active_version()
@@ -724,6 +841,293 @@ class CapsuleWarehouseStoreTest(unittest.TestCase):
         pre_restore = Path(result["pre_restore_backup_path"])
         self.assertTrue(pre_restore.is_file())
         self.assertEqual(self._read_setting_from(pre_restore, "phase"), "after")
+
+    def test_backup_is_validated_before_atomic_publication(self) -> None:
+        self.store.initialize()
+        with self.store.transaction() as connection:
+            connection.execute(
+                "INSERT INTO app_settings VALUES (?, ?, ?)",
+                ("backup-atomicity", json.dumps("ready"), NOW),
+            )
+            self.store.bump_revision(connection)
+
+        def revisions() -> tuple[int, int]:
+            with self.store.read_connection() as connection:
+                row = connection.execute(
+                    "SELECT warehouse_revision, last_backed_up_revision "
+                    "FROM warehouse_state WHERE singleton_id = 1"
+                ).fetchone()
+                return int(row[0]), int(row[1])
+
+        backup_root = self.path.parent / "backups"
+
+        class FailingSource:
+            @staticmethod
+            def backup(_destination):
+                raise sqlite3.OperationalError("sentinel")
+
+            @staticmethod
+            def close():
+                return None
+
+        failures = (
+            (
+                "backup",
+                patch.object(
+                    self.store,
+                    "_connect",
+                    return_value=FailingSource(),
+                ),
+                sqlite3.OperationalError,
+            ),
+            (
+                "verify",
+                patch.object(
+                    store_module,
+                    "_verify_database",
+                    side_effect=CapsuleStoreError("sentinel"),
+                ),
+                CapsuleStoreError,
+            ),
+            (
+                "fsync",
+                patch.object(
+                    store_module,
+                    "_fsync_file",
+                    side_effect=OSError("sentinel"),
+                ),
+                OSError,
+            ),
+            (
+                "publish_fsync",
+                patch.object(
+                    store_module,
+                    "_fsync_directory",
+                    side_effect=OSError("sentinel"),
+                ),
+                OSError,
+            ),
+            (
+                "digest",
+                patch.object(
+                    store_module,
+                    "_sha256_file",
+                    side_effect=OSError("sentinel"),
+                ),
+                OSError,
+            ),
+        )
+        for label, injected, error in failures:
+            with self.subTest(label=label):
+                with (
+                    patch.object(self.store, "_apply_retention") as retention,
+                    injected,
+                    self.assertRaises(error),
+                ):
+                    self.store._create_backup_locked("manual")
+                retention.assert_not_called()
+                self.assertEqual(revisions(), (1, 0))
+                self.assertEqual(
+                    list(backup_root.glob("capsule_warehouse.*.sqlite3")),
+                    [],
+                )
+                self.assertEqual(list(backup_root.glob(".*.tmp")), [])
+
+        class FixedDateTime:
+            @staticmethod
+            def now(_timezone):
+                return datetime(
+                    2026,
+                    8,
+                    16,
+                    0,
+                    0,
+                    tzinfo=timezone.utc,
+                )
+
+        fixed_uuid = type("FixedUUID", (), {"hex": "12345678" + "0" * 24})()
+        existing = backup_root / (
+            "capsule_warehouse.manual."
+            "20260816T000000000000Z.12345678.sqlite3"
+        )
+        existing.write_bytes(b"do-not-replace")
+        with (
+            patch.object(store_module, "datetime", FixedDateTime),
+            patch.object(
+                store_module.uuid,
+                "uuid4",
+                return_value=fixed_uuid,
+            ),
+            self.assertRaisesRegex(
+                CapsuleStoreError,
+                "backup target already exists",
+            ),
+        ):
+            self.store._create_backup_locked("manual")
+        self.assertEqual(existing.read_bytes(), b"do-not-replace")
+        self.assertEqual(revisions(), (1, 0))
+        existing.unlink()
+
+        backup_root.mkdir(exist_ok=True)
+        abandoned = backup_root / (
+            ".capsule_warehouse.sqlite3.backup-manual.deadbeef.tmp"
+        )
+        shutil.copy2(self.path, abandoned)
+        self.assertEqual(self.store.list_backups(), [])
+        with self.assertRaisesRegex(CapsuleStoreError, "not published"):
+            self.store.inspect_restore(abandoned)
+        self.store._apply_retention("manual")
+        self.assertTrue(abandoned.is_file())
+
+        backup = self.store.create_backup("manual")
+        published = Path(backup["path"])
+        self.assertTrue(published.is_file())
+        self.assertFalse(published.is_symlink())
+        self.assertEqual(
+            hashlib.sha256(published.read_bytes()).hexdigest(),
+            backup["sha256"],
+        )
+        if os.name != "nt":
+            self.assertEqual(published.stat().st_mode & 0o777, 0o600)
+        self.assertEqual(revisions(), (1, 1))
+        self.assertTrue(self.store.inspect_restore(published)["sha256"])
+        self.assertEqual(
+            [Path(item["path"]) for item in self.store.list_backups()],
+            [published],
+        )
+
+    def test_restore_fails_while_another_process_has_a_transaction(self) -> None:
+        self._write_setting("phase", "backup")
+        backup = self.store.create_backup("manual")
+        backups_before = {
+            path.name for path in self.path.parent.glob("*.sqlite3")
+        }
+        script = (
+            "import json,sys\n"
+            "from pimos_lite.reweave_capsule_store import "
+            "CapsuleStoreError,CapsuleWarehouseStore\n"
+            "store=CapsuleWarehouseStore(sys.argv[1])\n"
+            "try:\n"
+            " store.restore_backup(sys.argv[2],expected_sha256=sys.argv[3])\n"
+            "except CapsuleStoreError as exc:\n"
+            " print(json.dumps({'error':str(exc)}))\n"
+            "else:\n"
+            " print(json.dumps({'restored':True}))\n"
+        )
+        with self.store.transaction() as connection:
+            connection.execute(
+                "INSERT INTO app_settings(setting_key, value_json, updated_at) "
+                "VALUES (?, ?, ?)",
+                ("committed-during-restore", json.dumps("kept"), NOW),
+            )
+            process = subprocess.run(
+                [
+                    sys.executable,
+                    "-c",
+                    script,
+                    str(self.path),
+                    str(backup["path"]),
+                    backup["sha256"],
+                ],
+                cwd=Path(__file__).resolve().parents[1],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=True,
+            )
+            self.assertEqual(
+                json.loads(process.stdout),
+                {"error": "exclusive warehouse operation in progress"},
+            )
+        self.assertEqual(
+            self._read_setting("committed-during-restore"),
+            "kept",
+        )
+        self.assertEqual(
+            {path.name for path in self.path.parent.glob("*.sqlite3")},
+            backups_before,
+        )
+
+    def test_initialize_fails_while_another_process_has_exclusive_operation(
+        self,
+    ) -> None:
+        self.store.initialize()
+        before = self.path.read_bytes()
+        script = (
+            "import json,sys\n"
+            "from pimos_lite.reweave_capsule_store import "
+            "CapsuleStoreError,CapsuleWarehouseStore\n"
+            "try:\n"
+            " CapsuleWarehouseStore(sys.argv[1]).initialize()\n"
+            "except CapsuleStoreError as exc:\n"
+            " print(json.dumps({'error':str(exc)}))\n"
+            "else:\n"
+            " print(json.dumps({'initialized':True}))\n"
+        )
+
+        with store_module._exclusive_database_operation(self.path):
+            process = subprocess.run(
+                [sys.executable, "-c", script, str(self.path)],
+                cwd=Path(__file__).resolve().parents[1],
+                capture_output=True,
+                text=True,
+                timeout=10,
+                check=True,
+            )
+
+        self.assertEqual(
+            json.loads(process.stdout),
+            {"error": "exclusive warehouse operation in progress"},
+        )
+        self.assertEqual(self.path.read_bytes(), before)
+        self.assertEqual(
+            CapsuleWarehouseStore(self.path).initialize(),
+            self.path.resolve(),
+        )
+
+    def test_lock_descriptor_has_posix_and_windows_stdlib_branches(self) -> None:
+        lock_path = self.root / "operation.lock"
+        descriptor = os.open(lock_path, os.O_RDWR | os.O_CREAT, 0o600)
+        try:
+            if os.name == "posix":
+                self.assertTrue(
+                    store_module._try_lock_descriptor(
+                        descriptor,
+                        shared=False,
+                    )
+                )
+                store_module._unlock_descriptor(descriptor)
+
+            calls: list[tuple[int, int, int]] = []
+
+            class FakeMsvcrt:
+                LK_NBLCK = 1
+                LK_UNLCK = 2
+
+                @staticmethod
+                def locking(fd: int, operation: int, length: int) -> None:
+                    calls.append((fd, operation, length))
+
+            with (
+                patch.object(store_module.os, "name", "nt"),
+                patch.dict(sys.modules, {"msvcrt": FakeMsvcrt}),
+            ):
+                self.assertTrue(
+                    store_module._try_lock_descriptor(
+                        descriptor,
+                        shared=True,
+                    )
+                )
+                store_module._unlock_descriptor(descriptor)
+            self.assertEqual(
+                calls,
+                [
+                    (descriptor, FakeMsvcrt.LK_NBLCK, 1),
+                    (descriptor, FakeMsvcrt.LK_UNLCK, 1),
+                ],
+            )
+        finally:
+            os.close(descriptor)
 
     def test_restore_validation_failure_rolls_back_original_database(self) -> None:
         self.store.initialize()
@@ -1275,6 +1679,118 @@ class CapsuleWarehouseStoreTest(unittest.TestCase):
         backup = self.store.create_backup("manual")
         inspected = self.store.inspect_restore(backup["path"])
         self.assertEqual(inspected["user_version"], 1)
+
+    def test_v2_formal_identity_survives_backup_and_rejects_evidence_tampering(
+        self,
+    ) -> None:
+        payload = canonical_payload()
+        payload.update(
+            capability_kind="presentation",
+            activation={
+                "mode": "declared_input_render",
+                "entry_module": "presentation.js",
+                "entrypoint": "render",
+            },
+            runtime_allowlist=["local_computation", "scoped_ui_update"],
+            dom_scope={
+                "root_contract": "capsule_root",
+                "selectors": ["[data-ref='total']"],
+                "classes": [],
+                "attributes": [],
+                "events": [],
+            },
+            html=(
+                "<section data-capsule-root>"
+                '<span data-ref="total"></span></section>'
+            ),
+            css="__CAPSULE_ROOT__ { display: block; }\n",
+            javascript_modules=[
+                {
+                    "path": "presentation.js",
+                    "source": (
+                        "export function render(root, input) { "
+                        "root.querySelector(\"[data-ref='total']\").textContent = "
+                        "String(input.total); }\n"
+                    ),
+                }
+            ],
+        )
+        canonical = canonicalize_capsule({**payload, "assets": []})
+        declaration = build_page_capability_declaration_v2(
+            capability_kind="presentation",
+            elements=[
+                {
+                    "selector": "[data-ref='total']",
+                    "tag": "span",
+                    "reads": [],
+                    "writes": ["textContent"],
+                    "events": [],
+                }
+            ],
+        )
+        binding = build_formal_identity_binding_v2(
+            canonical_payload_digest=canonical.sha256,
+            page_capability_declaration=declaration,
+        )
+        summary = {
+            "page_capability_declaration": declaration,
+            "formal_identity_binding": binding,
+        }
+        self._seed_project_and_active_version(
+            payload=payload,
+            extraction_summary=summary,
+            canonical_hash=binding["formal_identity_digest"],
+        )
+        with self.store.transaction() as connection:
+            connection.execute(
+                "INSERT INTO capsule_sources VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    "source-v2",
+                    "version-1",
+                    "project-1",
+                    "project:project-1",
+                    "project",
+                    "index.html",
+                    "source-hash",
+                    binding["formal_identity_digest"],
+                    "exact",
+                    NOW,
+                ),
+            )
+        backup = self.store.create_backup("manual")
+        self.assertEqual(
+            self.store.inspect_restore(backup["path"])["user_version"],
+            1,
+        )
+        self.assertTrue(
+            self.store.restore_backup(
+                backup["path"],
+                expected_sha256=backup["sha256"],
+            )["restored"]
+        )
+
+        tampered = self.root / "v2-formal-identity-tampered.sqlite3"
+        shutil.copy2(backup["path"], tampered)
+        connection = sqlite3.connect(tampered)
+        trigger_sql = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'trigger' "
+            "AND name = 'capsule_versions_no_update'"
+        ).fetchone()[0]
+        connection.execute("DROP TRIGGER capsule_versions_no_update")
+        broken = copy.deepcopy(summary)
+        broken["page_capability_declaration"]["provides"][0]["writes"] = []
+        connection.execute(
+            "UPDATE capsule_versions SET extraction_summary_json = ? "
+            "WHERE version_id = 'version-1'",
+            (compact_json(broken),),
+        )
+        connection.execute(trigger_sql)
+        connection.commit()
+        connection.close()
+        with self.assertRaisesRegex(
+            CapsuleStoreError, "capsule_version_formal_identity"
+        ):
+            self.store.inspect_restore(tampered)
 
     def test_backup_retention_preserves_manual_and_keeps_seven_auto(self) -> None:
         manual = [self.store.create_backup("manual") for _ in range(2)]
@@ -2460,10 +2976,15 @@ class CapsuleWarehouseStoreTest(unittest.TestCase):
                     store_module._verify_database(tampered, expected_version=2)
 
     def _seed_project_and_active_version(
-        self, *, asset_content: bytes | None = None
+        self,
+        *,
+        asset_content: bytes | None = None,
+        payload: dict[str, object] | None = None,
+        extraction_summary: dict[str, object] | None = None,
+        canonical_hash: str | None = None,
     ) -> None:
         self.store.initialize()
-        payload = canonical_payload()
+        payload = copy.deepcopy(payload) if payload is not None else canonical_payload()
         asset_digest = (
             hashlib.sha256(asset_content).hexdigest()
             if asset_content is not None
@@ -2548,7 +3069,7 @@ class CapsuleWarehouseStoreTest(unittest.TestCase):
                     "quote_calculation",
                     "total_price",
                     "default",
-                    "computation",
+                    canonical.payload["capability_kind"],
                     "disabled",
                     None,
                     NOW,
@@ -2563,10 +3084,10 @@ class CapsuleWarehouseStoreTest(unittest.TestCase):
                     "capsule-1",
                     1,
                     "extraction.v1",
-                    "{}",
+                    compact_json(extraction_summary or {}),
                     "redaction.v1",
                     1,
-                    canonical.sha256,
+                    canonical_hash or canonical.sha256,
                     compact_json(canonical.payload["activation"]),
                     compact_json(canonical.payload["input_contract"]),
                     compact_json(canonical.payload["output_contract"]),

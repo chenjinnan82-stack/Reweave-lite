@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import os
@@ -10,6 +11,7 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from contextlib import contextmanager
@@ -17,7 +19,10 @@ from pathlib import Path
 from unittest.mock import patch
 
 from pimos_lite.composer.module_native import (
+    ADAPTER_V4_FORMAL_PRODUCT_COMPOSER_VERSION,
+    ADAPTER_V5_FORMAL_PRODUCT_COMPOSER_VERSION,
     _bundle_formal_capsule,
+    _normalize_formal_capsule,
     compose_capsule_product,
 )
 from pimos_lite.reweave_app_service import (
@@ -34,12 +39,20 @@ from pimos_lite.reweave_capsule_stage3 import (
     SUPERVISION_RULES_VERSION,
     VALIDATION_CONTRACT_VERSION,
     generate_computation_adapter_v2,
+    generate_computation_adapter_v3,
+    generate_computation_adapter_v4,
+    generate_computation_adapter_v5,
 )
+from pimos_lite.reweave_canonical import canonical_json_digest
 from pimos_lite.reweave_capsule_store import (
     CANONICALIZATION_VERSION,
     CapsuleStoreError,
     CapsuleWarehouseStore,
     canonicalize_capsule,
+)
+from pimos_lite.reweave_page_capability_contract import (
+    build_formal_identity_binding_v2,
+    build_page_capability_declaration_v2,
 )
 from pimos_lite.reweave_static_web_target import TARGET_AUTHORIZATION_MODE
 from scripts import run_public_reweave_demo
@@ -77,12 +90,12 @@ def _object_contract(properties: dict[str, object]) -> dict[str, object]:
 EMPTY_OBJECT = _object_contract({})
 ERRORS = {"schema": "error_contract.v1", "errors": {}}
 QUOTE_HTML = (
-    '<section class="quote">'
+    '<main class="quote">'
     '<label>Quantity <input data-ref="quantity" type="number" min="1" max="10" '
     'step="1" value="2"></label>'
     '<button data-action="calculate" type="button">Calculate</button>'
     '<output data-ref="total"></output>'
-    "</section>"
+    "</main>"
 )
 QUOTE_CSS = "__CAPSULE_ROOT__ .quote { display: grid; gap: 0.5rem; }\n"
 
@@ -355,6 +368,7 @@ def _seed_capsule(
     status: str = "active",
     payload: dict[str, object] | None = None,
     canonical_hash_override: str | None = None,
+    extraction_summary_override: dict[str, object] | None = None,
     activation_json_override: str | None = None,
     validation_contract_version_override: str | None = None,
 ) -> tuple[str, str]:
@@ -409,7 +423,7 @@ def _seed_capsule(
                 capsule_id,
                 1,
                 EXTRACTION_CONTRACT_VERSION,
-                _json(evidence["extraction"]),
+                _json(extraction_summary_override or evidence["extraction"]),
                 REDACTION_RULES_VERSION,
                 CANONICALIZATION_VERSION,
                 canonical_hash_override or canonical.sha256,
@@ -665,6 +679,158 @@ class CapsuleCoreCodeProjectionTest(unittest.TestCase):
             self.assertNotIn(forbidden, serialized)
         self.assertEqual(self.store.current_revision(), revision)
 
+    def test_v2_page_identity_uses_existing_loader_and_composer_projection(
+        self,
+    ) -> None:
+        payload = copy.deepcopy(self.payload)
+        payload["javascript_modules"] = sorted(  # type: ignore[index]
+            payload["javascript_modules"],  # type: ignore[index]
+            key=lambda row: row["path"],
+        )
+        canonical = canonicalize_capsule(payload)
+        declaration = build_page_capability_declaration_v2(
+            capability_kind="presentation",
+            elements=[
+                {
+                    "selector": "[data-ref='total']",
+                    "tag": "output",
+                    "reads": [],
+                    "writes": ["textContent"],
+                    "events": [],
+                }
+            ],
+        )
+        binding = build_formal_identity_binding_v2(
+            canonical_payload_digest=canonical.sha256,
+            page_capability_declaration=declaration,
+        )
+        extraction_summary = {
+            **_version_evidence("presentation")["extraction"],
+            "page_capability_declaration": declaration,
+            "formal_identity_binding": binding,
+        }
+        capsule_id, version_id = _seed_capsule(
+            self.store,
+            "presentation",
+            capability_key="page_identity_v2",
+            suffix="page_identity_v2",
+            payload=payload,
+            canonical_hash_override=binding["formal_identity_digest"],
+            extraction_summary_override=extraction_summary,
+        )
+        self._link_source(
+            version_id,
+            binding["formal_identity_digest"],
+            "page-identity-v2-source",
+        )
+
+        with patch.object(
+            self.service,
+            "_load_generation_capsules",
+            wraps=self.service._load_generation_capsules,
+        ) as existing_loader:
+            capsules, product_scope, contracts = (
+                self.service._load_generation_capsules_with_page_contracts(
+                    [capsule_id],
+                    read_only=True,
+                )
+            )
+        existing_loader.assert_called_once()
+        self.assertEqual(existing_loader.call_args.args, ([capsule_id],))
+        self.assertTrue(existing_loader.call_args.kwargs["read_only"])
+        self.assertIs(
+            existing_loader.call_args.kwargs["_page_contracts"],
+            contracts,
+        )
+        self.assertEqual(product_scope, {"kind": "general"})
+        self.assertEqual(capsules[0]["canonical_hash"], binding["formal_identity_digest"])
+        self.assertEqual(
+            contracts,
+            [
+                {
+                    "capsule_id": capsule_id,
+                    "version_id": version_id,
+                    "capability_kind": "presentation",
+                    "canonical_hash": binding["formal_identity_digest"],
+                    "page_capability_declaration": declaration,
+                }
+            ],
+        )
+
+        projection = self.service.get_capsule_core_code_projection(
+            {
+                "capsule_id": capsule_id,
+                "version_id": version_id,
+                "project_id": self.project_id,
+            }
+        )
+        self.assertTrue(projection["ok"], projection)
+        self.assertEqual(
+            projection["data"]["canonical_hash"],
+            binding["formal_identity_digest"],
+        )
+        composer_capsules, composer_scope, composer_contracts = (
+            self.service._load_composer_capsules(
+                [capsule_id],
+                read_only=True,
+            )
+        )
+        self.assertEqual(composer_capsules, capsules)
+        self.assertEqual(composer_scope, product_scope)
+        self.assertEqual(composer_contracts, contracts)
+        composition = compose_capsule_product(
+            task="Verified page capability",
+            product_id="product_" + "7" * 32,
+            generated_at=NOW,
+            capsules=composer_capsules,
+            verified_page_contracts=composer_contracts,
+        )
+        public_composition = json.dumps(
+            {
+                "files": composition["files"],
+                "composition_manifest": composition["composition_manifest"],
+            },
+            ensure_ascii=False,
+        )
+        self.assertNotIn("page_capability_declaration", public_composition)
+        self.assertNotIn("formal_capsule_identity.v2", public_composition)
+
+        orphan_id, orphan_version = _seed_capsule(
+            self.store,
+            "presentation",
+            capability_key="page_identity_v2_orphan",
+            suffix="page_identity_v2_orphan",
+            payload=payload,
+            canonical_hash_override=binding["formal_identity_digest"],
+            extraction_summary_override=extraction_summary,
+        )
+        with self.store.transaction() as connection:
+            connection.execute(
+                "INSERT INTO capsule_sources "
+                "(source_link_id, version_id, project_id, source_identity, source_kind, "
+                "source_relpath, source_hash, candidate_canonical_hash, relationship, read_at) "
+                "VALUES (?, ?, ?, ?, 'project', 'index.html', ?, ?, 'human_equivalent', ?)",
+                (
+                    "page-identity-v2-human-source",
+                    orphan_version,
+                    self.project_id,
+                    f"project:{self.project_id}",
+                    hashlib.sha256(
+                        (self.source / "index.html").read_bytes()
+                    ).hexdigest(),
+                    canonical.sha256,
+                    NOW,
+                ),
+            )
+        with self.assertRaisesRegex(
+            ProductGenerationError,
+            "formal_capsule_source_identity_invalid",
+        ):
+            self.service._load_generation_capsules_with_page_contracts(
+                [orphan_id],
+                read_only=True,
+            )
+
     def test_projection_fails_closed_for_identity_status_and_eligibility(self) -> None:
         self._assert_unavailable(version_id="version_wrong")
         self._assert_unavailable(project_id="project_wrong")
@@ -910,6 +1076,144 @@ class Phase5FormalGenerationTest(unittest.TestCase):
         self.assertEqual(len(products), 1)
         return products[0]
 
+    def test_formal_generation_and_recovery_forward_page_contracts(self) -> None:
+        capsules, product_scope = self.service._load_generation_capsules(
+            list(self.ids.values()),
+            read_only=True,
+        )
+        page_contracts = [{"projection": "verified"}]
+        with (
+            patch.object(
+                self.service,
+                "_load_composer_capsules",
+                return_value=(capsules, product_scope, page_contracts),
+            ),
+            patch(
+                "pimos_lite.reweave_app_service.compose_capsule_product",
+                side_effect=ValueError("projection_probe"),
+            ) as composer,
+            self.assertRaisesRegex(ProductGenerationError, "projection_probe"),
+        ):
+            self.service._generate_formal_product(
+                "Build a quote calculator",
+                list(self.ids.values()),
+            )
+        self.assertEqual(
+            composer.call_args.kwargs["verified_page_contracts"],
+            page_contracts,
+        )
+
+    def test_candidate_loads_once_and_shares_one_page_projection(self) -> None:
+        capsules, product_scope = self.service._load_generation_capsules(
+            list(self.ids.values()),
+            read_only=True,
+        )
+        page_contracts = [{"projection": "verified"}]
+        original = copy.deepcopy(page_contracts)
+        plan = {
+            "canonical_digest": "d" * 64,
+            "sections": [
+                {
+                    "work_items": [
+                        {
+                            "capsule_bindings": [
+                                {"capsule_id": row["capsule_id"]}
+                                for row in capsules
+                            ]
+                        }
+                    ]
+                }
+            ],
+        }
+        confirmation = {"schema_version": "product_plan_confirmation.v1"}
+
+        class Planner:
+            def get(self, _token, _catalog):
+                return {
+                    "ok": True,
+                    "data": {
+                        "status": "confirmed",
+                        "plan": plan,
+                        "confirmation": confirmation,
+                    },
+                }
+
+        execution = {
+            "schema_version": "plan_execution.v1",
+            "execution_digest": "e" * 64,
+            "composer_request": {
+                "task": "Verified candidate",
+                "product_id": "product_" + "8" * 32,
+                "generated_at": NOW,
+                "capsule_ids": [row["capsule_id"] for row in capsules],
+            },
+        }
+        self.service._product_planner = Planner()
+
+        def compile_probe(*_args, **kwargs):
+            self.assertIs(kwargs["verified_page_contracts"], page_contracts)
+            self.assertEqual(page_contracts, original)
+            return execution
+
+        def compose_probe(**kwargs):
+            self.assertIs(kwargs["verified_page_contracts"], page_contracts)
+            self.assertEqual(page_contracts, original)
+            raise ValueError("projection_probe")
+
+        with (
+            patch.object(
+                self.service,
+                "_load_composer_capsules",
+                return_value=(capsules, product_scope, page_contracts),
+            ) as loader,
+            patch(
+                "pimos_lite.reweave_app_service.compile_plan_execution",
+                side_effect=compile_probe,
+            ) as compiler,
+            patch(
+                "pimos_lite.reweave_app_service.compose_capsule_product",
+                side_effect=compose_probe,
+            ) as composer,
+            self.assertRaisesRegex(ProductGenerationError, "projection_probe"),
+        ):
+            self.service._build_product_candidate(
+                "plan_token_projection",
+                plan["canonical_digest"],
+                [],
+            )
+        loader.assert_called_once()
+        self.assertEqual(compiler.call_count, 1)
+        self.assertEqual(composer.call_count, 1)
+        self.assertEqual(page_contracts, original)
+
+        record = {
+            "manifest": {
+                "task": "Build a quote calculator",
+                "product_id": "product_" + "a" * 32,
+                "generated_at": NOW,
+            }
+        }
+        with (
+            patch(
+                "pimos_lite.reweave_app_service.compose_capsule_product",
+                side_effect=ValueError("projection_probe"),
+            ) as composer,
+            self.assertRaisesRegex(
+                ProductGenerationError,
+                "formal_capsule_selection_expired",
+            ),
+        ):
+            self.service._assert_recoverable_product_matches_composition(
+                record,
+                capsules,
+                product_scope,
+                page_contracts,
+            )
+        self.assertEqual(
+            composer.call_args.kwargs["verified_page_contracts"],
+            page_contracts,
+        )
+
     def test_formal_initial_state_does_not_load_historical_modules(self) -> None:
         script = """
 import sys
@@ -1019,6 +1323,79 @@ for name in sys.modules:
             },
         )
 
+    def test_formal_generation_cancel_cleans_product_before_usage_commit(self) -> None:
+        runtime_entered = threading.Event()
+        release_runtime = threading.Event()
+
+        def cancellable_composition(**kwargs: object) -> dict[str, object]:
+            self.assertTrue(callable(kwargs.get("cancel_check")))
+            return _composition_stub(**kwargs)
+
+        def blocked_runtime(_root: Path) -> dict[str, object]:
+            runtime_entered.set()
+            self.assertTrue(release_runtime.wait(5))
+            return _runtime_receipt(_root)
+
+        with (
+            patch(
+                "pimos_lite.reweave_app_service.compose_capsule_product",
+                side_effect=cancellable_composition,
+            ),
+            patch(
+                "pimos_lite.reweave_app_service._validate_product_static",
+                side_effect=_quality_receipt,
+            ),
+            patch(
+                "pimos_lite.reweave_app_service._validate_product_runtime",
+                side_effect=blocked_runtime,
+            ),
+        ):
+            started = self._start_all()
+            self.assertTrue(runtime_entered.wait(5))
+            cancelled = self.service.cancel_intake_run(
+                {"run_id": started["run_id"]}
+            )
+            self.assertTrue(cancelled.get("ok"), cancelled)
+            release_runtime.set()
+            state = self._wait(started)
+
+        self.assertEqual(state["status"], "cancelled")
+        products = self.state / "products"
+        self.assertEqual(
+            [] if not products.exists() else list(products.iterdir()),
+            [],
+        )
+        with self.store.read_connection() as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT COUNT(*) FROM product_capsule_usage"
+                ).fetchone()[0],
+                0,
+            )
+
+    def test_formal_bundle_checks_cancel_between_bounded_subprocesses(self) -> None:
+        cancelled = threading.Event()
+
+        def analyzer(_payload: dict[str, object]) -> None:
+            cancelled.set()
+
+        def check_cancelled() -> None:
+            if cancelled.is_set():
+                raise ProductGenerationError("cancelled_by_user")
+
+        with (
+            patch(
+                "pimos_lite.composer.module_native._run_formal_analyzer",
+                side_effect=analyzer,
+            ),
+            self.assertRaisesRegex(ProductGenerationError, "cancelled_by_user"),
+        ):
+            _bundle_formal_capsule(
+                _capsule_payload("presentation"),
+                "ReweaveCancellationProbe",
+                cancel_check=check_cancelled,
+            )
+
     def test_formal_composer_is_deterministic_and_input_order_independent(self) -> None:
         if not (ROOT / "node_modules" / "esbuild" / "package.json").is_file():
             self.skipTest("npm ci is required for the formal composer")
@@ -1032,8 +1409,23 @@ for name in sys.modules:
         second = compose_capsule_product(
             **arguments, capsules=list(reversed(capsules))
         )
+        cancellable = compose_capsule_product(
+            **arguments,
+            capsules=capsules,
+            cancel_check=lambda: None,
+        )
         self.assertEqual(first, second)
+        self.assertEqual(first, cancellable)
         self.assertNotIn("reweave-formal-compose-", first["files"]["app.js"])
+        self.assertIn(
+            '<div id="reweave-1234567890abcdef-root" '
+            'data-reweave-product-root="true">',
+            first["files"]["index.html"],
+        )
+        self.assertNotIn(
+            '<main id="reweave-1234567890abcdef-root"',
+            first["files"]["index.html"],
+        )
 
     def test_static_web_target_service_returns_review_only_patch_without_writes(
         self,
@@ -1091,6 +1483,10 @@ for name in sys.modules:
 
         self.assertTrue(result.get("ok"), result)
         self.assertEqual(composer.call_count, 1)
+        self.assertEqual(
+            composer.call_args.kwargs["verified_page_contracts"],
+            [],
+        )
         patch_data = result["data"]
         self.assertEqual(patch_data["status"], "ready_for_review")
         self.assertEqual(
@@ -1302,6 +1698,10 @@ export function compute(input) {
         )
 
         self.assertEqual(composition["status"], "composed")
+        self.assertEqual(
+            composition["composer_version"],
+            "module_native_formal_product.v3",
+        )
         self.assertIn("ReweaveFormalCapsule", composition["files"]["app.js"])
 
     def test_formal_composer_rejects_invalid_computation_adapter_v2_modules(self) -> None:
@@ -1372,6 +1772,546 @@ export function compute(input) {
             ValueError, "computation_adapter_authorization_invalid"
         ):
             _bundle_formal_capsule(capsule, "ReweaveAdapterV2Tampered")
+
+    def test_formal_composer_accepts_v3_identity_and_rejects_tampering(self) -> None:
+        capsule = _capsule_payload("computation")
+        capsule.update(
+            candidate_origin="deterministic_computation_adapter",
+            adapter_contract_version="computation_adapter.v3",
+        )
+        capsule["error_contract"] = _adapter_errors()
+        capsule["activation"] = {
+            "mode": "declared_input_compute",
+            "entry_module": "__reweave_adapter__/compute.js",
+            "entrypoint": "compute",
+        }
+        capsule["output_contract"] = _object_contract(
+            {
+                "quantity": {"type": "integer", "minimum": 1, "maximum": 10},
+                "unit_price": {"type": "integer", "minimum": 55, "maximum": 100},
+            }
+        )
+        adapter = generate_computation_adapter_v3(
+            ["quantity"],
+            capsule["input_contract"],
+            capsule["output_contract"],
+            "unit_price",
+            ["quantity"],
+        )
+        capsule["javascript_modules"] = [
+            {
+                "path": "__reweave_adapter__/compute.js",
+                "source": adapter,
+            },
+            {
+                "path": "__reweave_capture__/selected.js",
+                "source": (
+                    "export function __selected(quantity) { "
+                    "return 105 - quantity * 5; }\n"
+                ),
+            },
+        ]
+        bundle = _bundle_formal_capsule(capsule, "ReweaveAdapterV3")
+        self.assertIn("ReweaveAdapterV3", bundle)
+
+        missing = copy.deepcopy(capsule)
+        missing["javascript_modules"] = missing["javascript_modules"][:1]
+        with self.assertRaisesRegex(
+            ValueError, "formal_computation_adapter_v3_modules_invalid"
+        ):
+            _bundle_formal_capsule(missing, "ReweaveAdapterV3")
+
+        source_tampered = copy.deepcopy(capsule)
+        source_tampered["javascript_modules"][0]["source"] = adapter.replace(
+            '"quantity": input.quantity',
+            '"quantity": result',
+        )
+        with self.assertRaisesRegex(
+            ValueError, "computation_adapter_authorization_invalid"
+        ):
+            _bundle_formal_capsule(source_tampered, "ReweaveAdapterV3")
+
+        passthrough_tampered = copy.deepcopy(capsule)
+        passthrough_tampered["output_contract"]["properties"]["quantity"][
+            "minimum"
+        ] = 0
+        with self.assertRaisesRegex(
+            ValueError, "computation_adapter_authorization_invalid"
+        ):
+            _bundle_formal_capsule(
+                passthrough_tampered,
+                "ReweaveAdapterV3",
+            )
+
+        identity_tampered = copy.deepcopy(capsule)
+        identity_tampered.update(
+            capsule_id="capsule_adapter_v3",
+            version_id="version_adapter_v3",
+            capability_key="quote_calculation",
+            role_key="discount_policy",
+            variant_key="default",
+            canonical_hash="f" * 64,
+        )
+        with self.assertRaisesRegex(ValueError, "formal_capsule_identity_invalid"):
+            _normalize_formal_capsule(identity_tampered)
+        mapping_tampered = copy.deepcopy(identity_tampered)
+        mapping_tampered["mapping"] = {
+            "schema": "computation_capture_mapping.v3",
+            "passthrough_fields": ["unit_price"],
+        }
+        with self.assertRaisesRegex(ValueError, "formal_capsule_object_invalid"):
+            _normalize_formal_capsule(mapping_tampered)
+
+    def test_formal_composer_v6_and_v7_accept_exact_evidence_and_reject_tampering(
+        self,
+    ) -> None:
+        input_contract = _object_contract(
+            {
+                "urgent": {"type": "boolean"},
+                "important": {"type": "boolean"},
+            }
+        )
+        output_contract = _object_contract(
+            {
+                "priority": {
+                    "type": "string",
+                    "min_length": 4,
+                    "max_length": 8,
+                    "enum": ["delegate", "do_now", "drop", "schedule"],
+                }
+            }
+        )
+        selected_source = (
+            """export function __selected(urgent, important) {
+  if (urgent && important) return "do_now";
+  if (!urgent && important) return "schedule";
+  if (urgent && !important) return "delegate";
+  return "drop";
+}
+"""
+        )
+        computation = _capsule_payload("computation")
+        computation.update(
+            capsule_id="capsule_priority_computation",
+            version_id="version_priority_computation",
+            capability_key="priority_classification",
+            role_key="classify_priority",
+            variant_key="default",
+            candidate_origin="deterministic_computation_adapter",
+            adapter_contract_version="computation_adapter.v4",
+            input_contract=input_contract,
+            output_contract=output_contract,
+            error_contract=_adapter_errors(),
+            activation={
+                "mode": "declared_input_compute",
+                "entry_module": "__reweave_adapter__/compute.js",
+                "entrypoint": "compute",
+            },
+        )
+        computation["javascript_modules"] = [
+            {
+                "path": "__reweave_adapter__/compute.js",
+                "source": generate_computation_adapter_v4(
+                    ["urgent", "important"], input_contract, output_contract
+                ),
+            },
+            {
+                "path": "__reweave_capture__/selected.js",
+                "source": selected_source,
+            },
+        ]
+        canonical = canonicalize_capsule(
+            {
+                key: computation[key]
+                for key in (
+                    "capability_kind",
+                    "activation",
+                    "input_contract",
+                    "output_contract",
+                    "error_contract",
+                    "runtime_allowlist",
+                    "dom_scope",
+                    "usage_scope",
+                    "html",
+                    "css",
+                    "javascript_modules",
+                    "assets",
+                )
+            }
+        )
+        computation["canonical_hash"] = canonical.sha256
+        urgent_binding = "a" * 64
+        important_binding = "b" * 64
+        target_binding = "f" * 64
+        mapping = {
+            "schema": "computation_capture_mapping.v4",
+            "arguments": [
+                {
+                    "parameter_binding_id": urgent_binding,
+                    "input_field": "urgent",
+                    "kind": "boolean",
+                },
+                {
+                    "parameter_binding_id": important_binding,
+                    "input_field": "important",
+                    "kind": "boolean",
+                }
+            ],
+            "result_field": "priority",
+            "result_enum": ["delegate", "do_now", "drop", "schedule"],
+            "proof_schema": "source_graph_proof.v2",
+            "examples": [
+                {
+                    "input": {"urgent": False, "important": False},
+                    "expected": {"priority": "drop"},
+                },
+                {
+                    "input": {"urgent": False, "important": True},
+                    "expected": {"priority": "schedule"},
+                },
+                {
+                    "input": {"urgent": True, "important": False},
+                    "expected": {"priority": "delegate"},
+                },
+                {
+                    "input": {"urgent": True, "important": True},
+                    "expected": {"priority": "do_now"},
+                },
+            ],
+        }
+        proof_closure = {
+            "module_paths": ["priority.js"],
+            "binding_ids": [urgent_binding, important_binding, target_binding],
+        }
+        proof = {
+            "schema": "source_graph_proof.v2",
+            "target_binding_id": target_binding,
+            "parameter_domains": [
+                {
+                    "parameter_binding_id": urgent_binding,
+                    "domain": {"kind": "boolean", "values": [False, True]},
+                },
+                {
+                    "parameter_binding_id": important_binding,
+                    "domain": {"kind": "boolean", "values": [False, True]},
+                }
+            ],
+            "result_domain": {
+                "kind": "enum",
+                "values": ["delegate", "do_now", "drop", "schedule"],
+            },
+            "closure": proof_closure,
+            "closure_sha256": canonical_json_digest(proof_closure),
+            "dependency_evidence_sha256": "c" * 64,
+            "module_evidence_sha256": "d" * 64,
+            "top_level_evidence_sha256": "e" * 64,
+        }
+        evidence = {
+            "schema": "ephemeral_capture_candidate.v1",
+            "candidate_origin": "deterministic_computation_adapter",
+            "adapter_contract_version": "computation_adapter.v4",
+            "source_graph_version": "source_graph.v1",
+            "bundle_contract_version": "reweave_capture_bundle.v1",
+            "project_id": "project_priority",
+            "source_identity_sha256": "1" * 64,
+            "scope_snapshot_sha256": "2" * 64,
+            "selected_function": {
+                "module_relpath": "priority.js",
+                "export_name": "classifyPriority",
+                "target_binding_id": target_binding,
+                "selected_bundle_sha256": hashlib.sha256(
+                    selected_source.encode("utf-8")
+                ).hexdigest(),
+                "capture_entry_sha256": "3" * 64,
+            },
+            "dependency_closure": {},
+            "mapping": mapping,
+            "mapping_sha256": canonical_json_digest(mapping),
+            "enumerations_digest": canonical_json_digest([]),
+            "examples": {
+                "count": 4,
+                "canonical_sha256": canonical_json_digest(mapping["examples"]),
+            },
+            "execution_bundle_sha256": "4" * 64,
+            "rule_versions": {
+                "source_graph_version": "source_graph.v1",
+                "adapter_contract_version": "computation_adapter.v4"
+            },
+            "canonical_candidate": canonical.payload,
+            "source_graph_proof": proof,
+            "source_graph_proof_sha256": canonical_json_digest(proof),
+        }
+        computation["adapter_evidence"] = evidence
+
+        presentation = _capsule_payload("presentation")
+        presentation.update(
+            capsule_id="capsule_priority_presentation",
+            version_id="version_priority_presentation",
+            capability_key="priority_classification",
+            role_key="priority_result",
+            variant_key="default",
+            candidate_origin=None,
+            adapter_contract_version=None,
+            input_contract=output_contract,
+        )
+        presentation["javascript_modules"] = [
+            {
+                "path": "presentation.js",
+                "source": """export function render(root, input) {
+  const total = root.querySelector("[data-ref='total']");
+  total.textContent = String(input.priority);
+}
+""",
+            }
+        ]
+        composed = compose_capsule_product(
+            task="Show priority",
+            product_id="product_1234567890abcdef",
+            generated_at="2026-08-12T00:00:00Z",
+            capsules=[presentation, computation],
+        )
+        self.assertEqual(
+            composed["composer_version"],
+            ADAPTER_V4_FORMAL_PRODUCT_COMPOSER_VERSION,
+        )
+        self.assertEqual(
+            composed["provenance"]["composer_version"],
+            ADAPTER_V4_FORMAL_PRODUCT_COMPOSER_VERSION,
+        )
+        without_v6_evidence = copy.deepcopy(computation)
+        without_v6_evidence.pop("adapter_evidence")
+        with self.assertRaisesRegex(
+            ValueError, "formal_adapter_v4_evidence_invalid"
+        ):
+            _normalize_formal_capsule(without_v6_evidence)
+        reversed_composed = compose_capsule_product(
+            task="Show priority",
+            product_id="product_1234567890abcdef",
+            generated_at="2026-08-12T00:00:00Z",
+            capsules=[computation, presentation],
+        )
+        self.assertEqual(composed, reversed_composed)
+
+        for label, mutate in (
+            (
+                "mapping",
+                lambda value: value["adapter_evidence"].update(
+                    mapping_sha256="0" * 64
+                ),
+            ),
+            (
+                "proof",
+                lambda value: value["adapter_evidence"].update(
+                    source_graph_proof_sha256="0" * 64
+                ),
+            ),
+            (
+                "source",
+                lambda value: value["javascript_modules"][1].update(
+                    source=selected_source + "// forged\n"
+                ),
+            ),
+            (
+                "adapter",
+                lambda value: value["javascript_modules"][0].update(
+                    source=value["javascript_modules"][0]["source"] + "// forged\n"
+                ),
+            ),
+        ):
+            changed = copy.deepcopy(computation)
+            mutate(changed)
+            with self.subTest(label=label), self.assertRaises(ValueError):
+                compose_capsule_product(
+                    task="Show priority",
+                    product_id="product_1234567890abcdef",
+                    generated_at="2026-08-12T00:00:00Z",
+                    capsules=[presentation, changed],
+                )
+
+        string_input = _object_contract(
+            {
+                "message": {
+                    "type": "string",
+                    "min_length": 1,
+                    "max_length": 1000,
+                }
+            }
+        )
+        string_output = _object_contract(
+            {
+                "classification": {
+                    "type": "string",
+                    "min_length": 6,
+                    "max_length": 6,
+                    "enum": ["normal", "urgent"],
+                }
+            }
+        )
+        string_source = (
+            "export function __selected(message) { "
+            'return message.includes("urgent") ? "urgent" : "normal"; }\n'
+        )
+        string_computation = copy.deepcopy(computation)
+        string_computation.update(
+            capsule_id="capsule_message_computation",
+            version_id="version_message_computation",
+            capability_key="message_classification",
+            role_key="classify_message",
+            adapter_contract_version="computation_adapter.v5",
+            input_contract=string_input,
+            output_contract=string_output,
+        )
+        string_computation["javascript_modules"] = [
+            {
+                "path": "__reweave_adapter__/compute.js",
+                "source": generate_computation_adapter_v5(
+                    ["message"],
+                    string_input,
+                    string_output,
+                ),
+            },
+            {
+                "path": "__reweave_capture__/selected.js",
+                "source": string_source,
+            },
+        ]
+        string_canonical = canonicalize_capsule(
+            {
+                key: string_computation[key]
+                for key in (
+                    "capability_kind",
+                    "activation",
+                    "input_contract",
+                    "output_contract",
+                    "error_contract",
+                    "runtime_allowlist",
+                    "dom_scope",
+                    "usage_scope",
+                    "html",
+                    "css",
+                    "javascript_modules",
+                    "assets",
+                )
+            }
+        )
+        string_computation["canonical_hash"] = string_canonical.sha256
+        string_binding = "9" * 64
+        string_target = "8" * 64
+        string_mapping = {
+            "schema": "computation_capture_mapping.v5",
+            "arguments": [
+                {
+                    "parameter_binding_id": string_binding,
+                    "input_field": "message",
+                    "kind": "string",
+                    "min_length": 1,
+                    "max_length": 1000,
+                }
+            ],
+            "result_field": "classification",
+            "result_enum": ["normal", "urgent"],
+            "proof_schema": "source_graph_proof.v3",
+            "examples": [
+                {
+                    "input": {"message": "routine task"},
+                    "expected": {"classification": "normal"},
+                },
+                {
+                    "input": {"message": "urgent task"},
+                    "expected": {"classification": "urgent"},
+                },
+            ],
+        }
+        string_closure = {
+            "module_paths": ["message.js"],
+            "binding_ids": [string_binding, string_target],
+        }
+        string_proof = {
+            "schema": "source_graph_proof.v3",
+            "target_binding_id": string_target,
+            "parameter_domains": [
+                {
+                    "parameter_binding_id": string_binding,
+                    "domain": {
+                        "kind": "string",
+                        "min_length": 1,
+                        "max_length": 1000,
+                    },
+                }
+            ],
+            "result_domain": {
+                "kind": "enum",
+                "values": ["normal", "urgent"],
+            },
+            "closure": string_closure,
+            "closure_sha256": canonical_json_digest(string_closure),
+            "dependency_evidence_sha256": "7" * 64,
+            "module_evidence_sha256": "6" * 64,
+            "top_level_evidence_sha256": "5" * 64,
+        }
+        string_evidence = copy.deepcopy(evidence)
+        string_evidence.update(
+            adapter_contract_version="computation_adapter.v5",
+            selected_function={
+                "module_relpath": "message.js",
+                "export_name": "classifyMessage",
+                "target_binding_id": string_target,
+                "selected_bundle_sha256": hashlib.sha256(
+                    string_source.encode("utf-8")
+                ).hexdigest(),
+                "capture_entry_sha256": "3" * 64,
+            },
+            mapping=string_mapping,
+            mapping_sha256=canonical_json_digest(string_mapping),
+            examples={
+                "count": 2,
+                "canonical_sha256": canonical_json_digest(
+                    string_mapping["examples"]
+                ),
+            },
+            rule_versions={
+                "source_graph_version": "source_graph.v1",
+                "adapter_contract_version": "computation_adapter.v5",
+            },
+            canonical_candidate=string_canonical.payload,
+            source_graph_proof=string_proof,
+            source_graph_proof_sha256=canonical_json_digest(string_proof),
+        )
+        string_computation["adapter_evidence"] = string_evidence
+        string_presentation = copy.deepcopy(presentation)
+        string_presentation.update(
+            capsule_id="capsule_message_presentation",
+            version_id="version_message_presentation",
+            capability_key="message_classification",
+            role_key="message_result",
+            input_contract=string_output,
+        )
+        string_presentation["javascript_modules"][0]["source"] = (
+            """export function render(root, input) {
+  const total = root.querySelector("[data-ref='total']");
+  total.textContent = String(input.classification);
+}
+"""
+        )
+        string_composed = compose_capsule_product(
+            task="Show classification",
+            product_id="product_1234567890abcdef",
+            generated_at="2026-08-12T00:00:00Z",
+            capsules=[string_presentation, string_computation],
+        )
+        self.assertEqual(
+            string_composed["composer_version"],
+            ADAPTER_V5_FORMAL_PRODUCT_COMPOSER_VERSION,
+        )
+        tampered_v5 = copy.deepcopy(string_computation)
+        tampered_v5["adapter_evidence"]["source_graph_proof_sha256"] = "0" * 64
+        with self.assertRaisesRegex(ValueError, "formal_adapter_v4_evidence_invalid"):
+            compose_capsule_product(
+                task="Show classification",
+                product_id="product_1234567890abcdef",
+                generated_at="2026-08-12T00:00:00Z",
+                capsules=[string_presentation, tampered_v5],
+            )
 
     def test_formal_composer_does_not_apply_v2_module_rule_to_plain_computation(self) -> None:
         capsule = _capsule_payload("computation")

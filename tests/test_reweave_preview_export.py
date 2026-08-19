@@ -47,6 +47,7 @@ def _governance_preview() -> dict:
 class ReweavePreviewExportTest(unittest.TestCase):
     def setUp(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()
+        self._services: list[ReweaveAppService] = []
         self._state_dir = Path(self._tmpdir.name) / "reweave_state"
         self._state_dir.mkdir()
         self._source_dir = self._state_dir / "user_project"
@@ -78,6 +79,8 @@ class ReweavePreviewExportTest(unittest.TestCase):
         self.package_root = Path(self.metadata_result["previewPath"])
 
     def tearDown(self) -> None:
+        for service in reversed(self._services):
+            service.close()
         self._env.stop()
         self._tmpdir.cleanup()
 
@@ -214,6 +217,7 @@ class ReweavePreviewExportTest(unittest.TestCase):
 
     def test_app_service_export(self) -> None:
         service = ReweaveAppService(engine=LocalReweaveEngine())
+        self._services.append(service)
         result = service.export_preview_package(self.package_id, str(self._export_dir), "zip")
         self.assertTrue(result["ok"])
 

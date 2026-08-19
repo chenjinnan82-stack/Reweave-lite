@@ -110,6 +110,7 @@ class LumoGeneratePreviewTest(unittest.TestCase):
 class LumoAppServiceGenerateTest(unittest.TestCase):
     def setUp(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()
+        self._services: list[ReweaveAppService] = []
         self._state_dir = Path(self._tmpdir.name)
         self._env = patch.dict(
             os.environ,
@@ -118,6 +119,8 @@ class LumoAppServiceGenerateTest(unittest.TestCase):
         self._env.start()
 
     def tearDown(self) -> None:
+        for service in reversed(self._services):
+            service.close()
         self._env.stop()
         self._tmpdir.cleanup()
 
@@ -146,6 +149,7 @@ class LumoAppServiceGenerateTest(unittest.TestCase):
                 raise AssertionError("index_pack must not run when health fails")
 
         service = ReweaveAppService(engine=LumoReweaveEngine(luna_client=DownClient()))
+        self._services.append(service)
         cap_ids = self._promote_capsules()
         result = service.generate_preview(
             {"taskText": "Fallback preview", "capsuleIds": cap_ids[:1], "sourceBoxes": []}
@@ -174,6 +178,7 @@ class LumoAppServiceGenerateTest(unittest.TestCase):
                 }
 
         service = ReweaveAppService(engine=LumoReweaveEngine(luna_client=HealthyClient()))
+        self._services.append(service)
         cap_ids = self._promote_capsules()
         result = service.generate_preview(
             {"taskText": "Pack provenance", "capsuleIds": cap_ids[:1], "sourceBoxes": []}
@@ -200,6 +205,7 @@ class LumoAppServiceGenerateTest(unittest.TestCase):
                 }
 
         service = ReweaveAppService(engine=LumoReweaveEngine(luna_client=FailPackClient()))
+        self._services.append(service)
         cap_ids = self._promote_capsules()
         result = service.generate_preview(
             {"taskText": "Pack failure", "capsuleIds": cap_ids[:1], "sourceBoxes": []}
@@ -231,6 +237,7 @@ class LumoAppServiceGenerateTest(unittest.TestCase):
         promoted = warehouse.promote_source_drafts(box["id"])
 
         service = ReweaveAppService(engine=LumoReweaveEngine(luna_client=HealthyClient()))
+        self._services.append(service)
         service.generate_preview(
             {"taskText": "Source safety", "capsuleIds": [promoted[0]["id"]], "sourceBoxes": []}
         )
@@ -241,6 +248,7 @@ class LumoAppServiceGenerateTest(unittest.TestCase):
 class LocalEngineUnchangedTest(unittest.TestCase):
     def setUp(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()
+        self._services: list[ReweaveAppService] = []
         self._state_dir = Path(self._tmpdir.name)
         self._env = patch.dict(
             os.environ,
@@ -253,6 +261,8 @@ class LocalEngineUnchangedTest(unittest.TestCase):
         self._env.start()
 
     def tearDown(self) -> None:
+        for service in reversed(self._services):
+            service.close()
         self._env.stop()
         self._tmpdir.cleanup()
 
@@ -266,6 +276,7 @@ class LocalEngineUnchangedTest(unittest.TestCase):
         promoted = warehouse.promote_source_drafts(box["id"])
 
         service = ReweaveAppService()
+        self._services.append(service)
         result = service.generate_preview(
             {"taskText": "Local only", "capsuleIds": [promoted[0]["id"]], "backend": "local"}
         )

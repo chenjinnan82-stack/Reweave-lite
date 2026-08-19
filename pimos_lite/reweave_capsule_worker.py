@@ -11,6 +11,7 @@ from typing import Any
 
 MAX_BYTES = 1024 * 1024
 MAX_PIXELS = 16_777_216
+MAX_ACCEPTANCE_CASES = 16
 
 
 def _emit(value: dict[str, Any]) -> None:
@@ -116,7 +117,7 @@ def _image(request: dict[str, Any]) -> dict[str, Any]:
 
 
 def _qweb(request: dict[str, Any]) -> dict[str, Any]:
-    from PySide6.QtCore import QTimer, QUrl
+    from PySide6.QtCore import QCoreApplication, QEvent, QTimer, QUrl
     from PySide6.QtWidgets import QApplication
     from PySide6.QtWebEngineCore import (
         QWebEnginePage,
@@ -128,6 +129,23 @@ def _qweb(request: dict[str, Any]) -> dict[str, Any]:
     root = Path.cwd().resolve()
     entry = _inside_workdir(request.get("entry"))
     allowed = {_inside_workdir(item) for item in request.get("allow_files", [])}
+    acceptance_mode = request.get("mode") == "qweb_acceptance"
+    require_main_landmark = request.get("require_main_landmark") is True
+    acceptance_cases = request.get("cases")
+    if acceptance_mode and (
+        type(acceptance_cases) is not list
+        or not 1 <= len(acceptance_cases) <= MAX_ACCEPTANCE_CASES
+        or any(
+            type(item) is not dict
+            or set(item) != {"case_id", "input"}
+            or type(item["case_id"]) is not str
+            or not item["case_id"]
+            for item in acceptance_cases
+        )
+        or len({item["case_id"] for item in acceptance_cases})
+        != len(acceptance_cases)
+    ):
+        raise ValueError("candidate_acceptance_cases_invalid")
     if entry not in allowed:
         raise ValueError("qweb_entry_not_allowed")
     blocked: list[dict[str, str]] = []
@@ -209,17 +227,91 @@ def _qweb(request: dict[str, Any]) -> dict[str, Any]:
                 }
             )
             return
-        page.runJavaScript(
-            "JSON.stringify(globalThis.__reweave_result === undefined ? null : globalThis.__reweave_result)",
-            finish,
-        )
+        if acceptance_mode:
+            cases_json = json.dumps(
+                acceptance_cases,
+                ensure_ascii=True,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            page.runJavaScript(
+                """(() => {
+                  const port = globalThis.__reweave_acceptance_v1;
+                  if (!port || typeof port.run !== "function") {
+                    return JSON.stringify({
+                      schema_version:"candidate_acceptance_worker.v1",
+                      status:"failed",
+                      error_code:"candidate_acceptance_port_missing"
+                    });
+                  }
+                  const rows = [];
+                  for (const item of """
+                + cases_json
+                + """) {
+                    try {
+                      rows.push({
+                        case_id:item.case_id,
+                        status:"passed",
+                        actual_output:port.run(item.input),
+                        error_code:null
+                      });
+                    } catch (_error) {
+                      rows.push({
+                        case_id:item.case_id,
+                        status:"failed",
+                        actual_output:null,
+                        error_code:"candidate_case_execution_failed"
+                      });
+                    }
+                  }
+                  return JSON.stringify({
+                    schema_version:"candidate_acceptance_worker.v1",
+                    status:"completed",
+                    cases:rows
+                  });
+                })()""",
+                finish,
+            )
+        else:
+            page.runJavaScript(
+                (
+                    """(() => {
+                  const mains = document.querySelectorAll("main");
+                  const nested = document.querySelector("main main") !== null;
+                  if (mains.length !== 1 || nested) {
+                    return JSON.stringify({
+                      schema_version:"qweb_validation.v1",
+                      status:"failed",
+                      error_code:"product_main_landmark_invalid",
+                      main_count:mains.length,
+                      nested_main:nested
+                    });
+                  }
+                  const value = globalThis.__reweave_result;
+                  if (value === undefined) return JSON.stringify(null);
+                  return JSON.stringify({
+                    ...value,
+                    document_landmarks:{main_count:1,nested_main:false}
+                  });
+                })()"""
+                    if require_main_landmark
+                    else (
+                        "JSON.stringify(globalThis.__reweave_result === "
+                        "undefined ? null : globalThis.__reweave_result)"
+                    )
+                ),
+                finish,
+            )
 
     page.loadFinished.connect(loaded)
     QTimer.singleShot(8000, app.quit)
     page.load(QUrl.fromLocalFile(str(entry)))
     app.exec()
     page.deleteLater()
+    QCoreApplication.sendPostedEvents(page, QEvent.Type.DeferredDelete)
     profile.deleteLater()
+    QCoreApplication.sendPostedEvents(profile, QEvent.Type.DeferredDelete)
+    app.processEvents()
     if blocked:
         result = {
             "schema_version": "qweb_validation.v1",
@@ -234,7 +326,11 @@ def _qweb(request: dict[str, Any]) -> dict[str, Any]:
         }
     result["blocked_requests"] = blocked
     result["console_messages"] = console
-    result["acceptance_scope"] = "real_qwebengine_runtime"
+    result["acceptance_scope"] = (
+        "candidate_business_acceptance"
+        if acceptance_mode
+        else "real_qwebengine_runtime"
+    )
     return result
 
 
@@ -247,7 +343,7 @@ def main() -> int:
         mode = request.get("mode")
         if mode == "image":
             result = _image(request)
-        elif mode == "qweb":
+        elif mode in {"qweb", "qweb_acceptance"}:
             result = _qweb(request)
         else:
             raise ValueError("worker_mode_invalid")

@@ -87,6 +87,9 @@ def test_capsule_warehouse_scene_is_one_read_only_release_module() -> None:
       bind: bind,
       sync: sync,
       getState: getState,
+      open: enterScene,
+      resume: resumeScene,
+      suspend: suspendScene,
     };""" in scene
     assert "window.ReweaveCapsuleWarehouseScene.create({" in app
     assert "capsuleWarehouseScene.bind();" in app
@@ -112,16 +115,20 @@ def test_capsule_warehouse_scene_is_one_read_only_release_module() -> None:
         assert forbidden not in scene
     assert "cap.formal_version === true" in scene
     assert 'source.source_identity === "project:" + source.project_id' in scene
-    assert '"missing_formal_source_identity"' in scene
+    assert '"multipleExactSources"' in scene
+    assert '"missingExactSource"' in scene
+    assert '"missingFormalSource"' in scene
     assert 'insufficientSourceEvidence: "来源证据不足"' in app
     assert 'insufficientSourceEvidence: "Insufficient source evidence"' in app
     assert 'text("insufficientSourceEvidence")' in scene
     assert 'data-i18n="noVerifiedCoreCode"' in index
     assert "looksAbsolutePath" in scene
     assert "safeRelativePath" in scene
-    assert ".warehouse-web-atmosphere" in styles
-    assert ".warehouse-source-link" in styles
-    assert ".warehouse-node.is-match" in styles
+    assert ".warehouse-source-accordion" in styles
+    assert ".warehouse-capsule-seal" in styles
+    assert ".warehouse-source-path" in styles
+    assert ".warehouse-web-atmosphere" not in styles
+    assert ".warehouse-source-link" not in styles
     assert "@media (prefers-reduced-motion: reduce)" in styles
     assert "targetIntegration.getState()" in app
 
@@ -177,7 +184,7 @@ def test_capsule_core_code_projection_is_exact_formal_and_fail_closed() -> None:
         assert result.stdout.strip() == "undefined"
 
 
-def test_product_plan_ide_prototype_is_one_frontend_only_scene() -> None:
+def test_product_flow_uses_real_planning_candidate_and_native_export_actions() -> None:
     node = shutil.which("node")
     index = (ROOT / "reweave_frontend" / "index.html").read_text(encoding="utf-8")
     app = (ROOT / "reweave_frontend" / "app.js").read_text(encoding="utf-8")
@@ -185,6 +192,9 @@ def test_product_plan_ide_prototype_is_one_frontend_only_scene() -> None:
         encoding="utf-8"
     )
     styles = (ROOT / "reweave_frontend" / "styles.css").read_text(encoding="utf-8")
+    desktop = (ROOT / "pimos_lite" / "desktop_reweave_static.py").read_text(
+        encoding="utf-8"
+    )
     audit = (ROOT / "pimos_lite" / "reweave_release_surface_audit.py").read_text(
         encoding="utf-8"
     )
@@ -201,27 +211,111 @@ def test_product_plan_ide_prototype_is_one_frontend_only_scene() -> None:
     ) < index.index('src="target_workflow.js"')
     assert 'id="screen-product-plan"' in index
     assert 'id="btn-open-product-plan"' in index
-    assert 'id="btn-warehouse-return-product-plan"' in index
-    assert 'id="product-plan-developer-mode"' in index
-    assert 'id="product-review-empty"' in index
+    assert 'id="btn-product-nav"' in index
+    assert 'id="btn-product-open-warehouse"' in index
+    assert 'id="product-planner-picker"' in index
+    assert 'id="product-planner-select"' in index
+    assert 'id="product-plan-section-review"' in index
+    assert 'id="product-plan-question-form"' in index
+    assert 'id="product-acceptance-cases"' in index
+    assert 'id="btn-confirm-and-generate"' in index
+    assert 'id="btn-confirm-and-agent"' in index
+    assert 'id="product-agent-handoff"' in index
+    assert 'id="btn-revoke-agent-handoff"' in index
+    assert "rootComputations.length !== 1" in scene
+    assert "terminalComputations.length !== 1" in scene
+    assert "terminalComputation.version_id" in scene
+    assert "rootComputation.version_id" in scene
+    assert 'id="btn-preview-product-candidate"' in index
+    assert 'id="btn-save-product-candidate"' in index
+    assert "prototype-only" not in index.lower()
     assert "window.ReweaveProductPlanScene = { create: create };" in scene
+    assert "copy_local_agent_handoff_binding" in scene
+    assert "navigator.clipboard" not in scene
+    assert "handoff_token_" not in scene
+    assert '"protocol": "reweave_agent_jsonl.v2"' in desktop
+    assert '"action": "bind_user_handoff"' in desktop
+    assert "JavascriptCanAccessClipboard, False" in desktop
     assert "productPlan: productPlanScene.getState()," in app
     assert "productPlanScene.bind();" in app
-    assert "productPlanScene.consumeWarehouseReturn()" in app
     assert '"reweave_frontend/product_plan_scene.js",' in audit
-    assert scene.count('id: "frontend"') == 1
-    assert scene.count('id: "backend"') == 1
-    assert scene.count('id: "data"') == 1
-    assert scene.count('id: "infrastructure"') == 1
-    assert 'scope: "prototype_only"' in scene
-    assert 'evidence_status: "prototype_navigation_only"' in scene
-    assert "formal_match_claimed: false" in scene
-    assert "validation_claimed: false" in scene
-    assert "fixture_label_visible: state.fixtureVisible" in scene
-    assert "真实候选尚未生成" in scene
+    for action in (
+        "list_product_planning_models",
+        "select_product_planning_model",
+        "start_product_plan",
+        "submit_product_plan_answers",
+        "get_product_plan_run",
+        "get_product_plan_workspace",
+        "confirm_product_plan",
+        "record_product_capability_gap_decision",
+        "prepare_product_capability_source_proposal",
+        "start_product_capability_source_proposal",
+        "start_product_capability_replan",
+        "confirm_product_candidate_acceptance",
+        "copy_local_agent_handoff_binding",
+        "revoke_local_agent_handoff",
+        "get_confirmed_product_plan",
+        "start_confirmed_product_candidate",
+        "get_product_candidate_run",
+        "read_product_candidate_file",
+        "preview_product_candidate",
+        "choose_product_candidate_export_folder",
+    ):
+        assert action in scene
+    assert (
+        'def record_product_capability_gap_decision(' in desktop
+        and '"record_product_capability_gap_decision"' in desktop
+    )
+    assert (
+        'def prepare_product_capability_source_proposal(' in desktop
+        and '"prepare_product_capability_source_proposal"' in desktop
+    )
+    assert (
+        'def start_product_capability_source_proposal(' in desktop
+        and '"start_product_capability_source_proposal"' in desktop
+    )
+    assert (
+        'def start_product_capability_replan(' in desktop
+        and '"start_product_capability_replan"' in desktop
+    )
+    assert 'dataset.action = "start-capability-replan"' in scene
+    assert 'call("start_product_capability_source_proposal"' in scene
+    assert "finite_enum_source_proposal_protocol_pending" not in scene
+    assert "gapFiniteEnumProtocolPending" not in scene
+    assert 'document.createElement("select")' in scene
+    assert "contract.enum.indexOf(text)" in scene
+    assert "source_proposal_run" in scene
+    assert "refreshCurrentWorkspace: refreshCurrentWorkspace" in scene
+    assert "ingestionNavigation.productReview" in app
+    assert 'missing.dataset.errorCode = "target_review_missing"' in app
+    assert "reviewIdentityDefaults" in app
+    assert "acceptance_suggestions" in scene
+    assert 'pollRun("get_product_plan_run", started.run_id)' in scene
+    assert 'params.get("main") === "1"' in app
+    assert 'scope: "prototype_only"' not in scene
+    assert "FIXTURE" not in scene
     assert "innerHTML" not in scene
+    assert 'sectionNoGaps: "无已识别的工作项缺口"' in scene
+    assert 'sectionNoGaps: "no identified work-item gaps"' in scene
+    assert 'sectionNotApplicable: "本产品不需要这一独立层"' in scene
+    assert (
+        'sectionNotApplicable: "This product does not need this independent layer"'
+        in scene
+    )
+    assert 'section.applicability === "not_applicable"' in scene
+    assert "? section.summary || copy().sectionNotApplicable" in scene
+    assert "本章节没有能力缺口" not in scene
+    assert "no capability gaps" not in scene
+    assert "section.gaps" in scene
+    assert 'input.type = "number"' in scene
+    assert 'input.step = "1"' in scene
+    assert "projection.passthrough_fields" in scene
+    assert "expected_previous_decision_digest" in scene
+    assert "previous_decision_digest" in scene
+    assert "product-gap-history" in scene
+    assert "planGaps().length" in scene
+    assert "通用 JSON" not in scene
     for forbidden in (
-        "bridgeCall(",
         "XMLHttpRequest",
         "fetch(",
         "WebSocket",
@@ -235,8 +329,49 @@ def test_product_plan_ide_prototype_is_one_frontend_only_scene() -> None:
     ):
         assert forbidden not in scene
     assert ".product-plan-section" in styles
-    assert ".screen-product-plan.developer-mode .product-plan-developer-only" in styles
+    assert ".product-capability-gap" in styles
+    assert ".product-gap-contracts" in styles
+    assert ".product-acceptance-row" in styles
+    assert ".product-candidate-file-review" in styles
     assert "@media (prefers-reduced-motion: reduce)" in styles
+
+    get_state = scene[scene.index("    function getState()") : scene.index(
+        "\n    return {", scene.index("    function getState()")
+    )]
+    for forbidden in (
+        "planToken",
+        "candidateToken",
+        "workspace_id",
+        "canonical_digest",
+        "candidate_digest",
+        "version_id",
+    ):
+        assert forbidden not in get_state
+
+    for slot in (
+        "confirm_product_candidate_acceptance",
+        "copy_local_agent_handoff_binding",
+        "revoke_local_agent_handoff",
+        "get_confirmed_product_plan",
+        "start_confirmed_product_candidate",
+        "get_product_candidate_run",
+        "get_product_candidate",
+        "read_product_candidate_file",
+        "choose_product_candidate_export_folder",
+        "preview_product_candidate",
+    ):
+        assert f"def {slot}(" in desktop
+    chooser = desktop[
+        desktop.index("            def choose_product_candidate_export_folder(") :
+        desktop.index(
+            "\n            @Slot(str, result=str)\n            def preview_product_candidate(",
+            desktop.index("            def choose_product_candidate_export_folder("),
+        )
+    ]
+    assert "destination_parent" in chooser
+    assert '"destination_parent": parent' in chooser
+    assert '"path"' not in chooser
+    assert "str(exc)" not in chooser
 
 
 def test_product_plan_ide_prototype_acceptance_stays_prototype_only() -> None:
@@ -264,6 +399,111 @@ def test_product_plan_ide_prototype_acceptance_stays_prototype_only() -> None:
     assert report["scope_limit"]["real_candidate_generation_implemented"] is False
 
 
+def test_product_acceptance_scalar_parser_matches_formal_data_contract() -> None:
+    node = shutil.which("node")
+    if not node:
+        return
+    scene_path = ROOT / "reweave_frontend" / "product_plan_scene.js"
+    script = r"""
+const fs = require("fs");
+global.window = {};
+let source = fs.readFileSync(process.argv[1], "utf8").replace(/\r\n?/g, "\n");
+const needle = `    return {
+      bind: bind,
+      sync: sync,
+      open: enterScene,
+      getState: getState,
+      consumeWarehouseReturn: consumeWarehouseReturn,
+      resume: resumeScene,
+      refreshCurrentWorkspace: refreshCurrentWorkspace,
+    };`;
+const replacement = `    return {
+      bind: bind,
+      sync: sync,
+      open: enterScene,
+      getState: getState,
+      consumeWarehouseReturn: consumeWarehouseReturn,
+      resume: resumeScene,
+      refreshCurrentWorkspace: refreshCurrentWorkspace,
+      __test: {
+        parseValue: parseValue,
+        scalarSupported: acceptanceScalarSupported,
+      },
+    };`;
+if (!source.includes(needle)) throw new Error("product plan hook insertion failed");
+eval(source.replace(needle, replacement));
+const hooks = window.ReweaveProductPlanScene.create({}).__test;
+const integer = {type:"integer",minimum:1,maximum:3,enum:[1,2,3]};
+const decimal = {
+  type:"decimal",
+  minimum:"-999999999999999999.99",
+  maximum:"999999999999999999.99",
+  max_scale:2,
+};
+const decimalEnum = {
+  type:"decimal",
+  minimum:"1",
+  maximum:"3",
+  max_scale:2,
+  enum:["1.23","2.5"],
+};
+const string = {type:"string",min_length:0,max_length:8};
+const stringEnum = {
+  type:"string",
+  min_length:0,
+  max_length:8,
+  enum:["  keep  ",""],
+};
+function rejects(value, contract) {
+  try { hooks.parseValue(value, contract); return false; }
+  catch (_) { return true; }
+}
+const result = {
+  integer: hooks.parseValue(" 2 ", integer),
+  decimal: hooks.parseValue(" 001.2300 ", decimal),
+  precise: hooks.parseValue("9007199254740991.12", decimal),
+  decimal_enum: hooks.parseValue("1.230", decimalEnum),
+  truth: hooks.parseValue("true", {type:"boolean"}),
+  empty: hooks.parseValue("", string),
+  spaces: hooks.parseValue("  keep  ", stringEnum),
+  utf16: hooks.parseValue("😀", {type:"string",min_length:2,max_length:2}),
+  rejected: [
+    rejects("4", integer),
+    rejects("1.234", decimal),
+    rejects("1000000000000000000", decimal),
+    rejects("-0.00", decimal),
+    rejects("2.6", decimalEnum),
+    rejects(" true ", {type:"boolean"}),
+    rejects("other", stringEnum),
+  ],
+  unsupported: ["number","object","array"].map(function (type) {
+    return hooks.scalarSupported({type:type}) === false;
+  }),
+};
+console.log(JSON.stringify(result));
+"""
+    result = subprocess.run(
+        [node, "-e", script, str(scene_path)],
+        check=True,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+    parsed = json.loads(result.stdout)
+    assert parsed == {
+        "integer": 2,
+        "decimal": "1.23",
+        "precise": "9007199254740991.12",
+        "decimal_enum": "1.23",
+        "truth": True,
+        "empty": "",
+        "spaces": "  keep  ",
+        "utf16": "😀",
+        "rejected": [True] * 7,
+        "unsupported": [True] * 3,
+    }
+
+
 def test_capsule_core_code_late_response_cannot_replace_current_revision() -> None:
     node = shutil.which("node")
     if not node:
@@ -277,11 +517,17 @@ const needle = `    return {
       bind: bind,
       sync: sync,
       getState: getState,
+      open: enterScene,
+      resume: resumeScene,
+      suspend: suspendScene,
     };`;
 const replacement = `    return {
       bind: bind,
       sync: sync,
       getState: getState,
+      open: enterScene,
+      resume: resumeScene,
+      suspend: suspendScene,
       __test: {
         setDetail: function (cap, projectId) {
           details[capsuleId(cap)] = {
@@ -318,8 +564,8 @@ if (!source.includes(needle)) throw new Error("scene test hook insertion failed"
 source = source.replace(needle, replacement);
 eval(source);
 
-const capA = {capsule_id: "capsule-a", version_id: "version-a", type: "presentation", formal_version: true, status: "active", name: "A"};
-const capB = {capsule_id: "capsule-b", version_id: "version-b", type: "interaction", formal_version: true, status: "active", name: "B"};
+const capA = {capsule_id: "capsule-a", version_id: "version-a", canonical_hash: "a".repeat(64), type: "presentation", formal_version: true, status: "active", name: "A"};
+const capB = {capsule_id: "capsule-b", version_id: "version-b", canonical_hash: "b".repeat(64), type: "interaction", formal_version: true, status: "active", name: "B"};
 const groupA = {key: "project:project-a", projectId: "project-a", evidenceStatus: "formal_exact_version_source"};
 const groupB = {key: "project:project-b", projectId: "project-b", evidenceStatus: "formal_exact_version_source"};
 const pending = {};
@@ -422,7 +668,7 @@ def test_capsule_source_fact_line_requires_exact_formal_identity() -> None:
         encoding="utf-8"
     )
     proof = scene[scene.index("    function hasFormalSourceFact(") : scene.index(
-        "\n    function createNode(", scene.index("    function hasFormalSourceFact(")
+        "\n    function capabilityName(", scene.index("    function hasFormalSourceFact(")
     )]
     grouping = scene[scene.index("    function addCapsuleToGroup(") : scene.index(
         "\n    function stableHash(", scene.index("    function addCapsuleToGroup(")
@@ -442,22 +688,28 @@ def test_capsule_source_fact_line_requires_exact_formal_identity() -> None:
 
     assert "missingIdentity" not in scene
     assert 'projectId: evidenceStatus === "formal_exact_version_source"' in grouping
-    assert '"missing_exact_version_source_relation"' in grouping
-    assert '"missing_formal_source_identity"' in grouping
-    assert '"source:" + sourceId' in grouping
+    assert '"missingExactSource"' in grouping
+    assert '"missingFormalSource"' in grouping
+    assert '"multipleExactSources"' in grouping
+    assert '"project:" + source.project_id' in grouping
+    assert '"unresolved:" + capsuleId(cap)' in grouping
     assert "key.replace" not in grouping
     assert 'group.evidenceStatus !== "formal_exact_version_source"' in proof
-    assert "exactProjectSources(cap).some" in proof
-    assert "group.projectId === source.project_id" in proof
-    assert 'group.key === "project:" + source.project_id' in proof
-    assert "if (hasFormalSourceFact(group, cap)) appendLine(" in render
+    assert "sources.length === 1" in proof
+    assert "group.projectId === sources[0].project_id" in proof
+    assert 'group.key === "project:" + sources[0].project_id' in proof
+    assert 'item.evidenceStatus === "formal_exact_version_source"' in render
+    assert 'item.evidenceStatus !== "formal_exact_version_source"' in render
+    assert "renderSourceAccordion(item" in render
+    assert "renderUnresolvedGroup(item" in render
+    assert "els.unresolvedNodes" in render
     assert "project_id: formalSource ? group.projectId : null" in projection
     assert "source_identity_status: sourceStatus" in projection
     assert "relationships: formalSource ? exactProjectSources(cap).filter" in projection
     assert 'group.evidenceStatus === "formal_exact_version_source"' in get_state
     assert "if (!hasFormalSourceFact(group, cap)) return null;" in core_identity
-    assert "missing_exact_version_source_relation" not in core_identity
-    assert "missing_formal_source_identity" not in core_identity
+    assert "missingExactSource" not in core_identity
+    assert "missingFormalSource" not in core_identity
 
 
 def test_formal_capsule_selection_is_correctable_and_fail_closed() -> None:
@@ -538,7 +790,7 @@ def test_capsule_warehouse_defaults_to_compact_simple_mode() -> None:
     assert 'id="warehouse-mode-help"' not in index
     assert 'data-i18n="modelTimeoutNote"' not in index
     assert 'data-i18n-title="modelTimeoutNote"' in index
-    assert 'setOptionalTitle(bindBtn, canBind ? "" : t("sourceBoxBindingDisabled"));' in app
+    assert 'setOptionalTitle(bindBtn, t("sourceBoxBindingDisabled"));' in app
     assert 'else element.removeAttribute("title");' in app
     assert 'controlHelp(el, key);' in app
     assert 'bindBtn.title = canBind ? ""' not in app
@@ -687,7 +939,14 @@ def test_management_run_failure_reaches_project_row_callback() -> None:
     end = app.index("\n  function inspectAndRestoreBackup(", start)
     script = """
 var seen = {refreshed: false};
-function bridgeCall() {
+var ingestionManagement = {sourceRootSelectionStale: false};
+function bridgeCall(method, payload) {
+  if (JSON.parse(payload).run_id === 'run-3') {
+    return Promise.resolve(JSON.stringify({
+      ok: false,
+      error: {code: 'source_unavailable'}
+    }));
+  }
   return Promise.resolve(JSON.stringify({
     ok: true,
     data: {run: {status: 'failed', error: {code: 'source_unavailable'}}}
@@ -707,15 +966,69 @@ function refreshIngestionManagement() { seen.refreshed = true; }
 function collectRunIds() { return []; }
 """ + app[start:end] + """
 pollManagementRun('run-1', null, false, function (key) { seen.row = key; });
-setTimeout(function () { console.log(JSON.stringify(seen)); }, 0);
+setTimeout(function () {
+  seen.firstGlobal = seen.global;
+  ingestionManagement.sourceRootSelectionStale = true;
+  pollManagementRun('run-2', null, false, function (key) { seen.staleRow = key; });
+  setTimeout(function () {
+    pollManagementRun('run-3', null, false, function (key) {
+      seen.missingPayloadRow = key;
+    });
+    setTimeout(function () { console.log(JSON.stringify(seen)); }, 0);
+  }, 0);
+}, 0);
 """
     result = subprocess.run(
         [node, "-e", script], check=True, capture_output=True, text=True
     )
     assert json.loads(result.stdout) == {
         "refreshed": False,
-        "global": "projectScanSourceMissing",
+        "global": "sourceRootSelectionStale",
         "row": "projectScanSourceMissing",
+        "firstGlobal": "projectScanSourceMissing",
+        "staleRow": "projectScanSourceMissing",
+        "missingPayloadRow": "projectScanSourceMissing",
+    }
+
+
+def test_management_run_failure_uses_safe_projected_error_code() -> None:
+    node = shutil.which("node")
+    if not node:
+        return
+    app = (ROOT / "reweave_frontend" / "app.js").read_text(encoding="utf-8")
+    start = app.index("  function pollManagementRun(")
+    end = app.index("\n  function inspectAndRestoreBackup(", start)
+    script = """
+var seen = {};
+var ingestionManagement = {sourceRootSelectionStale: false};
+function bridgeCall() {
+  return Promise.resolve(JSON.stringify({
+    ok: true,
+    data: {run: {status: 'failed', error_code: 'source_derivation_run_stale'}}
+  }));
+}
+function parseBridgeJson(raw) { return JSON.parse(raw); }
+function managementPayload(result) { return result && result.ok !== false ? result.data : null; }
+function managementError(result) {
+  return result && result.error && result.error.code === 'source_derivation_run_stale'
+    ? 'source_derivation_run_stale'
+    : 'managementOperationFailed';
+}
+function rememberManagementRun() {}
+function renderManagementRuns() {}
+function setManagementStatus(key) { seen.global = key; }
+function refreshIngestionManagement() {}
+function collectRunIds() { return []; }
+""" + app[start:end] + """
+pollManagementRun('run-1', null, false, function (key) { seen.row = key; });
+setTimeout(function () { console.log(JSON.stringify(seen)); }, 0);
+"""
+    result = subprocess.run(
+        [node, "-e", script], check=True, capture_output=True, text=True
+    )
+    assert json.loads(result.stdout) == {
+        "global": "source_derivation_run_stale",
+        "row": "source_derivation_run_stale",
     }
 
 
@@ -833,15 +1146,19 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert "function isCapsuleManageEligible(cap)" in app
     assert "function syncSourceControls()" in app
     assert "function syncWelcomeSourceBoxMode()" in app
-    assert "function handleStoreSource(sourceId)" in app
-    assert 'storeBtn.textContent = t("store");' in app
     assert "Bind locally, scan read-only, no source writes." in app
-    assert 'desktopCapability("canChooseSourceFolder")' in app
-    assert 'desktopCapability("canScanSourceBox")' in app
-    assert 'desktopCapability("canDraftCapsules")' in app
+    assert "addSourceBtn.disabled = true;" in app
+    assert 'addSourceBtn.classList.add("hidden");' in app
+    assert 'bindBtn.classList.add("hidden");' in app
+    for retired in (
+        "choose_source_folder",
+        "scan_source_box",
+        "draft_capsules",
+        "promote_source_drafts",
+    ):
+        assert retired not in app
     assert 'params.get("desktop") === "1"' not in app
     assert 'params.get("main") === "1"' in app
-    assert 'classList.toggle("hidden", !allowed)' in app
     assert 'new QWebChannel(qt.webChannelTransport' in app
     assert "function applyLumoLiteRuntimeView()" in app
     assert "function currentWorkflowStep(hasTaskPackPreview)" in app
@@ -895,8 +1212,10 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert "behaviorModuleCount" not in app
     assert 'id="btn-capsule-warehouse" class="btn-ghost btn-collapsed hidden"' in index
     assert 'id="capsule-warehouse-popover"' in index
-    assert index.count('class="warehouse-section') == 6
-    assert '<details class="warehouse-section"' in index
+    assert index.count("data-ingestion-panel=") == 4
+    assert 'id="screen-capsule-ingestion"' in index
+    assert 'class="capsule-ingestion-advanced warehouse-developer-only"' in index
+    assert 'id="screen-capsule-ingestion"' in index
     assert "var ingestionManagement = {" in app
     assert 'bridgeCall("list_supervision_models", JSON.stringify({}))' in app
     assert 'bridgeCall("list_review_items", JSON.stringify({}))' in app
@@ -906,8 +1225,73 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert 'bridgeCall("get_intake_run", JSON.stringify({ run_id: runId }))' in app
     assert '"start_inspect_computation_adapters"' not in app
     assert '"start_create_computation_adapter"' in app
+    assert 'selectedSourceRootId: ""' in app
+    assert 'sourceRootSelectionStale: false' in app
+    assert 'option.value = String(index);' in app
+    assert 'option.textContent = sourceRootDisplayLabel(root);' in app
+    assert 'select.dataset.sourceRootSelector = "session";' in app
+    assert 'source_root_id: String(selected.root_id)' in app
+    assert '"computation_capture_mapping.v5"' in app
+    assert '"source_graph_proof.v3"' in app
+    assert "captureUsesBoundedString()" in app
+    assert "uniqueResults.size !== enumResults.length" in app
+    assert "witnessControls.length !== enumResults.length" in app
+    assert "text.length < minimumWitnessLength" in app
+    assert "text.length > maximumWitnessLength" in app
+    assert "capturePayload.examples = witnessControls.map" in app
+    assert "passthrough_fields" not in app[
+        app.index("function renderJavascriptComputationOffers") : app.index(
+            "\n  function sourceHandoffStatusProjection"
+        )
+    ]
     assert '"start_scan_javascript_computations"' in app
     assert 'bridgeCall("register_javascript_computation_source"' in app
+    assert (
+        '"authorize_and_start_source_derived_computation"' in app
+    )
+    assert (
+        '"copy_local_source_derived_handoff_binding"' in app
+    )
+    assert (
+        '"decide_local_source_derived_handoff_proposal"' in app
+    )
+    assert '"revoke_local_source_derived_handoff"' in app
+    assert 'authorizeAgent.disabled = true;' in app
+    assert 'authorizeAgent.textContent = t("sourceDerivedAgentCopiedClose");' in app
+    assert (
+        'if (!window.confirm(t("sourceDerivedAgentRevokeConfirm"))) return;'
+        in app
+    )
+    source_derived_authorize_handler = app[
+        app.index('authorizeAgent.dataset.action = "authorize-source-derived-agent"') :
+        app.index('row.appendChild(authorizeAgent);')
+    ]
+    assert "refreshIngestionManagement()" not in source_derived_authorize_handler
+    assert 'dataset.action = "authorize-source-derived"' in app
+    assert "sourceDerivedNotice" in app
+    assert "input_text:" in app
+    assert "expected_result:" in app
+    assert 'run.status === "review_required"' in app
+    assert 'dataset.action = "authorize-source-agent"' in app
+    assert 'bridgeCall(\n              "copy_local_source_handoff_binding"' in app
+    assert 'dataset.action = "revoke-source-agent"' in app
+    assert 'bridgeCall(\n              "revoke_local_source_handoff"' in app
+    assert 'String(project.source_type || "") === "static_web"' in app
+    assert '"completed_with_pending",' in app
+    assert "source_handoff_token_" not in app
+    assert "source_derived_handoff_token_" not in app
+    assert '"source_handoff_status.v1"' in app
+    assert '"source_derived_handoff_status.v1"' in app
+    assert (
+        'String(item.project_id || "") ===\n'
+        "            sourceHandoffContext.project_id" in app
+    )
+    assert (
+        'String(item.run_id || "") === sourceHandoffContext.run_id' in app
+    )
+    assert 'sourceMissing.dataset.errorCode = "source_handoff_review_missing"' in app
+    assert "unrelated Reviews are not shown" in app
+    assert "不会显示其他 Review" in app
     assert 'data-action", "inspect-computation-adapters"' not in app
     assert 'data-action", "create-computation-adapter"' not in app
     assert 'data-action", "scan-javascript-computations"' in app
@@ -967,14 +1351,17 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert 'capsule_id: selected.capsule_id' in app
     assert 'version_id: selected.version_id' in app
     assert 'legacy.status' in app
-    assert 'legacy.path' in app
+    assert 'legacy.path' not in app
     legacy_start = app.index("  function renderManagementLegacy()")
     legacy_end = app.index("\n  function renderManagementBackups()", legacy_start)
     legacy_ui = app[legacy_start:legacy_end]
     assert "alias.eligible_targets" in legacy_ui
     assert "ingestionManagement.capabilityGroups" not in legacy_ui
     management_start = app.index("  function managementPayload(")
-    management_end = app.index("\n  function addBoundSource(", management_start)
+    management_end = app.index(
+        "\n  function applyVerificationResult(",
+        management_start,
+    )
     management = app[management_start:management_end]
     assert "data.capsules" not in management
     assert "usedCapsuleIds" not in management
@@ -1070,6 +1457,110 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert "text-overflow: ellipsis;" in styles
 
 
+def test_gate2_capsule_architecture_uses_exact_context_and_four_station_scene() -> None:
+    index = (ROOT / "reweave_frontend" / "index.html").read_text(encoding="utf-8")
+    app = (ROOT / "reweave_frontend" / "app.js").read_text(encoding="utf-8")
+    scene = (ROOT / "reweave_frontend" / "capsule_warehouse_scene.js").read_text(
+        encoding="utf-8"
+    )
+    product = (ROOT / "reweave_frontend" / "product_plan_scene.js").read_text(
+        encoding="utf-8"
+    )
+    styles = (ROOT / "reweave_frontend" / "styles.css").read_text(encoding="utf-8")
+
+    assert index.count("data-ingestion-station=") == 4
+    assert index.count("data-ingestion-panel=") == 4
+    assert 'role="tablist"' in index
+    assert len(re.findall(r'<button[^>]+role="tab"[^>]+data-ingestion-station=', index)) == 4
+    assert index.count('role="tabpanel"') == 4
+    assert 'aria-current="step"' not in index
+    assert 'id="warehouse-fact-strip"' not in index
+    assert 'id="warehouse-search-status"' in index
+    assert 'id="warehouse-evidence-rail"' not in index
+    assert 'id="warehouse-code-proof"' in index
+    assert 'id="capsule-ingestion-specimen"' in index
+    assert 'class="capsule-ingestion-source-context"' in index
+    assert 'id="warehouse-unresolved-shelf"' in index
+    assert 'id="warehouse-unresolved-nodes"' in index
+    assert 'class="warehouse-source-ledger"' in index
+    assert 'id="warehouse-code-summary"' in index
+    assert 'id="warehouse-raw-evidence" class="warehouse-raw-evidence">' in index
+    assert 'data-i18n="showValidationEvidence"' in index
+    assert 'id="warehouse-scene-links"' not in index
+    assert 'id="btn-warehouse-zoom-in"' not in index
+    assert 'id="btn-warehouse-zoom-out"' not in index
+    assert 'id="btn-warehouse-zoom-reset"' not in index
+    assert "togglePopover(\"capsule-warehouse\")" not in app
+    assert 'showScreen("screen-capsule-ingestion")' in app
+    assert 'capsuleWarehouseScene.open(context || null);' in app
+    assert "WORLD_WIDTH" not in scene
+    assert "overviewPosition" not in scene
+    assert "capsulePosition" not in scene
+    assert "setCanvasScale" not in scene
+    assert "scrollIntoView" in scene
+    assert "warehouse-evidence-rail" not in scene
+    assert "function currentSpecimenContext()" in scene
+    assert "host.openManagement(currentSpecimenContext())" in scene
+    assert "warehouse-unresolved-shelf" in index
+    assert "function createSourceKnot(" in scene
+    assert "function createSourceToggle(" in scene
+    assert "function createCapsuleUnit(" in scene
+    assert "function createCapsuleContract(" in scene
+    assert "function sourcePathFor(" in scene
+    assert "function toggleCapsule(" in scene
+    assert "function openCode(" in scene
+    assert "function suspendScene(" in scene
+    assert "singleSourceAutoExpanded" in scene
+    assert "singleSourceUserCollapsed" in scene
+    assert "groups.length === 1" in scene
+    assert "exactGroups.length === 1" in scene
+    assert "state.singleSourceUserCollapsed = true;" in scene
+    assert "group.fingerprint" in scene
+    assert "capsuleCanonicalHash(item) === context.canonical_hash" in scene
+    assert "sources.length !== 1" in scene
+    assert "raw.canonical_hash !== capsuleCanonicalHash(cap)" in scene
+    assert "if (state.planContext) return;" in scene
+    assert "if (state.planContext) {" in scene
+    assert "innerHTML" not in scene
+    assert "function managementDisplayLabel(" in app
+    assert "looksPrivateManagementValue(rawSourceRelpath)" in app
+    assert "ingestionScreen.scrollTop = 0;" in app
+    assert "window.scrollTo(0, 0);" in app
+    assert "button.focus({ preventScroll: true });" in app
+    assert 'button.setAttribute("aria-selected", active ? "true" : "false")' in app
+    assert 'panel.hidden = !active;' in app
+    assert '"ArrowLeft", "ArrowRight", "Home", "End"' in app
+    assert 'openIngestionScene("warehouse", specimenContext || null);' in app
+    assert "ingestionNavigation.specimen = !productReview" in app
+    assert "legacy.path" not in app
+    assert "String(product.pre_restore_backup_path" not in app
+    assert 'copy().viewInWarehouse' in product
+    assert 'canonical_hash: String(binding.canonical_hash || "")' in product
+    assert ".warehouse-source-accordion" in styles
+    assert ".warehouse-source-toggle" in styles
+    assert ".warehouse-capsule-rack-grid" in styles
+    assert ".warehouse-capsule-seal" in styles
+    assert ".warehouse-capsule-contract" in styles
+    assert ".warehouse-source-slot" in styles
+    assert ".warehouse-source-path" in styles
+    assert ".warehouse-cocoon-rack" not in styles
+    assert ".warehouse-source-cocoon" not in styles
+    assert ".warehouse-cocoon-shell" not in styles
+    assert ".warehouse-capsule-axis" not in styles
+    assert ".warehouse-unique-thread" not in styles
+    assert "warehouse-tension-axis" not in scene
+    assert 'document.createElementNS(namespace, "circle")' not in scene
+    assert '<circle cx="398"' not in index
+    assert "@keyframes warehouse-contract-reveal" in styles
+    assert "warehouse-cocoon-open-top" not in styles
+    assert ".warehouse-capsule-core.is-presentation" in styles
+    assert ".warehouse-capsule-core.is-interaction" in styles
+    assert ".warehouse-capsule-core.is-computation" in styles
+    assert ".warehouse-unresolved-shelf" in styles
+    assert ".capsule-ingestion-stations button:focus-visible" in styles
+    assert ".capsule-ingestion-source-context" in styles
+
+
 def test_public_release_entrypoints_do_not_reference_private_workspaces() -> None:
     forbidden = (
         "workspace_" + "sixcats_argus_integration",
@@ -1153,6 +1644,96 @@ def test_static_web_target_ui_is_review_only_and_fail_closed() -> None:
     assert "checked" not in toggle.group(1)
     assert ".target-developer-only" in styles
     assert ".screen-target.developer-mode .target-developer-only" in styles
+    assert 'data-target-stage="select"' in index
+    assert 'data-target-panel="select"' in index
+    assert 'data-target-panel="compose"' in index
+    assert 'data-target-panel="review"' in index
+    assert 'data-target-panel="confirmed"' in index
+    assert 'data-i18n="showTechnicalEvidence"' in index
+    assert 'class="target-completed-context"' in index
+    assert index.count('data-target-summary="select"') == 1
+    assert index.count('data-target-summary="compose"') == 1
+    assert (
+        '<header class="product-plan-bar reweave-workspace-bar target-top-bar">'
+        in index
+    )
+    assert (
+        '<header class="product-plan-bar reweave-workspace-bar compat-top-bar">'
+        in index
+    )
+    assert (
+        'id="btn-target-back" class="product-delivery-button"'
+        in index
+    )
+    assert (
+        'id="btn-open-product-plan" class="product-delivery-button"'
+        in index
+    )
+    assert 'class="product-plan-tools target-tool-rail"' in index
+    assert 'class="product-plan-tools compat-tool-rail"' in index
+    assert 'class="compat-context-note"' in index
+    assert 'html[lang="zh-CN"] .reweave-workspace-bar .btn-lang::after' in styles
+    assert 'content: "中 / EN";' in styles
+    assert ".screen-target .delivery-switch" not in styles
+    assert ".screen-target .delivery-switch-button" not in styles
+    target_style = re.search(
+        r"^\.screen-target \{(?P<body>.*?)\n\}",
+        styles,
+        re.DOTALL | re.MULTILINE,
+    )
+    assert target_style is not None
+    assert "background: var(--bg);" in target_style.group("body")
+    for element_id in (
+        "btn-compat-target-nav",
+        "btn-compat-warehouse-nav",
+        "btn-compat-ingestion-nav",
+    ):
+        assert f'id="{element_id}"' in index
+    assert 'capsuleWarehouse: "胶囊仓库"' in app
+    assert 'capsuleWarehouse: "Capsule Warehouse"' in app
+    assert "deriveTargetStage" in target
+    assert 'setAttribute("data-target-stage", stage)' in target
+    assert 'stage: deriveTargetStage()' in target
+    assert 'showTechnicalEvidence: "显示技术证据"' in app
+    assert 'showTechnicalEvidence: "Show technical evidence"' in app
+    assert 'targetReadOnly: "目标只读 · 仅审阅改动"' in app
+    assert 'targetKicker: "静态站点 · 只读改动审阅"' in app
+    assert 'selectTargetFolder: "选择静态站点文件夹"' in app
+    assert 'generateReviewPatch: "生成审阅改动"' in app
+    assert 'compatibilityTitle: "兼容工具 / 快速组合"' in app
+    assert 'targetAnalysisError_entry_not_found: "找不到所选 HTML 入口。"' in app
+    assert 'targetAnalysisRecovery_entry_not_found: "请确认相对路径存在于目标文件夹内，然后再次只读分析。"' in app
+    assert 'targetAnalysisError_entry_not_found: "The selected HTML entry was not found."' in app
+    assert (
+        'targetAnalysisRecovery_entry_not_found: "Confirm the relative path exists in the target folder, then analyze read-only again."'
+        in app
+    )
+    assert 'targetComposeSummaryOne: "1 个正式胶囊 · {task}"' in app
+    assert 'targetComposeSummaryOne: "1 formal capsule · {task}"' in app
+    assert "syncGeneratedPackageView()" in app
+    assert "if (data && !isLumoLiteReadOnly())" in app
+    assert "renderTargetLastError" in target
+    assert "targetErrorUserCopy" in target
+    assert "applyTargetStatusError" in target
+    assert "target-status-reason" in target
+    assert "target-status-recovery" in target
+    assert "markTargetEntryInvalid" in target
+    assert ".screen-target .target-status.is-error" in styles
+    assert "border-left: 3px solid var(--danger)" in styles
+    assert ".screen-target .target-field input.is-invalid" in styles
+    assert 'compatibilityDisclaimer:' in app
+    forbidden_copy = (
+        "Apply to target",
+        "Deploy to target",
+        "Write to target",
+        "已写入目标",
+        "部署到目标",
+        "应用到目标",
+    )
+    for phrase in forbidden_copy:
+        assert phrase not in index
+        assert phrase not in app
+        assert phrase not in target
 
     bridge_guard = target[
         target.index("    function hasTargetBridge(") : target.index(

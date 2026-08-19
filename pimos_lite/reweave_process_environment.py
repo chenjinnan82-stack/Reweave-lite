@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import platform
 from collections.abc import Mapping
 
 
@@ -15,6 +16,15 @@ _WINDOWS_RUNTIME_KEYS = (
     "TEMP",
     "TMP",
 )
+
+
+def qwebengine_qpa_platform() -> str:
+    """Honor an explicit Qt platform, otherwise select the safe platform default."""
+
+    explicit = os.environ.get("QT_QPA_PLATFORM")
+    if explicit:
+        return explicit
+    return "cocoa" if platform.system() == "Darwin" else "offscreen"
 
 
 def restricted_subprocess_environment(

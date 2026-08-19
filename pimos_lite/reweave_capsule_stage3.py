@@ -29,6 +29,11 @@ from urllib.request import HTTPRedirectHandler, ProxyHandler, Request, build_ope
 from pimos_lite.reweave_capsule_intake import (
     COMPUTATION_ADAPTER_CONTRACT_VERSION,
     COMPUTATION_ADAPTER_ENTRY,
+    COMPUTATION_ADAPTER_V2,
+    COMPUTATION_ADAPTER_V3,
+    COMPUTATION_ADAPTER_V4,
+    COMPUTATION_ADAPTER_V5,
+    EPHEMERAL_COMPUTATION_ADAPTER_VERSIONS,
     EXTRACTION_CONTRACT_VERSION,
     IntakeError,
     REDACTION_RULES_VERSION,
@@ -53,13 +58,26 @@ from pimos_lite.reweave_javascript_source import (
     JavascriptSourceError,
     JavascriptSourceService,
 )
-from pimos_lite.reweave_process_environment import restricted_subprocess_environment
+from pimos_lite.reweave_page_capability_contract import (
+    build_formal_identity_binding_v2,
+    build_page_capability_contract_v2,
+    build_page_capability_declaration_v2,
+    normalize_page_capability_selector,
+)
+from pimos_lite.reweave_process_environment import (
+    qwebengine_qpa_platform,
+    restricted_subprocess_environment,
+)
 
 
 SECURITY_RULES_VERSION = "security_rules.v1"
 SUPERVISION_RULES_VERSION = "supervision_rules.v1"
 VALIDATION_CONTRACT_VERSION = "validation_contract.v1"
-COMPUTATION_ADAPTER_V2 = "computation_adapter.v2"
+FROZEN_REVIEW_ADMISSION_VERSION = "frozen_stage3_review_admission.v2"
+FROZEN_UI_REVIEW_ADMISSION_AUTHORIZATION_VERSION = (
+    "frozen_stage3_ui_review_admission_authorization.v1"
+)
+FROZEN_UI_REVIEW_ADMISSION_VERSION = "frozen_stage3_ui_review_admission.v1"
 CAPTURE_BUNDLE_CONTRACT_VERSION = "reweave_capture_bundle.v1"
 CAPTURE_SELECTED_ENTRY = "__reweave_capture__/selected.js"
 CAPTURE_EXECUTION_BUNDLE_VERSION = "reweave_execution_bundle.v1"
@@ -72,6 +90,13 @@ CAPTURE_EXECUTION_BUNDLE_OPTIONS_SHA256 = (
     "31df8afa5f9f2b6060601b74a1cf499f7b5a04219929168036e6df09ba6e88fb"
 )
 COMPUTE_WORKER_CONTRACT_VERSION = "compute_validation.v1"
+CAPTURE_MAPPING_V3 = "computation_capture_mapping.v3"
+CAPTURE_MAPPING_V4 = "computation_capture_mapping.v4"
+CAPTURE_MAPPING_V5 = "computation_capture_mapping.v5"
+CAPTURE_RESUME_V1 = "resubmit_ephemeral_capture.v1"
+CAPTURE_RESUME_V2 = "resubmit_ephemeral_capture.v2"
+CAPTURE_RESUME_V3 = "resubmit_ephemeral_capture.v3"
+CAPTURE_RESUME_V4 = "resubmit_ephemeral_capture.v4"
 _CAPTURE_TEMP_MARKER = b"reweave-capture-private-root.v1\n"
 _CAPTURE_JOB_MARKER = b"reweave-capture-private-job.v1\n"
 _CAPTURE_TEMP_LOCK = threading.RLock()
@@ -154,6 +179,8 @@ def _capture_temp_workspace() -> Any:
         ):
             shutil.rmtree(workspace)
 MAX_HTTP_BYTES = 1024 * 1024
+OLLAMA_METADATA_TIMEOUT_SECONDS = 10
+OLLAMA_SUPERVISION_TIMEOUT_SECONDS = 180
 MAX_ASSET_BYTES = 1024 * 1024
 MAX_ASSET_TOTAL_BYTES = 5 * 1024 * 1024
 MAX_HTML_DEPTH = 64
@@ -253,7 +280,8 @@ class CleanAsset:
 @dataclass(frozen=True)
 class Stage3Artifact:
     canonical_payload: dict[str, Any]
-    canonical_hash: str
+    canonical_payload_digest: str
+    formal_identity_binding: dict[str, str] | None
     assets: tuple[CleanAsset, ...]
     cleaning_summary: dict[str, Any]
     security_result: dict[str, Any]
@@ -263,6 +291,12 @@ class Stage3Artifact:
     model_digest: str | None = None
     supervised_at: str | None = None
     validation: dict[str, Any] | None = None
+
+    @property
+    def version_canonical_hash(self) -> str:
+        if self.formal_identity_binding is None:
+            return self.canonical_payload_digest
+        return self.formal_identity_binding["formal_identity_digest"]
 
 
 @dataclass(frozen=True)
@@ -519,6 +553,114 @@ def sanitize_html(
     if re.search(r"\sfor=\"(?!__CAPSULE_ID__-)", cleaned_html):
         raise Stage3Error("html_label_target_invalid")
     return cleaned_html.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _stage3_page_capability_declaration(
+    capability_kind: str,
+    cleaned_html: str,
+    page_capability_accesses: Any,
+) -> dict[str, Any]:
+    if capability_kind not in {"presentation", "interaction"}:
+        raise Stage3Error("page_capability_kind_invalid")
+    parser = _HtmlTreeParser()
+    try:
+        parser.feed(cleaned_html)
+        parser.close()
+    except Exception as exc:
+        raise Stage3Error("page_capability_html_invalid") from exc
+    if parser.failed:
+        raise Stage3Error("page_capability_html_invalid")
+
+    provided: list[dict[str, Any]] = []
+
+    def visit(node: dict[str, Any]) -> None:
+        tag = str(node.get("tag") or "")
+        attrs = dict(node.get("attrs", []))
+        reads = {"hidden", "textContent"}
+        writes = {"hidden", "textContent"}
+        events = {"click"}
+        if tag in {"button", "input", "select", "textarea"}:
+            reads.add("disabled")
+            writes.add("disabled")
+        if tag in {"input", "select", "textarea"}:
+            reads.add("value")
+            writes.add("value")
+            events.update({"change", "input", "select"})
+        if tag == "input":
+            reads.add("checked")
+            writes.add("checked")
+        if tag == "select":
+            reads.add("selectedIndex")
+            writes.add("selectedIndex")
+        if tag == "form":
+            events.update({"reset", "submit"})
+        for name in ("data-action", "data-ref"):
+            value = attrs.get(name)
+            if value:
+                provided.append(
+                    {
+                        "selector": f"[{name}='{value}']",
+                        "tag": tag,
+                        "reads": sorted(reads),
+                        "writes": sorted(writes),
+                        "events": sorted(events),
+                    }
+                )
+        for child in node.get("children", []):
+            if isinstance(child, dict):
+                visit(child)
+
+    visit(parser.root)
+    try:
+        provider = build_page_capability_declaration_v2(
+            capability_kind="presentation",
+            elements=provided,
+        )
+    except ValueError as exc:
+        raise Stage3Error(str(exc)) from exc
+    provider_by_selector = {
+        row["selector"]: row for row in provider["provides"]
+    }
+    if type(page_capability_accesses) is not list or not page_capability_accesses:
+        raise Stage3Error("page_capability_accesses_invalid")
+    required: list[dict[str, Any]] = []
+    for item in page_capability_accesses:
+        if type(item) is not dict or set(item) != {
+            "selector",
+            "reads",
+            "writes",
+            "events",
+        }:
+            raise Stage3Error("page_capability_accesses_invalid")
+        try:
+            selector = normalize_page_capability_selector(item["selector"])
+        except ValueError as exc:
+            raise Stage3Error(str(exc)) from exc
+        offered = provider_by_selector.get(selector)
+        if offered is None:
+            raise Stage3Error("page_capability_element_missing")
+        required.append(
+            {
+                "selector": selector,
+                "tag": offered["tag"],
+                "reads": item["reads"],
+                "writes": item["writes"],
+                "events": item["events"],
+            }
+        )
+    try:
+        build_page_capability_contract_v2(
+            presentation_provides=provider["provides"],
+            interaction_requires=required,
+        )
+        return build_page_capability_declaration_v2(
+            capability_kind=capability_kind,
+            elements=provider["provides"]
+            if capability_kind == "presentation"
+            else required,
+        )
+    except ValueError as exc:
+        raise Stage3Error(str(exc)) from exc
 
 
 def sanitize_css(source: str, *, redact_strings: list[str]) -> str:
@@ -905,7 +1047,11 @@ class OllamaSupervisor:
         self.store = store
 
     def list_models(self, base_url: str) -> list[dict[str, str]]:
-        payload, _raw = self._request(_loopback_base(base_url), "/api/tags")
+        payload, _raw = self._request(
+            _loopback_base(base_url),
+            "/api/tags",
+            timeout_seconds=OLLAMA_METADATA_TIMEOUT_SECONDS,
+        )
         rows: list[dict[str, str]] = []
         if type(payload.get("models")) is not list:
             raise Stage3Error("ollama_response_invalid")
@@ -992,6 +1138,7 @@ class OllamaSupervisor:
                 "format": "json",
                 "options": {"temperature": 0},
             },
+            timeout_seconds=OLLAMA_SUPERVISION_TIMEOUT_SECONDS,
         )
         raw_model_output = response.get("response")
         if type(raw_model_output) is not str or len(raw_model_output.encode("utf-8")) > MAX_HTTP_BYTES:
@@ -1009,7 +1156,11 @@ class OllamaSupervisor:
 
     @staticmethod
     def _request(
-        base_url: str, path: str, payload: dict[str, Any] | None = None
+        base_url: str,
+        path: str,
+        payload: dict[str, Any] | None = None,
+        *,
+        timeout_seconds: float = OLLAMA_METADATA_TIMEOUT_SECONDS,
     ) -> tuple[dict[str, Any], bytes]:
         data = None if payload is None else _json(payload).encode("utf-8")
         request = Request(
@@ -1020,7 +1171,7 @@ class OllamaSupervisor:
         )
         opener = build_opener(ProxyHandler({}), _NoRedirect())
         try:
-            with opener.open(request, timeout=10) as response:
+            with opener.open(request, timeout=timeout_seconds) as response:
                 raw = response.read(MAX_HTTP_BYTES + 1)
         except (HTTPError, URLError, TimeoutError, OSError) as exc:
             raise Stage3Error("ollama_unavailable") from exc
@@ -1187,7 +1338,10 @@ def _analyze_javascript(candidate: dict[str, Any], redact_strings: list[str]) ->
         timeout=15,
         error_code="javascript_security_analyzer_failed",
     )
-    if result.get("status") != "passed":
+    if (
+        result.get("schema_version") != "javascript_security.v2"
+        or result.get("status") != "passed"
+    ):
         raise Stage3Error(str(result.get("error_code") or "javascript_security_rejected"))
     return result
 
@@ -1357,12 +1511,20 @@ def capture_static_gate(
         "rule_versions",
         "canonical_candidate",
     }
+    if payload.get("adapter_contract_version") in {
+        COMPUTATION_ADAPTER_V4,
+        COMPUTATION_ADAPTER_V5,
+    }:
+        payload_keys.update(
+            {"source_graph_proof", "source_graph_proof_sha256"}
+        )
     if (
         type(payload) is not dict
         or set(payload) != payload_keys
         or payload.get("schema") != "ephemeral_capture_candidate.v1"
         or payload.get("candidate_origin") != "deterministic_computation_adapter"
-        or payload.get("adapter_contract_version") != COMPUTATION_ADAPTER_V2
+        or payload.get("adapter_contract_version")
+        not in EPHEMERAL_COMPUTATION_ADAPTER_VERSIONS
         or payload.get("source_graph_version") != "source_graph.v1"
         or payload.get("bundle_contract_version") != CAPTURE_BUNDLE_CONTRACT_VERSION
         or type(payload.get("project_id")) is not str
@@ -1400,6 +1562,104 @@ def capture_static_gate(
     mapping = payload.get("mapping")
     examples = payload.get("examples")
     rule_versions = payload.get("rule_versions")
+    adapter_version = payload["adapter_contract_version"]
+    mapping_valid = (
+        type(mapping) is dict
+        and type(mapping.get("arguments")) is list
+        and bool(mapping["arguments"])
+        and type(mapping.get("result_field")) is str
+        and _SNAKE.fullmatch(mapping["result_field"]) is not None
+        and (
+            (
+                adapter_version == COMPUTATION_ADAPTER_V2
+                and set(mapping) == {"arguments", "result_field"}
+            )
+            or (
+                adapter_version == COMPUTATION_ADAPTER_V3
+                and set(mapping)
+                == {
+                    "schema",
+                    "arguments",
+                    "result_field",
+                    "passthrough_fields",
+                }
+                and mapping.get("schema") == CAPTURE_MAPPING_V3
+                and type(mapping.get("passthrough_fields")) is list
+                and bool(mapping["passthrough_fields"])
+            )
+            or (
+                adapter_version == COMPUTATION_ADAPTER_V4
+                and set(mapping)
+                == {
+                    "schema",
+                    "arguments",
+                    "result_field",
+                    "result_enum",
+                    "proof_schema",
+                    "examples",
+                }
+                and mapping.get("schema") == CAPTURE_MAPPING_V4
+                and mapping.get("proof_schema") == "source_graph_proof.v2"
+                and type(mapping.get("result_enum")) is list
+                and bool(mapping["result_enum"])
+                and type(mapping.get("examples")) is list
+                and bool(mapping["examples"])
+            )
+            or (
+                adapter_version == COMPUTATION_ADAPTER_V5
+                and set(mapping)
+                == {
+                    "schema",
+                    "arguments",
+                    "result_field",
+                    "result_enum",
+                    "proof_schema",
+                    "examples",
+                }
+                and mapping.get("schema") == CAPTURE_MAPPING_V5
+                and mapping.get("proof_schema") == "source_graph_proof.v3"
+                and type(mapping.get("result_enum")) is list
+                and bool(mapping["result_enum"])
+                and type(mapping.get("examples")) is list
+                and bool(mapping["examples"])
+            )
+        )
+    )
+    if mapping_valid and adapter_version in {
+        COMPUTATION_ADAPTER_V4,
+        COMPUTATION_ADAPTER_V5,
+    }:
+        normalize_mapping = (
+            _normalize_capture_mapping_v5
+            if adapter_version == COMPUTATION_ADAPTER_V5
+            else _normalize_capture_mapping_v4
+        )
+        expected_mapping_schema = (
+            CAPTURE_MAPPING_V5
+            if adapter_version == COMPUTATION_ADAPTER_V5
+            else CAPTURE_MAPPING_V4
+        )
+        try:
+            (
+                normalized_arguments,
+                _normalized_domains,
+                normalized_result_field,
+                normalized_result_enum,
+                normalized_proof_schema,
+                normalized_examples,
+                _normalized_enumerations,
+            ) = normalize_mapping(mapping)
+        except Stage3Error:
+            mapping_valid = False
+        else:
+            mapping_valid = mapping == {
+                "schema": expected_mapping_schema,
+                "arguments": normalized_arguments,
+                "result_field": normalized_result_field,
+                "result_enum": normalized_result_enum,
+                "proof_schema": normalized_proof_schema,
+                "examples": normalized_examples,
+            }
     if (
         type(selected_function) is not dict
         or set(selected_function)
@@ -1471,12 +1731,7 @@ def capture_static_gate(
                 "metafile_inputs",
             )
         )
-        or type(mapping) is not dict
-        or set(mapping) != {"arguments", "result_field"}
-        or type(mapping.get("arguments")) is not list
-        or not mapping["arguments"]
-        or type(mapping.get("result_field")) is not str
-        or _SNAKE.fullmatch(mapping["result_field"]) is None
+        or not mapping_valid
         or hashlib.sha256(_canonical_json_bytes(mapping)).hexdigest()
         != payload.get("mapping_sha256")
         or type(examples) is not dict
@@ -1487,6 +1742,22 @@ def capture_static_gate(
         is None
         or re.fullmatch(r"[0-9a-f]{64}", payload.get("execution_bundle_sha256") or "")
         is None
+        or (
+            adapter_version in {COMPUTATION_ADAPTER_V4, COMPUTATION_ADAPTER_V5}
+            and (
+                type(payload.get("source_graph_proof")) is not dict
+                or payload["source_graph_proof"].get("schema")
+                != (
+                    "source_graph_proof.v3"
+                    if adapter_version == COMPUTATION_ADAPTER_V5
+                    else "source_graph_proof.v2"
+                )
+                or hashlib.sha256(
+                    _canonical_json_bytes(payload["source_graph_proof"])
+                ).hexdigest()
+                != payload.get("source_graph_proof_sha256")
+            )
+        )
     ):
         raise Stage3Error("capture_evidence_invalid")
     enum_rows = [
@@ -1525,7 +1796,7 @@ def capture_static_gate(
         type(rule_versions) is not dict
         or set(rule_versions) != expected_rule_keys
         or rule_versions.get("source_graph_version") != "source_graph.v1"
-        or rule_versions.get("adapter_contract_version") != COMPUTATION_ADAPTER_V2
+        or rule_versions.get("adapter_contract_version") != adapter_version
         or rule_versions.get("bundle_contract_version")
         != CAPTURE_BUNDLE_CONTRACT_VERSION
         or rule_versions.get("typescript_version") != CAPTURE_TYPESCRIPT_VERSION
@@ -1579,6 +1850,13 @@ def capture_static_gate(
             },
             "boolean": {"parameter_binding_id", "input_field", "kind"},
             "enum": {"parameter_binding_id", "input_field", "kind", "values"},
+            "string": {
+                "parameter_binding_id",
+                "input_field",
+                "kind",
+                "min_length",
+                "max_length",
+            },
         }.get(kind)
         field_name = argument.get("input_field")
         binding_id = argument.get("parameter_binding_id")
@@ -1599,6 +1877,12 @@ def capture_static_gate(
             }
         elif kind == "boolean":
             domain = {"kind": "boolean", "values": [False, True]}
+        elif kind == "string":
+            domain = {
+                "kind": "string",
+                "min_length": argument["min_length"],
+                "max_length": argument["max_length"],
+            }
         else:
             domain = {"kind": "enum", "values": argument["values"]}
         parameter_domains.append(
@@ -1622,12 +1906,39 @@ def capture_static_gate(
                 contract.get("type") != "string"
                 or contract.get("enum") != argument.get("values")
             )
+        ) or (
+            kind == "string"
+            and contract
+            != {
+                "type": "string",
+                "min_length": argument.get("min_length"),
+                "max_length": argument.get("max_length"),
+            }
         ):
             raise Stage3Error("capture_evidence_invalid")
+    passthrough_fields = (
+        mapping["passthrough_fields"]
+        if adapter_version == COMPUTATION_ADAPTER_V3
+        else []
+    )
+    output_fields = set(passthrough_fields) | {mapping["result_field"]}
     if (
         argument_fields != set(input_properties)
-        or len(output_properties) != 1
-        or mapping["result_field"] not in output_properties
+        or set(output_properties) != output_fields
+        or (
+            adapter_version == COMPUTATION_ADAPTER_V3
+            and (
+                passthrough_fields != sorted(passthrough_fields)
+                or len(set(passthrough_fields)) != len(passthrough_fields)
+                or not set(passthrough_fields).issubset(argument_fields)
+                or mapping["result_field"] in passthrough_fields
+                or any(
+                    _canonical_json_bytes(output_properties[field])
+                    != _canonical_json_bytes(input_properties[field])
+                    for field in passthrough_fields
+                )
+            )
+        )
     ):
         raise Stage3Error("capture_evidence_invalid")
     if list(normalized) != [
@@ -1644,11 +1955,60 @@ def capture_static_gate(
             "target_binding_id": selected_function["target_binding_id"],
         },
         parameter_domains,
+        request_schema=(
+            "source_graph_request.v2"
+            if adapter_version == COMPUTATION_ADAPTER_V5
+            else "source_graph_request.v1"
+        ),
     )
     rebuilt_proof = rebuilt["proof"]
     rebuilt_capture = rebuilt["capture"]
-    result_intervals = rebuilt_proof.get("result_domain", {}).get("intervals")
+    result_domain = rebuilt_proof.get("result_domain")
+    result_intervals = (
+        result_domain.get("intervals") if type(result_domain) is dict else None
+    )
     output_contract = output_properties[mapping["result_field"]]
+    result_domain_valid = (
+        (
+            adapter_version == COMPUTATION_ADAPTER_V4
+            and rebuilt_proof.get("schema") == "source_graph_proof.v2"
+            and result_domain
+            == {"kind": "enum", "values": mapping.get("result_enum")}
+            and output_contract.get("type") == "string"
+            and output_contract.get("enum") == mapping.get("result_enum")
+            and payload.get("source_graph_proof") == rebuilt_proof
+            and mapping.get("examples")
+            == json.loads(_json(mapping.get("examples")))
+            and hashlib.sha256(
+                _canonical_json_bytes(mapping["examples"])
+            ).hexdigest()
+            == examples.get("canonical_sha256")
+        )
+        or (
+            adapter_version == COMPUTATION_ADAPTER_V5
+            and rebuilt_proof.get("schema") == "source_graph_proof.v3"
+            and result_domain
+            == {"kind": "enum", "values": mapping.get("result_enum")}
+            and output_contract.get("type") == "string"
+            and output_contract.get("enum") == mapping.get("result_enum")
+            and payload.get("source_graph_proof") == rebuilt_proof
+            and mapping.get("examples")
+            == json.loads(_json(mapping.get("examples")))
+            and hashlib.sha256(
+                _canonical_json_bytes(mapping["examples"])
+            ).hexdigest()
+            == examples.get("canonical_sha256")
+        )
+        or (
+            adapter_version in {COMPUTATION_ADAPTER_V2, COMPUTATION_ADAPTER_V3}
+            and type(result_intervals) is list
+            and bool(result_intervals)
+            and min(item[0] for item in result_intervals)
+            == output_contract.get("minimum")
+            and max(item[1] for item in result_intervals)
+            == output_contract.get("maximum")
+        )
+    )
     if (
         rebuilt_proof.get("target_binding_id")
         != selected_function["target_binding_id"]
@@ -1657,10 +2017,7 @@ def capture_static_gate(
             for item in rebuilt_proof.get("parameter_domains", [])
         ]
         != [item["parameter_binding_id"] for item in mapping["arguments"]]
-        or type(result_intervals) is not list
-        or not result_intervals
-        or min(item[0] for item in result_intervals) != output_contract.get("minimum")
-        or max(item[1] for item in result_intervals) != output_contract.get("maximum")
+        or not result_domain_valid
         or rebuilt_proof.get("closure")
         != {
             "module_paths": dependency_closure["module_paths"],
@@ -1901,6 +2258,206 @@ def generate_computation_adapter_v2(
     )
 
 
+def generate_computation_adapter_v3(
+    argument_fields: list[str],
+    input_contract: dict[str, Any],
+    output_contract: dict[str, Any],
+    result_field: str,
+    passthrough_fields: list[str],
+) -> str:
+    """Generate scalar-result computation.adapter.v3 with verified input passthrough."""
+
+    input_properties = input_contract.get("properties")
+    output_properties = output_contract.get("properties")
+    if (
+        type(input_properties) is not dict
+        or type(output_properties) is not dict
+        or type(result_field) is not str
+        or _SNAKE.fullmatch(result_field) is None
+        or type(passthrough_fields) is not list
+        or not passthrough_fields
+        or passthrough_fields != sorted(passthrough_fields)
+        or len(set(passthrough_fields)) != len(passthrough_fields)
+        or not set(passthrough_fields).issubset(input_properties)
+        or result_field in passthrough_fields
+        or set(output_properties) != set(passthrough_fields) | {result_field}
+        or any(
+            _canonical_json_bytes(output_properties[field])
+            != _canonical_json_bytes(input_properties[field])
+            for field in passthrough_fields
+        )
+    ):
+        raise Stage3Error("adapter_mapping_invalid")
+    scalar_output = {
+        "schema": "data_contract.v1",
+        "type": "object",
+        "properties": {result_field: output_properties[result_field]},
+        "required": [result_field],
+        "additional_properties": False,
+    }
+    source = generate_computation_adapter_v2(
+        argument_fields,
+        input_contract,
+        scalar_output,
+    )
+    scalar_return = (
+        f"  return {{ ok: true, value: {{ {_json(result_field)}: result }} }};"
+    )
+    output_fields = sorted(set(passthrough_fields) | {result_field})
+    values = ", ".join(
+        f"{_json(field)}: "
+        + ("result" if field == result_field else f"input.{field}")
+        for field in output_fields
+    )
+    return source.replace(
+        scalar_return,
+        f"  return {{ ok: true, value: {{ {values} }} }};",
+        1,
+    )
+
+
+def generate_computation_adapter_v4(
+    argument_fields: list[str],
+    input_contract: dict[str, Any],
+    output_contract: dict[str, Any],
+) -> str:
+    """Generate a scalar finite-enum adapter without changing adapter.v2."""
+
+    output_properties = output_contract.get("properties")
+    if type(output_properties) is not dict or len(output_properties) != 1:
+        raise Stage3Error("adapter_mapping_invalid")
+    result_field, result_contract = next(iter(output_properties.items()))
+    values = result_contract.get("enum") if type(result_contract) is dict else None
+    if (
+        type(result_field) is not str
+        or _SNAKE.fullmatch(result_field) is None
+        or type(result_contract) is not dict
+        or result_contract.get("type") != "string"
+        or type(values) is not list
+        or not values
+        or len(values) > 32
+        or any(type(value) is not str for value in values)
+        or len(set(values)) != len(values)
+        or values != sorted(values, key=lambda value: value.encode("utf-8"))
+    ):
+        raise Stage3Error("adapter_mapping_invalid")
+    integer_output = {
+        "schema": "data_contract.v1",
+        "type": "object",
+        "properties": {
+            result_field: {"type": "integer", "minimum": 0, "maximum": 0}
+        },
+        "required": [result_field],
+        "additional_properties": False,
+    }
+    source = generate_computation_adapter_v2(
+        argument_fields, input_contract, integer_output
+    )
+    old_check = "\n".join(
+        [
+            "    !Number.isSafeInteger(result)",
+            "    || result < 0",
+            "    || result > 0",
+        ]
+    )
+    new_check = "\n".join(
+        [
+            '    typeof result !== "string"',
+            "    || ("
+            + " && ".join(f"result !== {_json(value)}" for value in values)
+            + ")",
+        ]
+    )
+    if old_check not in source:
+        raise Stage3Error("adapter_mapping_invalid")
+    return source.replace(old_check, new_check, 1)
+
+
+def generate_computation_adapter_v5(
+    argument_fields: list[str],
+    input_contract: dict[str, Any],
+    output_contract: dict[str, Any],
+) -> str:
+    """Generate the bounded-string scalar-enum adapter v5."""
+
+    input_properties = input_contract.get("properties")
+    if (
+        type(input_properties) is not dict
+        or len(input_properties) != 1
+        or argument_fields != list(input_properties)
+    ):
+        raise Stage3Error("adapter_mapping_invalid")
+    contract = next(iter(input_properties.values()))
+    if (
+        type(contract) is not dict
+        or set(contract) != {"type", "min_length", "max_length"}
+        or contract.get("type") != "string"
+        or type(contract.get("min_length")) is not int
+        or type(contract.get("max_length")) is not int
+        or not 0 <= contract["min_length"] <= contract["max_length"] <= 10_000
+    ):
+        raise Stage3Error("adapter_mapping_invalid")
+    output_properties = output_contract.get("properties")
+    if type(output_properties) is not dict or len(output_properties) != 1:
+        raise Stage3Error("adapter_mapping_invalid")
+    result_field, result_contract = next(iter(output_properties.items()))
+    values = result_contract.get("enum") if type(result_contract) is dict else None
+    if (
+        type(result_field) is not str
+        or _SNAKE.fullmatch(result_field) is None
+        or type(values) is not list
+        or not values
+        or len(values) > 32
+        or any(type(value) is not str for value in values)
+        or values != sorted(set(values), key=lambda value: value.encode("utf-8"))
+    ):
+        raise Stage3Error("adapter_mapping_invalid")
+    field = argument_fields[0]
+    input_error = (
+        '    return { ok: false, error: { code: "INPUT_CONTRACT_VIOLATION", '
+        "field: null, details: {} } };"
+    )
+    output_error = (
+        '    return { ok: false, error: { code: "OUTPUT_CONTRACT_VIOLATION", '
+        "field: null, details: {} } };"
+    )
+    return "\n".join(
+        [
+            'import { __selected as __source } from "../__reweave_capture__/selected.js";',
+            "",
+            "export function compute(input) {",
+            "  if (",
+            "    input === null",
+            '    || typeof input !== "object"',
+            "    || Array.isArray(input)",
+            "    || Object.keys(input).length !== 1",
+            f"    || !Object.hasOwn(input, {_json(field)})",
+            "  ) {",
+            input_error,
+            "  }",
+            "  if (",
+            f'    typeof input.{field} !== "string"',
+            f"    || input.{field}.length < {contract['min_length']}",
+            f"    || input.{field}.length > {contract['max_length']}",
+            "  ) {",
+            input_error,
+            "  }",
+            f"  const result = __source(input.{field});",
+            "  if (",
+            '    typeof result !== "string"',
+            "    || ("
+            + " && ".join(f"result !== {_json(value)}" for value in values)
+            + ")",
+            "  ) {",
+            output_error,
+            "  }",
+            f"  return {{ ok: true, value: {{ {_json(result_field)}: result }} }};",
+            "}",
+            "",
+        ]
+    )
+
+
 def preflight_computation_capture_v2(
     candidate_payload_json: bytes,
     examples: list[dict[str, Any]],
@@ -1975,6 +2532,182 @@ def preflight_computation_capture_v2(
         "passed": True,
     }
     return gate, _canonical_json_bytes(receipt)
+
+
+def preflight_computation_capture_v3(
+    candidate_payload_json: bytes,
+    examples: list[dict[str, Any]],
+    *,
+    snapshot: JavascriptScopeSnapshot,
+    expected_source_identity_sha256: str,
+) -> tuple[CaptureStaticGateResult, bytes]:
+    """Run v3 examples after the same complete static gate."""
+
+    gate = capture_static_gate(
+        candidate_payload_json,
+        snapshot=snapshot,
+        expected_source_identity_sha256=expected_source_identity_sha256,
+    )
+    payload = _parse_canonical_json_bytes(candidate_payload_json, "capture_payload_invalid")
+    candidate = payload["canonical_candidate"]
+    mapping = payload["mapping"]
+    passthrough_fields = mapping["passthrough_fields"]
+    inputs: list[dict[str, Any]] = []
+    expected_values: list[dict[str, Any]] = []
+    canonical_examples: list[dict[str, Any]] = []
+    for item in examples:
+        if type(item) is not dict or set(item) != {"input", "expected"}:
+            raise Stage3Error("adapter_mapping_invalid")
+        input_value = item["input"]
+        expected = item["expected"]
+        if (
+            type(input_value) is not dict
+            or type(expected) is not dict
+            or not data_contract_accepts(candidate["input_contract"], input_value)
+            or not data_contract_accepts(candidate["output_contract"], expected)
+            or any(
+                _canonical_json_bytes(input_value.get(field))
+                != _canonical_json_bytes(expected.get(field))
+                for field in passthrough_fields
+            )
+        ):
+            raise Stage3Error("adapter_mapping_invalid")
+        cloned_input = json.loads(_json(input_value))
+        cloned_expected = json.loads(_json(expected))
+        inputs.append(cloned_input)
+        expected_values.append({"ok": True, "value": cloned_expected})
+        canonical_examples.append(
+            {"input": cloned_input, "expected": cloned_expected}
+        )
+    examples_sha256 = hashlib.sha256(
+        _canonical_json_bytes(canonical_examples)
+    ).hexdigest()
+    try:
+        _validate_computation(
+            candidate,
+            {
+                "schema": "synthetic_fixtures.v1",
+                "normal": inputs,
+                "boundary": [],
+                "invalid": [],
+            },
+            expected_values=expected_values,
+            execution_bundle=gate.execution_bundle,
+            execution_bundle_sha256=gate.execution_bundle_sha256,
+        )
+    except Stage3Error as exc:
+        if exc.code == "compute_worker_failed":
+            raise Stage3Error("adapter_source_exception") from exc
+        if exc.code == "compute_worker_failed_timeout":
+            raise Stage3Error("worker_timeout") from exc
+        raise
+    receipt = {
+        "validation_scope": "adapter_example_preflight",
+        "formal_runtime_evidence": False,
+        "candidate_payload_sha256": hashlib.sha256(candidate_payload_json).hexdigest(),
+        "execution_bundle_sha256": gate.execution_bundle_sha256,
+        "examples_sha256": examples_sha256,
+        "worker_contract_version": COMPUTE_WORKER_CONTRACT_VERSION,
+        "passed": True,
+    }
+    return gate, _canonical_json_bytes(receipt)
+
+
+def preflight_computation_capture_v4(
+    candidate_payload_json: bytes,
+    examples: list[dict[str, Any]],
+    *,
+    snapshot: JavascriptScopeSnapshot,
+    expected_source_identity_sha256: str,
+) -> tuple[CaptureStaticGateResult, bytes]:
+    """Run closed-enum examples after the complete static gate."""
+
+    gate = capture_static_gate(
+        candidate_payload_json,
+        snapshot=snapshot,
+        expected_source_identity_sha256=expected_source_identity_sha256,
+    )
+    payload = _parse_canonical_json_bytes(candidate_payload_json, "capture_payload_invalid")
+    candidate = payload["canonical_candidate"]
+    mapping = payload["mapping"]
+    result_field = mapping["result_field"]
+    inputs: list[dict[str, Any]] = []
+    expected_values: list[dict[str, Any]] = []
+    canonical_examples: list[dict[str, Any]] = []
+    for item in examples:
+        if type(item) is not dict or set(item) != {"input", "expected"}:
+            raise Stage3Error("adapter_mapping_invalid")
+        input_value = item["input"]
+        expected = item["expected"]
+        if (
+            type(input_value) is not dict
+            or type(expected) is not dict
+            or set(expected) != {result_field}
+            or not data_contract_accepts(candidate["input_contract"], input_value)
+            or not data_contract_accepts(candidate["output_contract"], expected)
+        ):
+            raise Stage3Error("adapter_mapping_invalid")
+        cloned_input = json.loads(_json(input_value))
+        cloned_expected = json.loads(_json(expected))
+        inputs.append(cloned_input)
+        expected_values.append({"ok": True, "value": cloned_expected})
+        canonical_examples.append(
+            {"input": cloned_input, "expected": cloned_expected}
+        )
+    examples_sha256 = hashlib.sha256(
+        _canonical_json_bytes(canonical_examples)
+    ).hexdigest()
+    if (
+        examples_sha256 != payload["examples"]["canonical_sha256"]
+        or canonical_examples != mapping["examples"]
+    ):
+        raise Stage3Error("capture_evidence_invalid")
+    try:
+        _validate_computation(
+            candidate,
+            {
+                "schema": "synthetic_fixtures.v1",
+                "normal": inputs,
+                "boundary": [],
+                "invalid": [],
+            },
+            expected_values=expected_values,
+            execution_bundle=gate.execution_bundle,
+            execution_bundle_sha256=gate.execution_bundle_sha256,
+        )
+    except Stage3Error as exc:
+        if exc.code == "compute_worker_failed":
+            raise Stage3Error("adapter_source_exception") from exc
+        if exc.code == "compute_worker_failed_timeout":
+            raise Stage3Error("worker_timeout") from exc
+        raise
+    receipt = {
+        "validation_scope": "adapter_example_preflight",
+        "formal_runtime_evidence": False,
+        "candidate_payload_sha256": hashlib.sha256(candidate_payload_json).hexdigest(),
+        "execution_bundle_sha256": gate.execution_bundle_sha256,
+        "examples_sha256": examples_sha256,
+        "worker_contract_version": COMPUTE_WORKER_CONTRACT_VERSION,
+        "passed": True,
+    }
+    return gate, _canonical_json_bytes(receipt)
+
+
+def preflight_computation_capture_v5(
+    candidate_payload_json: bytes,
+    examples: list[dict[str, Any]],
+    *,
+    snapshot: JavascriptScopeSnapshot,
+    expected_source_identity_sha256: str,
+) -> tuple[CaptureStaticGateResult, bytes]:
+    """Run bounded-string enum examples after the v5 static proof gate."""
+
+    return preflight_computation_capture_v4(
+        candidate_payload_json,
+        examples,
+        snapshot=snapshot,
+        expected_source_identity_sha256=expected_source_identity_sha256,
+    )
 
 
 def make_prepared_review(
@@ -2066,7 +2799,14 @@ def _run_source_graph_capture(
     snapshot: JavascriptScopeSnapshot,
     selection: dict[str, str],
     parameter_domains: list[dict[str, Any]],
+    *,
+    request_schema: str = "source_graph_request.v1",
 ) -> dict[str, Any]:
+    if request_schema not in {
+        "source_graph_request.v1",
+        "source_graph_request.v2",
+    }:
+        raise Stage3Error("capture_request_invalid")
     root = Path(__file__).resolve().parents[1]
     module_snapshot = [
         {
@@ -2077,7 +2817,7 @@ def _run_source_graph_capture(
         for module in snapshot.modules
     ]
     request = {
-        "schema": "source_graph_request.v1",
+        "schema": request_schema,
         "mode": "capture",
         "project_id": snapshot.project_id,
         "scope_snapshot_sha256": snapshot.scope_snapshot_sha256,
@@ -2516,6 +3256,290 @@ def _normalize_capture_mapping(
     return normalized, domains, result_field, normalized_examples, enumerations
 
 
+def _normalize_capture_mapping_v3(
+    mapping: dict[str, Any],
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    str,
+    list[str],
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
+    if (
+        type(mapping) is not dict
+        or set(mapping)
+        != {
+            "schema",
+            "arguments",
+            "result_field",
+            "passthrough_fields",
+            "examples",
+        }
+        or mapping.get("schema") != CAPTURE_MAPPING_V3
+    ):
+        raise Stage3Error("adapter_mapping_invalid")
+    arguments, domains, result_field, examples, enumerations = (
+        _normalize_capture_mapping(
+            {
+                "arguments": mapping.get("arguments"),
+                "result_field": mapping.get("result_field"),
+                "examples": mapping.get("examples"),
+            }
+        )
+    )
+    passthrough_fields = mapping.get("passthrough_fields")
+    argument_fields = {item["input_field"] for item in arguments}
+    if (
+        type(passthrough_fields) is not list
+        or not passthrough_fields
+        or any(
+            type(field) is not str or _SNAKE.fullmatch(field) is None
+            for field in passthrough_fields
+        )
+        or len(set(passthrough_fields)) != len(passthrough_fields)
+        or passthrough_fields
+        != sorted(passthrough_fields, key=lambda field: field.encode("utf-8"))
+        or not set(passthrough_fields).issubset(argument_fields)
+        or result_field in passthrough_fields
+    ):
+        raise Stage3Error("adapter_mapping_invalid")
+    expected_fields = set(passthrough_fields) | {result_field}
+    for example in examples:
+        if (
+            type(example) is not dict
+            or set(example) != {"input", "expected"}
+            or type(example.get("input")) is not dict
+            or type(example.get("expected")) is not dict
+            or set(example["expected"]) != expected_fields
+        ):
+            raise Stage3Error("adapter_mapping_invalid")
+        for field in passthrough_fields:
+            if (
+                field not in example["input"]
+                or _canonical_json_bytes(example["input"][field])
+                != _canonical_json_bytes(example["expected"][field])
+            ):
+                raise Stage3Error("adapter_mapping_invalid")
+    return (
+        arguments,
+        domains,
+        result_field,
+        list(passthrough_fields),
+        examples,
+        enumerations,
+    )
+
+
+def _normalize_capture_mapping_v4(
+    mapping: dict[str, Any],
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    str,
+    list[str],
+    str,
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
+    expected_keys = {
+        "schema",
+        "arguments",
+        "result_field",
+        "result_enum",
+        "proof_schema",
+        "examples",
+    }
+    if (
+        type(mapping) is not dict
+        or set(mapping) != expected_keys
+        or mapping.get("schema") != CAPTURE_MAPPING_V4
+        or mapping.get("proof_schema") != "source_graph_proof.v2"
+        or "passthrough_fields" in mapping
+    ):
+        raise Stage3Error("adapter_mapping_invalid")
+    arguments, domains, result_field, _examples, enumerations = (
+        _normalize_capture_mapping(
+            {
+                "arguments": mapping.get("arguments"),
+                "result_field": mapping.get("result_field"),
+                "examples": mapping.get("examples"),
+            }
+        )
+    )
+    values = mapping.get("result_enum")
+    if (
+        type(values) is not list
+        or not values
+        or len(values) > 32
+        or any(type(value) is not str for value in values)
+        or len(set(values)) != len(values)
+    ):
+        raise Stage3Error("adapter_mapping_invalid")
+    try:
+        result_enum = sorted(values, key=lambda value: value.encode("utf-8"))
+    except UnicodeEncodeError as exc:
+        raise Stage3Error("adapter_mapping_invalid") from exc
+    input_contract, output_contract, _error_contract = _capture_contracts_v4(
+        arguments,
+        result_field,
+        {"kind": "enum", "values": result_enum},
+    )
+    examples = mapping.get("examples")
+    if type(examples) is not list or not 1 <= len(examples) <= 64:
+        raise Stage3Error("adapter_mapping_invalid")
+    normalized_examples: list[dict[str, Any]] = []
+    covered: set[str] = set()
+    input_fields = {item["input_field"] for item in arguments}
+    for item in examples:
+        if (
+            type(item) is not dict
+            or set(item) != {"input", "expected"}
+            or type(item.get("input")) is not dict
+            or set(item["input"]) != input_fields
+            or type(item.get("expected")) is not dict
+            or set(item["expected"]) != {result_field}
+            or not data_contract_accepts(input_contract, item["input"])
+            or not data_contract_accepts(output_contract, item["expected"])
+        ):
+            raise Stage3Error("adapter_mapping_invalid")
+        covered.add(item["expected"][result_field])
+        normalized_examples.append(json.loads(_json(item)))
+    if covered != set(result_enum):
+        raise Stage3Error("adapter_mapping_invalid")
+    return (
+        arguments,
+        domains,
+        result_field,
+        result_enum,
+        "source_graph_proof.v2",
+        normalized_examples,
+        enumerations,
+    )
+
+
+def _normalize_capture_mapping_v5(
+    mapping: dict[str, Any],
+) -> tuple[
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+    str,
+    list[str],
+    str,
+    list[dict[str, Any]],
+    list[dict[str, Any]],
+]:
+    expected_keys = {
+        "schema",
+        "arguments",
+        "result_field",
+        "result_enum",
+        "proof_schema",
+        "examples",
+    }
+    arguments_value = mapping.get("arguments") if type(mapping) is dict else None
+    if (
+        type(mapping) is not dict
+        or set(mapping) != expected_keys
+        or mapping.get("schema") != CAPTURE_MAPPING_V5
+        or mapping.get("proof_schema") != "source_graph_proof.v3"
+        or type(arguments_value) is not list
+        or len(arguments_value) != 1
+    ):
+        raise Stage3Error("adapter_mapping_invalid")
+    item = arguments_value[0]
+    if (
+        type(item) is not dict
+        or set(item)
+        != {
+            "parameter_binding_id",
+            "input_field",
+            "kind",
+            "min_length",
+            "max_length",
+        }
+        or re.fullmatch(r"[0-9a-f]{64}", item.get("parameter_binding_id") or "")
+        is None
+        or type(item.get("input_field")) is not str
+        or _SNAKE.fullmatch(item["input_field"]) is None
+        or item.get("kind") != "string"
+        or type(item.get("min_length")) is not int
+        or type(item.get("max_length")) is not int
+        or not 0 <= item["min_length"] <= item["max_length"] <= 10_000
+    ):
+        raise Stage3Error("adapter_mapping_invalid")
+    argument = {
+        "parameter_binding_id": item["parameter_binding_id"],
+        "input_field": item["input_field"],
+        "kind": "string",
+        "min_length": item["min_length"],
+        "max_length": item["max_length"],
+    }
+    result_field = mapping.get("result_field")
+    values = mapping.get("result_enum")
+    if (
+        type(result_field) is not str
+        or _SNAKE.fullmatch(result_field) is None
+        or result_field == argument["input_field"]
+        or type(values) is not list
+        or not values
+        or len(values) > 32
+        or any(type(value) is not str for value in values)
+        or len(set(values)) != len(values)
+    ):
+        raise Stage3Error("adapter_mapping_invalid")
+    try:
+        result_enum = sorted(values, key=lambda value: value.encode("utf-8"))
+    except UnicodeEncodeError as exc:
+        raise Stage3Error("adapter_mapping_invalid") from exc
+    input_contract, output_contract, _error_contract = _capture_contracts_v5(
+        [argument],
+        result_field,
+        {"kind": "enum", "values": result_enum},
+    )
+    examples = mapping.get("examples")
+    if type(examples) is not list or not 1 <= len(examples) <= 64:
+        raise Stage3Error("adapter_mapping_invalid")
+    normalized_examples: list[dict[str, Any]] = []
+    covered: set[str] = set()
+    for example in examples:
+        if (
+            type(example) is not dict
+            or set(example) != {"input", "expected"}
+            or type(example.get("input")) is not dict
+            or set(example["input"]) != {argument["input_field"]}
+            or type(example.get("expected")) is not dict
+            or set(example["expected"]) != {result_field}
+            or not data_contract_accepts(input_contract, example["input"])
+            or not data_contract_accepts(output_contract, example["expected"])
+        ):
+            raise Stage3Error("adapter_mapping_invalid")
+        covered.add(example["expected"][result_field])
+        normalized_examples.append(json.loads(_json(example)))
+    normalized_examples.sort(key=_canonical_json_bytes)
+    if covered != set(result_enum):
+        raise Stage3Error("adapter_mapping_invalid")
+    domains = [
+        {
+            "parameter_binding_id": argument["parameter_binding_id"],
+            "domain": {
+                "kind": "string",
+                "min_length": argument["min_length"],
+                "max_length": argument["max_length"],
+            },
+        }
+    ]
+    return (
+        [argument],
+        domains,
+        result_field,
+        result_enum,
+        "source_graph_proof.v3",
+        normalized_examples,
+        [],
+    )
+
+
 def _capture_error_contract() -> dict[str, Any]:
     details = {
         "schema": "data_contract.v1",
@@ -2600,6 +3624,172 @@ def _capture_contracts(
         raise Stage3Error("adapter_mapping_invalid") from exc
 
 
+def _capture_contracts_v3(
+    arguments: list[dict[str, Any]],
+    result_field: str,
+    passthrough_fields: list[str],
+    result_domain: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    input_contract, scalar_output, error_contract = _capture_contracts(
+        arguments, result_field, result_domain
+    )
+    input_properties = input_contract["properties"]
+    output_properties = {
+        field: json.loads(_json(input_properties[field]))
+        for field in passthrough_fields
+    }
+    output_properties[result_field] = scalar_output["properties"][result_field]
+    output_contract = {
+        "schema": "data_contract.v1",
+        "type": "object",
+        "properties": output_properties,
+        "required": sorted(output_properties),
+        "additional_properties": False,
+    }
+    try:
+        return normalize_capsule_contracts(
+            "computation", input_contract, output_contract, error_contract
+        )
+    except DataContractError as exc:
+        raise Stage3Error("adapter_mapping_invalid") from exc
+
+
+def _capture_contracts_v4(
+    arguments: list[dict[str, Any]],
+    result_field: str,
+    result_domain: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    values = result_domain.get("values") if type(result_domain) is dict else None
+    if (
+        type(result_domain) is not dict
+        or result_domain.get("kind") != "enum"
+        or type(values) is not list
+        or not values
+        or len(values) > 32
+        or any(type(value) is not str for value in values)
+        or len(set(values)) != len(values)
+        or values != sorted(values, key=lambda value: value.encode("utf-8"))
+    ):
+        raise Stage3Error("interval_unproven")
+    properties: dict[str, Any] = {}
+    for argument in arguments:
+        field_name = argument["input_field"]
+        if argument["kind"] == "integer":
+            properties[field_name] = {
+                "type": "integer",
+                "minimum": argument["minimum"],
+                "maximum": argument["maximum"],
+            }
+        elif argument["kind"] == "boolean":
+            properties[field_name] = {"type": "boolean"}
+        else:
+            argument_values = argument["values"]
+            lengths = [_utf16_length(value) for value in argument_values]
+            properties[field_name] = {
+                "type": "string",
+                "min_length": min(lengths),
+                "max_length": max(lengths),
+                "enum": argument_values,
+            }
+    lengths = [_utf16_length(value) for value in values]
+    input_contract = {
+        "schema": "data_contract.v1",
+        "type": "object",
+        "properties": properties,
+        "required": sorted(properties),
+        "additional_properties": False,
+    }
+    output_contract = {
+        "schema": "data_contract.v1",
+        "type": "object",
+        "properties": {
+            result_field: {
+                "type": "string",
+                "min_length": min(lengths),
+                "max_length": max(lengths),
+                "enum": list(values),
+            }
+        },
+        "required": [result_field],
+        "additional_properties": False,
+    }
+    try:
+        return normalize_capsule_contracts(
+            "computation", input_contract, output_contract, _capture_error_contract()
+        )
+    except DataContractError as exc:
+        raise Stage3Error("adapter_mapping_invalid") from exc
+
+
+def _capture_contracts_v5(
+    arguments: list[dict[str, Any]],
+    result_field: str,
+    result_domain: dict[str, Any],
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    values = result_domain.get("values") if type(result_domain) is dict else None
+    if (
+        len(arguments) != 1
+        or type(arguments[0]) is not dict
+        or arguments[0].get("kind") != "string"
+        or type(values) is not list
+        or not values
+        or len(values) > 32
+        or any(type(value) is not str for value in values)
+        or len(set(values)) != len(values)
+        or values != sorted(values, key=lambda value: value.encode("utf-8"))
+    ):
+        raise Stage3Error("interval_unproven")
+    argument = arguments[0]
+    if (
+        type(argument.get("input_field")) is not str
+        or _SNAKE.fullmatch(argument["input_field"]) is None
+        or type(argument.get("min_length")) is not int
+        or type(argument.get("max_length")) is not int
+        or not 0 <= argument["min_length"] <= argument["max_length"] <= 10_000
+        or type(result_field) is not str
+        or _SNAKE.fullmatch(result_field) is None
+        or result_field == argument["input_field"]
+    ):
+        raise Stage3Error("adapter_mapping_invalid")
+    result_lengths = [_utf16_length(value) for value in values]
+    input_contract = {
+        "schema": "data_contract.v1",
+        "type": "object",
+        "properties": {
+            argument["input_field"]: {
+                "type": "string",
+                "min_length": argument["min_length"],
+                "max_length": argument["max_length"],
+            }
+        },
+        "required": [argument["input_field"]],
+        "additional_properties": False,
+    }
+    output_contract = {
+        "schema": "data_contract.v1",
+        "type": "object",
+        "properties": {
+            result_field: {
+                "type": "string",
+                "min_length": min(result_lengths),
+                "max_length": max(result_lengths),
+                "enum": list(values),
+            }
+        },
+        "required": [result_field],
+        "additional_properties": False,
+    }
+    try:
+        return normalize_capsule_contracts(
+            "computation",
+            input_contract,
+            output_contract,
+            _capture_error_contract(),
+        )
+    except DataContractError as exc:
+        raise Stage3Error("adapter_mapping_invalid") from exc
+
+
 def _same_capture_snapshot(
     expected: JavascriptScopeSnapshot, actual: JavascriptScopeSnapshot
 ) -> bool:
@@ -2625,6 +3815,8 @@ def _same_capture_snapshot(
 def _persist_capture_waiting_review(
     store: CapsuleWarehouseStore,
     *,
+    adapter_version: str,
+    resume_contract: str,
     project_id: str,
     source_identity_sha256: str,
     decision_binding_sha256: str,
@@ -2692,7 +3884,7 @@ def _persist_capture_waiting_review(
                         "candidates": 1,
                         "waiting_user": 1,
                         "candidate_origin": "deterministic_computation_adapter",
-                        "adapter_contract_version": COMPUTATION_ADAPTER_V2,
+                        "adapter_contract_version": adapter_version,
                     }
                 ),
                 now,
@@ -2725,9 +3917,9 @@ def _persist_capture_waiting_review(
                     {
                         "schema": "sanitized_candidate.v1",
                         "candidate_origin": "deterministic_computation_adapter",
-                        "adapter_contract_version": COMPUTATION_ADAPTER_V2,
+                        "adapter_contract_version": adapter_version,
                         "requires_reextract": True,
-                        "resume_contract": "resubmit_ephemeral_capture.v1",
+                        "resume_contract": resume_contract,
                     }
                 ),
                 _json(
@@ -2869,7 +4061,7 @@ def _pyside_environment(temp_root: Path) -> dict[str, str]:
         "XDG_DATA_HOME": str(temp_root / "data"),
         "APPDATA": str(temp_root / "appdata"),
         "LOCALAPPDATA": str(temp_root / "localappdata"),
-        "QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen"),
+        "QT_QPA_PLATFORM": qwebengine_qpa_platform(),
         "QTWEBENGINE_CHROMIUM_FLAGS": "--disable-gpu",
         "QT_LOGGING_RULES": "*.debug=false;qt.webenginecontext.info=false",
     })
@@ -3488,12 +4680,1053 @@ class ReweaveCapsuleStage3:
             self._capture_decision_tokens.pop(review_id, None)
         return result
 
-    def prepare_ephemeral_computation_capture_v2(
+    def admit_frozen_review(
+        self,
+        source_database_path: Path,
+        source_directory_path: Path,
+        review_id: str,
+        *,
+        expected_source_sha256: str,
+        expected_warehouse_revision: int,
+        authorization_binding: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Revalidate and admit one frozen review into this warehouse."""
+
+        source_path = Path(source_database_path)
+        source_directory = Path(source_directory_path)
+        binding_keys = {
+            "plan_digest",
+            "gap_id",
+            "projection_digest",
+            "authorize_decision_digest",
+            "source_proposal_authorization_digest",
+            "capability_key",
+            "adapter_contract_version",
+            "input_contract",
+            "output_contract",
+            "error_contract",
+            "authorization_warehouse_revision",
+            "authorization_catalog_digest",
+            "target_catalog_digest",
+        }
+        digest_fields = {
+            "plan_digest",
+            "projection_digest",
+            "authorize_decision_digest",
+            "source_proposal_authorization_digest",
+            "authorization_catalog_digest",
+            "target_catalog_digest",
+        }
+        if (
+            not source_path.is_absolute()
+            or source_path.is_symlink()
+            or not source_path.is_file()
+            or not source_directory.is_absolute()
+            or source_directory.is_symlink()
+            or not source_directory.is_dir()
+            or not re.fullmatch(r"[0-9a-f]{64}", expected_source_sha256)
+            or type(expected_warehouse_revision) is not int
+            or expected_warehouse_revision < 0
+            or not review_id
+            or type(authorization_binding) is not dict
+            or set(authorization_binding) != binding_keys
+            or any(
+                re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    str(authorization_binding.get(field) or ""),
+                )
+                is None
+                for field in digest_fields
+            )
+            or type(authorization_binding.get("gap_id")) is not str
+            or not authorization_binding["gap_id"]
+            or type(authorization_binding.get("capability_key")) is not str
+            or not authorization_binding["capability_key"]
+            or authorization_binding.get("adapter_contract_version")
+            not in {
+                COMPUTATION_ADAPTER_V2,
+                COMPUTATION_ADAPTER_V3,
+                COMPUTATION_ADAPTER_V4,
+                COMPUTATION_ADAPTER_V5,
+            }
+            or type(
+                authorization_binding.get("authorization_warehouse_revision")
+            )
+            is not int
+            or authorization_binding["authorization_warehouse_revision"] < 0
+        ):
+            raise Stage3Error("frozen_review_admission_invalid")
+        try:
+            authorized_contracts = normalize_capsule_contracts(
+                "computation",
+                authorization_binding["input_contract"],
+                authorization_binding["output_contract"],
+                authorization_binding["error_contract"],
+            )
+        except (DataContractError, TypeError) as exc:
+            raise Stage3Error("frozen_review_admission_invalid") from exc
+        if authorized_contracts != (
+            authorization_binding["input_contract"],
+            authorization_binding["output_contract"],
+            authorization_binding["error_contract"],
+        ):
+            raise Stage3Error("frozen_review_admission_invalid")
+
+        def file_sha256(path: Path) -> str:
+            digest = hashlib.sha256()
+            with path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            return digest.hexdigest()
+
+        if file_sha256(source_path) != expected_source_sha256:
+            raise Stage3Error("frozen_review_source_changed")
+        source_store = CapsuleWarehouseStore(source_path)
+        source_stage3 = ReweaveCapsuleStage3(source_store)
+        review = source_stage3._review(review_id)
+        if (
+            review["candidate_status"] != "review_required"
+            or review["decision"] is not None
+            or review["project_id"] is None
+        ):
+            raise Stage3Error("frozen_review_not_admissible")
+        prepared = source_stage3._prepare(review)
+        if prepared.artifact.version_canonical_hash != review["candidate_canonical_hash"]:
+            raise Stage3Error("candidate_changed_since_validation")
+        try:
+            source_summary = json.loads(review["sanitized_candidate_json"])
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise Stage3Error("sanitized_candidate_invalid") from exc
+        candidate = prepared.artifact.canonical_payload
+        if (
+            candidate.get("capability_kind") != "computation"
+            or source_summary.get("adapter_contract_version")
+            != authorization_binding["adapter_contract_version"]
+            or (
+                candidate.get("input_contract"),
+                candidate.get("output_contract"),
+                candidate.get("error_contract"),
+            )
+            != authorized_contracts
+        ):
+            raise Stage3Error("frozen_review_authorization_mismatch")
+        evidence = source_stage3._evidence(review)
+        capability_kind = prepared.artifact.canonical_payload["capability_kind"]
+        if not source_stage3._evidence_current(evidence, capability_kind):
+            raise Stage3Error("stage3_evidence_expired")
+        supervision = json.loads(review["supervision_result_json"] or "null")
+        if type(supervision) is not dict:
+            raise Stage3Error("stage3_evidence_missing")
+        _validate_supervision(supervision, capability_kind)
+        response_hash = review["supervision_response_hash"]
+        if type(response_hash) is not str or not re.fullmatch(r"[0-9a-f]{64}", response_hash):
+            raise Stage3Error("stage3_evidence_invalid")
+        validation = source_stage3._runtime_validation(prepared)
+        if _canonical_json_bytes(validation) != _canonical_json_bytes(
+            evidence["validation"]
+        ):
+            raise Stage3Error("stage3_validation_changed")
+        if file_sha256(source_path) != expected_source_sha256:
+            raise Stage3Error("frozen_review_source_changed")
+
+        with tempfile.TemporaryDirectory(prefix="reweave-frozen-review-admission.") as temp:
+            verification_path = Path(temp) / "capsule_warehouse.sqlite3"
+            shutil.copy2(source_path, verification_path)
+            verification_store = CapsuleWarehouseStore(verification_path)
+            with verification_store.transaction() as connection:
+                changed = connection.execute(
+                    "UPDATE source_roots SET current_path = ? WHERE root_id = "
+                    "(SELECT source_root_id FROM projects WHERE project_id = ?)",
+                    (str(source_directory), review["project_id"]),
+                ).rowcount
+                if changed != 1:
+                    raise Stage3Error("frozen_review_lineage_incomplete")
+            try:
+                durable_snapshot = JavascriptSourceService(verification_store).scan(
+                    str(review["project_id"])
+                )
+            except JavascriptSourceError as exc:
+                raise Stage3Error("frozen_review_source_changed") from exc
+            if (
+                prepared.capture_snapshot is None
+                or not _same_capture_snapshot(
+                    prepared.capture_snapshot, durable_snapshot
+                )
+            ):
+                raise Stage3Error("frozen_review_source_changed")
+
+        with source_store.read_connection() as connection:
+            run = connection.execute(
+                "SELECT * FROM intake_runs WHERE run_id = ?", (review["run_id"],)
+            ).fetchone()
+            project = connection.execute(
+                "SELECT * FROM projects WHERE project_id = ?", (review["project_id"],)
+            ).fetchone()
+            root = (
+                connection.execute(
+                    "SELECT * FROM source_roots WHERE root_id = ?",
+                    (project["source_root_id"],),
+                ).fetchone()
+                if project is not None
+                else None
+            )
+            file_index = (
+                connection.execute(
+                    "SELECT * FROM project_file_index WHERE project_id = ? "
+                    "ORDER BY logical_path",
+                    (review["project_id"],),
+                ).fetchall()
+                if project is not None
+                else []
+            )
+        if run is None or project is None or root is None:
+            raise Stage3Error("frozen_review_lineage_incomplete")
+        root = dict(root)
+        root["current_path"] = str(source_directory)
+        source_rows = [
+            dict(row)
+            for row in file_index
+            if row["logical_path"] == review["source_relpath"]
+        ]
+        if len(source_rows) != 1:
+            raise Stage3Error("frozen_review_lineage_incomplete")
+        source_relative = PurePosixPath(str(review["source_relpath"]))
+        if (
+            source_relative.is_absolute()
+            or not source_relative.parts
+            or any(part in {"", ".", ".."} for part in source_relative.parts)
+        ):
+            raise Stage3Error("frozen_review_lineage_incomplete")
+        source_file = source_directory.joinpath(*source_relative.parts)
+        if (
+            source_file.is_symlink()
+            or not source_file.is_file()
+            or file_sha256(source_file) != source_rows[0]["content_sha256"]
+        ):
+            raise Stage3Error("frozen_review_source_changed")
+        source_file_sha256 = source_rows[0]["content_sha256"]
+
+        comparison = self._equivalence_comparison(
+            prepared, self._hash_matches(prepared.artifact.version_canonical_hash)
+        )
+        validation_sha256 = hashlib.sha256(
+            _canonical_json_bytes(validation)
+        ).hexdigest()
+        receipt_base = {
+            "schema": FROZEN_REVIEW_ADMISSION_VERSION,
+            "source_database_sha256": expected_source_sha256,
+            "source_review_id": review_id,
+            "candidate_canonical_hash": prepared.artifact.version_canonical_hash,
+            "source_identity_sha256": prepared.snapshot_digest,
+            "source_file_sha256": source_file_sha256,
+            "validation_sha256": validation_sha256,
+            "plan_digest": authorization_binding["plan_digest"],
+            "gap_id": authorization_binding["gap_id"],
+            "projection_digest": authorization_binding["projection_digest"],
+            "authorize_decision_digest": authorization_binding[
+                "authorize_decision_digest"
+            ],
+            "source_proposal_authorization_digest": authorization_binding[
+                "source_proposal_authorization_digest"
+            ],
+            "authorized_capability_key": authorization_binding[
+                "capability_key"
+            ],
+            "authorized_adapter_contract_version": authorization_binding[
+                "adapter_contract_version"
+            ],
+            "authorized_input_contract": authorization_binding[
+                "input_contract"
+            ],
+            "authorized_output_contract": authorization_binding[
+                "output_contract"
+            ],
+            "authorized_error_contract": authorization_binding[
+                "error_contract"
+            ],
+            "authorization_warehouse_revision": authorization_binding[
+                "authorization_warehouse_revision"
+            ],
+            "authorization_catalog_digest": authorization_binding[
+                "authorization_catalog_digest"
+            ],
+            "supervision_model_name": evidence["model_name"],
+            "supervision_model_digest": evidence["model_digest"],
+        }
+
+        def admission_receipt(
+            target_revision_before: int,
+            target_revision_after: int,
+        ) -> dict[str, Any]:
+            value = {
+                **receipt_base,
+                "target_warehouse_revision_before": target_revision_before,
+                "target_catalog_digest_before": authorization_binding[
+                    "target_catalog_digest"
+                ],
+                "target_warehouse_revision_after": target_revision_after,
+                "target_catalog_digest_after": authorization_binding[
+                    "target_catalog_digest"
+                ],
+            }
+            return {
+                **value,
+                "digest": hashlib.sha256(
+                    _canonical_json_bytes(value)
+                ).hexdigest(),
+            }
+
+        lineage_rows = (
+            ("source_roots", root, "root_id"),
+            ("projects", dict(project), "project_id"),
+            *(
+                ("project_file_index", dict(row), "logical_path")
+                for row in file_index
+            ),
+            ("intake_runs", dict(run), "run_id"),
+        )
+        with self.store.transaction() as connection:
+            revision = int(
+                connection.execute(
+                    "SELECT warehouse_revision FROM warehouse_state WHERE singleton_id = 1"
+                ).fetchone()[0]
+            )
+            if revision != expected_warehouse_revision:
+                raise Stage3Error("frozen_review_target_stale")
+            selected_row = connection.execute(
+                "SELECT value_json FROM app_settings WHERE setting_key = "
+                "'capsule_supervision_model'"
+            ).fetchone()
+            try:
+                selected_model = (
+                    json.loads(selected_row[0])
+                    if selected_row is not None
+                    else None
+                )
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise Stage3Error(
+                    "frozen_review_supervision_model_changed"
+                ) from exc
+            if (
+                type(selected_model) is not dict
+                or selected_model.get("name") != evidence["model_name"]
+                or selected_model.get("digest") != evidence["model_digest"]
+            ):
+                raise Stage3Error("frozen_review_supervision_model_changed")
+            existing = connection.execute(
+                "SELECT * FROM review_items WHERE review_id = ?",
+                (review_id,),
+            ).fetchone()
+            if existing is not None:
+                try:
+                    existing_summary = json.loads(
+                        existing["sanitized_candidate_json"]
+                    )
+                except (TypeError, json.JSONDecodeError) as exc:
+                    raise Stage3Error(
+                        "frozen_review_identity_conflict"
+                    ) from exc
+                existing_receipt = existing_summary.get(
+                    "frozen_review_admission"
+                )
+                if (
+                    type(existing_receipt) is not dict
+                    or existing_receipt.get("schema")
+                    != FROZEN_REVIEW_ADMISSION_VERSION
+                    or type(
+                        existing_receipt.get(
+                            "target_warehouse_revision_before"
+                        )
+                    )
+                    is not int
+                    or type(
+                        existing_receipt.get(
+                            "target_warehouse_revision_after"
+                        )
+                    )
+                    is not int
+                ):
+                    raise Stage3Error("frozen_review_identity_conflict")
+                receipt = admission_receipt(
+                    existing_receipt["target_warehouse_revision_before"],
+                    existing_receipt["target_warehouse_revision_after"],
+                )
+                admitted_review = dict(review)
+                summary = json.loads(
+                    admitted_review["sanitized_candidate_json"]
+                )
+                summary["frozen_review_admission"] = receipt
+                admitted_review["sanitized_candidate_json"] = _json(summary)
+                admitted_review["equivalence_comparison_json"] = _json(
+                    comparison
+                )
+                if (
+                    existing_receipt != receipt
+                    or receipt["target_warehouse_revision_before"]
+                    != authorization_binding[
+                        "authorization_warehouse_revision"
+                    ]
+                    or receipt["target_warehouse_revision_after"]
+                    != receipt["target_warehouse_revision_before"] + 1
+                    or revision
+                    != receipt["target_warehouse_revision_after"]
+                    or dict(existing) != admitted_review
+                ):
+                    raise Stage3Error("frozen_review_identity_conflict")
+                for table, row, identity_column in lineage_rows:
+                    if table == "project_file_index":
+                        current = connection.execute(
+                            "SELECT * FROM project_file_index "
+                            "WHERE project_id = ? AND logical_path = ?",
+                            (row["project_id"], row["logical_path"]),
+                        ).fetchone()
+                    else:
+                        current = connection.execute(
+                            f"SELECT * FROM {table} "
+                            f"WHERE {identity_column} = ?",
+                            (row[identity_column],),
+                        ).fetchone()
+                    if current is None or dict(current) != row:
+                        raise Stage3Error(
+                            "frozen_review_identity_conflict"
+                        )
+                return {
+                    "review_id": review_id,
+                    "status": "already_admitted",
+                    "canonical_hash": prepared.artifact.version_canonical_hash,
+                    "admission_digest": receipt["digest"],
+                    "warehouse_revision": revision,
+                }
+            if (
+                revision
+                != authorization_binding["authorization_warehouse_revision"]
+            ):
+                raise Stage3Error("frozen_review_target_stale")
+            receipt = admission_receipt(revision, revision + 1)
+            admitted_review = dict(review)
+            summary = json.loads(admitted_review["sanitized_candidate_json"])
+            summary["frozen_review_admission"] = receipt
+            admitted_review["sanitized_candidate_json"] = _json(summary)
+            admitted_review["equivalence_comparison_json"] = _json(comparison)
+            rows = (
+                *lineage_rows,
+                ("review_items", admitted_review, "review_id"),
+            )
+            for table, row, identity_column in rows:
+                if table == "project_file_index":
+                    current = connection.execute(
+                        "SELECT * FROM project_file_index "
+                        "WHERE project_id = ? AND logical_path = ?",
+                        (row["project_id"], row["logical_path"]),
+                    ).fetchone()
+                else:
+                    current = connection.execute(
+                        f"SELECT * FROM {table} WHERE {identity_column} = ?",
+                        (row[identity_column],),
+                    ).fetchone()
+                if current is not None:
+                    if dict(current) != row:
+                        raise Stage3Error("frozen_review_identity_conflict")
+                    continue
+                columns = tuple(row)
+                placeholders = ",".join("?" for _ in columns)
+                connection.execute(
+                    f"INSERT INTO {table} ({','.join(columns)}) VALUES ({placeholders})",
+                    tuple(row[column] for column in columns),
+                )
+            new_revision = self.store.bump_revision(connection)
+            if new_revision != receipt["target_warehouse_revision_after"]:
+                raise Stage3Error("frozen_review_target_stale")
+        return {
+            "review_id": review_id,
+            "status": "review_required",
+            "canonical_hash": prepared.artifact.version_canonical_hash,
+            "admission_digest": receipt["digest"],
+            "warehouse_revision": new_revision,
+        }
+
+    def admit_frozen_ui_review_batch(
+        self,
+        source_database_path: Path,
+        source_directory_path: Path,
+        *,
+        expected_source_sha256: str,
+        expected_warehouse_revision: int,
+        authorization_binding: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Atomically admit one compatible interaction/presentation pair."""
+
+        source_path = Path(source_database_path)
+        source_directory = Path(source_directory_path)
+        authorization_keys = {
+            "schema",
+            "scope",
+            "source_database_sha256",
+            "source_project_id",
+            "source_run_id",
+            "source_file_index_digest",
+            "capability_key",
+            "display_name",
+            "page_capability_contract_digest",
+            "supervision_model_name",
+            "supervision_model_digest",
+            "target_warehouse_revision",
+            "target_catalog_digest",
+            "reviews",
+            "authorization_digest",
+        }
+        review_keys = {
+            "review_id",
+            "capability_kind",
+            "candidate_canonical_hash",
+            "source_relpath",
+            "source_file_sha256",
+            "validation_sha256",
+            "page_capability_declaration_digest",
+        }
+        digest_fields = {
+            "source_database_sha256",
+            "source_file_index_digest",
+            "page_capability_contract_digest",
+            "supervision_model_digest",
+            "target_catalog_digest",
+            "authorization_digest",
+        }
+        reviews = (
+            authorization_binding.get("reviews")
+            if type(authorization_binding) is dict
+            else None
+        )
+        if (
+            not source_path.is_absolute()
+            or source_path.is_symlink()
+            or not source_path.is_file()
+            or not source_directory.is_absolute()
+            or source_directory.is_symlink()
+            or not source_directory.is_dir()
+            or re.fullmatch(r"[0-9a-f]{64}", expected_source_sha256) is None
+            or type(expected_warehouse_revision) is not int
+            or expected_warehouse_revision < 0
+            or type(authorization_binding) is not dict
+            or set(authorization_binding) != authorization_keys
+            or authorization_binding.get("schema")
+            != FROZEN_UI_REVIEW_ADMISSION_AUTHORIZATION_VERSION
+            or authorization_binding.get("scope")
+            not in {"isolated_rehearsal", "formal_admission"}
+            or any(
+                re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    str(authorization_binding.get(field) or ""),
+                )
+                is None
+                for field in digest_fields
+            )
+            or authorization_binding["source_database_sha256"]
+            != expected_source_sha256
+            or type(authorization_binding.get("source_project_id")) is not str
+            or not authorization_binding["source_project_id"]
+            or type(authorization_binding.get("source_run_id")) is not str
+            or not authorization_binding["source_run_id"]
+            or type(authorization_binding.get("capability_key")) is not str
+            or _SNAKE.fullmatch(authorization_binding["capability_key"]) is None
+            or type(authorization_binding.get("display_name")) is not str
+            or not authorization_binding["display_name"]
+            or len(authorization_binding["display_name"]) > 200
+            or type(authorization_binding.get("supervision_model_name")) is not str
+            or not authorization_binding["supervision_model_name"]
+            or authorization_binding.get("target_warehouse_revision")
+            != expected_warehouse_revision
+            or type(reviews) is not list
+            or len(reviews) != 2
+            or any(
+                type(item) is not dict
+                or set(item) != review_keys
+                or item.get("capability_kind")
+                not in {"interaction", "presentation"}
+                or type(item.get("review_id")) is not str
+                or not item["review_id"]
+                or type(item.get("source_relpath")) is not str
+                or not item["source_relpath"]
+                or any(
+                    re.fullmatch(r"[0-9a-f]{64}", str(item.get(field) or ""))
+                    is None
+                    for field in (
+                        "candidate_canonical_hash",
+                        "source_file_sha256",
+                        "validation_sha256",
+                        "page_capability_declaration_digest",
+                    )
+                )
+                for item in reviews
+            )
+            or [item["capability_kind"] for item in reviews]
+            != ["interaction", "presentation"]
+        ):
+            raise Stage3Error("frozen_ui_review_admission_invalid")
+        authorization_body = {
+            key: value
+            for key, value in authorization_binding.items()
+            if key != "authorization_digest"
+        }
+        if authorization_binding["authorization_digest"] != hashlib.sha256(
+            _canonical_json_bytes(authorization_body)
+        ).hexdigest():
+            raise Stage3Error("frozen_ui_review_admission_invalid")
+
+        def file_sha256(path: Path) -> str:
+            digest = hashlib.sha256()
+            with path.open("rb") as handle:
+                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+                    digest.update(chunk)
+            return digest.hexdigest()
+
+        if file_sha256(source_path) != expected_source_sha256:
+            raise Stage3Error("frozen_ui_review_source_changed")
+        source_store = CapsuleWarehouseStore(source_path)
+        with source_store.read_connection() as connection:
+            source_reviews = {
+                str(authorized["capability_kind"]): connection.execute(
+                    "SELECT * FROM review_items WHERE review_id = ?",
+                    (authorized["review_id"],),
+                ).fetchone()
+                for authorized in reviews
+            }
+            run_row = connection.execute(
+                "SELECT * FROM intake_runs WHERE run_id = ?",
+                (authorization_binding["source_run_id"],),
+            ).fetchone()
+            project_row = connection.execute(
+                "SELECT * FROM projects WHERE project_id = ?",
+                (authorization_binding["source_project_id"],),
+            ).fetchone()
+            root_row = (
+                connection.execute(
+                    "SELECT * FROM source_roots WHERE root_id = ?",
+                    (project_row["source_root_id"],),
+                ).fetchone()
+                if project_row is not None
+                else None
+            )
+        if (
+            run_row is None
+            or project_row is None
+            or root_row is None
+            or project_row["source_type"] != "static_web"
+            or run_row["project_id"] != project_row["project_id"]
+            or any(row is None for row in source_reviews.values())
+        ):
+            raise Stage3Error("frozen_ui_review_lineage_incomplete")
+
+        prepared_by_kind: dict[str, _PreparedReview] = {}
+        review_by_kind: dict[str, dict[str, Any]] = {}
+        summary_by_kind: dict[str, dict[str, Any]] = {}
+        comparison_by_kind: dict[str, dict[str, Any]] = {}
+        with tempfile.TemporaryDirectory(
+            prefix="reweave-frozen-ui-review-admission."
+        ) as temp:
+            verification_path = Path(temp) / "capsule_warehouse.sqlite3"
+            shutil.copy2(source_path, verification_path)
+            verification_store = CapsuleWarehouseStore(verification_path)
+            with verification_store.transaction() as connection:
+                changed = connection.execute(
+                    "UPDATE source_roots SET current_path = ? WHERE root_id = ?",
+                    (str(source_directory), root_row["root_id"]),
+                ).rowcount
+                if changed != 1:
+                    raise Stage3Error(
+                        "frozen_ui_review_lineage_incomplete"
+                    )
+            verification_stage3 = ReweaveCapsuleStage3(verification_store)
+            try:
+                snapshot = verification_stage3.intake.snapshot_project(
+                    str(project_row["project_id"])
+                )
+            except IntakeError as exc:
+                raise Stage3Error("frozen_ui_review_source_changed") from exc
+            file_index = [
+                {
+                    "path": item.path,
+                    "file_type": item.file_type,
+                    "size": item.size,
+                    "sha256": item.sha256,
+                }
+                for item in snapshot.entries
+            ]
+            if hashlib.sha256(
+                _canonical_json_bytes(file_index)
+            ).hexdigest() != authorization_binding[
+                "source_file_index_digest"
+            ]:
+                raise Stage3Error("frozen_ui_review_source_changed")
+            source_files = {item["path"]: item for item in file_index}
+
+            for authorized in reviews:
+                kind = str(authorized["capability_kind"])
+                review = verification_stage3._review(
+                    str(authorized["review_id"])
+                )
+                source_file = source_files.get(authorized["source_relpath"])
+                if (
+                    review["candidate_status"] != "review_required"
+                    or review["decision"] is not None
+                    or review["project_id"]
+                    != authorization_binding["source_project_id"]
+                    or review["run_id"]
+                    != authorization_binding["source_run_id"]
+                    or source_file is None
+                    or source_file["sha256"]
+                    != authorized["source_file_sha256"]
+                ):
+                    raise Stage3Error("frozen_ui_review_not_admissible")
+                prepared = verification_stage3._prepare(review)
+                if (
+                    prepared.artifact.canonical_payload["capability_kind"]
+                    != kind
+                    or prepared.artifact.version_canonical_hash
+                    != review["candidate_canonical_hash"]
+                    or review["candidate_canonical_hash"]
+                    != authorized["candidate_canonical_hash"]
+                    or review["source_relpath"]
+                    != authorized["source_relpath"]
+                ):
+                    raise Stage3Error(
+                        "frozen_ui_review_authorization_mismatch"
+                    )
+                try:
+                    summary = json.loads(
+                        review["sanitized_candidate_json"]
+                    )
+                except (TypeError, json.JSONDecodeError) as exc:
+                    raise Stage3Error(
+                        "sanitized_candidate_invalid"
+                    ) from exc
+                declared_files = {
+                    item["path"]: item["sha256"]
+                    for item in (
+                        list(summary.get("static_evidence") or [])
+                        + list(summary.get("module_evidence") or [])
+                    )
+                    if type(item) is dict
+                    and type(item.get("path")) is str
+                    and type(item.get("sha256")) is str
+                }
+                if (
+                    not declared_files
+                    or any(
+                        path not in source_files
+                        or source_files[path]["sha256"] != digest
+                        for path, digest in declared_files.items()
+                    )
+                ):
+                    raise Stage3Error(
+                        "frozen_ui_review_source_changed"
+                    )
+                declaration = summary.get("page_capability_declaration")
+                formal_binding = summary.get("formal_identity_binding")
+                field = "requires" if kind == "interaction" else "provides"
+                try:
+                    expected_declaration = (
+                        build_page_capability_declaration_v2(
+                            capability_kind=kind,
+                            elements=declaration[field],
+                        )
+                    )
+                    expected_formal_binding = (
+                        build_formal_identity_binding_v2(
+                            canonical_payload_digest=(
+                                prepared.artifact.canonical_payload_digest
+                            ),
+                            page_capability_declaration=(
+                                expected_declaration
+                            ),
+                        )
+                    )
+                except (KeyError, TypeError, ValueError) as exc:
+                    raise Stage3Error(
+                        "frozen_ui_review_page_capability_invalid"
+                    ) from exc
+                if (
+                    declaration != expected_declaration
+                    or formal_binding != expected_formal_binding
+                    or expected_formal_binding["formal_identity_digest"]
+                    != review["candidate_canonical_hash"]
+                    or declaration["canonical_digest"]
+                    != authorized[
+                        "page_capability_declaration_digest"
+                    ]
+                ):
+                    raise Stage3Error(
+                        "frozen_ui_review_page_capability_invalid"
+                    )
+                evidence = verification_stage3._evidence(review)
+                if (
+                    not verification_stage3._evidence_current(evidence, kind)
+                    or evidence.get("model_name")
+                    != authorization_binding["supervision_model_name"]
+                    or evidence.get("model_digest")
+                    != authorization_binding["supervision_model_digest"]
+                ):
+                    raise Stage3Error(
+                        "frozen_ui_review_evidence_invalid"
+                    )
+                try:
+                    supervision = json.loads(
+                        review["supervision_result_json"] or "null"
+                    )
+                except (TypeError, json.JSONDecodeError) as exc:
+                    raise Stage3Error("stage3_evidence_invalid") from exc
+                _validate_supervision(supervision, kind)
+                response_hash = review["supervision_response_hash"]
+                if (
+                    type(response_hash) is not str
+                    or re.fullmatch(r"[0-9a-f]{64}", response_hash) is None
+                ):
+                    raise Stage3Error("stage3_evidence_invalid")
+                validation = verification_stage3._runtime_validation(
+                    prepared
+                )
+                validation_sha256 = hashlib.sha256(
+                    _canonical_json_bytes(validation)
+                ).hexdigest()
+                if (
+                    _canonical_json_bytes(validation)
+                    != _canonical_json_bytes(evidence["validation"])
+                    or validation_sha256
+                    != authorized["validation_sha256"]
+                ):
+                    raise Stage3Error("stage3_validation_changed")
+                prepared_by_kind[kind] = prepared
+                review_by_kind[kind] = review
+                summary_by_kind[kind] = summary
+                comparison_by_kind[kind] = self._equivalence_comparison(
+                    prepared,
+                    self._hash_matches(
+                        prepared.artifact.version_canonical_hash
+                    ),
+                )
+
+        page_contract = build_page_capability_contract_v2(
+            presentation_provides=summary_by_kind["presentation"][
+                "page_capability_declaration"
+            ]["provides"],
+            interaction_requires=summary_by_kind["interaction"][
+                "page_capability_declaration"
+            ]["requires"],
+        )
+        if (
+            page_contract["canonical_digest"]
+            != authorization_binding["page_capability_contract_digest"]
+        ):
+            raise Stage3Error("frozen_ui_review_page_capability_invalid")
+
+        root = dict(root_row)
+        root["current_path"] = str(source_directory)
+        if (
+            file_sha256(source_path) != expected_source_sha256
+            or self.store.path.resolve() == source_path.resolve()
+        ):
+            raise Stage3Error("frozen_ui_review_source_changed")
+
+        def receipt(
+            kind: str,
+            revision_before: int,
+            revision_after: int,
+        ) -> dict[str, Any]:
+            authorized = next(
+                item for item in reviews if item["capability_kind"] == kind
+            )
+            prepared = prepared_by_kind[kind]
+            value = {
+                "schema": FROZEN_UI_REVIEW_ADMISSION_VERSION,
+                "batch_authorization_digest": authorization_binding[
+                    "authorization_digest"
+                ],
+                "authorization_scope": authorization_binding["scope"],
+                "source_database_sha256": expected_source_sha256,
+                "source_review_id": authorized["review_id"],
+                "capability_kind": kind,
+                "candidate_canonical_hash": prepared.artifact.version_canonical_hash,
+                "source_identity_sha256": prepared.snapshot_digest,
+                "source_file_sha256": authorized["source_file_sha256"],
+                "validation_sha256": authorized["validation_sha256"],
+                "page_capability_declaration_digest": authorized[
+                    "page_capability_declaration_digest"
+                ],
+                "page_capability_contract_digest": page_contract[
+                    "canonical_digest"
+                ],
+                "authorized_capability_key": authorization_binding[
+                    "capability_key"
+                ],
+                "authorized_display_name": authorization_binding[
+                    "display_name"
+                ],
+                "supervision_model_name": authorization_binding[
+                    "supervision_model_name"
+                ],
+                "supervision_model_digest": authorization_binding[
+                    "supervision_model_digest"
+                ],
+                "target_warehouse_revision_before": revision_before,
+                "target_catalog_digest_before": authorization_binding[
+                    "target_catalog_digest"
+                ],
+                "target_warehouse_revision_after": revision_after,
+                "target_catalog_digest_after": authorization_binding[
+                    "target_catalog_digest"
+                ],
+            }
+            return {
+                **value,
+                "digest": hashlib.sha256(
+                    _canonical_json_bytes(value)
+                ).hexdigest(),
+            }
+
+        lineage_rows = (
+            ("source_roots", root, "root_id"),
+            ("projects", dict(project_row), "project_id"),
+            ("intake_runs", dict(run_row), "run_id"),
+        )
+        ordered_kinds = ("interaction", "presentation")
+        expected_receipts = {
+            kind: receipt(
+                kind,
+                expected_warehouse_revision + index,
+                expected_warehouse_revision + index + 1,
+            )
+            for index, kind in enumerate(ordered_kinds)
+        }
+        admitted_rows: dict[str, dict[str, Any]] = {}
+        for kind in ordered_kinds:
+            row = dict(review_by_kind[kind])
+            summary = dict(summary_by_kind[kind])
+            summary["frozen_ui_review_admission"] = expected_receipts[kind]
+            row["sanitized_candidate_json"] = _json(summary)
+            row["equivalence_comparison_json"] = _json(
+                comparison_by_kind[kind]
+            )
+            admitted_rows[kind] = row
+
+        with self.store.transaction() as connection:
+            revision = int(
+                connection.execute(
+                    "SELECT warehouse_revision FROM warehouse_state "
+                    "WHERE singleton_id = 1"
+                ).fetchone()[0]
+            )
+            selected_row = connection.execute(
+                "SELECT value_json FROM app_settings WHERE setting_key = "
+                "'capsule_supervision_model'"
+            ).fetchone()
+            try:
+                selected_model = (
+                    json.loads(selected_row[0])
+                    if selected_row is not None
+                    else None
+                )
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise Stage3Error(
+                    "frozen_ui_review_supervision_model_changed"
+                ) from exc
+            if (
+                type(selected_model) is not dict
+                or selected_model.get("name")
+                != authorization_binding["supervision_model_name"]
+                or selected_model.get("digest")
+                != authorization_binding["supervision_model_digest"]
+            ):
+                raise Stage3Error(
+                    "frozen_ui_review_supervision_model_changed"
+                )
+            group = connection.execute(
+                "SELECT capability_key FROM capability_groups "
+                "WHERE capability_key = ?",
+                (authorization_binding["capability_key"],),
+            ).fetchone()
+            existing = {
+                kind: connection.execute(
+                    "SELECT * FROM review_items WHERE review_id = ?",
+                    (review_by_kind[kind]["review_id"],),
+                ).fetchone()
+                for kind in ordered_kinds
+            }
+            if all(row is not None for row in existing.values()):
+                if (
+                    group is not None
+                    or revision != expected_warehouse_revision + 2
+                    or any(
+                        dict(existing[kind]) != admitted_rows[kind]
+                        for kind in ordered_kinds
+                    )
+                ):
+                    raise Stage3Error("frozen_ui_review_identity_conflict")
+                return {
+                    "status": "already_admitted",
+                    "review_ids": [
+                        review_by_kind[kind]["review_id"]
+                        for kind in ordered_kinds
+                    ],
+                    "admission_digests": [
+                        expected_receipts[kind]["digest"]
+                        for kind in ordered_kinds
+                    ],
+                    "warehouse_revision": revision,
+                }
+            if any(row is not None for row in existing.values()):
+                raise Stage3Error("frozen_ui_review_identity_conflict")
+            if group is not None:
+                raise Stage3Error("frozen_ui_review_capability_exists")
+            if revision != expected_warehouse_revision:
+                raise Stage3Error("frozen_ui_review_target_stale")
+            for table, row, identity_column in lineage_rows:
+                current = connection.execute(
+                    f"SELECT * FROM {table} WHERE {identity_column} = ?",
+                    (row[identity_column],),
+                ).fetchone()
+                if current is not None:
+                    if dict(current) != row:
+                        raise Stage3Error("frozen_ui_review_identity_conflict")
+                    continue
+                columns = tuple(row)
+                connection.execute(
+                    f"INSERT INTO {table} ({','.join(columns)}) VALUES "
+                    f"({','.join('?' for _ in columns)})",
+                    tuple(row[column] for column in columns),
+                )
+            for kind in ordered_kinds:
+                row = admitted_rows[kind]
+                columns = tuple(row)
+                connection.execute(
+                    f"INSERT INTO review_items ({','.join(columns)}) VALUES "
+                    f"({','.join('?' for _ in columns)})",
+                    tuple(row[column] for column in columns),
+                )
+                new_revision = self.store.bump_revision(connection)
+                if new_revision != expected_receipts[kind][
+                    "target_warehouse_revision_after"
+                ]:
+                    raise Stage3Error("frozen_ui_review_target_stale")
+        return {
+            "status": "review_required",
+            "review_ids": [
+                review_by_kind[kind]["review_id"]
+                for kind in ordered_kinds
+            ],
+            "admission_digests": [
+                expected_receipts[kind]["digest"]
+                for kind in ordered_kinds
+            ],
+            "warehouse_revision": new_revision,
+        }
+
+    def _prepare_ephemeral_computation_capture(
         self,
         snapshot: JavascriptScopeSnapshot,
         selection: dict[str, str],
         mapping: dict[str, Any],
         *,
+        adapter_version: str,
         review_id: str | None = None,
     ) -> PreparedReview | dict[str, Any]:
         """Complete Stage E in memory; no candidate or module is persisted here."""
@@ -3505,13 +5738,75 @@ class ReweaveCapsuleStage3:
             or type(selection.get("module_relpath")) is not str
             or type(selection.get("export_name")) is not str
             or re.fullmatch(r"[0-9a-f]{64}", selection.get("target_binding_id") or "") is None
+            or adapter_version not in EPHEMERAL_COMPUTATION_ADAPTER_VERSIONS
             or (review_id is not None and (type(review_id) is not str or not review_id))
         ):
             raise Stage3Error("capture_request_invalid")
-        arguments, parameter_domains, result_field, examples, enumerations = (
-            _normalize_capture_mapping(mapping)
+        passthrough_fields: list[str] = []
+        result_enum: list[str] = []
+        proof_schema: str | None = None
+        if adapter_version == COMPUTATION_ADAPTER_V5:
+            (
+                arguments,
+                parameter_domains,
+                result_field,
+                result_enum,
+                proof_schema,
+                examples,
+                enumerations,
+            ) = _normalize_capture_mapping_v5(mapping)
+        elif adapter_version == COMPUTATION_ADAPTER_V4:
+            (
+                arguments,
+                parameter_domains,
+                result_field,
+                result_enum,
+                proof_schema,
+                examples,
+                enumerations,
+            ) = _normalize_capture_mapping_v4(mapping)
+        elif adapter_version == COMPUTATION_ADAPTER_V3:
+            (
+                arguments,
+                parameter_domains,
+                result_field,
+                passthrough_fields,
+                examples,
+                enumerations,
+            ) = _normalize_capture_mapping_v3(mapping)
+        else:
+            (
+                arguments,
+                parameter_domains,
+                result_field,
+                examples,
+                enumerations,
+            ) = _normalize_capture_mapping(mapping)
+        resume_contract = (
+            {
+                COMPUTATION_ADAPTER_V3: CAPTURE_RESUME_V2,
+                COMPUTATION_ADAPTER_V4: CAPTURE_RESUME_V3,
+                COMPUTATION_ADAPTER_V5: CAPTURE_RESUME_V4,
+            }.get(adapter_version, CAPTURE_RESUME_V1)
         )
-        first = _run_source_graph_capture(snapshot, selection, parameter_domains)
+        try:
+            first = _run_source_graph_capture(
+                snapshot,
+                selection,
+                parameter_domains,
+                request_schema=(
+                    "source_graph_request.v2"
+                    if adapter_version == COMPUTATION_ADAPTER_V5
+                    else "source_graph_request.v1"
+                ),
+            )
+        except Stage3Error as exc:
+            if (
+                adapter_version == COMPUTATION_ADAPTER_V3
+                and exc.code == "unsupported_control_flow"
+            ):
+                raise Stage3Error("interval_unproven") from exc
+            raise
         proof = first["proof"]
         capture = first["capture"]
         if (
@@ -3521,7 +5816,16 @@ class ReweaveCapsuleStage3:
             or capture.get("target_binding_id") != selection["target_binding_id"]
         ):
             raise Stage3Error("offer_stale")
-        second = _run_source_graph_capture(snapshot, selection, parameter_domains)
+        second = _run_source_graph_capture(
+            snapshot,
+            selection,
+            parameter_domains,
+            request_schema=(
+                "source_graph_request.v2"
+                if adapter_version == COMPUTATION_ADAPTER_V5
+                else "source_graph_request.v1"
+            ),
+        )
         if _canonical_json_bytes(first) != _canonical_json_bytes(second):
             raise Stage3Error("bundle_not_deterministic")
 
@@ -3535,14 +5839,62 @@ class ReweaveCapsuleStage3:
 
         require_fresh_snapshot()
 
-        input_contract, output_contract, error_contract = _capture_contracts(
-            arguments, result_field, proof.get("result_domain")
-        )
-        adapter_source = generate_computation_adapter_v2(
-            [item["input_field"] for item in arguments],
-            input_contract,
-            output_contract,
-        )
+        if adapter_version in {COMPUTATION_ADAPTER_V4, COMPUTATION_ADAPTER_V5}:
+            if (
+                proof.get("schema") != proof_schema
+                or proof.get("result_domain")
+                != {"kind": "enum", "values": result_enum}
+            ):
+                raise Stage3Error("interval_unproven")
+            if adapter_version == COMPUTATION_ADAPTER_V5:
+                input_contract, output_contract, error_contract = (
+                    _capture_contracts_v5(
+                        arguments,
+                        result_field,
+                        proof.get("result_domain"),
+                    )
+                )
+                adapter_source = generate_computation_adapter_v5(
+                    [item["input_field"] for item in arguments],
+                    input_contract,
+                    output_contract,
+                )
+            else:
+                input_contract, output_contract, error_contract = (
+                    _capture_contracts_v4(
+                        arguments,
+                        result_field,
+                        proof.get("result_domain"),
+                    )
+                )
+                adapter_source = generate_computation_adapter_v4(
+                    [item["input_field"] for item in arguments],
+                    input_contract,
+                    output_contract,
+                )
+        elif adapter_version == COMPUTATION_ADAPTER_V3:
+            input_contract, output_contract, error_contract = _capture_contracts_v3(
+                arguments,
+                result_field,
+                passthrough_fields,
+                proof.get("result_domain"),
+            )
+            adapter_source = generate_computation_adapter_v3(
+                [item["input_field"] for item in arguments],
+                input_contract,
+                output_contract,
+                result_field,
+                passthrough_fields,
+            )
+        else:
+            input_contract, output_contract, error_contract = _capture_contracts(
+                arguments, result_field, proof.get("result_domain")
+            )
+            adapter_source = generate_computation_adapter_v2(
+                [item["input_field"] for item in arguments],
+                input_contract,
+                output_contract,
+            )
         modules = [
             {"path": CAPTURE_SELECTED_ENTRY, "source": capture["source"]},
             {"path": COMPUTATION_ADAPTER_ENTRY, "source": adapter_source},
@@ -3550,10 +5902,33 @@ class ReweaveCapsuleStage3:
         modules = sorted(modules, key=lambda item: item["path"])
         execution_bundle, execution_evidence = _execution_bundle_v2(modules)
         del execution_bundle
-        mapping_evidence = {
-            "arguments": arguments,
-            "result_field": result_field,
-        }
+        mapping_evidence = (
+            {
+                "schema": (
+                    CAPTURE_MAPPING_V5
+                    if adapter_version == COMPUTATION_ADAPTER_V5
+                    else CAPTURE_MAPPING_V4
+                ),
+                "arguments": arguments,
+                "result_field": result_field,
+                "result_enum": result_enum,
+                "proof_schema": proof_schema,
+                "examples": examples,
+            }
+            if adapter_version in {COMPUTATION_ADAPTER_V4, COMPUTATION_ADAPTER_V5}
+            else
+            {
+                "schema": CAPTURE_MAPPING_V3,
+                "arguments": arguments,
+                "result_field": result_field,
+                "passthrough_fields": passthrough_fields,
+            }
+            if adapter_version == COMPUTATION_ADAPTER_V3
+            else {
+                "arguments": arguments,
+                "result_field": result_field,
+            }
+        )
         mapping_sha256 = hashlib.sha256(
             _canonical_json_bytes(mapping_evidence)
         ).hexdigest()
@@ -3629,7 +6004,7 @@ class ReweaveCapsuleStage3:
         usage_scope: dict[str, Any] = {"kind": "general"}
         rule_versions = {
             "source_graph_version": "source_graph.v1",
-            "adapter_contract_version": COMPUTATION_ADAPTER_V2,
+            "adapter_contract_version": adapter_version,
             "bundle_contract_version": CAPTURE_BUNDLE_CONTRACT_VERSION,
             "typescript_version": capture.get("typescript_version"),
             "esbuild_version": capture.get("esbuild_version"),
@@ -3673,7 +6048,7 @@ class ReweaveCapsuleStage3:
             value = {
                 "schema": "ephemeral_capture_candidate.v1",
                 "candidate_origin": "deterministic_computation_adapter",
-                "adapter_contract_version": COMPUTATION_ADAPTER_V2,
+                "adapter_contract_version": adapter_version,
                 "source_graph_version": "source_graph.v1",
                 "bundle_contract_version": CAPTURE_BUNDLE_CONTRACT_VERSION,
                 "project_id": snapshot.project_id,
@@ -3712,6 +6087,11 @@ class ReweaveCapsuleStage3:
                 "rule_versions": rule_versions,
                 "canonical_candidate": canonical,
             }
+            if adapter_version in {COMPUTATION_ADAPTER_V4, COMPUTATION_ADAPTER_V5}:
+                value["source_graph_proof"] = proof
+                value["source_graph_proof_sha256"] = hashlib.sha256(
+                    _canonical_json_bytes(proof)
+                ).hexdigest()
             return value, _canonical_json_bytes(value)
 
         payload, payload_json = candidate_payload(usage_scope)
@@ -3760,7 +6140,7 @@ class ReweaveCapsuleStage3:
             "examples_sha256": examples_sha256,
             "enumerations_digest": enumerations_digest,
             "source_graph_version": "source_graph.v1",
-            "adapter_contract_version": COMPUTATION_ADAPTER_V2,
+            "adapter_contract_version": adapter_version,
             "bundle_contract_version": CAPTURE_BUNDLE_CONTRACT_VERSION,
             "typescript_version": capture.get("typescript_version"),
             "esbuild_version": capture.get("esbuild_version"),
@@ -3773,6 +6153,10 @@ class ReweaveCapsuleStage3:
             "brand_profile_id": profile.get("id"),
             "brand_profile_digest": profile.get("digest"),
         }
+        if adapter_version in {COMPUTATION_ADAPTER_V4, COMPUTATION_ADAPTER_V5}:
+            decision_binding["source_graph_proof_sha256"] = hashlib.sha256(
+                _canonical_json_bytes(proof)
+            ).hexdigest()
         decision_binding_sha256 = hashlib.sha256(
             _canonical_json_bytes(decision_binding)
         ).hexdigest()
@@ -3794,6 +6178,8 @@ class ReweaveCapsuleStage3:
                 require_fresh_evidence()
                 review_id = _persist_capture_waiting_review(
                     self.store,
+                    adapter_version=adapter_version,
+                    resume_contract=resume_contract,
                     project_id=snapshot.project_id,
                     source_identity_sha256=snapshot.source_identity_sha256,
                     decision_binding_sha256=decision_binding_sha256,
@@ -3814,7 +6200,7 @@ class ReweaveCapsuleStage3:
                     "schema": "ephemeral_capture_outcome.v1",
                     "status": "waiting_user",
                     "candidate_status": "waiting_user",
-                    "resume_contract": "resubmit_ephemeral_capture.v1",
+                    "resume_contract": resume_contract,
                     "review_id": review_id,
                     "source_identity_sha256": snapshot.source_identity_sha256,
                     "decision_binding_sha256": decision_binding_sha256,
@@ -3895,7 +6281,7 @@ class ReweaveCapsuleStage3:
                     "schema": "ephemeral_capture_outcome.v1",
                     "status": "waiting_user",
                     "candidate_status": "waiting_user",
-                    "resume_contract": "resubmit_ephemeral_capture.v1",
+                    "resume_contract": resume_contract,
                     "review_id": review_id,
                     "source_identity_sha256": snapshot.source_identity_sha256,
                     "decision_binding_sha256": decision_binding_sha256,
@@ -3925,7 +6311,14 @@ class ReweaveCapsuleStage3:
         elif review_id is not None:
             raise Stage3Error("capture_decision_unexpected")
 
-        gate, receipt_json = preflight_computation_capture_v2(
+        preflight = (
+            {
+                COMPUTATION_ADAPTER_V3: preflight_computation_capture_v3,
+                COMPUTATION_ADAPTER_V4: preflight_computation_capture_v4,
+                COMPUTATION_ADAPTER_V5: preflight_computation_capture_v5,
+            }.get(adapter_version, preflight_computation_capture_v2)
+        )
+        gate, receipt_json = preflight(
             payload_json,
             examples,
             snapshot=snapshot,
@@ -3951,6 +6344,70 @@ class ReweaveCapsuleStage3:
         )
         require_fresh_evidence()
         return prepared
+
+    def prepare_ephemeral_computation_capture_v2(
+        self,
+        snapshot: JavascriptScopeSnapshot,
+        selection: dict[str, str],
+        mapping: dict[str, Any],
+        *,
+        review_id: str | None = None,
+    ) -> PreparedReview | dict[str, Any]:
+        return self._prepare_ephemeral_computation_capture(
+            snapshot,
+            selection,
+            mapping,
+            adapter_version=COMPUTATION_ADAPTER_V2,
+            review_id=review_id,
+        )
+
+    def prepare_ephemeral_computation_capture_v3(
+        self,
+        snapshot: JavascriptScopeSnapshot,
+        selection: dict[str, str],
+        mapping: dict[str, Any],
+        *,
+        review_id: str | None = None,
+    ) -> PreparedReview | dict[str, Any]:
+        return self._prepare_ephemeral_computation_capture(
+            snapshot,
+            selection,
+            mapping,
+            adapter_version=COMPUTATION_ADAPTER_V3,
+            review_id=review_id,
+        )
+
+    def prepare_ephemeral_computation_capture_v4(
+        self,
+        snapshot: JavascriptScopeSnapshot,
+        selection: dict[str, str],
+        mapping: dict[str, Any],
+        *,
+        review_id: str | None = None,
+    ) -> PreparedReview | dict[str, Any]:
+        return self._prepare_ephemeral_computation_capture(
+            snapshot,
+            selection,
+            mapping,
+            adapter_version=COMPUTATION_ADAPTER_V4,
+            review_id=review_id,
+        )
+
+    def prepare_ephemeral_computation_capture_v5(
+        self,
+        snapshot: JavascriptScopeSnapshot,
+        selection: dict[str, str],
+        mapping: dict[str, Any],
+        *,
+        review_id: str | None = None,
+    ) -> PreparedReview | dict[str, Any]:
+        return self._prepare_ephemeral_computation_capture(
+            snapshot,
+            selection,
+            mapping,
+            adapter_version=COMPUTATION_ADAPTER_V5,
+            review_id=review_id,
+        )
 
     def preflight_computation_adapter(
         self,
@@ -4214,7 +6671,7 @@ class ReweaveCapsuleStage3:
         summary = {
             "schema": "sanitized_candidate.v1",
             "candidate_origin": "deterministic_computation_adapter",
-            "adapter_contract_version": COMPUTATION_ADAPTER_V2,
+            "adapter_contract_version": payload["adapter_contract_version"],
             "source_graph_version": payload["source_graph_version"],
             "bundle_contract_version": payload["bundle_contract_version"],
             "input_contract": candidate["input_contract"],
@@ -4263,7 +6720,8 @@ class ReweaveCapsuleStage3:
             review=review,
             artifact=Stage3Artifact(
                 canonical_payload=canonical.payload,
-                canonical_hash=canonical.sha256,
+                canonical_payload_digest=canonical.sha256,
+                formal_identity_binding=None,
                 assets=(),
                 cleaning_summary={
                     "schema_version": "capsule_cleaning.v1",
@@ -4304,7 +6762,7 @@ class ReweaveCapsuleStage3:
         if outcome.kind == "rules_revalidated":
             comparison = self._equivalence_comparison(
                 outcome.prepared,
-                self._hash_matches(outcome.prepared.artifact.canonical_hash),
+                self._hash_matches(outcome.prepared.artifact.version_canonical_hash),
             )
             comparison["reason_codes"] = [
                 "manual_rules_revalidation_required",
@@ -4337,7 +6795,13 @@ class ReweaveCapsuleStage3:
                 "waiting_validation",
                 "rejected",
             }
-            and summary.get("resume_contract") == "resubmit_ephemeral_capture.v1"
+            and summary.get("resume_contract")
+            in {
+                CAPTURE_RESUME_V1,
+                CAPTURE_RESUME_V2,
+                CAPTURE_RESUME_V3,
+                CAPTURE_RESUME_V4,
+            }
         ):
             raise Stage3Error("capture_resubmission_required")
         if review["candidate_status"] != "extracted":
@@ -4358,7 +6822,7 @@ class ReweaveCapsuleStage3:
             return self._record_gate_failure(
                 outcome.prepared.review,
                 outcome.error_code,
-                canonical_hash=outcome.prepared.artifact.canonical_hash,
+                canonical_hash=outcome.prepared.artifact.version_canonical_hash,
                 supervision=outcome.supervision,
                 response_hash=outcome.response_hash,
                 model=outcome.model,
@@ -4382,7 +6846,7 @@ class ReweaveCapsuleStage3:
         representative = self._same_run_representative(prepared)
         if representative is not None:
             return _Stage3GateOutcome("same_run", prepared, version=representative)
-        matches = self._hash_matches(prepared.artifact.canonical_hash)
+        matches = self._hash_matches(prepared.artifact.version_canonical_hash)
         eligible = [
             row
             for row in matches
@@ -4423,7 +6887,8 @@ class ReweaveCapsuleStage3:
             )
         artifact = Stage3Artifact(
             canonical_payload=prepared.artifact.canonical_payload,
-            canonical_hash=prepared.artifact.canonical_hash,
+            canonical_payload_digest=prepared.artifact.canonical_payload_digest,
+            formal_identity_binding=prepared.artifact.formal_identity_binding,
             assets=prepared.artifact.assets,
             cleaning_summary=prepared.artifact.cleaning_summary,
             security_result=prepared.artifact.security_result,
@@ -4480,10 +6945,22 @@ class ReweaveCapsuleStage3:
         )
 
     @staticmethod
+    def _ephemeral_adapter_version(prepared: _PreparedReview) -> str:
+        try:
+            summary = json.loads(prepared.review["sanitized_candidate_json"])
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise Stage3Error("sanitized_candidate_invalid") from exc
+        version = summary.get("adapter_contract_version")
+        if version not in EPHEMERAL_COMPUTATION_ADAPTER_VERSIONS:
+            raise Stage3Error("adapter_contract_version_expired")
+        return str(version)
+
+    @staticmethod
     def _ephemeral_run_values(
         prepared: _PreparedReview, status: str
     ) -> tuple[Any, ...]:
         now = _now()
+        adapter_version = ReweaveCapsuleStage3._ephemeral_adapter_version(prepared)
         return (
             prepared.review["run_id"],
             prepared.review["project_id"],
@@ -4499,7 +6976,7 @@ class ReweaveCapsuleStage3:
                 {
                     "candidates": 1,
                     "candidate_origin": "deterministic_computation_adapter",
-                    "adapter_contract_version": COMPUTATION_ADAPTER_V2,
+                    "adapter_contract_version": adapter_version,
                     "adapter_only": True,
                 }
             ),
@@ -4638,12 +7115,17 @@ class ReweaveCapsuleStage3:
         else:
             status = "rejected"
         self._assert_snapshot(prepared)
+        adapter_version = self._ephemeral_adapter_version(prepared)
         safe = {
             "schema": "sanitized_candidate.v1",
             "candidate_origin": "deterministic_computation_adapter",
-            "adapter_contract_version": COMPUTATION_ADAPTER_V2,
+            "adapter_contract_version": adapter_version,
             "requires_reextract": True,
-            "resume_contract": "resubmit_ephemeral_capture.v1",
+            "resume_contract": {
+                COMPUTATION_ADAPTER_V3: CAPTURE_RESUME_V2,
+                COMPUTATION_ADAPTER_V4: CAPTURE_RESUME_V3,
+                COMPUTATION_ADAPTER_V5: CAPTURE_RESUME_V4,
+            }.get(adapter_version, CAPTURE_RESUME_V1),
             "stage3_failure": {
                 "schema_version": "stage3_failure.v1",
                 "error_code": code,
@@ -4661,7 +7143,7 @@ class ReweaveCapsuleStage3:
                 prepared,
                 status=status,
                 sanitized=safe,
-                canonical_hash=prepared.artifact.canonical_hash,
+                canonical_hash=prepared.artifact.version_canonical_hash,
                 supervision=outcome.supervision,
                 response_hash=outcome.response_hash,
                 comparison=comparison,
@@ -4672,7 +7154,7 @@ class ReweaveCapsuleStage3:
             "review_id": prepared.review["review_id"],
             "status": status,
             "error_code": code,
-            "canonical_hash": prepared.artifact.canonical_hash,
+            "canonical_hash": prepared.artifact.version_canonical_hash,
         }
 
     def _persist_ephemeral_review_required(
@@ -4714,7 +7196,7 @@ class ReweaveCapsuleStage3:
                 prepared,
                 status="review_required",
                 sanitized=sanitized,
-                canonical_hash=artifact.canonical_hash,
+                canonical_hash=artifact.version_canonical_hash,
                 supervision=artifact.supervision,
                 response_hash=artifact.supervision_response_hash,
                 comparison=outcome.comparison,
@@ -4724,7 +7206,7 @@ class ReweaveCapsuleStage3:
         return {
             "review_id": prepared.review["review_id"],
             "status": "review_required",
-            "canonical_hash": artifact.canonical_hash,
+            "canonical_hash": artifact.version_canonical_hash,
             "validation_scope": artifact.validation.get("acceptance_scope"),
         }
 
@@ -4732,10 +7214,11 @@ class ReweaveCapsuleStage3:
         self, prepared: _PreparedReview, version: dict[str, Any]
     ) -> dict[str, Any]:
         self._assert_snapshot(prepared)
+        adapter_version = self._ephemeral_adapter_version(prepared)
         safe = {
             "schema": "sanitized_candidate.v1",
             "candidate_origin": "deterministic_computation_adapter",
-            "adapter_contract_version": COMPUTATION_ADAPTER_V2,
+            "adapter_contract_version": adapter_version,
             "source_brand_profile": {
                 "brand_profile_id": prepared.capture_brand_profile_id,
                 "brand_profile_digest": prepared.capture_brand_profile_digest,
@@ -4770,7 +7253,7 @@ class ReweaveCapsuleStage3:
             ).fetchone()
             if (
                 current is None
-                or current["canonical_hash"] != prepared.artifact.canonical_hash
+                or current["canonical_hash"] != prepared.artifact.version_canonical_hash
                 or not self._eligible_exact(dict(current))
                 or not self._exact_origin_compatible(prepared.review, dict(current))
                 or not self._exact_model_current(dict(current), connection)
@@ -4784,7 +7267,7 @@ class ReweaveCapsuleStage3:
                 prepared,
                 status="duplicate",
                 sanitized=safe,
-                canonical_hash=prepared.artifact.canonical_hash,
+                canonical_hash=prepared.artifact.version_canonical_hash,
                 supervision=None,
                 response_hash=None,
                 comparison=comparison,
@@ -4796,7 +7279,7 @@ class ReweaveCapsuleStage3:
                 (
                     version["version_id"],
                     prepared.review["review_id"],
-                    prepared.artifact.canonical_hash,
+                    prepared.artifact.version_canonical_hash,
                 ),
             )
             if bound.rowcount != 1:
@@ -4813,7 +7296,7 @@ class ReweaveCapsuleStage3:
                     f"project:{prepared.review['project_id']}",
                     prepared.review["source_relpath"],
                     prepared.review["source_hash"],
-                    prepared.artifact.canonical_hash,
+                    prepared.artifact.version_canonical_hash,
                     _now(),
                 ),
             )
@@ -4824,7 +7307,7 @@ class ReweaveCapsuleStage3:
             "status": "duplicate",
             "capsule_id": version["capsule_id"],
             "version_id": version["version_id"],
-            "canonical_hash": prepared.artifact.canonical_hash,
+            "canonical_hash": prepared.artifact.version_canonical_hash,
         }
 
     def publish_review(
@@ -4913,7 +7396,7 @@ class ReweaveCapsuleStage3:
         }:
             raise Stage3Error("publication_decision_invalid")
         prepared = self._prepare(review)
-        if prepared.artifact.canonical_hash != review["candidate_canonical_hash"]:
+        if prepared.artifact.version_canonical_hash != review["candidate_canonical_hash"]:
             raise Stage3Error("candidate_changed_since_validation")
         evidence = self._evidence(review)
         capability_kind = prepared.artifact.canonical_payload["capability_kind"]
@@ -4933,7 +7416,8 @@ class ReweaveCapsuleStage3:
             review=prepared.review,
             artifact=Stage3Artifact(
                 canonical_payload=prepared.artifact.canonical_payload,
-                canonical_hash=prepared.artifact.canonical_hash,
+                canonical_payload_digest=prepared.artifact.canonical_payload_digest,
+                formal_identity_binding=prepared.artifact.formal_identity_binding,
                 assets=prepared.artifact.assets,
                 cleaning_summary=prepared.artifact.cleaning_summary,
                 security_result=prepared.artifact.security_result,
@@ -5064,13 +7548,14 @@ class ReweaveCapsuleStage3:
             )
         else:
             prepared = self._prepare(review)
-        if prepared.artifact.canonical_hash != retained["canonical_hash"]:
+        if prepared.artifact.version_canonical_hash != retained["canonical_hash"]:
             raise Stage3Error("candidate_changed_since_validation")
         prepared = _PreparedReview(
             review=prepared.review,
             artifact=Stage3Artifact(
                 canonical_payload=prepared.artifact.canonical_payload,
-                canonical_hash=prepared.artifact.canonical_hash,
+                canonical_payload_digest=prepared.artifact.canonical_payload_digest,
+                formal_identity_binding=prepared.artifact.formal_identity_binding,
                 assets=prepared.artifact.assets,
                 cleaning_summary=prepared.artifact.cleaning_summary,
                 security_result=prepared.artifact.security_result,
@@ -5191,7 +7676,8 @@ class ReweaveCapsuleStage3:
             review=review_for_publish,
             artifact=Stage3Artifact(
                 canonical_payload=canonical.payload,
-                canonical_hash=canonical.sha256,
+                canonical_payload_digest=canonical.sha256,
+                formal_identity_binding=None,
                 assets=(),
                 cleaning_summary=cleaning,
                 security_result=evidence.get("security_result"),
@@ -5252,14 +7738,25 @@ class ReweaveCapsuleStage3:
             raise Stage3Error("sanitized_candidate_invalid") from exc
         if summary.get("rejected"):
             raise Stage3Error("candidate_already_rejected")
-        if summary.get("resume_contract") == "resubmit_ephemeral_capture.v1":
+        if summary.get("resume_contract") in {
+            CAPTURE_RESUME_V1,
+            CAPTURE_RESUME_V2,
+            CAPTURE_RESUME_V3,
+            CAPTURE_RESUME_V4,
+        }:
             raise Stage3Error("capture_resubmission_required")
         if (
             summary.get("candidate_origin")
             == "deterministic_computation_adapter"
-            and summary.get("adapter_contract_version") == COMPUTATION_ADAPTER_V2
+            and summary.get("adapter_contract_version")
+            in {
+                COMPUTATION_ADAPTER_V2,
+                COMPUTATION_ADAPTER_V3,
+                COMPUTATION_ADAPTER_V4,
+                COMPUTATION_ADAPTER_V5,
+            }
         ):
-            return self._prepare_persisted_capture_v2(review, summary)
+            return self._prepare_persisted_capture(review, summary)
         try:
             context = self.intake._project_context(str(review["project_id"]))
             snapshot = self.intake.snapshot_project(str(review["project_id"]))
@@ -5476,6 +7973,15 @@ class ReweaveCapsuleStage3:
             raise Stage3Error("sensitive_logical_path_unsupported")
         security = _analyze_javascript(found, sorted(set(redact_strings)))
         found["javascript_modules"] = security["javascript_modules"]
+        page_capability_declaration = (
+            _stage3_page_capability_declaration(
+                found["capability_kind"],
+                cleaned_html,
+                security.get("page_capability_accesses"),
+            )
+            if found["capability_kind"] != "computation"
+            else None
+        )
         cleaned_javascript = "\n".join(
             str(item.get("source") or "") for item in found["javascript_modules"]
         )
@@ -5564,9 +8070,20 @@ class ReweaveCapsuleStage3:
             "css_cleaned": bool(cleaned_css),
             "asset_count": len(assets),
         }
+        prepared_review = dict(review)
+        formal_identity_binding = None
+        if page_capability_declaration is not None:
+            summary["page_capability_declaration"] = page_capability_declaration
+            formal_identity_binding = build_formal_identity_binding_v2(
+                canonical_payload_digest=canonical.sha256,
+                page_capability_declaration=page_capability_declaration,
+            )
+            summary["formal_identity_binding"] = formal_identity_binding
+            prepared_review["sanitized_candidate_json"] = _json(summary)
         artifact = Stage3Artifact(
             canonical_payload=canonical.payload,
-            canonical_hash=canonical.sha256,
+            canonical_payload_digest=canonical.sha256,
+            formal_identity_binding=formal_identity_binding,
             assets=assets,
             cleaning_summary=cleaning,
             security_result={
@@ -5577,14 +8094,14 @@ class ReweaveCapsuleStage3:
             },
         )
         return _PreparedReview(
-            review=review,
+            review=prepared_review,
             artifact=artifact,
             fixtures=fixtures,
             snapshot_digest=snapshot.digest,
             listener_bindings=list(security.get("listener_bindings", [])),
         )
 
-    def _prepare_persisted_capture_v2(
+    def _prepare_persisted_capture(
         self, review: dict[str, Any], summary: dict[str, Any]
     ) -> _PreparedReview:
         payload = summary.get("ephemeral_capture_payload")
@@ -5671,7 +8188,8 @@ class ReweaveCapsuleStage3:
             review=review,
             artifact=Stage3Artifact(
                 canonical_payload=canonical.payload,
-                canonical_hash=canonical.sha256,
+                canonical_payload_digest=canonical.sha256,
+                formal_identity_binding=None,
                 assets=(),
                 cleaning_summary={
                     "schema_version": "capsule_cleaning.v1",
@@ -5802,7 +8320,7 @@ class ReweaveCapsuleStage3:
         }
         return {
             "schema_version": "capsule_supervision_input.v1",
-            "canonical_hash": prepared.artifact.canonical_hash,
+            "canonical_hash": prepared.artifact.version_canonical_hash,
             "capability_kind": payload["capability_kind"],
             "activation": activation,
             "input_contract": payload["input_contract"],
@@ -5956,6 +8474,570 @@ class ReweaveCapsuleStage3:
         return origin if type(origin) is str else None
 
     @classmethod
+    def _stored_capture_v3_evidence_eligible(
+        cls,
+        row: dict[str, Any],
+        extraction: dict[str, Any],
+        modules: list[dict[str, str]],
+    ) -> bool:
+        payload = extraction.get("ephemeral_capture_payload")
+        if type(payload) is not dict:
+            return False
+        expected_payload_keys = {
+            "schema",
+            "candidate_origin",
+            "adapter_contract_version",
+            "source_graph_version",
+            "bundle_contract_version",
+            "project_id",
+            "source_identity_sha256",
+            "scope_snapshot_sha256",
+            "selected_function",
+            "dependency_closure",
+            "mapping",
+            "mapping_sha256",
+            "enumerations_digest",
+            "examples",
+            "execution_bundle_sha256",
+            "rule_versions",
+            "canonical_candidate",
+        }
+        digest = re.compile(r"[0-9a-f]{64}")
+        candidate = payload.get("canonical_candidate")
+        selected = payload.get("selected_function")
+        closure = payload.get("dependency_closure")
+        mapping = payload.get("mapping")
+        examples = payload.get("examples")
+        rules = payload.get("rule_versions")
+        if (
+            set(payload) != expected_payload_keys
+            or payload.get("schema") != "ephemeral_capture_candidate.v1"
+            or payload.get("candidate_origin")
+            != "deterministic_computation_adapter"
+            or payload.get("adapter_contract_version") != COMPUTATION_ADAPTER_V3
+            or payload.get("source_graph_version") != "source_graph.v1"
+            or payload.get("bundle_contract_version")
+            != CAPTURE_BUNDLE_CONTRACT_VERSION
+            or type(payload.get("project_id")) is not str
+            or not payload["project_id"]
+            or digest.fullmatch(payload.get("source_identity_sha256") or "") is None
+            or digest.fullmatch(payload.get("scope_snapshot_sha256") or "") is None
+            or digest.fullmatch(payload.get("execution_bundle_sha256") or "") is None
+            or type(candidate) is not dict
+            or candidate.get("javascript_modules") != modules
+            or type(selected) is not dict
+            or set(selected)
+            != {
+                "module_relpath",
+                "export_name",
+                "target_binding_id",
+                "selected_bundle_sha256",
+                "capture_entry_sha256",
+            }
+            or type(closure) is not dict
+            or set(closure)
+            != {
+                "module_paths",
+                "binding_ids",
+                "closure_sha256",
+                "dependency_evidence_sha256",
+                "module_evidence_sha256",
+                "top_level_evidence_sha256",
+                "module_evaluation_paths",
+                "symbol_closure_paths",
+                "metafile_inputs",
+            }
+            or type(mapping) is not dict
+            or set(mapping)
+            != {"schema", "arguments", "result_field", "passthrough_fields"}
+            or mapping.get("schema") != CAPTURE_MAPPING_V3
+            or hashlib.sha256(_canonical_json_bytes(mapping)).hexdigest()
+            != payload.get("mapping_sha256")
+            or type(examples) is not dict
+            or set(examples) != {"count", "canonical_sha256"}
+            or type(examples.get("count")) is not int
+            or type(examples.get("count")) is bool
+            or not 1 <= examples["count"] <= 64
+            or digest.fullmatch(examples.get("canonical_sha256") or "") is None
+        ):
+            return False
+        if (
+            type(closure.get("module_paths")) is not list
+            or not closure["module_paths"]
+            or any(type(item) is not str or not item for item in closure["module_paths"])
+            or type(closure.get("binding_ids")) is not list
+            or not closure["binding_ids"]
+            or any(digest.fullmatch(item or "") is None for item in closure["binding_ids"])
+            or closure.get("closure_sha256")
+            != hashlib.sha256(
+                _canonical_json_bytes(
+                    {
+                        "module_paths": closure["module_paths"],
+                        "binding_ids": closure["binding_ids"],
+                    }
+                )
+            ).hexdigest()
+            or any(
+                digest.fullmatch(closure.get(key) or "") is None
+                for key in (
+                    "dependency_evidence_sha256",
+                    "module_evidence_sha256",
+                    "top_level_evidence_sha256",
+                )
+            )
+            or any(
+                type(closure.get(key)) is not list
+                or any(type(item) is not str or not item for item in closure[key])
+                for key in (
+                    "module_evaluation_paths",
+                    "symbol_closure_paths",
+                    "metafile_inputs",
+                )
+            )
+        ):
+            return False
+        expected_rule_keys = {
+            "source_graph_version",
+            "adapter_contract_version",
+            "bundle_contract_version",
+            "typescript_version",
+            "esbuild_version",
+            "selected_bundle_options_sha256",
+            "execution_bundle_options_sha256",
+            "redaction_rules_version",
+            "security_rules_version",
+            "validation_contract_version",
+            "canonicalization_version",
+            "brand_profile_id",
+            "brand_profile_digest",
+        }
+        if (
+            type(rules) is not dict
+            or set(rules) != expected_rule_keys
+            or rules.get("source_graph_version") != "source_graph.v1"
+            or rules.get("adapter_contract_version") != COMPUTATION_ADAPTER_V3
+            or rules.get("bundle_contract_version")
+            != CAPTURE_BUNDLE_CONTRACT_VERSION
+            or rules.get("typescript_version") != CAPTURE_TYPESCRIPT_VERSION
+            or rules.get("esbuild_version") != CAPTURE_ESBUILD_VERSION
+            or not _capture_bundle_options_current(rules)
+            or rules.get("redaction_rules_version") != REDACTION_RULES_VERSION
+            or rules.get("security_rules_version") != SECURITY_RULES_VERSION
+            or rules.get("validation_contract_version")
+            != VALIDATION_CONTRACT_VERSION
+            or rules.get("canonicalization_version")
+            != CANONICALIZATION_VERSION
+            or (rules.get("brand_profile_id") is None)
+            != (rules.get("brand_profile_digest") is None)
+            or (
+                rules.get("brand_profile_digest") is not None
+                and digest.fullmatch(rules["brand_profile_digest"]) is None
+            )
+        ):
+            return False
+        try:
+            stored_candidate = {
+                "capability_kind": row["capability_kind"],
+                "activation": json.loads(row["activation_json"]),
+                "input_contract": json.loads(row["input_contract_json"]),
+                "output_contract": json.loads(row["output_contract_json"]),
+                "error_contract": json.loads(row["error_contract_json"]),
+                "runtime_allowlist": json.loads(row["runtime_allowlist_json"]),
+                "dom_scope": json.loads(row["dom_scope_json"]),
+                "usage_scope": json.loads(row["usage_scope_json"]),
+                "html": row["html_text"],
+                "css": row["css_text"],
+                "javascript_modules": modules,
+                "assets": [],
+            }
+            canonical = canonicalize_capsule(candidate)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError):
+            return False
+        if (
+            canonical.payload != candidate
+            or candidate != stored_candidate
+            or canonical.sha256 != row.get("canonical_hash")
+            or candidate.get("capability_kind") != "computation"
+        ):
+            return False
+        arguments = mapping.get("arguments")
+        result_field = mapping.get("result_field")
+        passthrough = mapping.get("passthrough_fields")
+        input_properties = candidate.get("input_contract", {}).get("properties")
+        output_properties = candidate.get("output_contract", {}).get("properties")
+        if (
+            type(arguments) is not list
+            or not arguments
+            or type(result_field) is not str
+            or _SNAKE.fullmatch(result_field) is None
+            or type(passthrough) is not list
+            or not passthrough
+            or passthrough
+            != sorted(passthrough, key=lambda item: item.encode("utf-8"))
+            or len(set(passthrough)) != len(passthrough)
+            or type(input_properties) is not dict
+            or type(output_properties) is not dict
+        ):
+            return False
+        input_fields: list[str] = []
+        binding_ids: set[str] = set()
+        enum_rows: list[dict[str, Any]] = []
+        for argument in arguments:
+            if type(argument) is not dict:
+                return False
+            kind = argument.get("kind")
+            expected_keys = {
+                "integer": {
+                    "parameter_binding_id",
+                    "input_field",
+                    "kind",
+                    "minimum",
+                    "maximum",
+                },
+                "boolean": {"parameter_binding_id", "input_field", "kind"},
+                "enum": {"parameter_binding_id", "input_field", "kind", "values"},
+            }.get(kind)
+            field = argument.get("input_field")
+            binding_id = argument.get("parameter_binding_id")
+            if (
+                expected_keys is None
+                or set(argument) != expected_keys
+                or type(field) is not str
+                or _SNAKE.fullmatch(field) is None
+                or field in input_fields
+                or digest.fullmatch(binding_id or "") is None
+                or binding_id in binding_ids
+            ):
+                return False
+            contract = input_properties.get(field)
+            if (
+                kind == "integer"
+                and contract
+                != {
+                    "type": "integer",
+                    "minimum": argument.get("minimum"),
+                    "maximum": argument.get("maximum"),
+                }
+            ) or (kind == "boolean" and contract != {"type": "boolean"}) or (
+                kind == "enum"
+                and contract != {"type": "string", "enum": argument.get("values")}
+            ):
+                return False
+            input_fields.append(field)
+            binding_ids.add(binding_id)
+            if kind == "enum":
+                enum_rows.append(
+                    {
+                        "parameter_binding_id": binding_id,
+                        "values": argument.get("values"),
+                    }
+                )
+        if (
+            set(input_fields) != set(input_properties)
+            or not set(passthrough).issubset(input_fields)
+            or result_field in passthrough
+            or set(output_properties) != set(passthrough) | {result_field}
+            or any(
+                _canonical_json_bytes(output_properties[field])
+                != _canonical_json_bytes(input_properties[field])
+                for field in passthrough
+            )
+            or hashlib.sha256(
+                _canonical_json_bytes(
+                    sorted(
+                        enum_rows,
+                        key=lambda item: item["parameter_binding_id"],
+                    )
+                )
+            ).hexdigest()
+            != payload.get("enumerations_digest")
+        ):
+            return False
+        by_path = {item["path"]: item["source"] for item in modules}
+        selected_source = by_path.get(CAPTURE_SELECTED_ENTRY)
+        adapter_source = by_path.get(COMPUTATION_ADAPTER_ENTRY)
+        if (
+            len(by_path) != 2
+            or type(selected_source) is not str
+            or type(adapter_source) is not str
+            or hashlib.sha256(selected_source.encode("utf-8")).hexdigest()
+            != selected.get("selected_bundle_sha256")
+            or digest.fullmatch(selected.get("target_binding_id") or "") is None
+            or digest.fullmatch(selected.get("capture_entry_sha256") or "") is None
+        ):
+            return False
+        try:
+            expected_adapter = generate_computation_adapter_v3(
+                input_fields,
+                candidate["input_contract"],
+                candidate["output_contract"],
+                result_field,
+                passthrough,
+            )
+        except Stage3Error:
+            return False
+        return adapter_source == expected_adapter
+
+    @classmethod
+    def _stored_capture_v4_evidence_eligible(
+        cls,
+        row: dict[str, Any],
+        extraction: dict[str, Any],
+        modules: list[dict[str, str]],
+        *,
+        adapter_version: str = COMPUTATION_ADAPTER_V4,
+        mapping_schema: str = CAPTURE_MAPPING_V4,
+        proof_schema_expected: str = "source_graph_proof.v2",
+    ) -> bool:
+        payload = extraction.get("ephemeral_capture_payload")
+        if type(payload) is not dict:
+            return False
+        expected_payload_keys = {
+            "schema",
+            "candidate_origin",
+            "adapter_contract_version",
+            "source_graph_version",
+            "bundle_contract_version",
+            "project_id",
+            "source_identity_sha256",
+            "scope_snapshot_sha256",
+            "selected_function",
+            "dependency_closure",
+            "mapping",
+            "mapping_sha256",
+            "enumerations_digest",
+            "examples",
+            "execution_bundle_sha256",
+            "rule_versions",
+            "canonical_candidate",
+            "source_graph_proof",
+            "source_graph_proof_sha256",
+        }
+        digest = re.compile(r"[0-9a-f]{64}")
+        candidate = payload.get("canonical_candidate")
+        mapping = payload.get("mapping")
+        proof = payload.get("source_graph_proof")
+        selected = payload.get("selected_function")
+        closure = payload.get("dependency_closure")
+        examples = payload.get("examples")
+        rules = payload.get("rule_versions")
+        if (
+            set(payload) != expected_payload_keys
+            or payload.get("schema") != "ephemeral_capture_candidate.v1"
+            or payload.get("candidate_origin")
+            != "deterministic_computation_adapter"
+            or payload.get("adapter_contract_version") != adapter_version
+            or payload.get("source_graph_version") != "source_graph.v1"
+            or payload.get("bundle_contract_version")
+            != CAPTURE_BUNDLE_CONTRACT_VERSION
+            or any(
+                digest.fullmatch(payload.get(key) or "") is None
+                for key in (
+                    "source_identity_sha256",
+                    "scope_snapshot_sha256",
+                    "execution_bundle_sha256",
+                    "mapping_sha256",
+                    "source_graph_proof_sha256",
+                )
+            )
+            or type(candidate) is not dict
+            or candidate.get("javascript_modules") != modules
+            or type(mapping) is not dict
+            or type(proof) is not dict
+            or proof.get("schema") != proof_schema_expected
+            or hashlib.sha256(_canonical_json_bytes(proof)).hexdigest()
+            != payload.get("source_graph_proof_sha256")
+            or hashlib.sha256(_canonical_json_bytes(mapping)).hexdigest()
+            != payload.get("mapping_sha256")
+            or type(examples) is not dict
+            or set(examples) != {"count", "canonical_sha256"}
+            or examples.get("count") != len(mapping.get("examples", []))
+            or digest.fullmatch(examples.get("canonical_sha256") or "") is None
+            or hashlib.sha256(
+                _canonical_json_bytes(mapping.get("examples"))
+            ).hexdigest()
+            != examples.get("canonical_sha256")
+        ):
+            return False
+        try:
+            (
+                arguments,
+                parameter_domains,
+                result_field,
+                result_enum,
+                proof_schema,
+                normalized_examples,
+                enumerations,
+            ) = (
+                _normalize_capture_mapping_v5(mapping)
+                if adapter_version == COMPUTATION_ADAPTER_V5
+                else _normalize_capture_mapping_v4(mapping)
+            )
+            stored_candidate = {
+                "capability_kind": row["capability_kind"],
+                "activation": json.loads(row["activation_json"]),
+                "input_contract": json.loads(row["input_contract_json"]),
+                "output_contract": json.loads(row["output_contract_json"]),
+                "error_contract": json.loads(row["error_contract_json"]),
+                "runtime_allowlist": json.loads(row["runtime_allowlist_json"]),
+                "dom_scope": json.loads(row["dom_scope_json"]),
+                "usage_scope": json.loads(row["usage_scope_json"]),
+                "html": row["html_text"],
+                "css": row["css_text"],
+                "javascript_modules": modules,
+                "assets": [],
+            }
+            canonical = canonicalize_capsule(candidate)
+        except (KeyError, TypeError, ValueError, json.JSONDecodeError, Stage3Error):
+            return False
+        if (
+            mapping
+            != {
+                "schema": mapping_schema,
+                "arguments": arguments,
+                "result_field": result_field,
+                "result_enum": result_enum,
+                "proof_schema": proof_schema,
+                "examples": normalized_examples,
+            }
+            or candidate != stored_candidate
+            or canonical.payload != candidate
+            or canonical.sha256 != row.get("canonical_hash")
+            or candidate.get("capability_kind") != "computation"
+        ):
+            return False
+        contract_builder = (
+            _capture_contracts_v5
+            if adapter_version == COMPUTATION_ADAPTER_V5
+            else _capture_contracts_v4
+        )
+        input_contract, output_contract, error_contract = contract_builder(
+            arguments, result_field, {"kind": "enum", "values": result_enum}
+        )
+        if (
+            candidate.get("input_contract") != input_contract
+            or candidate.get("output_contract") != output_contract
+            or candidate.get("error_contract") != error_contract
+            or proof.get("parameter_domains") != parameter_domains
+            or proof.get("result_domain")
+            != {"kind": "enum", "values": result_enum}
+            or proof.get("target_binding_id")
+            != (selected or {}).get("target_binding_id")
+        ):
+            return False
+        if (
+            type(selected) is not dict
+            or set(selected)
+            != {
+                "module_relpath",
+                "export_name",
+                "target_binding_id",
+                "selected_bundle_sha256",
+                "capture_entry_sha256",
+            }
+            or any(
+                digest.fullmatch(selected.get(key) or "") is None
+                for key in (
+                    "target_binding_id",
+                    "selected_bundle_sha256",
+                    "capture_entry_sha256",
+                )
+            )
+            or type(closure) is not dict
+            or proof.get("closure") != {
+                "module_paths": closure.get("module_paths"),
+                "binding_ids": closure.get("binding_ids"),
+            }
+            or proof.get("closure_sha256") != closure.get("closure_sha256")
+            or type(proof.get("closure")) is not dict
+            or hashlib.sha256(
+                _canonical_json_bytes(proof["closure"])
+            ).hexdigest()
+            != proof.get("closure_sha256")
+            or any(
+                proof.get(key) != closure.get(key)
+                for key in (
+                    "dependency_evidence_sha256",
+                    "module_evidence_sha256",
+                    "top_level_evidence_sha256",
+                )
+            )
+            or any(
+                digest.fullmatch(proof.get(key) or "") is None
+                for key in (
+                    "closure_sha256",
+                    "dependency_evidence_sha256",
+                    "module_evidence_sha256",
+                    "top_level_evidence_sha256",
+                )
+            )
+        ):
+            return False
+        expected_rule_keys = {
+            "source_graph_version",
+            "adapter_contract_version",
+            "bundle_contract_version",
+            "typescript_version",
+            "esbuild_version",
+            "selected_bundle_options_sha256",
+            "execution_bundle_options_sha256",
+            "redaction_rules_version",
+            "security_rules_version",
+            "validation_contract_version",
+            "canonicalization_version",
+            "brand_profile_id",
+            "brand_profile_digest",
+        }
+        if (
+            type(rules) is not dict
+            or set(rules) != expected_rule_keys
+            or rules.get("source_graph_version") != "source_graph.v1"
+            or rules.get("adapter_contract_version") != adapter_version
+            or rules.get("bundle_contract_version")
+            != CAPTURE_BUNDLE_CONTRACT_VERSION
+            or rules.get("typescript_version") != CAPTURE_TYPESCRIPT_VERSION
+            or rules.get("esbuild_version") != CAPTURE_ESBUILD_VERSION
+            or not _capture_bundle_options_current(rules)
+            or rules.get("redaction_rules_version") != REDACTION_RULES_VERSION
+            or rules.get("security_rules_version") != SECURITY_RULES_VERSION
+            or rules.get("validation_contract_version")
+            != VALIDATION_CONTRACT_VERSION
+            or rules.get("canonicalization_version")
+            != CANONICALIZATION_VERSION
+        ):
+            return False
+        enum_rows = sorted(
+            enumerations, key=lambda item: item["parameter_binding_id"]
+        )
+        by_path = {item["path"]: item["source"] for item in modules}
+        selected_source = by_path.get(CAPTURE_SELECTED_ENTRY)
+        adapter_source = by_path.get(COMPUTATION_ADAPTER_ENTRY)
+        if (
+            len(by_path) != 2
+            or type(selected_source) is not str
+            or type(adapter_source) is not str
+            or hashlib.sha256(selected_source.encode("utf-8")).hexdigest()
+            != selected.get("selected_bundle_sha256")
+            or hashlib.sha256(_canonical_json_bytes(enum_rows)).hexdigest()
+            != payload.get("enumerations_digest")
+        ):
+            return False
+        try:
+            adapter_builder = (
+                generate_computation_adapter_v5
+                if adapter_version == COMPUTATION_ADAPTER_V5
+                else generate_computation_adapter_v4
+            )
+            expected_adapter = adapter_builder(
+                [item["input_field"] for item in arguments],
+                input_contract,
+                output_contract,
+            )
+        except Stage3Error:
+            return False
+        return adapter_source == expected_adapter
+
+    @classmethod
     def _adapter_evidence_eligible(
         cls, row: dict[str, Any], extraction: dict[str, Any]
     ) -> bool:
@@ -5985,6 +9067,23 @@ class ReweaveCapsuleStage3:
             return not adapter_modules
         if origin != "deterministic_computation_adapter":
             return False
+        if extraction.get("adapter_contract_version") == COMPUTATION_ADAPTER_V5:
+            return cls._stored_capture_v4_evidence_eligible(
+                row,
+                extraction,
+                modules,
+                adapter_version=COMPUTATION_ADAPTER_V5,
+                mapping_schema=CAPTURE_MAPPING_V5,
+                proof_schema_expected="source_graph_proof.v3",
+            )
+        if extraction.get("adapter_contract_version") == COMPUTATION_ADAPTER_V4:
+            return cls._stored_capture_v4_evidence_eligible(
+                row, extraction, modules
+            )
+        if extraction.get("adapter_contract_version") == COMPUTATION_ADAPTER_V3:
+            return cls._stored_capture_v3_evidence_eligible(
+                row, extraction, modules
+            )
         if extraction.get("adapter_contract_version") == COMPUTATION_ADAPTER_V2:
             payload = extraction.get("ephemeral_capture_payload")
             if (
@@ -6294,7 +9393,7 @@ class ReweaveCapsuleStage3:
                 (
                     prepared.review["run_id"],
                     prepared.review["review_id"],
-                    prepared.artifact.canonical_hash,
+                    prepared.artifact.version_canonical_hash,
                 ),
             ).fetchone()
         return dict(row) if row is not None else None
@@ -6478,14 +9577,14 @@ class ReweaveCapsuleStage3:
                         "role_key": row["role_key"],
                         "variant_key": row["variant_key"],
                         "canonical_hash_equal": row["canonical_hash"]
-                        == prepared.artifact.canonical_hash,
+                        == prepared.artifact.version_canonical_hash,
                         "contract_match": contract_match,
                         "scope_revalidation_match": scope_revalidation_match,
                     }
                 )
         return {
             "schema_version": "equivalence_comparison.v1",
-            "candidate_canonical_hash": prepared.artifact.canonical_hash,
+            "candidate_canonical_hash": prepared.artifact.version_canonical_hash,
             "automatic_semantic_merge": False,
             "candidates": candidates,
         }
@@ -6523,7 +9622,7 @@ class ReweaveCapsuleStage3:
                 "WHERE review_id = ?",
                 (
                     status,
-                    artifact.canonical_hash,
+                    artifact.version_canonical_hash,
                     _json(sanitized),
                     _json(artifact.supervision),
                     artifact.supervision_response_hash,
@@ -6537,7 +9636,7 @@ class ReweaveCapsuleStage3:
         return {
             "review_id": prepared.review["review_id"],
             "status": status,
-            "canonical_hash": artifact.canonical_hash,
+            "canonical_hash": artifact.version_canonical_hash,
             "validation_scope": artifact.validation.get("acceptance_scope")
             if artifact.validation
             else None,
@@ -6872,7 +9971,7 @@ class ReweaveCapsuleStage3:
             if (
                 current is None
                 or current["capsule_id"] != version["capsule_id"]
-                or current["canonical_hash"] != prepared.artifact.canonical_hash
+                or current["canonical_hash"] != prepared.artifact.version_canonical_hash
                 or not self._eligible_exact(dict(current))
                 or not self._exact_origin_compatible(review, dict(current))
                 or not self._exact_model_current(dict(current), connection)
@@ -6886,7 +9985,7 @@ class ReweaveCapsuleStage3:
                 "retained_version_id = ?, equivalence_comparison_json = ?, updated_at = ? "
                 "WHERE review_id = ? AND candidate_status = 'extracted' AND decision IS NULL",
                 (
-                    prepared.artifact.canonical_hash,
+                    prepared.artifact.version_canonical_hash,
                     _json(sanitized),
                     version["version_id"],
                     comparison,
@@ -6908,7 +10007,7 @@ class ReweaveCapsuleStage3:
                     f"project:{review['project_id']}",
                     review["source_relpath"],
                     review["source_hash"],
-                    prepared.artifact.canonical_hash,
+                    prepared.artifact.version_canonical_hash,
                     now,
                 ),
             )
@@ -6932,7 +10031,7 @@ class ReweaveCapsuleStage3:
         if comparison_target is None:
             raise Stage3Error("retained_version_not_in_comparison_evidence")
         prepared = self._prepare(review)
-        if prepared.artifact.canonical_hash != review["candidate_canonical_hash"]:
+        if prepared.artifact.version_canonical_hash != review["candidate_canonical_hash"]:
             raise Stage3Error("candidate_changed_since_validation")
         with self.store.read_connection() as connection:
             target = connection.execute(
@@ -6987,7 +10086,7 @@ class ReweaveCapsuleStage3:
                         f"project:{source_review['project_id']}",
                         source_review["source_relpath"],
                         source_review["source_hash"],
-                        prepared.artifact.canonical_hash,
+                        prepared.artifact.version_canonical_hash,
                         now,
                     ),
                 )
@@ -7303,7 +10402,7 @@ class ReweaveCapsuleStage3:
                         _json(review_summary),
                         REDACTION_RULES_VERSION,
                         CANONICALIZATION_VERSION,
-                        artifact.canonical_hash,
+                        artifact.version_canonical_hash,
                         _json(payload["activation"]),
                         _json(payload["input_contract"]),
                         _json(payload["output_contract"]),
@@ -7356,7 +10455,7 @@ class ReweaveCapsuleStage3:
                         f"project:{prepared.review['project_id']}",
                         prepared.review["source_relpath"],
                         prepared.review["source_hash"],
-                        artifact.canonical_hash,
+                        artifact.version_canonical_hash,
                         now,
                     ),
                 )
@@ -7374,7 +10473,7 @@ class ReweaveCapsuleStage3:
                             f"project:{follower['project_id']}",
                             follower["source_relpath"],
                             follower["source_hash"],
-                            artifact.canonical_hash,
+                            artifact.version_canonical_hash,
                             now,
                         ),
                     )
@@ -7402,7 +10501,7 @@ class ReweaveCapsuleStage3:
                     "candidate_canonical_hash = ?, sanitized_candidate_json = ?, updated_at = ? "
                     "WHERE review_id = ? AND candidate_status = 'publishable' AND decision IS ?",
                     (
-                        artifact.canonical_hash,
+                        artifact.version_canonical_hash,
                         _json(review_summary),
                         now,
                         prepared.review["review_id"],
@@ -7462,5 +10561,5 @@ class ReweaveCapsuleStage3:
             "capsule_id": capsule_id,
             "version_id": version_id,
             "version_number": version_number,
-            "canonical_hash": artifact.canonical_hash,
+            "canonical_hash": artifact.version_canonical_hash,
         }

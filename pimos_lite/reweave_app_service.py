@@ -2,16 +2,23 @@
 
 from __future__ import annotations
 
+import base64
+import copy
+import ctypes
+import difflib
+import errno
 import hashlib
 import json
 import os
 import re
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
 import threading
+import unicodedata
 import uuid
 from concurrent.futures import Future, ThreadPoolExecutor
 from datetime import datetime, timezone
@@ -19,18 +26,43 @@ from functools import wraps
 from html.parser import HTMLParser
 from importlib import import_module
 from pathlib import Path, PurePosixPath
-from typing import Any
+from typing import Any, Callable
 
-from pimos_lite.composer.module_native import compose_capsule_product
+from pimos_lite.composer.module_native import (
+    ADAPTER_V3_FORMAL_PRODUCT_COMPOSER_VERSION,
+    ADAPTER_V4_FORMAL_PRODUCT_COMPOSER_VERSION,
+    ADAPTER_V5_FORMAL_PRODUCT_COMPOSER_VERSION,
+    FORMAL_PRODUCT_COMPOSER_VERSION,
+    MULTI_COMPUTATION_FORMAL_PRODUCT_COMPOSER_VERSION,
+    PARAMETERIZED_FORMAL_PRODUCT_COMPOSER_VERSION,
+    compose_capsule_product,
+)
 from pimos_lite.reweave_capsule_intake import (
     COMPUTATION_ADAPTER_CONTRACT_VERSION,
     EXTRACTION_CONTRACT_VERSION,
     REDACTION_RULES_VERSION,
+    SECURITY_RULES_VERSION as INTAKE_SECURITY_RULES_VERSION,
+    SUPERVISION_RULES_VERSION as INTAKE_SUPERVISION_RULES_VERSION,
+    VALIDATION_CONTRACT_VERSION as INTAKE_VALIDATION_CONTRACT_VERSION,
     IntakeError,
     ReweaveCapsuleIntake,
 )
+from pimos_lite.reweave_canonical import canonical_json_digest
 from pimos_lite.reweave_capsule_stage3 import (
+    CAPTURE_MAPPING_V3,
+    CAPTURE_MAPPING_V4,
+    CAPTURE_MAPPING_V5,
+    CAPTURE_RESUME_V1,
+    CAPTURE_RESUME_V2,
+    CAPTURE_RESUME_V3,
+    CAPTURE_RESUME_V4,
     COMPUTATION_ADAPTER_V2,
+    COMPUTATION_ADAPTER_V3,
+    COMPUTATION_ADAPTER_V4,
+    COMPUTATION_ADAPTER_V5,
+    FROZEN_REVIEW_ADMISSION_VERSION,
+    FROZEN_UI_REVIEW_ADMISSION_AUTHORIZATION_VERSION,
+    FROZEN_UI_REVIEW_ADMISSION_VERSION,
     OllamaSupervisor,
     ReweaveCapsuleStage3,
     SECURITY_RULES_VERSION,
@@ -44,14 +76,71 @@ from pimos_lite.reweave_capsule_store import (
     CANONICALIZATION_VERSION,
     CapsuleStoreError,
     CapsuleWarehouseStore,
+    acquire_state_root_lease,
     canonicalize_capsule,
 )
-from pimos_lite.reweave_process_environment import restricted_subprocess_environment
+from pimos_lite.reweave_data_contract import (
+    DataContractError,
+    data_contract_accepts,
+    normalize_capsule_contracts,
+)
+from pimos_lite.reweave_process_environment import (
+    qwebengine_qpa_platform,
+    restricted_subprocess_environment,
+)
+from pimos_lite.reweave_product_planner import (
+    CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_V2,
+    CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_V3,
+    CAPABILITY_SOURCE_PROPOSAL_OUTPUT_V2,
+    PRODUCT_PLANNING_PHASES,
+    ProductPlanner,
+    ProductPlanningError,
+)
+from pimos_lite.reweave_plan_execution import (
+    CANDIDATE_ACCEPTANCE_RECEIPT_VERSION,
+    CANDIDATE_ACCEPTANCE_VERSION,
+    MAX_CANDIDATE_ACCEPTANCE_CASES,
+    MULTI_COMPUTATION_PLAN_EXECUTION_VERSION,
+    PARAMETERIZED_PLAN_EXECUTION_VERSION,
+    PLAN_EXECUTION_VERSION,
+    CandidateAcceptanceError,
+    PlanExecutionError,
+    build_candidate_acceptance,
+    build_candidate_acceptance_confirmation,
+    canonical_bytes as plan_execution_bytes,
+    canonical_digest as plan_execution_digest,
+    compile_multi_computation_plan_execution,
+    compile_parameterized_plan_execution,
+    compile_plan_execution,
+    evaluate_candidate_acceptance,
+    validate_candidate_acceptance_confirmation,
+)
 from pimos_lite.reweave_javascript_source import (
     JAVASCRIPT_SOURCE_TYPE,
     JavascriptScopeSnapshot,
     JavascriptSourceError,
     JavascriptSourceService,
+    javascript_source_snapshot_supported,
+)
+from pimos_lite.reweave_page_capability_contract import (
+    verify_formal_capsule_identity,
+)
+from pimos_lite.reweave_source_derivation import (
+    SOURCE_DERIVATION_AUTHORIZATION_VERSION,
+    SourceDerivationError,
+    append_source_derived_run_event,
+    build_source_derived_authorization,
+    build_source_derived_agent_proposal,
+    build_source_derived_request,
+    get_source_derived_run,
+    prepare_source_derived_run,
+    read_source_derived_evidence,
+    source_derived_project_graph_digest,
+    source_derived_run_projection,
+    validate_source_derived_response,
+    validate_source_derived_agent_proposal,
+    write_source_derived_proposal,
+    validate_source_derived_authorization,
 )
 from pimos_lite.reweave_source_registry import state_dir
 from pimos_lite.reweave_static_web_target import (
@@ -68,12 +157,59 @@ APP_SERVICE_VERSION = "v2"
 LUMO_LITE_MODE = "source_read_only_preview_write"
 PRODUCT_MANIFEST_VERSION = "reweave_product_manifest.v1"
 PRODUCTS_DIRNAME = "products"
+PRODUCT_CANDIDATES_DIRNAME = "product_candidates"
 _PRODUCT_ID = re.compile(r"product_[0-9a-f]{32}\Z")
 _MANIFEST_DIGEST = re.compile(r"[0-9a-f]{64}\Z")
+_CANDIDATE_ID = re.compile(r"candidate_[0-9a-f]{32}\Z")
+_CANDIDATE_TOKEN = re.compile(r"candidate_token_[0-9a-f]{48}\Z")
+_SOURCE_HANDOFF_TOKEN = re.compile(
+    r"source_handoff_token_[0-9a-f]{48}\Z"
+)
+_SOURCE_DERIVED_HANDOFF_TOKEN = re.compile(
+    r"source_derived_handoff_token_[0-9a-f]{48}\Z"
+)
+_SOURCE_HANDOFF_FILENAME = re.compile(
+    r"source_handoff_v1_([0-9a-f]{64})\.json\Z"
+)
+_SOURCE_HANDOFF_RUN_ID = re.compile(r"run_[0-9a-f]{32}\Z")
+_SOURCE_DERIVED_HANDOFF_FILENAME = re.compile(
+    r"source_derived_handoff_v1_([0-9a-f]{64})\.json\Z"
+)
+_CANDIDATE_STAGING = re.compile(
+    r"\.candidate_[0-9a-f]{32}-[a-z0-9_]{8}\Z"
+)
+_PRODUCT_STAGING = re.compile(
+    r"\.product_[0-9a-f]{32}-[a-z0-9_]{8}\Z"
+)
 PUBLIC_PRODUCT_ACTIONS = frozenset(
     {
         "get_initial_state",
         "generate_product",
+        "list_product_planning_models",
+        "select_product_planning_model",
+        "start_product_plan",
+        "submit_product_plan_answers",
+        "suggest_product_plan_action",
+        "revise_product_plan",
+        "get_product_plan_run",
+        "cancel_product_plan_run",
+        "get_product_plan_workspace",
+        "record_product_capability_gap_decision",
+        "prepare_product_capability_source_proposal",
+        "start_product_capability_source_proposal",
+        "start_product_capability_replan",
+        "confirm_product_plan",
+        "confirm_product_candidate_acceptance",
+        "create_local_agent_handoff",
+        "revoke_local_agent_handoff",
+        "list_reusable_product_capabilities",
+        "get_confirmed_product_plan",
+        "start_confirmed_product_candidate",
+        "start_product_candidate",
+        "get_product_candidate_run",
+        "get_product_candidate",
+        "read_product_candidate_file",
+        "export_product_candidate",
         "analyze_static_web_target",
         "generate_static_web_patch",
         "get_latest_product_entry_path",
@@ -108,6 +244,12 @@ CAPSULE_MANAGEMENT_ACTIONS = frozenset(
         "start_create_computation_adapter",
         "start_refresh_project",
         "start_refresh_all",
+        "authorize_and_start_source_derived_computation",
+        "create_local_source_derived_handoff",
+        "revoke_local_source_derived_handoff",
+        "decide_local_source_derived_handoff_proposal",
+        "create_local_source_handoff",
+        "revoke_local_source_handoff",
         "get_intake_run",
         "cancel_intake_run",
         "list_supervision_models",
@@ -131,6 +273,396 @@ CAPSULE_MANAGEMENT_ACTIONS = frozenset(
 _OLLAMA_LOOPBACK = "http://127.0.0.1:11434"
 _LEGACY_ID = re.compile(r"cap_[0-9a-f]{12}")
 _TERMINAL_TASK_STATES = frozenset({"completed", "failed", "cancelled"})
+_SOURCE_HANDOFF_DIRECTORY = "source_handoffs"
+_SOURCE_HANDOFF_VERSION = "source_handoff.v1"
+_SOURCE_HANDOFF_STATUS_VERSION = "source_handoff_status.v1"
+_SOURCE_HANDOFF_ACTION_PROFILE = "source_intake_agent.v1"
+_SOURCE_HANDOFF_MAX_BYTES = 64 * 1024
+_SOURCE_HANDOFF_SAFE_ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
+_SOURCE_HANDOFF_REASON = re.compile(r"[a-z][a-z0-9_]{1,95}\Z")
+_SOURCE_DERIVED_HANDOFF_DIRECTORY = "source_derived_handoffs"
+_SOURCE_DERIVED_HANDOFF_VERSION = "source_derived_handoff.v1"
+_SOURCE_DERIVED_HANDOFF_STATUS_VERSION = (
+    "source_derived_handoff_status.v1"
+)
+_SOURCE_DERIVED_HANDOFF_ACTION_PROFILE = "source_derived_agent.v1"
+
+
+def _sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    descriptor = os.open(path, flags)
+    try:
+        details = os.fstat(descriptor)
+        if not stat.S_ISREG(details.st_mode):
+            raise OSError("not_regular_file")
+        while True:
+            chunk = os.read(descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            digest.update(chunk)
+    finally:
+        os.close(descriptor)
+    return digest.hexdigest()
+
+
+def _copy_private_file(source: Path, target: Path) -> None:
+    target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    if target.exists() or target.is_symlink():
+        raise OSError("target_exists")
+    source_descriptor = os.open(
+        source,
+        os.O_RDONLY
+        | getattr(os, "O_BINARY", 0)
+        | getattr(os, "O_NOFOLLOW", 0),
+    )
+    target_descriptor = -1
+    try:
+        if not stat.S_ISREG(os.fstat(source_descriptor).st_mode):
+            raise OSError("source_not_regular")
+        target_descriptor = os.open(
+            target,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        while True:
+            chunk = os.read(source_descriptor, 1024 * 1024)
+            if not chunk:
+                break
+            view = memoryview(chunk)
+            while view:
+                written = os.write(target_descriptor, view)
+                if written <= 0:
+                    raise OSError("copy_incomplete")
+                view = view[written:]
+        if os.name == "posix":
+            os.fchmod(target_descriptor, 0o600)
+        os.fsync(target_descriptor)
+    finally:
+        os.close(source_descriptor)
+        if target_descriptor >= 0:
+            os.close(target_descriptor)
+    if os.name == "posix":
+        directory_descriptor = os.open(
+            target.parent,
+            os.O_RDONLY
+            | getattr(os, "O_DIRECTORY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+
+
+def _source_handoff_bytes(value: dict[str, Any]) -> bytes:
+    try:
+        raw = (
+            json.dumps(
+                value,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            )
+            + "\n"
+        ).encode("utf-8")
+    except (TypeError, UnicodeEncodeError, ValueError) as exc:
+        raise SourceHandoffError("source_handoff_invalid") from exc
+    if (
+        len(raw) > _SOURCE_HANDOFF_MAX_BYTES
+        or _strict_json_bytes(raw) != value
+    ):
+        raise SourceHandoffError("source_handoff_invalid")
+    return raw
+
+
+def _source_handoff_directory(
+    state_root: Path,
+    directory_name: str = _SOURCE_HANDOFF_DIRECTORY,
+) -> Path:
+    directory = state_root / directory_name
+    try:
+        directory.mkdir(mode=0o700, parents=True, exist_ok=True)
+        details = directory.lstat()
+        if (
+            stat.S_ISLNK(details.st_mode)
+            or not stat.S_ISDIR(details.st_mode)
+        ):
+            raise SourceHandoffError("source_handoff_conflict")
+        if os.name == "posix":
+            os.chmod(directory, 0o700)
+    except SourceHandoffError:
+        raise
+    except OSError as exc:
+        raise SourceHandoffError("source_handoff_unavailable") from exc
+    return directory
+
+
+def _read_source_handoff(path: Path) -> dict[str, Any]:
+    descriptor = -1
+    try:
+        before = path.lstat()
+        if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(before.st_mode):
+            raise SourceHandoffError("source_handoff_conflict")
+        descriptor = os.open(
+            path,
+            os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+        )
+        details = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(details.st_mode)
+            or (before.st_dev, before.st_ino)
+            != (details.st_dev, details.st_ino)
+            or details.st_size > _SOURCE_HANDOFF_MAX_BYTES
+            or (
+                os.name == "posix"
+                and stat.S_IMODE(details.st_mode) != 0o600
+            )
+        ):
+            raise SourceHandoffError("source_handoff_conflict")
+        raw = os.read(descriptor, _SOURCE_HANDOFF_MAX_BYTES + 1)
+        if len(raw) != details.st_size:
+            raise SourceHandoffError("source_handoff_conflict")
+        value = _strict_json_bytes(raw)
+        if type(value) is not dict:
+            raise SourceHandoffError("source_handoff_conflict")
+        return value
+    except SourceHandoffError:
+        raise
+    except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        raise SourceHandoffError("source_handoff_conflict") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+
+
+def _write_source_handoff(
+    path: Path,
+    value: dict[str, Any],
+    *,
+    replace: bool,
+    directory_name: str = _SOURCE_HANDOFF_DIRECTORY,
+) -> None:
+    payload = _source_handoff_bytes(value)
+    directory = _source_handoff_directory(
+        path.parent.parent,
+        directory_name,
+    )
+    if directory != path.parent:
+        raise SourceHandoffError("source_handoff_conflict")
+    temporary = directory / f".{path.name}.{uuid.uuid4().hex}.tmp"
+    descriptor = -1
+    try:
+        if not replace and (path.exists() or path.is_symlink()):
+            raise SourceHandoffError("source_handoff_conflict")
+        if replace:
+            details = path.lstat()
+            if (
+                stat.S_ISLNK(details.st_mode)
+                or not stat.S_ISREG(details.st_mode)
+            ):
+                raise SourceHandoffError("source_handoff_conflict")
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0),
+            0o600,
+        )
+        view = memoryview(payload)
+        while view:
+            written = os.write(descriptor, view)
+            if written <= 0:
+                raise OSError("source_handoff_write_incomplete")
+            view = view[written:]
+        if os.name == "posix":
+            os.fchmod(descriptor, 0o600)
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = -1
+        if replace:
+            os.replace(temporary, path)
+        else:
+            try:
+                os.link(temporary, path)
+            except FileExistsError as exc:
+                raise SourceHandoffError(
+                    "source_handoff_conflict"
+                ) from exc
+            temporary_details = temporary.lstat()
+            published_details = path.lstat()
+            if (
+                stat.S_ISLNK(published_details.st_mode)
+                or not stat.S_ISREG(published_details.st_mode)
+                or (temporary_details.st_dev, temporary_details.st_ino)
+                != (published_details.st_dev, published_details.st_ino)
+            ):
+                raise SourceHandoffError("source_handoff_conflict")
+            temporary.unlink()
+        published_details = path.lstat()
+        if (
+            stat.S_ISLNK(published_details.st_mode)
+            or not stat.S_ISREG(published_details.st_mode)
+            or (
+                os.name == "posix"
+                and stat.S_IMODE(published_details.st_mode) != 0o600
+            )
+        ):
+            raise SourceHandoffError("source_handoff_conflict")
+        if os.name == "posix":
+            directory_descriptor = os.open(
+                directory,
+                os.O_RDONLY
+                | getattr(os, "O_DIRECTORY", 0)
+                | getattr(os, "O_NOFOLLOW", 0),
+            )
+            try:
+                os.fsync(directory_descriptor)
+            finally:
+                os.close(directory_descriptor)
+    except SourceHandoffError:
+        raise
+    except OSError as exc:
+        raise SourceHandoffError("source_handoff_unavailable") from exc
+    finally:
+        if descriptor >= 0:
+            os.close(descriptor)
+        try:
+            if temporary.exists() and not temporary.is_symlink():
+                temporary.unlink()
+        except OSError:
+            pass
+
+
+def _staging_tree_identity(path: Path) -> tuple[int, int]:
+    def raise_walk_error(error: OSError) -> None:
+        raise error
+
+    try:
+        root = path.lstat()
+        reparse_flag = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        if (
+            stat.S_ISLNK(root.st_mode)
+            or bool(
+                getattr(root, "st_file_attributes", 0)
+                & reparse_flag
+            )
+            or not stat.S_ISDIR(root.st_mode)
+        ):
+            raise CapsuleStoreError("product_staging_recovery_conflict")
+        for current, directories, files in os.walk(
+            path,
+            topdown=True,
+            onerror=raise_walk_error,
+            followlinks=False,
+        ):
+            for name in [*directories, *files]:
+                details = (Path(current) / name).lstat()
+                if (
+                    stat.S_ISLNK(details.st_mode)
+                    or bool(
+                        getattr(details, "st_file_attributes", 0)
+                        & reparse_flag
+                    )
+                    or not (
+                        stat.S_ISDIR(details.st_mode)
+                        or stat.S_ISREG(details.st_mode)
+                    )
+                ):
+                    raise CapsuleStoreError(
+                        "product_staging_recovery_conflict"
+                    )
+        return int(root.st_dev), int(root.st_ino)
+    except CapsuleStoreError:
+        raise
+    except OSError as exc:
+        raise CapsuleStoreError(
+            "product_staging_recovery_failed"
+        ) from exc
+
+
+def _recover_product_staging(state_root: Path) -> None:
+    candidates: list[tuple[Path, tuple[int, int]]] = []
+    touched: set[Path] = set()
+    for root, pattern in (
+        (state_root / PRODUCT_CANDIDATES_DIRNAME, _CANDIDATE_STAGING),
+        (state_root / PRODUCTS_DIRNAME, _PRODUCT_STAGING),
+    ):
+        if not root.exists() and not root.is_symlink():
+            continue
+        try:
+            root_details = root.lstat()
+            if (
+                stat.S_ISLNK(root_details.st_mode)
+                or bool(
+                    getattr(root_details, "st_file_attributes", 0)
+                    & getattr(
+                        stat,
+                        "FILE_ATTRIBUTE_REPARSE_POINT",
+                        0,
+                    )
+                )
+                or not stat.S_ISDIR(root_details.st_mode)
+            ):
+                raise CapsuleStoreError(
+                    "product_staging_recovery_conflict"
+                )
+            with os.scandir(root) as entries:
+                for entry in entries:
+                    if pattern.fullmatch(entry.name):
+                        path = root / entry.name
+                        candidates.append(
+                            (path, _staging_tree_identity(path))
+                        )
+        except CapsuleStoreError:
+            raise
+        except OSError as exc:
+            raise CapsuleStoreError(
+                "product_staging_recovery_failed"
+            ) from exc
+
+    for path, expected_identity in candidates:
+        if _staging_tree_identity(path) != expected_identity:
+            raise CapsuleStoreError(
+                "product_staging_recovery_conflict"
+            )
+        try:
+            shutil.rmtree(path)
+        except OSError as exc:
+            raise CapsuleStoreError(
+                "product_staging_recovery_failed"
+            ) from exc
+        if path.exists() or path.is_symlink():
+            raise CapsuleStoreError(
+                "product_staging_recovery_failed"
+            )
+        touched.add(path.parent)
+
+    if os.name == "posix":
+        for root in sorted(touched):
+            try:
+                descriptor = os.open(
+                    root,
+                    os.O_RDONLY | getattr(os, "O_DIRECTORY", 0),
+                )
+                try:
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+            except OSError as exc:
+                raise CapsuleStoreError(
+                    "product_staging_recovery_failed"
+                ) from exc
 
 
 def _retired_v1_adapter_candidate(candidate: Any) -> bool:
@@ -379,6 +911,12 @@ class ProductGenerationError(RuntimeError):
         self.code = code
 
 
+class SourceHandoffError(RuntimeError):
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
 class _ProductShellParser(HTMLParser):
     def __init__(self) -> None:
         super().__init__(convert_charrefs=True)
@@ -437,10 +975,6 @@ def _canonical_manifest_bytes(manifest: dict[str, Any]) -> bytes:
     return encoded
 
 
-def _product_directory() -> Path:
-    return state_dir() / PRODUCTS_DIRNAME
-
-
 def _safe_product_relative(value: object) -> str:
     if type(value) is not str or not value or "\\" in value:
         raise ProductGenerationError("product_file_path_invalid")
@@ -488,6 +1022,573 @@ def _fsync_product_tree(root: Path) -> None:
             os.fsync(descriptor)
         finally:
             os.close(descriptor)
+
+
+_WINDOWS_RESERVED_NAMES = frozenset(
+    {"CON", "PRN", "AUX", "NUL"}
+    | {f"COM{index}" for index in range(1, 10)}
+    | {f"LPT{index}" for index in range(1, 10)}
+)
+
+
+def _safe_export_directory_name(product_name: object, digest: object) -> str:
+    if (
+        type(product_name) is not str
+        or type(digest) is not str
+        or _MANIFEST_DIGEST.fullmatch(digest) is None
+    ):
+        raise ProductGenerationError("product_candidate_export_request_invalid")
+    normalized = unicodedata.normalize("NFC", product_name)
+    safe = "".join(
+        "-"
+        if ord(character) < 32
+        or ord(character) == 127
+        or character in '<>:"/\\|?*'
+        else character
+        for character in normalized
+    )
+    safe = re.sub(r"[\s-]+", "-", safe).strip(" .-")
+    if not safe:
+        safe = "reweave-product"
+    if safe.split(".", 1)[0].upper() in _WINDOWS_RESERVED_NAMES:
+        safe = f"reweave-{safe}"
+    suffix = f"-{digest[:12]}"
+    byte_limit = 240 - len(os.fsencode(suffix))
+    while safe and len(os.fsencode(safe)) > byte_limit:
+        safe = safe[:-1]
+    return f"{safe.rstrip(' .-') or 'reweave-product'}{suffix}"
+
+
+def _safe_export_parent(value: object) -> Path:
+    if (
+        type(value) is not str
+        or not value
+        or len(value) > 4096
+        or "\x00" in value
+        or not Path(value).is_absolute()
+    ):
+        raise ProductGenerationError(
+            "product_candidate_export_destination_invalid"
+        )
+    parent = Path(os.path.abspath(value))
+    if parent == Path(parent.anchor):
+        raise ProductGenerationError(
+            "product_candidate_export_destination_invalid"
+        )
+    return parent
+
+
+def _validated_export_paths(files: object) -> list[str]:
+    if type(files) is not list or not files:
+        raise ProductGenerationError("product_candidate_invalid")
+    paths: list[str] = []
+    components: dict[tuple[tuple[str, ...], str], str] = {}
+    for item in files:
+        if type(item) is not dict:
+            raise ProductGenerationError("product_candidate_invalid")
+        logical = _safe_product_relative(item.get("path"))
+        if unicodedata.normalize("NFC", logical) != logical:
+            raise ProductGenerationError("product_candidate_export_path_unsafe")
+        parts = PurePosixPath(logical).parts
+        for index, part in enumerate(parts):
+            if (
+                not part
+                or part.endswith((" ", "."))
+                or any(
+                    ord(character) < 32
+                    or ord(character) == 127
+                    or character in '<>:"\\|?*'
+                    for character in part
+                )
+                or part.split(".", 1)[0].upper() in _WINDOWS_RESERVED_NAMES
+            ):
+                raise ProductGenerationError(
+                    "product_candidate_export_path_unsafe"
+                )
+            parent = tuple(value.casefold() for value in parts[:index])
+            key = (parent, part.casefold())
+            previous = components.get(key)
+            if previous is not None and previous != part:
+                raise ProductGenerationError(
+                    "product_candidate_export_path_conflict"
+                )
+            components[key] = part
+        paths.append(logical)
+    if len(paths) != len(set(paths)):
+        raise ProductGenerationError("product_candidate_invalid")
+    return paths
+
+
+def _read_export_file(root: Path, metadata: dict[str, Any]) -> bytes:
+    logical = _safe_product_relative(metadata["path"])
+    path = root.joinpath(*PurePosixPath(logical).parts)
+    directories = [root]
+    current = root
+    for part in PurePosixPath(logical).parts[:-1]:
+        current /= part
+        directories.append(current)
+
+    def directory_identities() -> tuple[tuple[int, int], ...]:
+        identities: list[tuple[int, int]] = []
+        for directory in directories:
+            details = directory.lstat()
+            reparse_point = bool(
+                getattr(details, "st_file_attributes", 0)
+                & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+            )
+            if (
+                stat.S_ISLNK(details.st_mode)
+                or reparse_point
+                or not stat.S_ISDIR(details.st_mode)
+            ):
+                raise ProductGenerationError("product_candidate_invalid")
+            identities.append((details.st_dev, details.st_ino))
+        return tuple(identities)
+
+    try:
+        original_directories = directory_identities()
+    except OSError as exc:
+        raise ProductGenerationError("product_candidate_invalid") from exc
+    flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+    flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        descriptor = os.open(path, flags)
+    except OSError as exc:
+        raise ProductGenerationError("product_candidate_invalid") from exc
+    try:
+        details = os.fstat(descriptor)
+        if (
+            not stat.S_ISREG(details.st_mode)
+            or details.st_size != metadata["size_bytes"]
+        ):
+            raise ProductGenerationError("product_candidate_invalid")
+        chunks: list[bytes] = []
+        remaining = metadata["size_bytes"] + 1
+        while remaining:
+            chunk = os.read(descriptor, min(1024 * 1024, remaining))
+            if not chunk:
+                break
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        data = b"".join(chunks)
+        final_details = os.fstat(descriptor)
+        path_details = path.lstat()
+        reparse_point = bool(
+            getattr(path_details, "st_file_attributes", 0)
+            & getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+        )
+        if (
+            final_details.st_size != metadata["size_bytes"]
+            or stat.S_ISLNK(path_details.st_mode)
+            or reparse_point
+            or not stat.S_ISREG(path_details.st_mode)
+            or (final_details.st_dev, final_details.st_ino)
+            != (path_details.st_dev, path_details.st_ino)
+        ):
+            raise ProductGenerationError("product_candidate_invalid")
+    finally:
+        os.close(descriptor)
+    try:
+        if directory_identities() != original_directories:
+            raise ProductGenerationError("product_candidate_invalid")
+    except OSError as exc:
+        raise ProductGenerationError("product_candidate_invalid") from exc
+    if (
+        len(data) != metadata["size_bytes"]
+        or hashlib.sha256(data).hexdigest() != metadata["sha256"]
+    ):
+        raise ProductGenerationError("product_candidate_invalid")
+    return data
+
+
+def _directory_open_flags() -> int:
+    return (
+        os.O_RDONLY
+        | getattr(os, "O_DIRECTORY", 0)
+        | getattr(os, "O_NOFOLLOW", 0)
+    )
+
+
+def _descriptor_relative_reads_supported() -> bool:
+    return (
+        hasattr(os, "O_DIRECTORY")
+        and hasattr(os, "O_NOFOLLOW")
+        and os.open in getattr(os, "supports_dir_fd", set())
+        and os.stat in getattr(os, "supports_dir_fd", set())
+        and os.stat in getattr(os, "supports_follow_symlinks", set())
+    )
+
+
+def _open_no_follow_directory(
+    path: Path,
+) -> tuple[int, tuple[tuple[int, int], ...]]:
+    if not path.is_absolute() or path == Path(path.anchor):
+        raise ProductGenerationError(
+            "product_candidate_export_destination_invalid"
+        )
+    current = os.open(path.anchor, _directory_open_flags())
+    identities = [
+        (os.fstat(current).st_dev, os.fstat(current).st_ino)
+    ]
+    try:
+        for part in path.parts[1:]:
+            child = os.open(
+                part,
+                _directory_open_flags(),
+                dir_fd=current,
+            )
+            details = os.fstat(child)
+            if not stat.S_ISDIR(details.st_mode):
+                os.close(child)
+                raise OSError(errno.ENOTDIR, "not_directory")
+            os.close(current)
+            current = child
+            identities.append((details.st_dev, details.st_ino))
+    except OSError as exc:
+        os.close(current)
+        raise ProductGenerationError(
+            "product_candidate_export_destination_unsafe"
+        ) from exc
+    return current, tuple(identities)
+
+
+def _open_export_directory(path: Path, application_state: Path) -> int:
+    try:
+        state_path = Path(os.path.abspath(application_state)).resolve(
+            strict=True
+        )
+    except OSError as exc:
+        raise ProductGenerationError(
+            "product_candidate_export_destination_unsafe"
+        ) from exc
+    state_descriptor, _state_chain = _open_no_follow_directory(state_path)
+    try:
+        state_details = os.fstat(state_descriptor)
+        state_identity = (state_details.st_dev, state_details.st_ino)
+    finally:
+        os.close(state_descriptor)
+    descriptor, destination_chain = _open_no_follow_directory(path)
+    if state_identity in destination_chain:
+        os.close(descriptor)
+        raise ProductGenerationError(
+            "product_candidate_export_destination_unsafe"
+        )
+    return descriptor
+
+
+def _open_export_directory_at(parent: int, name: str) -> int:
+    try:
+        descriptor = os.open(
+            name,
+            _directory_open_flags(),
+            dir_fd=parent,
+        )
+    except OSError as exc:
+        raise ProductGenerationError(
+            "product_candidate_export_destination_unsafe"
+        ) from exc
+    if not stat.S_ISDIR(os.fstat(descriptor).st_mode):
+        os.close(descriptor)
+        raise ProductGenerationError(
+            "product_candidate_export_destination_unsafe"
+        )
+    return descriptor
+
+
+def _write_export_file(root: int, logical: str, data: bytes) -> None:
+    current = os.dup(root)
+    try:
+        for part in PurePosixPath(logical).parts[:-1]:
+            try:
+                child = _open_export_directory_at(current, part)
+            except ProductGenerationError:
+                try:
+                    os.mkdir(part, 0o700, dir_fd=current)
+                except FileExistsError:
+                    pass
+                child = _open_export_directory_at(current, part)
+            os.fchmod(child, 0o700)
+            os.close(current)
+            current = child
+        flags = (
+            os.O_WRONLY
+            | os.O_CREAT
+            | os.O_EXCL
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        descriptor = os.open(
+            PurePosixPath(logical).name,
+            flags,
+            0o600,
+            dir_fd=current,
+        )
+        try:
+            view = memoryview(data)
+            while view:
+                written = os.write(descriptor, view)
+                if written <= 0:
+                    raise OSError("export_write_incomplete")
+                view = view[written:]
+            os.fchmod(descriptor, 0o600)
+            os.fsync(descriptor)
+        finally:
+            os.close(descriptor)
+        os.fsync(current)
+    except OSError as exc:
+        raise ProductGenerationError(
+            "product_candidate_export_destination_unsafe"
+        ) from exc
+    finally:
+        os.close(current)
+
+
+def _read_export_file_at(
+    root: int,
+    metadata: dict[str, Any],
+) -> bytes:
+    current = os.dup(root)
+    try:
+        for part in PurePosixPath(metadata["path"]).parts[:-1]:
+            child = _open_export_directory_at(current, part)
+            os.close(current)
+            current = child
+        flags = (
+            os.O_RDONLY
+            | getattr(os, "O_BINARY", 0)
+            | getattr(os, "O_NOFOLLOW", 0)
+        )
+        descriptor = os.open(
+            PurePosixPath(metadata["path"]).name,
+            flags,
+            dir_fd=current,
+        )
+        try:
+            details = os.fstat(descriptor)
+            if (
+                not stat.S_ISREG(details.st_mode)
+                or details.st_size != metadata["size_bytes"]
+            ):
+                raise ProductGenerationError("product_candidate_invalid")
+            chunks: list[bytes] = []
+            remaining = metadata["size_bytes"] + 1
+            while remaining:
+                chunk = os.read(descriptor, min(1024 * 1024, remaining))
+                if not chunk:
+                    break
+                chunks.append(chunk)
+                remaining -= len(chunk)
+            data = b"".join(chunks)
+            final_details = os.fstat(descriptor)
+            path_details = os.stat(
+                PurePosixPath(metadata["path"]).name,
+                dir_fd=current,
+                follow_symlinks=False,
+            )
+            if (
+                final_details.st_size != metadata["size_bytes"]
+                or not stat.S_ISREG(path_details.st_mode)
+                or (final_details.st_dev, final_details.st_ino)
+                != (path_details.st_dev, path_details.st_ino)
+            ):
+                raise ProductGenerationError("product_candidate_invalid")
+        finally:
+            os.close(descriptor)
+    except OSError as exc:
+        raise ProductGenerationError("product_candidate_invalid") from exc
+    finally:
+        os.close(current)
+    if (
+        len(data) != metadata["size_bytes"]
+        or hashlib.sha256(data).hexdigest() != metadata["sha256"]
+    ):
+        raise ProductGenerationError("product_candidate_invalid")
+    return data
+
+
+def _verify_export_tree(
+    root: int,
+    files: list[dict[str, Any]],
+    *,
+    error_code: str,
+) -> None:
+    expected_files = {item["path"]: item for item in files}
+    expected_directories = {
+        PurePosixPath(*PurePosixPath(logical).parts[:index]).as_posix()
+        for logical in expected_files
+        for index in range(1, len(PurePosixPath(logical).parts))
+    }
+    actual_files: set[str] = set()
+    actual_directories: set[str] = set()
+
+    def visit(directory: int, prefix: PurePosixPath) -> None:
+        try:
+            entries = list(os.scandir(directory))
+        except OSError as exc:
+            raise ProductGenerationError(error_code) from exc
+        for entry in entries:
+            try:
+                details = entry.stat(follow_symlinks=False)
+            except OSError as exc:
+                raise ProductGenerationError(error_code) from exc
+            logical = (
+                prefix / entry.name
+                if prefix.parts
+                else PurePosixPath(entry.name)
+            ).as_posix()
+            if stat.S_ISLNK(details.st_mode):
+                raise ProductGenerationError(error_code)
+            if stat.S_ISDIR(details.st_mode):
+                if details.st_mode & 0o777 != 0o700:
+                    raise ProductGenerationError(error_code)
+                actual_directories.add(logical)
+                child = _open_export_directory_at(directory, entry.name)
+                try:
+                    visit(child, PurePosixPath(logical))
+                finally:
+                    os.close(child)
+                continue
+            metadata = expected_files.get(logical)
+            if (
+                not stat.S_ISREG(details.st_mode)
+                or metadata is None
+                or details.st_mode & 0o777 != 0o600
+            ):
+                raise ProductGenerationError(error_code)
+            try:
+                _read_export_file_at(root, metadata)
+            except ProductGenerationError as exc:
+                raise ProductGenerationError(error_code) from exc
+            actual_files.add(logical)
+
+    if os.fstat(root).st_mode & 0o777 != 0o700:
+        raise ProductGenerationError(error_code)
+    visit(root, PurePosixPath())
+    if (
+        actual_files != set(expected_files)
+        or actual_directories != expected_directories
+    ):
+        raise ProductGenerationError(error_code)
+
+
+def _remove_export_tree_at(
+    parent: int,
+    name: str,
+    expected_identity: tuple[int, int],
+) -> None:
+    try:
+        details = os.stat(name, dir_fd=parent, follow_symlinks=False)
+        if (
+            not stat.S_ISDIR(details.st_mode)
+            or stat.S_ISLNK(details.st_mode)
+            or (details.st_dev, details.st_ino) != expected_identity
+        ):
+            return
+        root = _open_export_directory_at(parent, name)
+    except (OSError, ProductGenerationError):
+        return
+    actual = os.fstat(root)
+    if (actual.st_dev, actual.st_ino) != expected_identity:
+        os.close(root)
+        return
+
+    def clear(directory: int) -> None:
+        for entry in list(os.scandir(directory)):
+            details = entry.stat(follow_symlinks=False)
+            if stat.S_ISDIR(details.st_mode) and not stat.S_ISLNK(
+                details.st_mode
+            ):
+                child = _open_export_directory_at(directory, entry.name)
+                try:
+                    clear(child)
+                finally:
+                    os.close(child)
+                os.rmdir(entry.name, dir_fd=directory)
+            else:
+                os.unlink(entry.name, dir_fd=directory)
+
+    try:
+        clear(root)
+    finally:
+        os.close(root)
+    os.rmdir(name, dir_fd=parent)
+
+
+def _rename_export_no_replace(
+    parent: int,
+    source_name: str,
+    target_name: str,
+) -> None:
+    library = ctypes.CDLL(None, use_errno=True)
+    if sys.platform == "darwin":
+        function = library.renameatx_np
+        function.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        result = function(
+            parent,
+            os.fsencode(source_name),
+            parent,
+            os.fsencode(target_name),
+            0x00000004,
+        )
+    elif sys.platform.startswith("linux") and hasattr(library, "renameat2"):
+        function = library.renameat2
+        function.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        result = function(
+            parent,
+            os.fsencode(source_name),
+            parent,
+            os.fsencode(target_name),
+            0x00000001,
+        )
+    else:
+        raise ProductGenerationError(
+            "product_candidate_export_platform_unsupported"
+        )
+    if result == 0:
+        return
+    failure = ctypes.get_errno()
+    if failure in {errno.EEXIST, errno.ENOTEMPTY}:
+        raise ProductGenerationError("product_candidate_export_conflict")
+    raise ProductGenerationError("product_candidate_export_failed")
+
+
+def _candidate_content_digest(
+    execution_digest: str,
+    composer_version: str,
+    entry: dict[str, str],
+    files: list[dict[str, Any]],
+) -> str:
+    content_files = [
+        {
+            "path": item["path"],
+            "sha256": item["sha256"],
+            "size_bytes": item["size_bytes"],
+        }
+        for item in files
+        if item["path"]
+        not in {"manifest.json", "quality_gate.json", "runtime_validation.json"}
+    ]
+    return plan_execution_digest(
+        {
+            "schema_version": "product_candidate_content.v1",
+            "execution_digest": execution_digest,
+            "composer_version": composer_version,
+            "entry": entry,
+            "files": content_files,
+        }
+    )
 
 
 def _validate_product_static(root: Path) -> dict[str, Any]:
@@ -559,7 +1660,7 @@ def _product_worker_environment(temporary: Path) -> dict[str, str]:
         "XDG_DATA_HOME": str(temporary / "data"),
         "APPDATA": str(temporary / "appdata"),
         "LOCALAPPDATA": str(temporary / "localappdata"),
-        "QT_QPA_PLATFORM": os.environ.get("QT_QPA_PLATFORM", "offscreen"),
+        "QT_QPA_PLATFORM": qwebengine_qpa_platform(),
         "QTWEBENGINE_CHROMIUM_FLAGS": os.environ.get(
             "QTWEBENGINE_CHROMIUM_FLAGS", "--disable-gpu"
         ),
@@ -599,7 +1700,12 @@ def _validate_product_runtime(root: Path) -> dict[str, Any]:
         completed = subprocess.run(
             [_desktop_worker_python(), str(worker)],
             input=json.dumps(
-                {"mode": "qweb", "entry": "index.html", "allow_files": allowed},
+                {
+                    "mode": "qweb",
+                    "entry": "index.html",
+                    "allow_files": allowed,
+                    "require_main_landmark": True,
+                },
                 separators=(",", ":"),
             ),
             capture_output=True,
@@ -628,6 +1734,83 @@ def _validate_product_runtime(root: Path) -> dict[str, Any]:
             else "product_qweb_validation_failed"
         )
     return result
+
+
+def _validate_product_acceptance(
+    root: Path,
+    contract: dict[str, Any],
+) -> dict[str, Any]:
+    worker = Path(__file__).with_name("reweave_capsule_worker.py")
+    allowed = sorted(
+        path.relative_to(root).as_posix()
+        for path in root.rglob("*")
+        if path.is_file() and not path.is_symlink()
+    )
+    cases = [
+        {"case_id": item["case_id"], "input": item["input"]}
+        for item in contract["cases"]
+    ]
+    with tempfile.TemporaryDirectory(
+        prefix="reweave-product-acceptance-"
+    ) as temporary:
+        environment = _product_worker_environment(Path(temporary))
+        completed = subprocess.run(
+            [_desktop_worker_python(), str(worker)],
+            input=json.dumps(
+                {
+                    "mode": "qweb_acceptance",
+                    "entry": "index.html",
+                    "allow_files": allowed,
+                    "cases": cases,
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+                allow_nan=False,
+            ),
+            capture_output=True,
+            text=True,
+            cwd=root,
+            timeout=12,
+            check=False,
+            env=environment,
+        )
+    if completed.returncode or len(completed.stdout.encode("utf-8")) > 1024 * 1024:
+        raise ProductGenerationError("candidate_acceptance_worker_failed")
+    try:
+        result = _strict_json_bytes(completed.stdout.encode("utf-8"))
+    except (UnicodeError, ValueError, json.JSONDecodeError) as exc:
+        raise ProductGenerationError("candidate_acceptance_worker_failed") from exc
+    if (
+        type(result) is not dict
+        or set(result)
+        != {
+            "schema_version",
+            "status",
+            "cases",
+            "blocked_requests",
+            "console_messages",
+            "acceptance_scope",
+        }
+        or result.get("acceptance_scope") != "candidate_business_acceptance"
+        or result.get("blocked_requests") != []
+        or result.get("console_messages") != []
+        or result.get("status") != "completed"
+    ):
+        code = (
+            str(result.get("error_code"))
+            if type(result) is dict
+            and re.fullmatch(
+                r"[a-z][a-z0-9_]{1,95}", str(result.get("error_code") or "")
+            )
+            else "candidate_acceptance_worker_failed"
+        )
+        raise ProductGenerationError(code)
+    return {
+        "schema_version": result["schema_version"],
+        "status": result["status"],
+        "cases": result["cases"],
+    }
 
 
 def _serialized_management(method: Any) -> Any:
@@ -681,25 +1864,47 @@ class ReweaveAppService:
     ) -> None:
         self._engine = engine or _InactiveLegacyEngine()
         self._capsule_store = capsule_store or CapsuleWarehouseStore()
-        self._capsule_intake = ReweaveCapsuleIntake(self._capsule_store)
-        self._capsule_supervisor = OllamaSupervisor(self._capsule_store)
-        self._capsule_stage3 = ReweaveCapsuleStage3(
-            self._capsule_store,
-            intake=self._capsule_intake,
-            supervisor=self._capsule_supervisor,
-        )
-        self._javascript_sources = JavascriptSourceService(self._capsule_store)
-        self._ollama_base_url = ollama_base_url
-        self._management_lock = threading.RLock()
-        self._capsule_operation_lock = threading.RLock()
-        self._management_executor: ThreadPoolExecutor | None = None
-        self._management_tasks: dict[str, dict[str, Any]] = {}
-        self._restore_pending = False
-        self._management_closed = False
-        self._management_recovered = False
-        self._management_rules_checked = False
-        # Process-local by contract: source bytes, graphs, and offers never enter SQLite.
-        self._javascript_capture_sessions: dict[str, dict[str, Any]] = {}
+        self._state_root = self._capsule_store.path.parent.resolve()
+        self._state_root_lease = acquire_state_root_lease(self._state_root)
+        if not self._state_root_lease.primary_owner:
+            self._state_root_lease.close()
+            self._state_root_lease = None
+            raise CapsuleStoreError("reweave_state_root_in_use")
+        try:
+            _recover_product_staging(self._state_root)
+            self._ollama_base_url = ollama_base_url
+            self._capsule_intake = ReweaveCapsuleIntake(
+                self._capsule_store
+            )
+            self._capsule_supervisor = OllamaSupervisor(
+                self._capsule_store
+            )
+            self._capsule_stage3 = ReweaveCapsuleStage3(
+                self._capsule_store,
+                intake=self._capsule_intake,
+                supervisor=self._capsule_supervisor,
+            )
+            self._javascript_sources = JavascriptSourceService(
+                self._capsule_store
+            )
+            self._product_planner = ProductPlanner(
+                self._state_root / "product_workspaces",
+                ollama_base_url,
+            )
+            self._management_lock = threading.RLock()
+            self._capsule_operation_lock = threading.RLock()
+            self._management_executor: ThreadPoolExecutor | None = None
+            self._management_tasks: dict[str, dict[str, Any]] = {}
+            self._restore_pending = False
+            self._management_closed = False
+            self._management_recovered = False
+            self._management_rules_checked = False
+            # Process-local by contract: source bytes, graphs, and offers never enter SQLite.
+            self._javascript_capture_sessions: dict[str, dict[str, Any]] = {}
+            self._product_planner.recover_orphaned_workspaces(set())
+        except BaseException:
+            self._state_root_lease.close()
+            raise
 
     @property
     def engine(self) -> Any:
@@ -742,6 +1947,20 @@ class ReweaveAppService:
         products = [] if restore_pending else self._product_records()
         registered = [item for item in products if item["status"] == "registered"]
         latest = registered[0] if registered else None
+        planning_result = self._product_planner.initial_state()
+        planning = (
+            planning_result.get("data")
+            if planning_result.get("ok") is True
+            and type(planning_result.get("data")) is dict
+            else {
+                "schema_version": "product_planning_state.v1",
+                "available": False,
+                "selected_model": None,
+                "workspaces": [],
+                "candidate_generation_available": False,
+                "product_generation_performed": False,
+            }
+        )
         state: dict[str, Any] = {
             "mode": "desktop_app",
             "backend": "sqlite_capsule_warehouse",
@@ -761,12 +1980,14 @@ class ReweaveAppService:
             "canPromoteDrafts": False,
             "canGeneratePreview": False,
             "canGenerateProduct": True,
+            "canPlanProduct": planning["available"] is True,
             "canOpenPreviewFolder": False,
             "sourceBoxes": [],
             "capsules": capsules,
             "warehouseCapsules": capsules,
             "useLocalCapsules": bool(capsules),
             "history": [self._product_history_item(item) for item in registered],
+            "productPlanning": planning,
         }
         if latest is not None:
             state["previewPath"] = str(latest["path"])
@@ -848,6 +2069,660 @@ class ReweaveAppService:
             )
         return result
 
+    def _product_planning_catalog(self) -> dict[str, Any]:
+        """Return an exact, read-only and code-free planning capsule catalog."""
+        if not self._capsule_store.path.is_file():
+            return {"warehouse_revision": 0, "capsules": []}
+        try:
+            with self._capsule_store.read_connection() as connection:
+                revision_row = connection.execute(
+                    "SELECT warehouse_revision FROM warehouse_state "
+                    "WHERE singleton_id = 1"
+                ).fetchone()
+                rows = connection.execute(
+                    "SELECT c.*, g.display_name, cv.* FROM capsules c "
+                    "JOIN capability_groups g ON g.capability_key = c.capability_key "
+                    "JOIN capsule_versions cv ON cv.version_id = c.current_version_id "
+                    "WHERE c.status = 'active' "
+                    "ORDER BY c.capsule_id, cv.version_id"
+                ).fetchall()
+        except (CapsuleStoreError, OSError, RuntimeError, sqlite3.Error) as exc:
+            raise ProductGenerationError("product_planning_catalog_unavailable") from exc
+        capsules: list[dict[str, Any]] = []
+        for raw in rows:
+            row = dict(raw)
+            if not self._capsule_stage3._eligible_exact(row):
+                continue
+            try:
+                input_contract, output_contract, error_contract = (
+                    normalize_capsule_contracts(
+                        str(row["capability_kind"]),
+                        json.loads(str(row["input_contract_json"])),
+                        json.loads(str(row["output_contract_json"])),
+                        json.loads(str(row["error_contract_json"])),
+                    )
+                )
+            except (DataContractError, json.JSONDecodeError, TypeError) as exc:
+                raise ProductGenerationError(
+                    "product_planning_catalog_unavailable"
+                ) from exc
+            capsules.append(
+                {
+                    "capsule_id": str(row["capsule_id"]),
+                    "version_id": str(row["version_id"]),
+                    "display_name": str(row["display_name"]),
+                    "capability_key": str(row["capability_key"]),
+                    "role_key": str(row["role_key"]),
+                    "variant_key": str(row["variant_key"]),
+                    "capability_kind": str(row["capability_kind"]),
+                    "canonical_hash": str(row["canonical_hash"]),
+                    "identity_status": "formal_exact_version",
+                    "input_contract": input_contract,
+                    "output_contract": output_contract,
+                    "error_contract": error_contract,
+                }
+            )
+        return {
+            "warehouse_revision": int(revision_row[0]) if revision_row else 0,
+            "capsules": capsules,
+        }
+
+    @staticmethod
+    def _capability_source_proposal_capture_request(
+        authorization: dict[str, Any],
+        offer: dict[str, Any],
+        proposal: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, str], dict[str, Any]]:
+        if (
+            type(authorization) is dict
+            and authorization.get("schema_version")
+            == SOURCE_DERIVATION_AUTHORIZATION_VERSION
+        ):
+            try:
+                authorization = validate_source_derived_authorization(
+                    authorization
+                )
+            except SourceDerivationError as exc:
+                raise ProductPlanningError(
+                    "capability_source_proposal_capture_invalid"
+                ) from exc
+        if (
+            type(authorization) is not dict
+            or type(offer) is not dict
+            or offer.get("module_relpath") != "capability.js"
+            or offer.get("export_name") != "compute"
+            or type(offer.get("target_binding_id")) is not str
+            or re.fullmatch(
+                r"[0-9a-f]{64}",
+                str(offer["target_binding_id"]),
+            )
+            is None
+            or type(offer.get("parameters")) is not list
+        ):
+            raise ProductPlanningError(
+                "capability_source_proposal_capture_invalid"
+            )
+        input_contract, output_contract, _error_contract = (
+            normalize_capsule_contracts(
+                "computation",
+                authorization.get("input_contract"),
+                authorization.get("output_contract"),
+                authorization.get("error_contract"),
+            )
+        )
+        input_properties = input_contract["properties"]
+        output_properties = output_contract["properties"]
+        input_fields = sorted(
+            input_properties,
+            key=lambda field: field.encode("utf-8"),
+        )
+        parameters = offer["parameters"]
+        if (
+            len(parameters) != len(input_fields)
+            or any(
+                type(parameter) is not dict
+                or set(parameter)
+                != {"parameter_binding_id", "name"}
+                or parameter.get("name") != f"arg{index}"
+                or re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    str(parameter.get("parameter_binding_id") or ""),
+                )
+                is None
+                for index, parameter in enumerate(parameters)
+            )
+        ):
+            raise ProductPlanningError(
+                "capability_source_proposal_capture_invalid"
+            )
+        adapter_version = authorization.get("adapter_contract_version")
+        arguments = []
+        for field, parameter in zip(input_fields, parameters):
+            contract = input_properties[field]
+            if (
+                set(contract) != {"type", "minimum", "maximum"}
+                or contract["type"] != "integer"
+                or type(contract["minimum"]) is not int
+                or type(contract["maximum"]) is not int
+            ):
+                if contract == {"type": "boolean"}:
+                    arguments.append(
+                        {
+                            "parameter_binding_id": parameter[
+                                "parameter_binding_id"
+                            ],
+                            "input_field": field,
+                            "kind": "boolean",
+                        }
+                    )
+                    continue
+                if (
+                    adapter_version == COMPUTATION_ADAPTER_V5
+                    and set(contract)
+                    == {"type", "min_length", "max_length"}
+                    and contract.get("type") == "string"
+                    and type(contract.get("min_length")) is int
+                    and type(contract.get("max_length")) is int
+                    and 0
+                    <= contract["min_length"]
+                    <= contract["max_length"]
+                    <= 10_000
+                ):
+                    arguments.append(
+                        {
+                            "parameter_binding_id": parameter[
+                                "parameter_binding_id"
+                            ],
+                            "input_field": field,
+                            "kind": "string",
+                            "min_length": contract["min_length"],
+                            "max_length": contract["max_length"],
+                        }
+                    )
+                    continue
+                raise ProductPlanningError(
+                    "capability_source_proposal_capture_invalid"
+                )
+            arguments.append(
+                {
+                    "parameter_binding_id": parameter[
+                        "parameter_binding_id"
+                    ],
+                    "input_field": field,
+                    "kind": "integer",
+                    "minimum": contract["minimum"],
+                    "maximum": contract["maximum"],
+                }
+            )
+        result_field = authorization.get("result_field")
+        passthrough_fields = authorization.get(
+            "passthrough_fields",
+            (
+                []
+                if authorization.get("schema_version")
+                == SOURCE_DERIVATION_AUTHORIZATION_VERSION
+                else None
+            ),
+        )
+        if (
+            type(result_field) is not str
+            or result_field not in output_properties
+            or type(passthrough_fields) is not list
+            or adapter_version
+            not in {
+                COMPUTATION_ADAPTER_V2,
+                COMPUTATION_ADAPTER_V3,
+                COMPUTATION_ADAPTER_V4,
+                COMPUTATION_ADAPTER_V5,
+            }
+        ):
+            raise ProductPlanningError(
+                "capability_source_proposal_capture_invalid"
+            )
+        examples: list[dict[str, Any]] = []
+        seen_inputs: dict[str, str] = {}
+
+        def add_example(input_value: Any, expected_value: Any) -> None:
+            if (
+                not data_contract_accepts(input_contract, input_value)
+                or not data_contract_accepts(output_contract, expected_value)
+            ):
+                raise ProductPlanningError(
+                    "capability_source_proposal_capture_invalid"
+                )
+            input_digest = canonical_json_digest(input_value)
+            expected_digest = canonical_json_digest(expected_value)
+            previous = seen_inputs.get(input_digest)
+            if previous is not None:
+                if previous != expected_digest:
+                    raise ProductPlanningError(
+                        "capability_source_proposal_capture_invalid"
+                    )
+                return
+            seen_inputs[input_digest] = expected_digest
+            examples.append(
+                {
+                    "input": copy.deepcopy(input_value),
+                    "expected": copy.deepcopy(expected_value),
+                }
+            )
+
+        if adapter_version in {COMPUTATION_ADAPTER_V4, COMPUTATION_ADAPTER_V5}:
+            witnesses = (
+                proposal.get("witnesses")
+                if type(proposal) is dict
+                else None
+            )
+            result_enum = authorization.get("result_enum")
+            if (
+                authorization.get("schema_version")
+                not in (
+                    {
+                        CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_V3,
+                        SOURCE_DERIVATION_AUTHORIZATION_VERSION,
+                    }
+                    if adapter_version == COMPUTATION_ADAPTER_V5
+                    else {CAPABILITY_SOURCE_PROPOSAL_AUTHORIZATION_V2}
+                )
+                or authorization.get("capture_mapping_schema")
+                != (
+                    CAPTURE_MAPPING_V5
+                    if adapter_version == COMPUTATION_ADAPTER_V5
+                    else CAPTURE_MAPPING_V4
+                )
+                or authorization.get("proof_schema")
+                != (
+                    "source_graph_proof.v3"
+                    if adapter_version == COMPUTATION_ADAPTER_V5
+                    else "source_graph_proof.v2"
+                )
+                or passthrough_fields
+                or type(result_enum) is not list
+                or not result_enum
+                or type(proposal) is not dict
+                or proposal.get("schema")
+                != CAPABILITY_SOURCE_PROPOSAL_OUTPUT_V2
+                or type(witnesses) is not list
+                or len(witnesses) != len(result_enum)
+            ):
+                raise ProductPlanningError(
+                    "capability_source_proposal_capture_invalid"
+                )
+            actual_results: list[str] = []
+            for witness in witnesses:
+                if (
+                    type(witness) is not dict
+                    or set(witness)
+                    != {"input", "expected_scalar_result"}
+                ):
+                    raise ProductPlanningError(
+                        "capability_source_proposal_capture_invalid"
+                    )
+                scalar = witness["expected_scalar_result"]
+                actual_results.append(scalar)
+                add_example(
+                    witness["input"],
+                    {result_field: scalar},
+                )
+            if actual_results != result_enum:
+                raise ProductPlanningError(
+                    "capability_source_proposal_capture_invalid"
+                )
+        for case in authorization.get("acceptance_cases") or []:
+            if (
+                type(case) is not dict
+                or set(case) != {"input", "expected_output"}
+            ):
+                raise ProductPlanningError(
+                    "capability_source_proposal_capture_invalid"
+                )
+            expected = (
+                case["expected_output"][result_field]
+                if adapter_version == COMPUTATION_ADAPTER_V2
+                else case["expected_output"]
+            )
+            if adapter_version == COMPUTATION_ADAPTER_V2:
+                examples.append(
+                    {
+                        "input": copy.deepcopy(case["input"]),
+                        "expected": copy.deepcopy(expected),
+                    }
+                )
+            else:
+                add_example(case["input"], expected)
+        if len(examples) > 35:
+            raise ProductPlanningError(
+                "capability_source_proposal_capture_invalid"
+            )
+        mapping: dict[str, Any] = {
+            "arguments": arguments,
+            "result_field": result_field,
+            "examples": examples,
+        }
+        if adapter_version == COMPUTATION_ADAPTER_V3:
+            mapping = {
+                "schema": CAPTURE_MAPPING_V3,
+                **mapping,
+                "passthrough_fields": passthrough_fields,
+            }
+        elif adapter_version in {COMPUTATION_ADAPTER_V4, COMPUTATION_ADAPTER_V5}:
+            mapping = {
+                "schema": (
+                    CAPTURE_MAPPING_V5
+                    if adapter_version == COMPUTATION_ADAPTER_V5
+                    else CAPTURE_MAPPING_V4
+                ),
+                **mapping,
+                "result_enum": copy.deepcopy(result_enum),
+                "proof_schema": (
+                    "source_graph_proof.v3"
+                    if adapter_version == COMPUTATION_ADAPTER_V5
+                    else "source_graph_proof.v2"
+                ),
+            }
+        return (
+            {
+                "module_relpath": "capability.js",
+                "export_name": "compute",
+                "target_binding_id": offer["target_binding_id"],
+            },
+            mapping,
+        )
+
+    def _capability_source_proposal_review_outcome(
+        self,
+        review_id: str | None,
+    ) -> dict[str, Any] | None:
+        if not review_id or not self._capsule_store.path.is_file():
+            return None
+        with self._capsule_store.read_connection() as connection:
+            row = connection.execute(
+                "SELECT review_id, candidate_status, decision, "
+                "retained_version_id, updated_at FROM review_items "
+                "WHERE review_id = ?",
+                (review_id,),
+            ).fetchone()
+        if row is None:
+            return {
+                "status": "missing",
+                "review_id": review_id,
+            }
+        return {
+            "status": (
+                "published"
+                if row["candidate_status"] == "published"
+                else (
+                    "rejected"
+                    if row["candidate_status"] == "rejected"
+                    else "review_required"
+                )
+            ),
+            "review_id": str(row["review_id"]),
+            "decision": row["decision"],
+            "version_id": row["retained_version_id"],
+            "updated_at": row["updated_at"],
+        }
+
+    def _resolve_product_capability_replan(
+        self,
+        plan_token: str,
+        plan_digest: str,
+        projection_digest: str,
+        catalog: dict[str, Any],
+    ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+        workspace = self._product_planner._workspace_by_token(plan_token)
+        plan = workspace.get("plan")
+        projection = (
+            self._product_planner._read_capability_gap_projection(workspace)
+            if type(plan) is dict
+            else None
+        )
+        if (
+            workspace.get("status") != "plan_review"
+            or type(plan) is not dict
+            or plan.get("canonical_digest") != plan_digest
+            or projection is None
+            or projection.get("projection_digest") != projection_digest
+        ):
+            raise ProductPlanningError("capability_replan_unavailable")
+        decisions = self._product_planner._capability_gap_decisions(
+            workspace,
+            projection,
+        )
+        decision = decisions[-1] if decisions else None
+        authorization = (
+            self._product_planner
+            ._read_capability_source_proposal_authorization(
+                workspace,
+                projection,
+                decision,
+            )
+            if type(decision) is dict
+            and decision.get("decision") == "authorize"
+            else None
+        )
+        if authorization is None:
+            raise ProductPlanningError("capability_replan_unavailable")
+        try:
+            selected = self._product_planner._model_identity(
+                self._product_planner._selected_model(
+                    check_current=False
+                )
+            )
+        except ProductPlanningError as exc:
+            raise ProductPlanningError(
+                "capability_replan_handoff_stale"
+            ) from exc
+        if selected != workspace["model"]:
+            raise ProductPlanningError(
+                "capability_replan_handoff_stale"
+            )
+
+        linked: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        with self._capsule_store.read_connection() as connection:
+            rows = connection.execute(
+                "SELECT review_id, candidate_status, decision, "
+                "candidate_canonical_hash, sanitized_candidate_json "
+                "FROM review_items WHERE candidate_status = 'published' "
+                "AND decision = 'publish_general' ORDER BY review_id"
+            ).fetchall()
+        for raw in rows:
+            row = dict(raw)
+            try:
+                summary = json.loads(row["sanitized_candidate_json"])
+            except (TypeError, json.JSONDecodeError):
+                continue
+            receipt = (
+                summary.get("frozen_review_admission")
+                if type(summary) is dict
+                else None
+            )
+            if (
+                type(receipt) is dict
+                and receipt.get("plan_digest") == plan_digest
+                and receipt.get("gap_id") == projection["gap_id"]
+                and receipt.get("projection_digest") == projection_digest
+                and receipt.get("authorize_decision_digest")
+                == decision["canonical_digest"]
+                and receipt.get("source_proposal_authorization_digest")
+                == authorization["authorization_digest"]
+            ):
+                linked.append((row, receipt))
+        if not linked:
+            raise ProductPlanningError("capability_replan_unavailable")
+        if len(linked) != 1:
+            raise ProductPlanningError("capability_replan_ambiguous")
+        review, receipt = linked[0]
+        receipt_body = {
+            key: value for key, value in receipt.items() if key != "digest"
+        }
+        if (
+            receipt.get("schema") != FROZEN_REVIEW_ADMISSION_VERSION
+            or receipt.get("source_review_id") != review["review_id"]
+            or receipt.get("candidate_canonical_hash")
+            != review["candidate_canonical_hash"]
+            or receipt.get("authorized_capability_key")
+            != projection["capability_key"]
+            or receipt.get("authorized_adapter_contract_version")
+            != projection["adapter_contract_version"]
+            or receipt.get("authorized_input_contract")
+            != authorization["input_contract"]
+            or receipt.get("authorized_output_contract")
+            != authorization["output_contract"]
+            or receipt.get("authorized_error_contract")
+            != authorization["error_contract"]
+            or receipt.get("authorization_warehouse_revision")
+            != projection["warehouse_revision"]
+            or receipt.get("authorization_catalog_digest")
+            != authorization["catalog_digest"]
+            or type(receipt.get("target_warehouse_revision_before"))
+            is not int
+            or type(receipt.get("target_warehouse_revision_after"))
+            is not int
+            or receipt["target_warehouse_revision_before"]
+            != projection["warehouse_revision"]
+            or receipt["target_warehouse_revision_after"]
+            != receipt["target_warehouse_revision_before"] + 1
+            or receipt.get("target_catalog_digest_before")
+            != receipt.get("target_catalog_digest_after")
+            or receipt.get("digest")
+            != canonical_json_digest(receipt_body)
+        ):
+            raise ProductPlanningError(
+                "capability_replan_handoff_conflict"
+            )
+
+        normalized_catalog = self._product_planner._catalog(catalog)
+        published_matches = [
+            capsule
+            for capsule in normalized_catalog["capsules"]
+            if capsule["capability_key"] == projection["capability_key"]
+            and capsule["capability_kind"] == "computation"
+            and capsule["canonical_hash"]
+            == receipt["candidate_canonical_hash"]
+        ]
+        if not published_matches:
+            raise ProductPlanningError("capability_replan_unavailable")
+        if len(published_matches) != 1:
+            raise ProductPlanningError("capability_replan_ambiguous")
+        published = published_matches[0]
+        with self._capsule_store.read_connection() as connection:
+            evidence = connection.execute(
+                "SELECT cv.supervision_model_name, "
+                "cv.supervision_model_digest FROM capsule_versions cv "
+                "JOIN capsules c ON c.capsule_id = cv.capsule_id "
+                "WHERE cv.version_id = ? AND c.current_version_id = "
+                "cv.version_id AND c.status = 'active'",
+                (published["version_id"],),
+            ).fetchone()
+        if (
+            evidence is None
+            or evidence["supervision_model_name"]
+            != receipt.get("supervision_model_name")
+            or evidence["supervision_model_digest"]
+            != receipt.get("supervision_model_digest")
+            or published["input_contract"]
+            != authorization["input_contract"]
+            or published["output_contract"]
+            != authorization["output_contract"]
+            or published["error_contract"]
+            != authorization["error_contract"]
+        ):
+            raise ProductPlanningError(
+                "capability_replan_handoff_conflict"
+            )
+        if (
+            normalized_catalog["warehouse_revision"]
+            != receipt["target_warehouse_revision_after"] + 1
+        ):
+            raise ProductPlanningError(
+                "capability_replan_handoff_stale"
+            )
+        published_identity = (
+            self._product_planner._gap_capsule_identity(published)
+        )
+        offer = self._product_planner._capability_replan_offer(
+            normalized_catalog,
+            projection,
+            published_identity,
+            authorization["error_contract"],
+        )
+        if offer is None:
+            raise ProductPlanningError("capability_replan_unavailable")
+        binding = {
+            "admission_review_id": str(review["review_id"]),
+            "admission_digest": str(receipt["digest"]),
+            "publication_review_id": str(review["review_id"]),
+            "published_capsule": published_identity,
+            "authorization_revision": projection["warehouse_revision"],
+            "admission_revision_before": receipt[
+                "target_warehouse_revision_before"
+            ],
+            "admission_revision_after": receipt[
+                "target_warehouse_revision_after"
+            ],
+            "publication_revision": normalized_catalog[
+                "warehouse_revision"
+            ],
+        }
+        return binding, offer, projection
+
+    def _product_capability_replan_view(
+        self,
+        workspace: dict[str, Any],
+        catalog: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        plan = workspace.get("plan")
+        if type(plan) is not dict:
+            return None
+        projection = self._product_planner._read_capability_gap_projection(
+            workspace
+        )
+        if projection is None:
+            return None
+        decisions = self._product_planner._capability_gap_decisions(
+            workspace,
+            projection,
+        )
+        if not decisions or decisions[-1].get("decision") != "authorize":
+            return None
+        authorization = (
+            self._product_planner
+            ._read_capability_source_proposal_authorization(
+                workspace,
+                projection,
+                decisions[-1],
+            )
+        )
+        if authorization is None:
+            return None
+        try:
+            _binding, offer, _projection = (
+                self._resolve_product_capability_replan(
+                    workspace["plan_token"],
+                    plan["canonical_digest"],
+                    projection["projection_digest"],
+                    catalog,
+                )
+            )
+            status = "available"
+            role_order = [
+                member["role_key"] for member in offer["members"]
+            ]
+        except ProductPlanningError as exc:
+            status = exc.code
+            role_order = []
+        return {
+            "schema_version": "capability_replan_handoff.v1",
+            "status": status,
+            "source_gap_id": projection["gap_id"],
+            "projection_digest": projection["projection_digest"],
+            "role_order": role_order,
+            "successor_plan_token": None,
+            "handoff_digest": None,
+            "acceptance_suggestions": [],
+        }
+
     def close(self) -> None:
         with self._management_lock:
             if self._management_closed:
@@ -855,10 +2730,24 @@ class ReweaveAppService:
             self._management_closed = True
             for task in self._management_tasks.values():
                 task["cancel_event"].set()
+                future = task.get("future")
+                if (
+                    isinstance(future, Future)
+                    and future.cancel()
+                    and task["status"] not in _TERMINAL_TASK_STATES
+                ):
+                    task["status"] = "cancelled"
+                    task["completed_at"] = _now()
             self._javascript_capture_sessions.clear()
             executor = self._management_executor
-        if executor is not None:
-            executor.shutdown(wait=True, cancel_futures=False)
+            lease = self._state_root_lease
+            self._state_root_lease = None
+        try:
+            if executor is not None:
+                executor.shutdown(wait=True, cancel_futures=True)
+        finally:
+            if lease is not None:
+                lease.close()
 
     def _capsule_management_state(self) -> dict[str, Any]:
         initialized = self._capsule_store.path.is_file()
@@ -1010,6 +2899,47 @@ class ReweaveAppService:
             state.setdefault("capabilityGroupCount", 0)
             state.setdefault("selectedSupervisionModel", None)
             state["backups"] = self._capsule_store.list_backups()
+        for source_root in state.get("sourceRoots", []):
+            if type(source_root) is not dict:
+                continue
+            try:
+                source_root["source_derived_handoff"] = (
+                    self._source_derived_handoff_status_for_root(
+                        str(source_root.get("root_id") or "")
+                    )
+                )
+            except (SourceDerivationError, SourceHandoffError):
+                source_root["source_derived_handoff"] = {
+                    "schema_version": (
+                        _SOURCE_DERIVED_HANDOFF_STATUS_VERSION
+                    ),
+                    "status": "conflict",
+                    "proposal_status": "none",
+                    "proposal": None,
+                    "run": None,
+                    "created_at": None,
+                    "revoked_at": None,
+                }
+        for project in state.get("projects", []):
+            if type(project) is not dict:
+                continue
+            # Schema v1 has no source_type; every v1 project is Static Web.
+            project.setdefault("source_type", "static_web")
+            try:
+                project["source_handoff"] = (
+                    self._source_handoff_status_for_project(
+                        str(project.get("project_id") or "")
+                    )
+                )
+            except SourceHandoffError:
+                project["source_handoff"] = {
+                    "schema_version": _SOURCE_HANDOFF_STATUS_VERSION,
+                    "status": "conflict",
+                    "created_at": None,
+                    "revoked_at": None,
+                    "run_id": None,
+                    "run_status": None,
+                }
         return state
 
     @staticmethod
@@ -1022,6 +2952,1933 @@ class ReweaveAppService:
                 except (TypeError, json.JSONDecodeError):
                     row[column] = None
         return row
+
+    def _source_handoff_path(self, token_digest: str) -> Path:
+        return (
+            self._state_root
+            / _SOURCE_HANDOFF_DIRECTORY
+            / f"source_handoff_v1_{token_digest}.json"
+        )
+
+    @staticmethod
+    def _source_handoff_brand_identity(
+        row: dict[str, Any],
+        *,
+        include_mode: bool,
+    ) -> dict[str, Any]:
+        identity = {
+            "profile_id": row.get("brand_profile_id"),
+            "profile_digest": row.get("brand_profile_digest"),
+            "profile_version": int(row.get("brand_profile_version") or 0),
+        }
+        if include_mode:
+            identity["mode"] = str(row.get("brand_mode") or "")
+        return identity
+
+    @staticmethod
+    def _validate_source_handoff_record(
+        value: Any,
+        token_digest: str,
+    ) -> dict[str, Any]:
+        fields = {
+            "schema_version",
+            "action_profile",
+            "token_digest",
+            "source_root_id",
+            "project_id",
+            "source_type",
+            "root_kind",
+            "root_path_digest",
+            "project_relpath",
+            "entry_relpath",
+            "discovery_signature",
+            "snapshot_digest",
+            "root_brand",
+            "project_brand",
+            "supervision_model",
+            "warehouse_revision",
+            "run_id",
+            "status",
+            "created_at",
+            "revoked_at",
+            "canonical_digest",
+        }
+        if type(value) is not dict or set(value) != fields:
+            raise SourceHandoffError("source_handoff_conflict")
+        row = copy.deepcopy(value)
+        body = {
+            key: item
+            for key, item in row.items()
+            if key != "canonical_digest"
+        }
+        identifiers = (
+            row["source_root_id"],
+            row["project_id"],
+            row["root_kind"],
+        )
+        paths = (row["project_relpath"], row["entry_relpath"])
+        brands = (row["root_brand"], row["project_brand"])
+        if (
+            row["schema_version"] != _SOURCE_HANDOFF_VERSION
+            or row["action_profile"] != _SOURCE_HANDOFF_ACTION_PROFILE
+            or row["token_digest"] != token_digest
+            or re.fullmatch(r"[0-9a-f]{64}", token_digest) is None
+            or any(
+                type(item) is not str
+                or _SOURCE_HANDOFF_SAFE_ID.fullmatch(item) is None
+                for item in identifiers
+            )
+            or row["source_type"] != "static_web"
+            or any(
+                type(item) is not str
+                or not item
+                or len(item.encode("utf-8")) > 1024
+                or PurePosixPath(item).is_absolute()
+                or ".." in PurePosixPath(item).parts
+                for item in paths
+            )
+            or any(
+                type(row[key]) is not str
+                or re.fullmatch(r"[0-9a-f]{64}", row[key]) is None
+                for key in (
+                    "root_path_digest",
+                    "discovery_signature",
+                    "snapshot_digest",
+                    "canonical_digest",
+                )
+            )
+            or type(row["warehouse_revision"]) is not int
+            or row["warehouse_revision"] < 0
+            or type(row["run_id"]) is not str
+            or _SOURCE_HANDOFF_RUN_ID.fullmatch(row["run_id"]) is None
+            or row["status"] not in {"active", "revoked"}
+            or type(row["created_at"]) is not str
+            or not row["created_at"]
+            or (
+                row["revoked_at"] is not None
+                and (
+                    type(row["revoked_at"]) is not str
+                    or not row["revoked_at"]
+                )
+            )
+            or (row["status"] == "active" and row["revoked_at"] is not None)
+            or (row["status"] == "revoked" and row["revoked_at"] is None)
+            or row["canonical_digest"] != canonical_json_digest(body)
+        ):
+            raise SourceHandoffError("source_handoff_conflict")
+        for index, brand in enumerate(brands):
+            expected = {
+                "profile_id",
+                "profile_digest",
+                "profile_version",
+                *(("mode",) if index == 1 else ()),
+            }
+            if (
+                type(brand) is not dict
+                or set(brand) != expected
+                or type(brand["profile_version"]) is not int
+                or brand["profile_version"] < 0
+                or (
+                    brand["profile_id"] is not None
+                    and type(brand["profile_id"]) is not str
+                )
+                or (
+                    brand["profile_digest"] is not None
+                    and (
+                        type(brand["profile_digest"]) is not str
+                        or re.fullmatch(
+                            r"[0-9a-f]{64}", brand["profile_digest"]
+                        )
+                        is None
+                    )
+                )
+                or (
+                    index == 1
+                    and brand.get("mode")
+                    not in {"inherit", "replace", "clear"}
+                )
+            ):
+                raise SourceHandoffError("source_handoff_conflict")
+        model = row["supervision_model"]
+        if (
+            type(model) is not dict
+            or set(model) != {"name", "digest"}
+            or type(model["name"]) is not str
+            or not model["name"]
+            or len(model["name"].encode("utf-8")) > 512
+            or type(model["digest"]) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", model["digest"]) is None
+        ):
+            raise SourceHandoffError("source_handoff_conflict")
+        return row
+
+    def _source_handoff_records(
+        self,
+    ) -> list[tuple[dict[str, Any], Path]]:
+        directory = self._state_root / _SOURCE_HANDOFF_DIRECTORY
+        if not directory.exists() and not directory.is_symlink():
+            return []
+        try:
+            details = directory.lstat()
+            if (
+                stat.S_ISLNK(details.st_mode)
+                or not stat.S_ISDIR(details.st_mode)
+                or (
+                    os.name == "posix"
+                    and stat.S_IMODE(details.st_mode) != 0o700
+                )
+            ):
+                raise SourceHandoffError("source_handoff_conflict")
+            entries = sorted(directory.iterdir(), key=lambda item: item.name)
+        except SourceHandoffError:
+            raise
+        except OSError as exc:
+            raise SourceHandoffError("source_handoff_conflict") from exc
+        records: list[tuple[dict[str, Any], Path]] = []
+        for path in entries:
+            match = _SOURCE_HANDOFF_FILENAME.fullmatch(path.name)
+            if match is None:
+                raise SourceHandoffError("source_handoff_conflict")
+            row = self._validate_source_handoff_record(
+                _read_source_handoff(path),
+                match.group(1),
+            )
+            records.append((row, path))
+        return records
+
+    def _source_handoff_run_row(
+        self,
+        record: dict[str, Any],
+    ) -> dict[str, Any] | None:
+        with self._capsule_store.read_connection() as connection:
+            row = connection.execute(
+                "SELECT * FROM intake_runs WHERE run_id = ?",
+                (record["run_id"],),
+            ).fetchone()
+        if row is None:
+            return None
+        value = self._json_columns(dict(row), ("counts_json",))
+        try:
+            run_created_at = datetime.fromisoformat(
+                str(value.get("created_at") or "").replace("Z", "+00:00")
+            )
+            handoff_created_at = datetime.fromisoformat(
+                record["created_at"].replace("Z", "+00:00")
+            )
+        except ValueError as exc:
+            raise SourceHandoffError("source_handoff_conflict") from exc
+        terminal_snapshot_statuses = {
+            "no_change",
+            "completed",
+            "completed_with_pending",
+        }
+        status = value.get("status")
+        started_at = value.get("started_at")
+        completed_at = value.get("completed_at")
+        error_code = value.get("error_code")
+        terminal_statuses = terminal_snapshot_statuses | {
+            "failed",
+            "cancelled",
+            "interrupted",
+        }
+        lifecycle_invalid = (
+            (
+                status == "queued"
+                and (
+                    started_at is not None
+                    or completed_at is not None
+                    or error_code is not None
+                )
+            )
+            or (
+                status == "running"
+                and (
+                    type(started_at) is not str
+                    or not started_at
+                    or completed_at is not None
+                    or error_code is not None
+                )
+            )
+            or (
+                status in terminal_statuses
+                and (
+                    type(completed_at) is not str
+                    or not completed_at
+                )
+            )
+            or (
+                status in terminal_snapshot_statuses
+                and (
+                    type(started_at) is not str
+                    or not started_at
+                    or error_code is not None
+                )
+            )
+            or (
+                status in {"failed", "cancelled", "interrupted"}
+                and (
+                    type(error_code) is not str
+                    or not error_code
+                )
+            )
+        )
+        if (
+            str(value.get("project_id") or "") != record["project_id"]
+            or value.get("run_kind") != "refresh_project"
+            or value.get("extraction_contract_version")
+            != EXTRACTION_CONTRACT_VERSION
+            or value.get("redaction_rules_version")
+            != REDACTION_RULES_VERSION
+            or value.get("security_rules_version")
+            != INTAKE_SECURITY_RULES_VERSION
+            or value.get("supervision_rules_version")
+            != INTAKE_SUPERVISION_RULES_VERSION
+            or value.get("validation_contract_version")
+            != INTAKE_VALIDATION_CONTRACT_VERSION
+            or value.get("canonicalization_version")
+            != CANONICALIZATION_VERSION
+            or value.get("status")
+            not in {
+                "queued",
+                "running",
+                "no_change",
+                "completed",
+                "completed_with_pending",
+                "failed",
+                "cancelled",
+                "interrupted",
+            }
+            or lifecycle_invalid
+            or value.get("snapshot_before")
+            not in {None, record["snapshot_digest"]}
+            or value.get("snapshot_after")
+            not in {None, record["snapshot_digest"]}
+            or (
+                value.get("status") in terminal_snapshot_statuses
+                and (
+                    value.get("snapshot_before")
+                    != record["snapshot_digest"]
+                    or value.get("snapshot_after")
+                    != record["snapshot_digest"]
+                    or value.get("completed_at") is None
+                )
+            )
+            or type(value.get("counts_json")) is not dict
+            or value.get("legacy_source_path_hash") is not None
+            or value.get("legacy_source_file_hash") is not None
+            or type(value.get("created_at")) is not str
+            or run_created_at < handoff_created_at
+        ):
+            raise SourceHandoffError("source_handoff_conflict")
+        return value
+
+    def _validate_source_handoff_live_facts(
+        self,
+        record: dict[str, Any],
+        *,
+        check_snapshot: bool,
+    ) -> None:
+        with self._capsule_store.read_connection() as connection:
+            project_row = connection.execute(
+                "SELECT * FROM projects WHERE project_id = ?",
+                (record["project_id"],),
+            ).fetchone()
+            root_row = connection.execute(
+                "SELECT * FROM source_roots WHERE root_id = ?",
+                (record["source_root_id"],),
+            ).fetchone()
+        if project_row is None or root_row is None:
+            raise SourceHandoffError("source_handoff_stale")
+        project = dict(project_row)
+        root = dict(root_row)
+        try:
+            resolved_root = Path(str(root["current_path"])).resolve(
+                strict=True
+            )
+        except (OSError, RuntimeError) as exc:
+            raise SourceHandoffError("source_handoff_stale") from exc
+        current_model = self._capsule_supervisor.selected_model()
+        project_source_type = str(
+            project.get("source_type") or "static_web"
+        )
+        if (
+            str(project.get("source_root_id") or "")
+            != record["source_root_id"]
+            or project_source_type != "static_web"
+            or str(project.get("project_state") or "") != "ready"
+            or str(project.get("project_relpath") or "")
+            != record["project_relpath"]
+            or str(project.get("entry_relpath") or "")
+            != record["entry_relpath"]
+            or str(project.get("discovery_signature") or "")
+            != record["discovery_signature"]
+            or str(root.get("root_kind") or "") != record["root_kind"]
+            or str(root.get("status") or "") != "bound"
+            or hashlib.sha256(
+                str(resolved_root).encode("utf-8")
+            ).hexdigest()
+            != record["root_path_digest"]
+            or self._source_handoff_brand_identity(
+                root, include_mode=False
+            )
+            != record["root_brand"]
+            or self._source_handoff_brand_identity(
+                project, include_mode=True
+            )
+            != record["project_brand"]
+            or {
+                "name": str(current_model.get("name") or ""),
+                "digest": str(current_model.get("digest") or ""),
+            }
+            != record["supervision_model"]
+            or self._capsule_store.current_revision()
+            != record["warehouse_revision"]
+        ):
+            raise SourceHandoffError("source_handoff_stale")
+        if (
+            check_snapshot
+            and self._capsule_intake.snapshot_project(
+                record["project_id"]
+            ).digest
+            != record["snapshot_digest"]
+        ):
+            raise SourceHandoffError("source_handoff_stale")
+
+    def _source_handoff_status_for_project(
+        self,
+        project_id: str,
+    ) -> dict[str, Any]:
+        base = {
+            "schema_version": _SOURCE_HANDOFF_STATUS_VERSION,
+            "status": "none",
+            "created_at": None,
+            "revoked_at": None,
+            "run_id": None,
+            "run_status": None,
+        }
+        if not project_id:
+            return base
+        records = self._source_handoff_records()
+        active = [
+            (record, path)
+            for record, path in records
+            if record["status"] == "active"
+        ]
+        if len(active) > 1:
+            return {**base, "status": "conflict"}
+        record = active[0][0] if active else None
+        if record is None:
+            historical = [
+                current
+                for current, _path in records
+                if current["project_id"] == project_id
+            ]
+            if not historical:
+                return base
+            record = max(
+                historical,
+                key=lambda current: (
+                    current["created_at"],
+                    current["token_digest"],
+                ),
+            )
+        if record["project_id"] != project_id:
+            return base
+        run_row = self._source_handoff_run_row(record)
+        status = record["status"]
+        if status == "active" and run_row is None:
+            try:
+                self._validate_source_handoff_live_facts(
+                    record,
+                    check_snapshot=True,
+                )
+            except (IntakeError, SourceHandoffError, Stage3Error):
+                status = "stale"
+        return {
+            **base,
+            "status": status,
+            "created_at": record["created_at"],
+            "revoked_at": record["revoked_at"],
+            "run_id": record["run_id"],
+            "run_status": (
+                str(run_row.get("status") or "")
+                if run_row is not None
+                else "not_started"
+            ),
+        }
+
+    def _validated_source_handoff_binding(
+        self,
+        binding: Any,
+    ) -> tuple[dict[str, Any], Path]:
+        if (
+            type(binding) is not dict
+            or set(binding)
+            != {
+                "action_profile",
+                "token_digest",
+                "record_digest",
+                "source_root_id",
+                "project_id",
+                "run_id",
+                "snapshot_digest",
+            }
+            or binding.get("action_profile")
+            != _SOURCE_HANDOFF_ACTION_PROFILE
+            or type(binding.get("token_digest")) is not str
+            or re.fullmatch(
+                r"[0-9a-f]{64}",
+                binding["token_digest"],
+            )
+            is None
+        ):
+            raise SourceHandoffError("source_handoff_invalid")
+        path = self._source_handoff_path(binding["token_digest"])
+        record = self._validate_source_handoff_record(
+            _read_source_handoff(path),
+            binding["token_digest"],
+        )
+        if (
+            record["status"] != "active"
+            or record["canonical_digest"] != binding["record_digest"]
+            or any(
+                record[key] != binding[key]
+                for key in (
+                    "source_root_id",
+                    "project_id",
+                    "run_id",
+                    "snapshot_digest",
+                )
+            )
+        ):
+            raise SourceHandoffError(
+                "source_handoff_revoked"
+                if record["status"] == "revoked"
+                else "source_handoff_conflict"
+            )
+        active = [
+            current
+            for current, _current_path in self._source_handoff_records()
+            if current["status"] == "active"
+        ]
+        if len(active) != 1 or active[0]["token_digest"] != record["token_digest"]:
+            raise SourceHandoffError("source_handoff_conflict")
+        return record, path
+
+    @staticmethod
+    def _source_handoff_binding(record: dict[str, Any]) -> dict[str, Any]:
+        return {
+            "action_profile": _SOURCE_HANDOFF_ACTION_PROFILE,
+            "token_digest": record["token_digest"],
+            "record_digest": record["canonical_digest"],
+            "source_root_id": record["source_root_id"],
+            "project_id": record["project_id"],
+            "run_id": record["run_id"],
+            "snapshot_digest": record["snapshot_digest"],
+        }
+
+    @_serialized_management
+    def create_local_source_handoff(
+        self,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if (
+                set(request) != {"project_id"}
+                or type(request["project_id"]) is not str
+                or not request["project_id"].strip()
+            ):
+                return self._error("source_handoff_request_invalid")
+            self._ensure_capsule_management()
+            project = self._capsule_intake.get_project(
+                request["project_id"].strip()
+            )
+            root = self._capsule_intake.get_source_root(
+                str(project["source_root_id"])
+            )
+            if (
+                project.get("project_state") != "ready"
+                or str(project.get("source_type") or "static_web")
+                != "static_web"
+                or root.get("status") != "bound"
+            ):
+                return self._error("source_handoff_project_not_ready")
+            records = self._source_handoff_records()
+            active = [
+                record
+                for record, _path in records
+                if record["status"] == "active"
+            ]
+            if len(active) > 1:
+                return self._error("source_handoff_conflict")
+            if active:
+                return self._error("source_handoff_already_active")
+            snapshot = self._capsule_intake.snapshot_project(
+                str(project["project_id"])
+            )
+            selected = self._capsule_supervisor.selected_model()
+            model = {
+                "name": str(selected.get("name") or ""),
+                "digest": str(selected.get("digest") or ""),
+            }
+            try:
+                resolved_root = Path(str(root["current_path"])).resolve(
+                    strict=True
+                )
+            except (OSError, RuntimeError) as exc:
+                raise SourceHandoffError("source_handoff_project_not_ready") from exc
+            token = f"source_handoff_token_{uuid.uuid4().hex}{uuid.uuid4().hex[:16]}"
+            token_digest = hashlib.sha256(token.encode("utf-8")).hexdigest()
+            created_at = _now()
+            record: dict[str, Any] = {
+                "schema_version": _SOURCE_HANDOFF_VERSION,
+                "action_profile": _SOURCE_HANDOFF_ACTION_PROFILE,
+                "token_digest": token_digest,
+                "source_root_id": str(root["root_id"]),
+                "project_id": str(project["project_id"]),
+                "source_type": "static_web",
+                "root_kind": str(root["root_kind"]),
+                "root_path_digest": hashlib.sha256(
+                    str(resolved_root).encode("utf-8")
+                ).hexdigest(),
+                "project_relpath": str(project["project_relpath"]),
+                "entry_relpath": str(project["entry_relpath"]),
+                "discovery_signature": str(
+                    project["discovery_signature"]
+                ),
+                "snapshot_digest": snapshot.digest,
+                "root_brand": self._source_handoff_brand_identity(
+                    root,
+                    include_mode=False,
+                ),
+                "project_brand": self._source_handoff_brand_identity(
+                    project,
+                    include_mode=True,
+                ),
+                "supervision_model": model,
+                "warehouse_revision": self._capsule_store.current_revision(),
+                "run_id": (
+                    "run_"
+                    + hashlib.sha256(
+                        (
+                            "source_handoff_run\0" + token_digest
+                        ).encode("utf-8")
+                    ).hexdigest()[:32]
+                ),
+                "status": "active",
+                "created_at": created_at,
+                "revoked_at": None,
+            }
+            record["canonical_digest"] = canonical_json_digest(record)
+            validated = self._validate_source_handoff_record(
+                record,
+                token_digest,
+            )
+            _write_source_handoff(
+                self._source_handoff_path(token_digest),
+                validated,
+                replace=False,
+            )
+            return self._ok(
+                {
+                    "source_handoff_token": token,
+                    "status": "active",
+                    "created_at": created_at,
+                }
+            )
+        except (
+            CapsuleStoreError,
+            IntakeError,
+            OSError,
+            SourceHandoffError,
+            Stage3Error,
+            ValueError,
+        ) as exc:
+            return self._exception_error(
+                exc,
+                "source_handoff_create_failed",
+            )
+
+    @_serialized_management
+    def revoke_local_source_handoff(
+        self,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if (
+                set(request) != {"project_id"}
+                or type(request["project_id"]) is not str
+                or not request["project_id"].strip()
+            ):
+                return self._error("source_handoff_request_invalid")
+            project_id = request["project_id"].strip()
+            records = self._source_handoff_records()
+            active = [
+                (record, path)
+                for record, path in records
+                if record["status"] == "active"
+            ]
+            if len(active) > 1:
+                return self._error("source_handoff_conflict")
+            if active:
+                record, path = active[0]
+                if record["project_id"] != project_id:
+                    return self._error("source_handoff_not_found")
+                revoked_at = _now()
+                updated = {
+                    **record,
+                    "status": "revoked",
+                    "revoked_at": revoked_at,
+                }
+                updated["canonical_digest"] = canonical_json_digest(
+                    {
+                        key: value
+                        for key, value in updated.items()
+                        if key != "canonical_digest"
+                    }
+                )
+                validated = self._validate_source_handoff_record(
+                    updated,
+                    record["token_digest"],
+                )
+                _write_source_handoff(path, validated, replace=True)
+                return self._ok(
+                    self._source_handoff_status_for_project(project_id)
+                )
+            return self._ok(
+                self._source_handoff_status_for_project(project_id)
+            )
+        except (OSError, SourceHandoffError, ValueError) as exc:
+            return self._exception_error(
+                exc,
+                "source_handoff_revoke_failed",
+            )
+
+    def _resolve_local_source_handoff(
+        self,
+        handoff_token: str,
+    ) -> dict[str, Any]:
+        if (
+            type(handoff_token) is not str
+            or _SOURCE_HANDOFF_TOKEN.fullmatch(handoff_token) is None
+        ):
+            raise SourceHandoffError("source_handoff_invalid")
+        with self._capsule_operation_lock:
+            self._ensure_capsule_management()
+            token_digest = hashlib.sha256(
+                handoff_token.encode("utf-8")
+            ).hexdigest()
+            path = self._source_handoff_path(token_digest)
+            try:
+                record = self._validate_source_handoff_record(
+                    _read_source_handoff(path),
+                    token_digest,
+                )
+            except SourceHandoffError as exc:
+                if exc.code == "source_handoff_conflict" and not (
+                    path.exists() or path.is_symlink()
+                ):
+                    raise SourceHandoffError("source_handoff_invalid") from exc
+                raise
+            if record["status"] != "active":
+                raise SourceHandoffError("source_handoff_revoked")
+            active = [
+                current
+                for current, _current_path in self._source_handoff_records()
+                if current["status"] == "active"
+            ]
+            if (
+                len(active) != 1
+                or active[0]["token_digest"] != token_digest
+            ):
+                raise SourceHandoffError("source_handoff_conflict")
+            if self._source_handoff_run_row(record) is None:
+                self._validate_source_handoff_live_facts(
+                    record,
+                    check_snapshot=True,
+                )
+            return self._source_handoff_binding(record)
+
+    def _source_derived_handoff_path(self, token_digest: str) -> Path:
+        return (
+            self._state_root
+            / _SOURCE_DERIVED_HANDOFF_DIRECTORY
+            / f"source_derived_handoff_v1_{token_digest}.json"
+        )
+
+    @staticmethod
+    def _source_derived_handoff_model(value: Any) -> dict[str, str]:
+        try:
+            name_size = (
+                len(value["name"].encode("utf-8"))
+                if type(value) is dict
+                and type(value.get("name")) is str
+                else 0
+            )
+        except UnicodeEncodeError as exc:
+            raise SourceHandoffError(
+                "source_derived_handoff_conflict"
+            ) from exc
+        if (
+            type(value) is not dict
+            or set(value) != {"name", "digest"}
+            or type(value["name"]) is not str
+            or not value["name"]
+            or name_size > 512
+            or type(value["digest"]) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", value["digest"]) is None
+        ):
+            raise SourceHandoffError("source_derived_handoff_conflict")
+        return copy.deepcopy(value)
+
+    @staticmethod
+    def _source_derived_authorization_core(
+        value: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            key: copy.deepcopy(item)
+            for key, item in value.items()
+            if key not in {"authorized_at", "authorization_digest"}
+        }
+
+    @staticmethod
+    def _source_derived_authorization_matches_proposal(
+        authorization: dict[str, Any],
+        proposal: dict[str, Any],
+    ) -> bool:
+        request = proposal["request"]
+        input_field = request["input_field"]
+        result_field = request["result_field"]
+        return (
+            authorization["source_snapshot_sha256"]
+            == proposal["source_snapshot_sha256"]
+            and authorization["project_graph_digest"]
+            == proposal["project_graph_digest"]
+            and authorization["evidence"] == proposal["evidence"]
+            and authorization["behavior_intent"]
+            == request["behavior_intent"]
+            and authorization["input_field"] == input_field
+            and authorization["result_field"] == result_field
+            and authorization["result_enum"] == request["result_enum"]
+            and authorization["input_contract"]["properties"][input_field]
+            == {
+                "type": "string",
+                "min_length": request["input_min_length"],
+                "max_length": request["input_max_length"],
+            }
+            and [
+                {
+                    "input_text": item["input"][input_field],
+                    "expected_result": item["expected_output"][result_field],
+                }
+                for item in authorization["acceptance_cases"]
+            ]
+            == request["acceptance_cases"]
+            and authorization["source_proposal_model"]
+            == proposal["source_proposal_model"]
+            and authorization["warehouse_revision"]
+            == proposal["warehouse_revision"]
+            and authorization["catalog_digest"]
+            == proposal["catalog_digest"]
+        )
+
+    @classmethod
+    def _validate_source_derived_handoff_record(
+        cls,
+        value: Any,
+        token_digest: str,
+    ) -> dict[str, Any]:
+        fields = {
+            "schema_version",
+            "action_profile",
+            "token_digest",
+            "source_root_id",
+            "root_kind",
+            "root_path_digest",
+            "root_snapshot_digest",
+            "source_proposal_model",
+            "supervision_model",
+            "warehouse_revision",
+            "catalog_digest",
+            "handoff_binding_digest",
+            "proposal",
+            "proposal_digest",
+            "proposal_status",
+            "authorization",
+            "run_id",
+            "status",
+            "created_at",
+            "approved_at",
+            "rejected_at",
+            "revoked_at",
+            "canonical_digest",
+        }
+        if type(value) is not dict or set(value) != fields:
+            raise SourceHandoffError("source_derived_handoff_conflict")
+        row = copy.deepcopy(value)
+        body = {
+            key: item
+            for key, item in row.items()
+            if key != "canonical_digest"
+        }
+        proposal = row["proposal"]
+        authorization = row["authorization"]
+        try:
+            validated_proposal = (
+                validate_source_derived_agent_proposal(proposal)
+                if proposal is not None
+                else None
+            )
+            validated_authorization = (
+                validate_source_derived_authorization(authorization)
+                if authorization is not None
+                else None
+            )
+        except SourceDerivationError as exc:
+            raise SourceHandoffError(
+                "source_derived_handoff_conflict"
+            ) from exc
+        timestamp_keys = (
+            "created_at",
+            "approved_at",
+            "rejected_at",
+            "revoked_at",
+        )
+        if (
+            row["schema_version"] != _SOURCE_DERIVED_HANDOFF_VERSION
+            or row["action_profile"]
+            != _SOURCE_DERIVED_HANDOFF_ACTION_PROFILE
+            or row["token_digest"] != token_digest
+            or re.fullmatch(r"[0-9a-f]{64}", token_digest) is None
+            or type(row["source_root_id"]) is not str
+            or _SOURCE_HANDOFF_SAFE_ID.fullmatch(row["source_root_id"])
+            is None
+            or type(row["root_kind"]) is not str
+            or _SOURCE_HANDOFF_SAFE_ID.fullmatch(row["root_kind"]) is None
+            or any(
+                type(row[key]) is not str
+                or re.fullmatch(r"[0-9a-f]{64}", row[key]) is None
+                for key in (
+                    "root_path_digest",
+                    "root_snapshot_digest",
+                    "catalog_digest",
+                    "handoff_binding_digest",
+                    "canonical_digest",
+                )
+            )
+            or cls._source_derived_handoff_model(
+                row["source_proposal_model"]
+            )
+            != row["source_proposal_model"]
+            or cls._source_derived_handoff_model(
+                row["supervision_model"]
+            )
+            != row["supervision_model"]
+            or type(row["warehouse_revision"]) is not int
+            or row["warehouse_revision"] < 0
+            or row["proposal_status"]
+            not in {"none", "pending", "approved", "rejected"}
+            or row["status"] not in {"active", "revoked"}
+            or type(row["created_at"]) is not str
+            or not row["created_at"]
+            or any(
+                row[key] is not None
+                and (type(row[key]) is not str or not row[key])
+                for key in timestamp_keys[1:]
+            )
+            or (
+                row["run_id"] is not None
+                and (
+                    type(row["run_id"]) is not str
+                    or _SOURCE_HANDOFF_RUN_ID.fullmatch(row["run_id"])
+                    is None
+                )
+            )
+            or (
+                row["proposal_digest"] is not None
+                and (
+                    type(row["proposal_digest"]) is not str
+                    or re.fullmatch(
+                        r"[0-9a-f]{64}", row["proposal_digest"]
+                    )
+                    is None
+                )
+            )
+            or (
+                validated_proposal is not None
+                and (
+                    validated_proposal["canonical_digest"]
+                    != row["proposal_digest"]
+                    or validated_proposal["handoff_binding_digest"]
+                    != row["handoff_binding_digest"]
+                )
+            )
+            or (
+                validated_authorization is not None
+                and (
+                    validated_proposal is None
+                    or not cls._source_derived_authorization_matches_proposal(
+                        validated_authorization,
+                        validated_proposal,
+                    )
+                )
+            )
+            or row["canonical_digest"] != canonical_json_digest(body)
+        ):
+            raise SourceHandoffError("source_derived_handoff_conflict")
+        state_shape = {
+            "none": (
+                proposal is None
+                and row["proposal_digest"] is None
+                and authorization is None
+                and row["run_id"] is None
+                and row["approved_at"] is None
+                and row["rejected_at"] is None
+            ),
+            "pending": (
+                proposal is not None
+                and row["proposal_digest"] is not None
+                and authorization is None
+                and row["run_id"] is None
+                and row["approved_at"] is None
+                and row["rejected_at"] is None
+            ),
+            "approved": (
+                proposal is not None
+                and row["proposal_digest"] is not None
+                and authorization is not None
+                and row["approved_at"] is not None
+                and row["rejected_at"] is None
+            ),
+            "rejected": (
+                proposal is not None
+                and row["proposal_digest"] is not None
+                and authorization is None
+                and row["run_id"] is None
+                and row["approved_at"] is None
+                and row["rejected_at"] is not None
+            ),
+        }
+        if (
+            not state_shape[row["proposal_status"]]
+            or (row["status"] == "active" and row["revoked_at"] is not None)
+            or (row["status"] == "revoked" and row["revoked_at"] is None)
+        ):
+            raise SourceHandoffError("source_derived_handoff_conflict")
+        return row
+
+    def _source_derived_handoff_records(
+        self,
+    ) -> list[tuple[dict[str, Any], Path]]:
+        directory = (
+            self._state_root / _SOURCE_DERIVED_HANDOFF_DIRECTORY
+        )
+        if not directory.exists() and not directory.is_symlink():
+            return []
+        try:
+            details = directory.lstat()
+            if (
+                stat.S_ISLNK(details.st_mode)
+                or not stat.S_ISDIR(details.st_mode)
+                or (
+                    os.name == "posix"
+                    and stat.S_IMODE(details.st_mode) != 0o700
+                )
+            ):
+                raise SourceHandoffError(
+                    "source_derived_handoff_conflict"
+                )
+            paths = sorted(directory.iterdir(), key=lambda item: item.name)
+        except SourceHandoffError:
+            raise
+        except OSError as exc:
+            raise SourceHandoffError(
+                "source_derived_handoff_conflict"
+            ) from exc
+        result: list[tuple[dict[str, Any], Path]] = []
+        for path in paths:
+            match = _SOURCE_DERIVED_HANDOFF_FILENAME.fullmatch(path.name)
+            if match is None:
+                raise SourceHandoffError(
+                    "source_derived_handoff_conflict"
+                )
+            result.append(
+                (
+                    self._validate_source_derived_handoff_record(
+                        _read_source_handoff(path),
+                        match.group(1),
+                    ),
+                    path,
+                )
+            )
+        return result
+
+    def _source_derived_root_identity(
+        self,
+        source_root_id: str,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        root = self._capsule_intake.get_source_root(source_root_id)
+        if root.get("status") != "bound":
+            raise SourceHandoffError("source_derived_handoff_source_stale")
+        try:
+            resolved = Path(str(root["current_path"])).resolve(
+                strict=True
+            )
+        except (OSError, RuntimeError) as exc:
+            raise SourceHandoffError(
+                "source_derived_handoff_source_stale"
+            ) from exc
+        identity = {
+            "source_root_id": str(root["root_id"]),
+            "root_kind": str(root["root_kind"]),
+            "root_path_digest": hashlib.sha256(
+                str(resolved).encode("utf-8")
+            ).hexdigest(),
+            "brand_profile_id": root.get("brand_profile_id"),
+            "brand_profile_digest": root.get("brand_profile_digest"),
+            "brand_profile_version": int(
+                root.get("brand_profile_version") or 0
+            ),
+        }
+        return root, identity
+
+    def _source_derived_handoff_facts(
+        self,
+        source_root_id: str,
+    ) -> dict[str, Any]:
+        # ponytail: bind root authority here; prepare later freezes the one
+        # permitted evidence file instead of inventing a second root scanner.
+        _root, root_identity = self._source_derived_root_identity(
+            source_root_id
+        )
+        source_model = self._product_planner._model_identity(
+            self._product_planner._selected_model(check_current=False)
+        )
+        selected_supervisor = self._capsule_supervisor.selected_model()
+        catalog = self._product_planning_catalog()
+        return {
+            "root_identity": root_identity,
+            "root_snapshot_digest": canonical_json_digest(root_identity),
+            "source_proposal_model": {
+                "name": source_model["name"],
+                "digest": source_model["digest"],
+            },
+            "supervision_model": {
+                "name": selected_supervisor["name"],
+                "digest": selected_supervisor["digest"],
+            },
+            "warehouse_revision": catalog["warehouse_revision"],
+            "catalog_digest": canonical_json_digest(catalog),
+        }
+
+    def _validate_source_derived_handoff_live_facts(
+        self,
+        record: dict[str, Any],
+    ) -> None:
+        facts = self._source_derived_handoff_facts(
+            record["source_root_id"]
+        )
+        root = facts["root_identity"]
+        if (
+            root["root_kind"] != record["root_kind"]
+            or root["root_path_digest"] != record["root_path_digest"]
+            or facts["root_snapshot_digest"]
+            != record["root_snapshot_digest"]
+            or facts["source_proposal_model"]
+            != record["source_proposal_model"]
+            or facts["supervision_model"]
+            != record["supervision_model"]
+            or facts["warehouse_revision"] != record["warehouse_revision"]
+            or facts["catalog_digest"] != record["catalog_digest"]
+        ):
+            raise SourceHandoffError(
+                "source_derived_handoff_stale"
+            )
+        if record["proposal"] is not None:
+            root = self._capsule_intake.get_source_root(
+                record["source_root_id"]
+            )
+            evidence = read_source_derived_evidence(
+                str(root["current_path"]),
+                record["proposal"]["request"]["source_relpath"],
+            )
+            identity = [
+                {
+                    key: evidence[0][key]
+                    for key in ("logical_path", "sha256", "size_bytes")
+                }
+            ]
+            if (
+                evidence[0]["sha256"]
+                != record["proposal"]["source_snapshot_sha256"]
+                or source_derived_project_graph_digest(evidence)
+                != record["proposal"]["project_graph_digest"]
+                or identity != record["proposal"]["evidence"]
+            ):
+                raise SourceHandoffError(
+                    "source_derived_handoff_stale"
+                )
+
+    @staticmethod
+    def _source_derived_proposal_summary(
+        proposal: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if proposal is None:
+            return None
+        request = proposal["request"]
+        return {
+            "source_relpath": request["source_relpath"],
+            "behavior_intent": request["behavior_intent"],
+            "input": {
+                "min_length": request["input_min_length"],
+                "max_length": request["input_max_length"],
+            },
+            "result_enum": copy.deepcopy(request["result_enum"]),
+            "acceptance_cases": copy.deepcopy(
+                request["acceptance_cases"]
+            ),
+        }
+
+    def _source_derived_handoff_status_for_root(
+        self,
+        source_root_id: str,
+    ) -> dict[str, Any]:
+        base = {
+            "schema_version": _SOURCE_DERIVED_HANDOFF_STATUS_VERSION,
+            "status": "none",
+            "proposal_status": "none",
+            "proposal": None,
+            "run": None,
+            "created_at": None,
+            "approved_at": None,
+            "rejected_at": None,
+            "revoked_at": None,
+        }
+        if not source_root_id:
+            return base
+        records = self._source_derived_handoff_records()
+        active = [
+            record
+            for record, _path in records
+            if record["status"] == "active"
+        ]
+        if len(active) > 1:
+            return {**base, "status": "conflict"}
+        record = active[0] if active else None
+        if record is None:
+            historical = [
+                current
+                for current, _path in records
+                if current["source_root_id"] == source_root_id
+            ]
+            if not historical:
+                return base
+            record = max(
+                historical,
+                key=lambda current: (
+                    current["created_at"],
+                    current["token_digest"],
+                ),
+            )
+        if record["source_root_id"] != source_root_id:
+            return base
+        status = record["status"]
+        if status == "active":
+            try:
+                self._validate_source_derived_handoff_live_facts(record)
+            except (SourceDerivationError, SourceHandoffError):
+                status = "stale"
+        run = None
+        if record["run_id"] is not None:
+            try:
+                current = source_derived_run_projection(
+                    get_source_derived_run(
+                        self._state_root, record["run_id"]
+                    )
+                )
+                run = {
+                    "run_id": current["run_id"],
+                    "status": current["status"],
+                    "stage": current["stage"],
+                    "review_scope": current.get("review_scope"),
+                }
+            except SourceDerivationError:
+                status = "conflict"
+        return {
+            **base,
+            "status": status,
+            "proposal_status": record["proposal_status"],
+            "proposal": self._source_derived_proposal_summary(
+                record["proposal"]
+            ),
+            "run": run,
+            "created_at": record["created_at"],
+            "approved_at": record["approved_at"],
+            "rejected_at": record["rejected_at"],
+            "revoked_at": record["revoked_at"],
+        }
+
+    @staticmethod
+    def _source_derived_handoff_binding(
+        record: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "action_profile": _SOURCE_DERIVED_HANDOFF_ACTION_PROFILE,
+            "token_digest": record["token_digest"],
+            "handoff_binding_digest": record["handoff_binding_digest"],
+            "source_root_id": record["source_root_id"],
+        }
+
+    def _validated_source_derived_handoff_binding(
+        self,
+        binding: Any,
+    ) -> tuple[dict[str, Any], Path]:
+        if (
+            type(binding) is not dict
+            or set(binding)
+            != {
+                "action_profile",
+                "token_digest",
+                "handoff_binding_digest",
+                "source_root_id",
+            }
+            or binding.get("action_profile")
+            != _SOURCE_DERIVED_HANDOFF_ACTION_PROFILE
+            or type(binding.get("token_digest")) is not str
+            or re.fullmatch(
+                r"[0-9a-f]{64}", binding["token_digest"]
+            )
+            is None
+        ):
+            raise SourceHandoffError("source_derived_handoff_invalid")
+        path = self._source_derived_handoff_path(
+            binding["token_digest"]
+        )
+        record = self._validate_source_derived_handoff_record(
+            _read_source_handoff(path),
+            binding["token_digest"],
+        )
+        if record["status"] != "active":
+            raise SourceHandoffError("source_derived_handoff_revoked")
+        if any(
+            record[key] != binding[key]
+            for key in (
+                "token_digest",
+                "handoff_binding_digest",
+                "source_root_id",
+            )
+        ):
+            raise SourceHandoffError("source_derived_handoff_conflict")
+        active = [
+            item
+            for item, _item_path in self._source_derived_handoff_records()
+            if item["status"] == "active"
+        ]
+        if (
+            len(active) != 1
+            or active[0]["token_digest"] != record["token_digest"]
+        ):
+            raise SourceHandoffError("source_derived_handoff_conflict")
+        self._validate_source_derived_handoff_live_facts(record)
+        return record, path
+
+    def _write_updated_source_derived_handoff(
+        self,
+        record: dict[str, Any],
+        path: Path,
+    ) -> dict[str, Any]:
+        body = {
+            key: copy.deepcopy(value)
+            for key, value in record.items()
+            if key != "canonical_digest"
+        }
+        updated = {
+            **body,
+            "canonical_digest": canonical_json_digest(body),
+        }
+        validated = self._validate_source_derived_handoff_record(
+            updated,
+            updated["token_digest"],
+        )
+        _write_source_handoff(
+            path,
+            validated,
+            replace=True,
+            directory_name=_SOURCE_DERIVED_HANDOFF_DIRECTORY,
+        )
+        return validated
+
+    @_serialized_management
+    def create_local_source_derived_handoff(
+        self,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if (
+                set(request) != {"source_root_id"}
+                or type(request["source_root_id"]) is not str
+                or not request["source_root_id"].strip()
+            ):
+                return self._error(
+                    "source_derived_handoff_request_invalid"
+                )
+            self._ensure_capsule_management()
+            source_root_id = request["source_root_id"].strip()
+            if not javascript_source_snapshot_supported():
+                raise SourceDerivationError(
+                    "source_platform_unsupported_v1"
+                )
+            facts = self._source_derived_handoff_facts(source_root_id)
+            records = self._source_derived_handoff_records()
+            active = [
+                record
+                for record, _path in records
+                if record["status"] == "active"
+            ]
+            if len(active) > 1:
+                return self._error("source_derived_handoff_conflict")
+            if active:
+                return self._error(
+                    "source_derived_handoff_already_active"
+                )
+            token = (
+                "source_derived_handoff_token_"
+                + uuid.uuid4().hex
+                + uuid.uuid4().hex[:16]
+            )
+            token_digest = hashlib.sha256(
+                token.encode("utf-8")
+            ).hexdigest()
+            created_at = _now()
+            binding_body = {
+                "source_root_id": source_root_id,
+                "root_snapshot_digest": facts[
+                    "root_snapshot_digest"
+                ],
+                "source_proposal_model": facts[
+                    "source_proposal_model"
+                ],
+                "supervision_model": facts["supervision_model"],
+                "warehouse_revision": facts["warehouse_revision"],
+                "catalog_digest": facts["catalog_digest"],
+                "created_at": created_at,
+            }
+            record: dict[str, Any] = {
+                "schema_version": _SOURCE_DERIVED_HANDOFF_VERSION,
+                "action_profile": (
+                    _SOURCE_DERIVED_HANDOFF_ACTION_PROFILE
+                ),
+                "token_digest": token_digest,
+                "source_root_id": source_root_id,
+                "root_kind": facts["root_identity"]["root_kind"],
+                "root_path_digest": facts["root_identity"][
+                    "root_path_digest"
+                ],
+                "root_snapshot_digest": facts[
+                    "root_snapshot_digest"
+                ],
+                "source_proposal_model": facts[
+                    "source_proposal_model"
+                ],
+                "supervision_model": facts["supervision_model"],
+                "warehouse_revision": facts["warehouse_revision"],
+                "catalog_digest": facts["catalog_digest"],
+                "handoff_binding_digest": canonical_json_digest(
+                    binding_body
+                ),
+                "proposal": None,
+                "proposal_digest": None,
+                "proposal_status": "none",
+                "authorization": None,
+                "run_id": None,
+                "status": "active",
+                "created_at": created_at,
+                "approved_at": None,
+                "rejected_at": None,
+                "revoked_at": None,
+            }
+            record["canonical_digest"] = canonical_json_digest(record)
+            validated = self._validate_source_derived_handoff_record(
+                record,
+                token_digest,
+            )
+            _write_source_handoff(
+                self._source_derived_handoff_path(token_digest),
+                validated,
+                replace=False,
+                directory_name=_SOURCE_DERIVED_HANDOFF_DIRECTORY,
+            )
+            return self._ok(
+                {
+                    "source_derived_handoff_token": token,
+                    "status": "active",
+                    "created_at": created_at,
+                }
+            )
+        except (
+            CapsuleStoreError,
+            IntakeError,
+            OSError,
+            ProductPlanningError,
+            SourceDerivationError,
+            SourceHandoffError,
+            Stage3Error,
+            ValueError,
+        ) as exc:
+            return self._exception_error(
+                exc, "source_derived_handoff_create_failed"
+            )
+
+    @_serialized_management
+    def revoke_local_source_derived_handoff(
+        self,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if (
+                set(request) != {"source_root_id"}
+                or type(request["source_root_id"]) is not str
+                or not request["source_root_id"].strip()
+            ):
+                return self._error(
+                    "source_derived_handoff_request_invalid"
+                )
+            source_root_id = request["source_root_id"].strip()
+            records = self._source_derived_handoff_records()
+            active = [
+                (record, path)
+                for record, path in records
+                if record["status"] == "active"
+            ]
+            if len(active) > 1:
+                return self._error("source_derived_handoff_conflict")
+            if active:
+                record, path = active[0]
+                if record["source_root_id"] != source_root_id:
+                    return self._error(
+                        "source_derived_handoff_not_found"
+                    )
+                self._write_updated_source_derived_handoff(
+                    {
+                        **record,
+                        "status": "revoked",
+                        "revoked_at": _now(),
+                    },
+                    path,
+                )
+            return self._ok(
+                self._source_derived_handoff_status_for_root(
+                    source_root_id
+                )
+            )
+        except (OSError, SourceHandoffError, ValueError) as exc:
+            return self._exception_error(
+                exc, "source_derived_handoff_revoke_failed"
+            )
+
+    def _resolve_local_source_derived_handoff(
+        self,
+        handoff_token: str,
+    ) -> dict[str, Any]:
+        if (
+            type(handoff_token) is not str
+            or _SOURCE_DERIVED_HANDOFF_TOKEN.fullmatch(handoff_token)
+            is None
+        ):
+            raise SourceHandoffError(
+                "source_derived_handoff_invalid"
+            )
+        with self._capsule_operation_lock:
+            self._ensure_capsule_management()
+            token_digest = hashlib.sha256(
+                handoff_token.encode("utf-8")
+            ).hexdigest()
+            path = self._source_derived_handoff_path(token_digest)
+            try:
+                record = self._validate_source_derived_handoff_record(
+                    _read_source_handoff(path), token_digest
+                )
+            except SourceHandoffError as exc:
+                if exc.code == "source_handoff_conflict" and not (
+                    path.exists() or path.is_symlink()
+                ):
+                    raise SourceHandoffError(
+                        "source_derived_handoff_invalid"
+                    ) from exc
+                raise
+            binding = self._source_derived_handoff_binding(record)
+            self._validated_source_derived_handoff_binding(binding)
+            return binding
+
+    @_serialized_management
+    def decide_local_source_derived_handoff_proposal(
+        self,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if (
+                set(request) != {"source_root_id", "decision"}
+                or type(request["source_root_id"]) is not str
+                or request["decision"] not in {"approve", "reject"}
+            ):
+                return self._error(
+                    "source_derived_handoff_decision_invalid"
+                )
+            source_root_id = request["source_root_id"].strip()
+            active = [
+                (record, path)
+                for record, path in self._source_derived_handoff_records()
+                if record["status"] == "active"
+            ]
+            if len(active) != 1:
+                return self._error(
+                    "source_derived_handoff_not_found"
+                    if not active
+                    else "source_derived_handoff_conflict"
+                )
+            record, path = active[0]
+            if record["source_root_id"] != source_root_id:
+                return self._error(
+                    "source_derived_handoff_not_found"
+                )
+            self._validate_source_derived_handoff_live_facts(record)
+            current = record["proposal_status"]
+            target = (
+                "approved"
+                if request["decision"] == "approve"
+                else "rejected"
+            )
+            if current == target:
+                return self._ok(
+                    self._source_derived_handoff_status_for_root(
+                        source_root_id
+                    )
+                )
+            if current != "pending":
+                return self._error(
+                    "source_derived_handoff_decision_conflict"
+                )
+            if target == "rejected":
+                self._write_updated_source_derived_handoff(
+                    {
+                        **record,
+                        "proposal_status": "rejected",
+                        "rejected_at": _now(),
+                    },
+                    path,
+                )
+            else:
+                proposal = record["proposal"]
+                (
+                    authorization,
+                    evidence,
+                    _source_model,
+                    _supervisor,
+                ) = self._source_derived_authorization_values(
+                    {
+                        "source_root_id": source_root_id,
+                        **proposal["request"],
+                    }
+                )
+                expected = build_source_derived_agent_proposal(
+                    handoff_binding_digest=record[
+                        "handoff_binding_digest"
+                    ],
+                    authorization=authorization,
+                    evidence=evidence,
+                    prepared_at=proposal["prepared_at"],
+                )
+                if expected != proposal:
+                    raise SourceHandoffError(
+                        "source_derived_handoff_stale"
+                    )
+                self._write_updated_source_derived_handoff(
+                    {
+                        **record,
+                        "proposal_status": "approved",
+                        "authorization": authorization,
+                        "approved_at": _now(),
+                    },
+                    path,
+                )
+            return self._ok(
+                self._source_derived_handoff_status_for_root(
+                    source_root_id
+                )
+            )
+        except (
+            CapsuleStoreError,
+            IntakeError,
+            OSError,
+            ProductPlanningError,
+            SourceDerivationError,
+            SourceHandoffError,
+            Stage3Error,
+            ValueError,
+        ) as exc:
+            return self._exception_error(
+                exc, "source_derived_handoff_decision_failed"
+            )
+
+    def _prepare_authorized_source_derived_computation(
+        self,
+        binding: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        with self._capsule_operation_lock:
+            record, path = (
+                self._validated_source_derived_handoff_binding(binding)
+            )
+            expected = {
+                "source_relpath",
+                "behavior_intent",
+                "input_field",
+                "input_min_length",
+                "input_max_length",
+                "result_field",
+                "result_enum",
+                "acceptance_cases",
+            }
+            if type(payload) is not dict or set(payload) != expected:
+                raise SourceHandoffError(
+                    "source_derived_proposal_request_invalid"
+                )
+            (
+                authorization,
+                evidence,
+                _source_model,
+                _supervisor,
+            ) = self._source_derived_authorization_values(
+                {
+                    "source_root_id": record["source_root_id"],
+                    **copy.deepcopy(payload),
+                }
+            )
+            prepared_at = (
+                record["proposal"]["prepared_at"]
+                if record["proposal"] is not None
+                else _now()
+            )
+            proposal = build_source_derived_agent_proposal(
+                handoff_binding_digest=record[
+                    "handoff_binding_digest"
+                ],
+                authorization=authorization,
+                evidence=evidence,
+                prepared_at=prepared_at,
+            )
+            if record["proposal"] is not None:
+                if record["proposal"] != proposal:
+                    raise SourceHandoffError(
+                        "source_derived_proposal_conflict"
+                    )
+                return self._source_derived_handoff_status_for_root(
+                    record["source_root_id"]
+                )
+            self._write_updated_source_derived_handoff(
+                {
+                    **record,
+                    "proposal": proposal,
+                    "proposal_digest": proposal["canonical_digest"],
+                    "proposal_status": "pending",
+                },
+                path,
+            )
+            return self._source_derived_handoff_status_for_root(
+                record["source_root_id"]
+            )
+
+    def _get_authorized_source_derived_authorization(
+        self,
+        binding: dict[str, Any],
+    ) -> dict[str, Any]:
+        with self._capsule_operation_lock:
+            record, _path = (
+                self._validated_source_derived_handoff_binding(binding)
+            )
+            return self._source_derived_handoff_status_for_root(
+                record["source_root_id"]
+            )
+
+    def _start_authorized_source_derived_computation(
+        self,
+        binding: dict[str, Any],
+    ) -> dict[str, Any]:
+        with self._capsule_operation_lock:
+            record, path = (
+                self._validated_source_derived_handoff_binding(binding)
+            )
+            if record["proposal_status"] != "approved":
+                raise SourceHandoffError(
+                    "source_derived_handoff_approval_required"
+                )
+            proposal = record["proposal"]
+            (
+                current_authorization,
+                evidence,
+                source_model,
+                supervisor,
+            ) = self._source_derived_authorization_values(
+                {
+                    "source_root_id": record["source_root_id"],
+                    **proposal["request"],
+                }
+            )
+            expected = build_source_derived_agent_proposal(
+                handoff_binding_digest=record[
+                    "handoff_binding_digest"
+                ],
+                authorization=current_authorization,
+                evidence=evidence,
+                prepared_at=proposal["prepared_at"],
+            )
+            if (
+                expected != proposal
+                or self._source_derived_authorization_core(
+                    current_authorization
+                )
+                != self._source_derived_authorization_core(
+                    record["authorization"]
+                )
+            ):
+                raise SourceHandoffError(
+                    "source_derived_handoff_stale"
+                )
+            result = self._start_source_derived_authorization(
+                record["authorization"],
+                evidence,
+                source_model,
+                supervisor,
+                source_root_id=record["source_root_id"],
+                source_relpath=proposal["request"]["source_relpath"],
+            )
+            result_data = (
+                result.get("data")
+                if type(result.get("data")) is dict
+                else {}
+            )
+            run_id = result.get("run_id") or result_data.get("run_id")
+            status = result.get("status") or result_data.get("status")
+            if (
+                result.get("ok") is True
+                and type(run_id) is str
+                and record["run_id"] is None
+            ):
+                self._write_updated_source_derived_handoff(
+                    {**record, "run_id": run_id},
+                    path,
+                )
+            elif (
+                result.get("ok") is True
+                and run_id != record["run_id"]
+            ):
+                raise SourceHandoffError(
+                    "source_derived_handoff_conflict"
+                )
+            return (
+                {
+                    "ok": True,
+                    "run_id": run_id,
+                    "status": status,
+                }
+                if result.get("ok") is True
+                else result
+            )
+
+    def _get_authorized_source_derived_run(
+        self,
+        binding: dict[str, Any],
+    ) -> dict[str, Any]:
+        with self._capsule_operation_lock:
+            record, _path = (
+                self._validated_source_derived_handoff_binding(binding)
+            )
+            if record["run_id"] is None:
+                raise SourceHandoffError(
+                    "source_derived_run_not_started"
+                )
+            result = self.get_intake_run({"run_id": record["run_id"]})
+            if result.get("ok") is not True:
+                raise SourceHandoffError(
+                    str((result.get("error") or {}).get("code")
+                        or "source_derived_run_failed")
+                )
+            value = result["data"]
+            return {
+                key: value.get(key)
+                for key in (
+                    "run_id",
+                    "status",
+                    "stage",
+                    "created_at",
+                    "updated_at",
+                    "review_scope",
+                    "error_code",
+                )
+                if value.get(key) is not None
+            }
+
+    def _cancel_authorized_source_derived_run(
+        self,
+        binding: dict[str, Any],
+    ) -> dict[str, Any]:
+        with self._capsule_operation_lock:
+            record, _path = (
+                self._validated_source_derived_handoff_binding(binding)
+            )
+            if record["run_id"] is None:
+                raise SourceHandoffError(
+                    "source_derived_run_not_started"
+                )
+            return self.cancel_intake_run({"run_id": record["run_id"]})
+
+    def _get_authorized_source_derived_review_summary(
+        self,
+        binding: dict[str, Any],
+    ) -> dict[str, Any]:
+        with self._capsule_operation_lock:
+            record, _path = (
+                self._validated_source_derived_handoff_binding(binding)
+            )
+            if record["run_id"] is None:
+                raise SourceHandoffError(
+                    "source_derived_run_not_started"
+                )
+            current = source_derived_run_projection(
+                get_source_derived_run(
+                    self._state_root, record["run_id"]
+                )
+            )
+            proposal = record["proposal"]["request"]
+            return {
+                "schema_version": "source_derived_review_summary.v1",
+                "run": {
+                    "status": current["status"],
+                    "stage": current["stage"],
+                },
+                "capability_kind": "computation",
+                "behavior_intent": proposal["behavior_intent"],
+                "input": {
+                    "kind": "bounded_string",
+                    "min_length": proposal["input_min_length"],
+                    "max_length": proposal["input_max_length"],
+                },
+                "output": {
+                    "kind": "finite_string_enum",
+                    "enum": copy.deepcopy(proposal["result_enum"]),
+                },
+                "acceptance_passed_count": (
+                    len(proposal["acceptance_cases"])
+                    if current["status"] == "review_required"
+                    else 0
+                ),
+                "reason_code": current.get("error_code"),
+            }
 
     @staticmethod
     def _allowed_review_decisions(item: dict[str, Any]) -> list[str]:
@@ -1038,8 +4895,28 @@ class ReweaveAppService:
         )
         ephemeral_capture = (
             requires_reextract
-            and candidate.get("adapter_contract_version") == COMPUTATION_ADAPTER_V2
-            and candidate.get("resume_contract") == "resubmit_ephemeral_capture.v1"
+            and (
+                (
+                    candidate.get("adapter_contract_version")
+                    == COMPUTATION_ADAPTER_V2
+                    and candidate.get("resume_contract") == CAPTURE_RESUME_V1
+                )
+                or (
+                    candidate.get("adapter_contract_version")
+                    == COMPUTATION_ADAPTER_V3
+                    and candidate.get("resume_contract") == CAPTURE_RESUME_V2
+                )
+                or (
+                    candidate.get("adapter_contract_version")
+                    == COMPUTATION_ADAPTER_V4
+                    and candidate.get("resume_contract") == CAPTURE_RESUME_V3
+                )
+                or (
+                    candidate.get("adapter_contract_version")
+                    == COMPUTATION_ADAPTER_V5
+                    and candidate.get("resume_contract") == CAPTURE_RESUME_V4
+                )
+            )
         )
         if not requires_reextract and current_status in {
             "extracted",
@@ -1083,7 +4960,26 @@ class ReweaveAppService:
                 failure_code == "asset_content_confirmation_required_stage3"
             ):
                 allowed.append("confirm_assets_contain_no_real_records")
-        if current_status == "review_required":
+        frozen_product_review = (
+            type(candidate.get("frozen_review_admission")) is dict
+            and candidate["frozen_review_admission"].get("schema")
+            == FROZEN_REVIEW_ADMISSION_VERSION
+        )
+        frozen_ui_review = (
+            type(candidate.get("frozen_ui_review_admission")) is dict
+            and candidate["frozen_ui_review_admission"].get("schema")
+            == FROZEN_UI_REVIEW_ADMISSION_VERSION
+        )
+        if current_status == "review_required" and (
+            frozen_product_review or frozen_ui_review
+        ):
+            allowed.extend(["publish_general", "reject"])
+        elif (
+            current_status == "review_required"
+            and candidate.get("adapter_contract_version") == COMPUTATION_ADAPTER_V3
+        ):
+            allowed.append("reject")
+        elif current_status == "review_required":
             usage_kind = (candidate.get("usage_scope") or {}).get("kind")
             if usage_kind == "general":
                 allowed.append("publish_general")
@@ -1255,13 +5151,24 @@ class ReweaveAppService:
                         str(row["current_version_id"]),
                         "adapter_contract_version_changed",
                     )
-                elif adapter_version != COMPUTATION_ADAPTER_V2:
+                elif adapter_version not in {
+                    COMPUTATION_ADAPTER_V2,
+                    COMPUTATION_ADAPTER_V3,
+                    COMPUTATION_ADAPTER_V4,
+                    COMPUTATION_ADAPTER_V5,
+                }:
                     stale[str(row["capsule_id"])] = (
                         str(row["current_version_id"]),
                         "adapter_contract_version_changed",
                     )
                 elif (
-                    adapter_version == COMPUTATION_ADAPTER_V2
+                    adapter_version
+                    in {
+                        COMPUTATION_ADAPTER_V2,
+                        COMPUTATION_ADAPTER_V3,
+                        COMPUTATION_ADAPTER_V4,
+                        COMPUTATION_ADAPTER_V5,
+                    }
                     and not self._capsule_stage3._stored_version_evidence_eligible(
                         dict(row)
                     )
@@ -1308,17 +5215,42 @@ class ReweaveAppService:
         kind: str,
         action: Any,
         *,
+        run_id: str | None = None,
         restore: bool = False,
         cancellable: bool = False,
+        read_only_planning: bool = False,
+        read_only_candidate: bool = False,
+        planning_progress: bool = False,
+        retry_terminal: bool = False,
     ) -> dict[str, Any]:
-        if not restore:
-            try:
-                self._ensure_capsule_management()
-            except (CapsuleStoreError, OSError, RuntimeError, sqlite3.Error) as exc:
-                return self._exception_error(exc, "capsule_management_unavailable")
+        if read_only_planning and not kind.startswith("product_plan_"):
+            raise ValueError("read_only_planning_kind_invalid")
+        if planning_progress and not read_only_planning:
+            raise ValueError("planning_progress_kind_invalid")
+        if read_only_candidate and not kind.startswith("product_candidate_"):
+            raise ValueError("read_only_candidate_kind_invalid")
+        if retry_terminal and (
+            run_id is None
+            or not read_only_candidate
+            or kind != "product_candidate_start_confirmed"
+        ):
+            raise ValueError("management_retry_terminal_invalid")
         with self._management_lock:
             if self._management_closed:
                 return self._error("capsule_management_closed")
+            if not restore and not read_only_planning and not read_only_candidate:
+                try:
+                    self._ensure_capsule_management()
+                except (
+                    CapsuleStoreError,
+                    OSError,
+                    RuntimeError,
+                    sqlite3.Error,
+                ) as exc:
+                    return self._exception_error(
+                        exc,
+                        "capsule_management_unavailable",
+                    )
             if self._restore_pending:
                 return self._error("restore_in_progress")
             if restore:
@@ -1329,7 +5261,24 @@ class ReweaveAppService:
                         and current["cancellable"]
                     ):
                         current["cancel_event"].set()
-            task_id = f"run_{uuid.uuid4().hex}"
+            task_id = run_id or f"run_{uuid.uuid4().hex}"
+            if run_id is not None:
+                if re.fullmatch(r"run_[0-9a-f]{32}", run_id) is None:
+                    raise ValueError("management_run_id_invalid")
+                existing_task = self._management_tasks.get(run_id)
+                if existing_task is not None:
+                    if existing_task["kind"] != kind:
+                        raise ValueError("management_run_id_conflict")
+                    if not (
+                        retry_terminal
+                        and existing_task["status"] in {"failed", "cancelled"}
+                        and existing_task["completed_at"] is not None
+                    ):
+                        return {
+                            "ok": True,
+                            "run_id": run_id,
+                            "status": existing_task["status"],
+                        }
             cancel_event = threading.Event()
             task: dict[str, Any] = {
                 "run_id": task_id,
@@ -1340,38 +5289,85 @@ class ReweaveAppService:
                 "completed_at": None,
                 "data": None,
                 "error": None,
+                "phase": None,
                 "cancellable": cancellable,
                 "cancel_event": cancel_event,
                 "future": None,
             }
             self._management_tasks[task_id] = task
 
+            def report_phase(phase: str) -> None:
+                if phase not in PRODUCT_PLANNING_PHASES:
+                    raise ValueError("product_plan_phase_invalid")
+                with self._management_lock:
+                    if task["status"] == "running":
+                        task["phase"] = phase
+
             def run() -> None:
                 try:
-                    if cancel_event.is_set() and cancellable:
-                        task["status"] = "cancelled"
-                        return
-                    task["status"] = "running"
-                    task["started_at"] = _now()
+                    with self._management_lock:
+                        if self._management_closed or (
+                            cancel_event.is_set() and cancellable
+                        ):
+                            task["status"] = "cancelled"
+                            return
+                        task["status"] = "running"
+                        task["started_at"] = _now()
                     with self._capsule_operation_lock:
-                        task["data"] = action(cancel_event)
+                        task["data"] = (
+                            action(cancel_event, report_phase)
+                            if planning_progress
+                            else action(cancel_event)
+                        )
+                    planner_error = None
+                    if (
+                        (
+                            kind.startswith("product_plan_")
+                            or kind.startswith("product_candidate_")
+                        )
+                        and type(task["data"]) is dict
+                        and task["data"].get("ok") is False
+                    ):
+                        error = task["data"].get("error")
+                        planner_error = (
+                            error.get("code")
+                            if type(error) is dict and type(error.get("code")) is str
+                            else f"{kind}_failed"
+                        )
                     action_status = (
                         task["data"].get("status")
                         if type(task["data"]) is dict
                         else None
                     )
-                    task["status"] = (
-                        "cancelled"
-                        if cancellable and action_status == "cancelled"
-                        else "completed"
-                    )
+                    if planner_error is not None:
+                        task["status"] = (
+                            "cancelled"
+                            if cancellable and planner_error == "product_plan_cancelled"
+                            else "failed"
+                        )
+                        if task["status"] == "failed":
+                            task["error"] = {
+                                "code": planner_error,
+                                "message_key": planner_error,
+                            }
+                    else:
+                        task["status"] = (
+                            "cancelled"
+                            if cancellable and action_status == "cancelled"
+                            else "completed"
+                        )
                 except BaseException as exc:
                     error_code = getattr(exc, "code", None)
                     task["status"] = (
                         "cancelled"
                         if cancellable
                         and cancel_event.is_set()
-                        and error_code in {"intake_cancelled", "cancelled_by_user"}
+                        and error_code
+                        in {
+                            "intake_cancelled",
+                            "cancelled_by_user",
+                            "product_plan_cancelled",
+                        }
                         else "failed"
                     )
                     if task["status"] == "failed":
@@ -1622,10 +5618,19 @@ class ReweaveAppService:
             self._capsule_store.bump_revision(connection)
         return changed
 
-    def _refresh_project(self, project_id: str, cancel: threading.Event) -> dict[str, Any]:
+    def _refresh_project(
+        self,
+        project_id: str,
+        cancel: threading.Event,
+        *,
+        run_id: str | None = None,
+        expected_snapshot_sha256: str | None = None,
+    ) -> dict[str, Any]:
         intake_result = self._capsule_intake.run_intake(
             project_id,
             cancel_check=cancel.is_set,
+            run_id=run_id,
+            expected_snapshot_sha256=expected_snapshot_sha256,
         )
         gate_results: list[dict[str, Any]] = []
         extracted_review_ids: list[str] = []
@@ -1653,6 +5658,288 @@ class ReweaveAppService:
             "intake": intake_result,
             "gate_results": gate_results,
         }
+
+    def _start_authorized_source_intake(
+        self,
+        binding: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            with self._capsule_operation_lock:
+                record, _path = self._validated_source_handoff_binding(
+                    binding
+                )
+                existing = self._source_handoff_run_row(record)
+                if existing is not None:
+                    return {
+                        "ok": True,
+                        "run_id": record["run_id"],
+                        "status": str(existing.get("status") or ""),
+                    }
+                self._validate_source_handoff_live_facts(
+                    record,
+                    check_snapshot=True,
+                )
+                return self._submit_management_task(
+                    "source_handoff_refresh_project",
+                    lambda cancel: self._run_authorized_source_intake(
+                        binding,
+                        cancel,
+                    ),
+                    run_id=record["run_id"],
+                    cancellable=True,
+                )
+        except (
+            CapsuleStoreError,
+            IntakeError,
+            OSError,
+            SourceHandoffError,
+            Stage3Error,
+            ValueError,
+        ) as exc:
+            return self._exception_error(
+                exc,
+                "source_handoff_intake_failed",
+            )
+
+    def _run_authorized_source_intake(
+        self,
+        binding: dict[str, Any],
+        cancel: threading.Event,
+    ) -> dict[str, Any]:
+        record, _path = self._validated_source_handoff_binding(binding)
+        if self._source_handoff_run_row(record) is not None:
+            raise SourceHandoffError("source_handoff_conflict")
+        self._validate_source_handoff_live_facts(
+            record,
+            check_snapshot=True,
+        )
+        return self._refresh_project(
+            record["project_id"],
+            cancel,
+            run_id=record["run_id"],
+            expected_snapshot_sha256=record["snapshot_digest"],
+        )
+
+    def _get_authorized_source_intake_run(
+        self,
+        binding: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            with self._capsule_operation_lock:
+                record, _path = self._validated_source_handoff_binding(
+                    binding
+                )
+                run_row = self._source_handoff_run_row(record)
+            with self._management_lock:
+                live = self._management_tasks.get(record["run_id"])
+                live_view = (
+                    self._task_view(live)
+                    if live is not None
+                    and live.get("kind")
+                    == "source_handoff_refresh_project"
+                    else None
+                )
+            if (
+                live_view is not None
+                and live_view.get("status")
+                not in _TERMINAL_TASK_STATES
+            ):
+                return self._ok(
+                    {
+                        key: live_view.get(key)
+                        for key in (
+                            "run_id",
+                            "status",
+                            "created_at",
+                            "started_at",
+                            "completed_at",
+                            "error",
+                        )
+                        if live_view.get(key) is not None
+                    }
+                )
+            if run_row is None:
+                return self._ok(
+                    {
+                        "run_id": record["run_id"],
+                        "status": "not_started",
+                        "created_at": record["created_at"],
+                    }
+                )
+            result = {
+                key: run_row.get(key)
+                for key in (
+                    "run_id",
+                    "status",
+                    "created_at",
+                    "started_at",
+                    "completed_at",
+                    "error_code",
+                )
+                if run_row.get(key) is not None
+            }
+            if live_view is not None:
+                if live_view.get("status") == "failed":
+                    result["status"] = "failed"
+                    result["error"] = live_view.get("error")
+                elif live_view.get("status") == "cancelled":
+                    result["status"] = "cancelled"
+            if run_row.get("status") in {
+                "completed",
+                "completed_with_pending",
+            }:
+                with self._capsule_store.read_connection() as connection:
+                    unfinished = connection.execute(
+                        "SELECT COUNT(*) FROM review_items WHERE run_id = ? "
+                        "AND candidate_status IN "
+                        "('extracted', 'waiting_model', 'waiting_validation')",
+                        (record["run_id"],),
+                    ).fetchone()[0]
+                if int(unfinished):
+                    result["status"] = "interrupted"
+                    result["error_code"] = "manual_recovery_required"
+            return self._ok(result)
+        except (
+            CapsuleStoreError,
+            OSError,
+            SourceHandoffError,
+            sqlite3.Error,
+            ValueError,
+        ) as exc:
+            return self._exception_error(
+                exc,
+                "source_handoff_run_failed",
+            )
+
+    @staticmethod
+    def _source_handoff_review_reason(
+        values: tuple[Any, ...],
+    ) -> str | None:
+        for value in values:
+            if type(value) is not dict:
+                continue
+            candidates = [value]
+            candidates.extend(
+                nested
+                for nested in value.values()
+                if type(nested) is dict
+            )
+            for candidate in candidates:
+                codes = candidate.get("codes")
+                if type(codes) is list:
+                    safe_codes = sorted(
+                        code
+                        for code in codes
+                        if type(code) is str
+                        and _SOURCE_HANDOFF_REASON.fullmatch(code)
+                        is not None
+                    )
+                    if safe_codes:
+                        return safe_codes[0]
+                for key in ("reason_code", "error_code", "code"):
+                    code = candidate.get(key)
+                    if (
+                        type(code) is str
+                        and _SOURCE_HANDOFF_REASON.fullmatch(code)
+                        is not None
+                    ):
+                        return code
+        return None
+
+    def _get_authorized_source_review_summaries(
+        self,
+        binding: dict[str, Any],
+    ) -> dict[str, Any]:
+        try:
+            with self._capsule_operation_lock:
+                record, _path = self._validated_source_handoff_binding(
+                    binding
+                )
+                run_row = self._source_handoff_run_row(record)
+                if run_row is None:
+                    return self._ok({"items": []})
+                with self._capsule_store.read_connection() as connection:
+                    rows = connection.execute(
+                        "SELECT candidate_status, sanitized_candidate_json, "
+                        "redaction_summary_json, supervision_result_json "
+                        "FROM review_items WHERE run_id = ? AND project_id = ? "
+                        "ORDER BY created_at, review_id",
+                        (record["run_id"], record["project_id"]),
+                    ).fetchall()
+            items: list[dict[str, Any]] = []
+            for raw in rows:
+                value = dict(raw)
+                decoded: list[Any] = []
+                for key in (
+                    "redaction_summary_json",
+                    "supervision_result_json",
+                ):
+                    try:
+                        decoded.append(
+                            json.loads(value[key])
+                            if value.get(key)
+                            else None
+                        )
+                    except (TypeError, json.JSONDecodeError) as exc:
+                        raise SourceHandoffError(
+                            "source_handoff_review_conflict"
+                        ) from exc
+                try:
+                    candidate = (
+                        json.loads(value["sanitized_candidate_json"])
+                        if value.get("sanitized_candidate_json")
+                        else None
+                    )
+                except (TypeError, json.JSONDecodeError) as exc:
+                    raise SourceHandoffError(
+                        "source_handoff_review_conflict"
+                    ) from exc
+                capability_kind = (
+                    candidate.get("capability_kind")
+                    if type(candidate) is dict
+                    else None
+                )
+                if capability_kind not in {
+                    "interaction",
+                    "presentation",
+                    "computation",
+                    "data",
+                }:
+                    raise SourceHandoffError(
+                        "source_handoff_review_conflict"
+                    )
+                item = {
+                    "status": str(value["candidate_status"]),
+                    "capability_kind": capability_kind,
+                }
+                reason = self._source_handoff_review_reason(
+                    tuple(decoded)
+                )
+                if (
+                    reason is None
+                    and item["status"]
+                    in {
+                        "extracted",
+                        "waiting_model",
+                        "waiting_validation",
+                    }
+                ):
+                    reason = "manual_recovery_required"
+                if reason is not None:
+                    item["reason_code"] = reason
+                items.append(item)
+            return self._ok({"items": items})
+        except (
+            CapsuleStoreError,
+            OSError,
+            SourceHandoffError,
+            sqlite3.Error,
+            ValueError,
+        ) as exc:
+            return self._exception_error(
+                exc,
+                "source_handoff_review_failed",
+            )
 
     def start_refresh_project(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
         try:
@@ -1812,17 +6099,51 @@ class ReweaveAppService:
             raise Stage3Error("offer_stale")
         if cancel.is_set():
             raise Stage3Error("scan_cancelled")
-        mapping = {
-            "arguments": request.get("arguments"),
-            "result_field": request.get("result_field"),
-            "examples": request.get("examples"),
-        }
+        mapping_schema = request.get("schema")
+        if mapping_schema is None:
+            mapping = {
+                "arguments": request.get("arguments"),
+                "result_field": request.get("result_field"),
+                "examples": request.get("examples"),
+            }
+            prepare = self._capsule_stage3.prepare_ephemeral_computation_capture_v2
+        elif mapping_schema == CAPTURE_MAPPING_V3:
+            mapping = {
+                "schema": CAPTURE_MAPPING_V3,
+                "arguments": request.get("arguments"),
+                "result_field": request.get("result_field"),
+                "passthrough_fields": request.get("passthrough_fields"),
+                "examples": request.get("examples"),
+            }
+            prepare = self._capsule_stage3.prepare_ephemeral_computation_capture_v3
+        elif mapping_schema == CAPTURE_MAPPING_V4:
+            mapping = {
+                "schema": CAPTURE_MAPPING_V4,
+                "arguments": request.get("arguments"),
+                "result_field": request.get("result_field"),
+                "result_enum": request.get("result_enum"),
+                "proof_schema": request.get("proof_schema"),
+                "examples": request.get("examples"),
+            }
+            prepare = self._capsule_stage3.prepare_ephemeral_computation_capture_v4
+        elif mapping_schema == CAPTURE_MAPPING_V5:
+            mapping = {
+                "schema": CAPTURE_MAPPING_V5,
+                "arguments": request.get("arguments"),
+                "result_field": request.get("result_field"),
+                "result_enum": request.get("result_enum"),
+                "proof_schema": request.get("proof_schema"),
+                "examples": request.get("examples"),
+            }
+            prepare = self._capsule_stage3.prepare_ephemeral_computation_capture_v5
+        else:
+            raise Stage3Error("capture_request_invalid")
         selection = {
             "module_relpath": offer.get("module_relpath"),
             "export_name": offer.get("export_name"),
             "target_binding_id": offer.get("target_binding_id"),
         }
-        prepared = self._capsule_stage3.prepare_ephemeral_computation_capture_v2(
+        prepared = prepare(
             snapshot,
             selection,
             mapping,
@@ -1874,14 +6195,41 @@ class ReweaveAppService:
             with self._management_lock:
                 is_ephemeral_v2 = project_id in self._javascript_capture_sessions
             if is_ephemeral_v2:
-                allowed_keys = {
-                    "project_id",
-                    "offer_id",
-                    "review_id",
-                    "arguments",
-                    "result_field",
-                    "examples",
-                }
+                mapping_schema = request.get("schema")
+                if mapping_schema is None:
+                    allowed_keys = {
+                        "project_id",
+                        "offer_id",
+                        "review_id",
+                        "arguments",
+                        "result_field",
+                        "examples",
+                    }
+                elif mapping_schema == CAPTURE_MAPPING_V3:
+                    allowed_keys = {
+                        "schema",
+                        "project_id",
+                        "offer_id",
+                        "review_id",
+                        "arguments",
+                        "result_field",
+                        "passthrough_fields",
+                        "examples",
+                    }
+                elif mapping_schema in {CAPTURE_MAPPING_V4, CAPTURE_MAPPING_V5}:
+                    allowed_keys = {
+                        "schema",
+                        "project_id",
+                        "offer_id",
+                        "review_id",
+                        "arguments",
+                        "result_field",
+                        "result_enum",
+                        "proof_schema",
+                        "examples",
+                    }
+                else:
+                    return self._error("capture_request_invalid")
                 if set(request) - allowed_keys:
                     return self._error("capture_request_invalid")
                 return self._submit_management_task(
@@ -1932,9 +6280,66 @@ class ReweaveAppService:
             run_id = str(request.get("run_id") or "").strip()
             if not run_id:
                 return self._error("run_id_required")
+            try:
+                if not hasattr(self, "_state_root"):
+                    raise SourceDerivationError(
+                        "source_derivation_run_not_found"
+                    )
+                source_derived = self._source_derived_run_context(run_id)
+            except SourceDerivationError as exc:
+                if exc.code != "source_derivation_run_not_found":
+                    raise
+            else:
+                projection = source_derived_run_projection(
+                    source_derived
+                )
+                with self._management_lock:
+                    live = self._management_tasks.get(run_id)
+                if (
+                    live is None
+                    and projection["status"] in {"pending", "running"}
+                ):
+                    projection = append_source_derived_run_event(
+                        self._state_root,
+                        run_id,
+                        status="failed",
+                        stage=projection["stage"],
+                        error_code="manual_recovery_required",
+                        created_at=_now(),
+                    )
+                return self._ok(projection)
+            try:
+                product_run = (
+                    self._product_planner
+                    .get_capability_source_proposal_run(run_id)
+                )
+            except ProductPlanningError as exc:
+                if exc.code not in {
+                    "capability_source_proposal_run_not_found",
+                }:
+                    raise
+            else:
+                with self._management_lock:
+                    live = self._management_tasks.get(run_id)
+                if (
+                    live is None
+                    and product_run["status"] in {"pending", "running"}
+                ):
+                    product_run = (
+                        self._product_planner
+                        .append_capability_source_proposal_run_event(
+                            run_id,
+                            status="failed",
+                            stage=product_run["stage"],
+                            error_code="manual_recovery_required",
+                        )
+                    )
+                return self._ok(product_run)
             with self._management_lock:
                 task = self._management_tasks.get(run_id)
                 if task is not None:
+                    if str(task["kind"]).startswith("product_plan_"):
+                        return self._error("intake_run_not_found")
                     return self._ok(self._task_view(task))
             with self._capsule_operation_lock:
                 self._ensure_capsule_management()
@@ -1954,7 +6359,13 @@ class ReweaveAppService:
                         )
                     }
             return self._ok(result)
-        except (CapsuleStoreError, OSError, ValueError) as exc:
+        except (
+            CapsuleStoreError,
+            OSError,
+            ProductPlanningError,
+            SourceDerivationError,
+            ValueError,
+        ) as exc:
             return self._exception_error(exc, "get_intake_run_failed")
 
     def cancel_intake_run(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -1963,9 +6374,80 @@ class ReweaveAppService:
             run_id = str(request.get("run_id") or "").strip()
             if not run_id:
                 return self._error("run_id_required")
+            try:
+                if not hasattr(self, "_state_root"):
+                    raise SourceDerivationError(
+                        "source_derivation_run_not_found"
+                    )
+                source_derived = self._source_derived_run_context(run_id)
+            except SourceDerivationError as exc:
+                if exc.code != "source_derivation_run_not_found":
+                    raise
+            else:
+                projection = source_derived_run_projection(
+                    source_derived
+                )
+                if projection["status"] in {
+                    "review_required",
+                    "failed",
+                    "cancelled",
+                }:
+                    return self._error("intake_run_already_terminal")
+                with self._management_lock:
+                    task = self._management_tasks.get(run_id)
+                    if (
+                        task is None
+                        or task["kind"] != "source_derived_computation"
+                    ):
+                        append_source_derived_run_event(
+                            self._state_root,
+                            run_id,
+                            status="failed",
+                            stage=projection["stage"],
+                            error_code="manual_recovery_required",
+                            created_at=_now(),
+                        )
+                        return self._error("intake_run_not_cancellable")
+                    task["cancel_event"].set()
+                return self._ok(
+                    {"run_id": run_id, "cancel_requested": True}
+                )
+            try:
+                product_run = (
+                    self._product_planner
+                    .get_capability_source_proposal_run(run_id)
+                )
+            except ProductPlanningError as exc:
+                if exc.code not in {
+                    "capability_source_proposal_run_not_found",
+                }:
+                    raise
+            else:
+                if product_run["status"] in {
+                    "review_required",
+                    "failed",
+                    "cancelled",
+                }:
+                    return self._error("intake_run_already_terminal")
+                with self._management_lock:
+                    task = self._management_tasks.get(run_id)
+                    if task is None:
+                        self._product_planner.append_capability_source_proposal_run_event(
+                            run_id,
+                            status="failed",
+                            stage=product_run["stage"],
+                            error_code="manual_recovery_required",
+                        )
+                        return self._error("intake_run_not_cancellable")
+                    task["cancel_event"].set()
+                return self._ok(
+                    {"run_id": run_id, "cancel_requested": True}
+                )
             with self._management_lock:
                 task = self._management_tasks.get(run_id)
                 if task is None:
+                    return self._error("intake_run_not_cancellable")
+                if str(task["kind"]).startswith("product_plan_"):
                     return self._error("intake_run_not_cancellable")
                 if not task["cancellable"]:
                     return self._error("intake_run_not_cancellable")
@@ -1973,7 +6455,11 @@ class ReweaveAppService:
                     return self._error("intake_run_already_terminal")
                 task["cancel_event"].set()
             return self._ok({"run_id": run_id, "cancel_requested": True})
-        except ValueError as exc:
+        except (
+            ProductPlanningError,
+            SourceDerivationError,
+            ValueError,
+        ) as exc:
             return self._exception_error(exc, "cancel_intake_run_failed")
 
     def list_supervision_models(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -2005,6 +6491,4159 @@ class ReweaveAppService:
             )
         except ValueError as exc:
             return self._exception_error(exc, "select_supervision_model_failed")
+
+    def list_product_planning_models(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if request:
+                return self._error("product_planning_request_invalid")
+            return self._submit_management_task(
+                "product_plan_list_models",
+                lambda _cancel: self._product_planner.list_models(),
+                read_only_planning=True,
+            )
+        except ValueError as exc:
+            return self._exception_error(exc, "product_planning_request_invalid")
+
+    def list_reusable_product_capabilities(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            if self._payload(payload):
+                return self._error("reusable_capability_request_invalid")
+            with self._capsule_operation_lock:
+                catalog = self._product_planning_catalog()
+                identities = catalog["capsules"]
+                capsule_ids = [item["capsule_id"] for item in identities]
+                loaded = []
+                if capsule_ids:
+                    loaded, _scope, _page_contracts = (
+                        self._load_generation_capsules_with_page_contracts(
+                            capsule_ids,
+                            read_only=True,
+                        )
+                    )
+                by_id = {item["capsule_id"]: item for item in loaded}
+                with self._capsule_store.read_connection() as connection:
+                    result = []
+                    for identity in identities:
+                        capsule = by_id.get(identity["capsule_id"])
+                        source = connection.execute(
+                            "SELECT relationship FROM capsule_sources "
+                            "WHERE version_id = ? AND candidate_canonical_hash = ? "
+                            "AND relationship IN ('exact', 'published_implementation') "
+                            "ORDER BY source_link_id LIMIT 1",
+                            (identity["version_id"], identity["canonical_hash"]),
+                        ).fetchone()
+                        if capsule is None or source is None:
+                            raise ProductGenerationError(
+                                "reusable_capability_source_invalid"
+                            )
+                        result.append(
+                            {
+                                **identity,
+                                "input_contract": capsule["input_contract"],
+                                "output_contract": capsule["output_contract"],
+                                "source": {
+                                    "status": "formal_exact_source_verified",
+                                    "relationship": str(source["relationship"]),
+                                },
+                            }
+                        )
+            return self._ok(
+                {
+                    "schema_version": "reweave_reusable_capability_catalog.v1",
+                    "warehouse_revision": catalog["warehouse_revision"],
+                    "capabilities": result,
+                }
+            )
+        except (
+            CapsuleStoreError,
+            OSError,
+            ProductGenerationError,
+            RuntimeError,
+            sqlite3.Error,
+            ValueError,
+        ) as exc:
+            return self._exception_error(
+                exc,
+                "reusable_capability_catalog_unavailable",
+            )
+
+    def select_product_planning_model(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if set(request) != {"name", "digest"}:
+                return self._error("product_planning_model_required")
+            name = request["name"]
+            digest = request["digest"]
+            if type(name) is not str or type(digest) is not str:
+                return self._error("product_planning_model_required")
+            return self._submit_management_task(
+                "product_plan_model_probe",
+                lambda _cancel, phase: self._product_planner.select_model(
+                    name,
+                    digest,
+                    phase_callback=phase,
+                ),
+                read_only_planning=True,
+                planning_progress=True,
+            )
+        except ValueError as exc:
+            return self._exception_error(exc, "product_planning_model_required")
+
+    def start_product_plan(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if set(request) not in (
+                {"goal"},
+                {"goal", "supersedes_plan_token"},
+            ):
+                return self._error("product_plan_goal_invalid")
+            goal = request["goal"]
+            supersedes = request.get("supersedes_plan_token")
+            if (
+                type(goal) is not str
+                or not goal.strip()
+                or len(goal) > 4_000
+                or (supersedes is not None and type(supersedes) is not str)
+            ):
+                return self._error("product_plan_goal_invalid")
+
+            def action(
+                cancel: threading.Event,
+                phase: Callable[[str], None],
+            ) -> dict[str, Any]:
+                return self._product_planner.start(
+                    goal.strip(),
+                    self._product_planning_catalog(),
+                    cancel.is_set,
+                    resume_plan_token=supersedes,
+                    phase_callback=phase,
+                )
+
+            return self._submit_management_task(
+                "product_plan_start",
+                action,
+                cancellable=True,
+                read_only_planning=True,
+                planning_progress=True,
+            )
+        except ValueError as exc:
+            return self._exception_error(exc, "product_plan_goal_invalid")
+
+    def start_product_capability_replan(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if (
+                set(request)
+                != {"plan_token", "plan_digest", "projection_digest"}
+                or any(
+                    type(request[key]) is not str or not request[key]
+                    for key in request
+                )
+            ):
+                return self._error("capability_replan_unavailable")
+
+            def action(
+                cancel: threading.Event,
+                phase: Callable[[str], None],
+            ) -> dict[str, Any]:
+                catalog = self._product_planning_catalog()
+                source = self._product_planner._workspace_by_token(
+                    request["plan_token"]
+                )
+                existing = (
+                    self._product_planner
+                    ._read_capability_replan_handoff(source)
+                )
+                binding = None
+                if existing is None:
+                    binding, _offer, _projection = (
+                        self._resolve_product_capability_replan(
+                            request["plan_token"],
+                            request["plan_digest"],
+                            request["projection_digest"],
+                            catalog,
+                        )
+                    )
+                return self._product_planner.start_capability_replan(
+                    request["plan_token"],
+                    request["plan_digest"],
+                    request["projection_digest"],
+                    binding,
+                    catalog,
+                    cancel.is_set,
+                    phase_callback=phase,
+                )
+
+            return self._submit_management_task(
+                "product_plan_capability_replan",
+                action,
+                run_id=(
+                    "run_"
+                    + canonical_json_digest(
+                        {
+                            "schema_version": (
+                                "capability_replan_management_run.v1"
+                            ),
+                            **request,
+                        }
+                    )[:32]
+                ),
+                cancellable=True,
+                read_only_planning=True,
+                planning_progress=True,
+            )
+        except (
+            CapsuleStoreError,
+            OSError,
+            ProductGenerationError,
+            ProductPlanningError,
+            ValueError,
+            sqlite3.Error,
+        ) as exc:
+            return self._exception_error(
+                exc,
+                "capability_replan_unavailable",
+            )
+
+    def submit_product_plan_answers(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if set(request) != {
+                "plan_token",
+                "question_set_digest",
+                "answers",
+            }:
+                return self._error("product_plan_answers_invalid")
+            if (
+                type(request["plan_token"]) is not str
+                or type(request["question_set_digest"]) is not str
+                or type(request["answers"]) is not list
+            ):
+                return self._error("product_plan_answers_invalid")
+            return self._submit_management_task(
+                "product_plan_answers",
+                lambda cancel, phase: self._product_planner.answer(
+                    request["plan_token"],
+                    request["question_set_digest"],
+                    request["answers"],
+                    self._product_planning_catalog(),
+                    cancel.is_set,
+                    phase_callback=phase,
+                ),
+                cancellable=True,
+                read_only_planning=True,
+                planning_progress=True,
+            )
+        except ValueError as exc:
+            return self._exception_error(exc, "product_plan_answers_invalid")
+
+    def revise_product_plan(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            action = request.get("action")
+            selected_action = request.get("selected_action")
+            target_operation = request.get("target_operation")
+            if action == "request" and target_operation in {"add", "update"}:
+                expected = {
+                    "plan_token",
+                    "action",
+                    "message",
+                    "target_section_id",
+                    "target_operation",
+                    (
+                        "requirement_refs"
+                        if target_operation == "add"
+                        else "target_binding_ref"
+                    ),
+                }
+            elif action == "request":
+                expected = (
+                    {
+                        "plan_token",
+                        "action",
+                        "message",
+                        "reviewed_plan",
+                        "selected_action",
+                        "suggestion_receipt",
+                        "suggestion_digest",
+                        "target_section_id",
+                    }
+                    if selected_action == "propose_revision"
+                    else {
+                        "plan_token",
+                        "action",
+                        "message",
+                        "reviewed_plan",
+                        "selected_action",
+                        "suggestion_receipt",
+                        "suggestion_digest",
+                    }
+                )
+            elif action == "edit_diff":
+                expected = {
+                    "plan_token",
+                    "action",
+                    "expected_diff_digest",
+                    "fields",
+                }
+            else:
+                expected = {
+                    "plan_token",
+                    "action",
+                    "base_plan_digest",
+                    "diff_digest",
+                    "reviewed_plan",
+                    "reviewed_diff",
+                }
+            if (
+                set(request) != expected
+                or action
+                not in {"request", "edit_diff", "accept_diff", "reject_diff"}
+                or type(request.get("plan_token")) is not str
+                or (
+                    action == "request"
+                    and target_operation in {"add", "update"}
+                    and (
+                        type(request.get("message")) is not str
+                        or type(request.get("target_section_id")) is not str
+                        or (
+                            target_operation == "add"
+                            and (
+                                type(request.get("requirement_refs")) is not list
+                                or any(
+                                    type(ref) is not str
+                                    for ref in request["requirement_refs"]
+                                )
+                            )
+                        )
+                        or (
+                            target_operation == "update"
+                            and type(request.get("target_binding_ref")) is not str
+                        )
+                    )
+                )
+                or (
+                    action == "request"
+                    and target_operation not in {"add", "update"}
+                    and (
+                        type(request.get("message")) is not str
+                        or type(request.get("reviewed_plan")) is not dict
+                        or type(request.get("selected_action")) is not str
+                        or type(request.get("suggestion_receipt")) is not str
+                        or type(request.get("suggestion_digest")) is not str
+                        or (
+                            selected_action == "propose_revision"
+                            and type(request.get("target_section_id")) is not str
+                        )
+                    )
+                )
+                or (
+                    action == "edit_diff"
+                    and (
+                        type(request.get("expected_diff_digest")) is not str
+                        or type(request.get("fields")) is not dict
+                    )
+                )
+                or (
+                    action in {"accept_diff", "reject_diff"}
+                    and (
+                        type(request.get("base_plan_digest")) is not str
+                        or type(request.get("diff_digest")) is not str
+                        or type(request.get("reviewed_plan")) is not dict
+                        or type(request.get("reviewed_diff")) is not dict
+                    )
+                )
+            ):
+                return self._error("product_plan_revision_invalid")
+            revision = {
+                key: value
+                for key, value in request.items()
+                if key != "plan_token"
+            }
+            if action == "request":
+                revision["message"] = request["message"]
+            plan_token = request["plan_token"]
+            return self._submit_management_task(
+                "product_plan_revision",
+                lambda cancel, phase: self._product_planner.revise(
+                    plan_token,
+                    revision,
+                    self._product_planning_catalog(),
+                    cancel.is_set,
+                    phase_callback=phase,
+                ),
+                cancellable=action == "request",
+                read_only_planning=True,
+                planning_progress=True,
+            )
+        except ValueError as exc:
+            return self._exception_error(exc, "product_plan_revision_invalid")
+
+    def suggest_product_plan_action(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if (
+                set(request) != {"plan_token", "feedback"}
+                or type(request.get("plan_token")) is not str
+                or type(request.get("feedback")) is not str
+            ):
+                return self._error("product_plan_action_suggestion_invalid")
+            return self._submit_management_task(
+                "product_plan_action_suggestion",
+                lambda cancel: self._product_planner.suggest_action(
+                    request["plan_token"],
+                    request["feedback"],
+                    cancel.is_set,
+                ),
+                cancellable=True,
+                read_only_planning=True,
+            )
+        except ValueError as exc:
+            return self._exception_error(
+                exc,
+                "product_plan_action_suggestion_invalid",
+            )
+
+    def get_product_plan_run(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if set(request) != {"run_id"} or type(request["run_id"]) is not str:
+                return self._error("product_plan_run_id_required")
+            run_id = request["run_id"].strip()
+            with self._management_lock:
+                task = self._management_tasks.get(run_id)
+                if task is None or not str(task["kind"]).startswith("product_plan_"):
+                    return self._error("product_plan_run_not_found")
+                return self._ok(self._task_view(task))
+        except ValueError as exc:
+            return self._exception_error(exc, "product_plan_run_invalid")
+
+    def cancel_product_plan_run(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if set(request) != {"run_id"} or type(request["run_id"]) is not str:
+                return self._error("product_plan_run_id_required")
+            run_id = request["run_id"].strip()
+            with self._management_lock:
+                task = self._management_tasks.get(run_id)
+                if (
+                    task is None
+                    or not str(task["kind"]).startswith("product_plan_")
+                    or task["cancellable"] is not True
+                ):
+                    return self._error("product_plan_run_not_cancellable")
+                if task["status"] in _TERMINAL_TASK_STATES:
+                    return self._error("product_plan_run_already_terminal")
+                task["cancel_event"].set()
+            return self._ok({"run_id": run_id, "cancel_requested": True})
+        except ValueError as exc:
+            return self._exception_error(exc, "product_plan_cancel_failed")
+
+    def get_product_plan_workspace(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if (
+                set(request) != {"plan_token"}
+                or type(request["plan_token"]) is not str
+            ):
+                return self._error("product_plan_token_invalid")
+            with self._capsule_operation_lock:
+                catalog = self._product_planning_catalog()
+                restored = self._product_planner.get(
+                    request["plan_token"],
+                    catalog,
+                )
+                data = restored.get("data") if type(restored) is dict else None
+                published_source_review = False
+                if restored.get("ok") is True and type(data) is dict:
+                    for gap in data.get("capability_gaps") or []:
+                        run = (
+                            gap.get("source_proposal_run")
+                            if type(gap) is dict
+                            else None
+                        )
+                        if (
+                            type(run) is dict
+                            and run.get("status") == "review_required"
+                        ):
+                            outcome = (
+                                self._capability_source_proposal_review_outcome(
+                                    run.get("review_id")
+                                )
+                            )
+                            run["review_outcome"] = outcome
+                            published_source_review = (
+                                published_source_review
+                                or (
+                                    type(outcome) is dict
+                                    and outcome.get("status") == "published"
+                                )
+                            )
+                if (
+                    restored.get("ok") is True
+                    and type(data) is dict
+                    and data.get("plan_token") == request["plan_token"]
+                    and data.get("capability_replan") is None
+                    and published_source_review
+                    and hasattr(
+                        self._product_planner,
+                        "_workspace_by_token",
+                    )
+                    and hasattr(
+                        self._product_planner,
+                        "_read_capability_gap_projection",
+                    )
+                ):
+                    workspace = self._product_planner._workspace_by_token(
+                        request["plan_token"]
+                    )
+                    data["capability_replan"] = (
+                        self._product_capability_replan_view(
+                            workspace,
+                            catalog,
+                        )
+                    )
+                confirmation = (
+                    data.get("confirmation") if type(data) is dict else None
+                )
+                plan = data.get("plan") if type(data) is dict else None
+                if (
+                    restored.get("ok") is not True
+                    or type(confirmation) is not dict
+                    or confirmation.get("schema_version")
+                    != "product_plan_confirmation.v2"
+                    or type(plan) is not dict
+                ):
+                    return restored
+                capsule_ids = sorted(
+                    {
+                        binding["capsule_id"]
+                        for section in plan["sections"]
+                        for item in section["work_items"]
+                        for binding in item["capsule_bindings"]
+                    }
+                )
+                capsules, _scope = self._load_generation_capsules(
+                    capsule_ids,
+                    read_only=True,
+                )
+                projected = self._product_planner.get(
+                    request["plan_token"],
+                    catalog,
+                    [
+                        {
+                            key: capsule[key]
+                            for key in (
+                                "capsule_id",
+                                "version_id",
+                                "canonical_hash",
+                                "capability_key",
+                                "capability_kind",
+                                "input_contract",
+                                "output_contract",
+                            )
+                        }
+                        for capsule in capsules
+                    ],
+                )
+                projected_data = (
+                    projected.get("data")
+                    if type(projected) is dict
+                    and projected.get("ok") is True
+                    else None
+                )
+                handoff = (
+                    projected_data.get("agent_handoff")
+                    if type(projected_data) is dict
+                    else None
+                )
+                if (
+                    type(handoff) is dict
+                    and handoff.get("status") == "active"
+                ):
+                    try:
+                        (
+                            _workspace,
+                            exact_capsules,
+                            product_scope,
+                            page_contracts,
+                        ) = self._confirmed_candidate_context(
+                            request["plan_token"]
+                        )
+                        status = (
+                            self._product_planner.get_agent_handoff_status(
+                                request["plan_token"],
+                                self._agent_handoff_capsule_facts_digest(
+                                    exact_capsules,
+                                    product_scope,
+                                    page_contracts,
+                                ),
+                            )
+                        )
+                        if status.get("ok") is True:
+                            projected_data["agent_handoff"] = status["data"]
+                        else:
+                            projected_data["agent_handoff"] = {
+                                **handoff,
+                                "status": "conflict",
+                            }
+                    except (
+                        CapsuleStoreError,
+                        OSError,
+                        ProductGenerationError,
+                        ValueError,
+                    ):
+                        projected_data["agent_handoff"] = {
+                            **handoff,
+                            "status": "stale",
+                        }
+                return projected
+        except (CapsuleStoreError, OSError, ProductGenerationError, ValueError) as exc:
+            return self._exception_error(exc, "product_plan_workspace_failed")
+
+    @_serialized_management
+    def confirm_product_plan(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            expected = {"plan_token", "plan_digest", "reviewed_plan"}
+            if (
+                set(request) not in (expected, {*expected, "parameter_confirmation"})
+                or type(request["plan_token"]) is not str
+                or type(request["plan_digest"]) is not str
+                or type(request["reviewed_plan"]) is not dict
+                or (
+                    "parameter_confirmation" in request
+                    and type(request["parameter_confirmation"]) is not dict
+                )
+            ):
+                return self._error("product_plan_confirmation_invalid")
+            with self._capsule_operation_lock:
+                restored = self._product_planner.get(request["plan_token"])
+                if restored.get("ok") is not True:
+                    return restored
+                stored = restored.get("data")
+                stored_plan = stored.get("plan") if type(stored) is dict else None
+                if (
+                    type(stored_plan) is not dict
+                    or stored_plan != request["reviewed_plan"]
+                    or stored_plan.get("canonical_digest")
+                    != request["plan_digest"]
+                    or stored.get("status") not in {"plan_review", "confirmed"}
+                    or stored.get("plan_diff") is not None
+                ):
+                    catalog = self._product_planning_catalog()
+                    result = self._product_planner.confirm(
+                        request["plan_token"],
+                        request["plan_digest"],
+                        request["reviewed_plan"],
+                        catalog,
+                        None,
+                        request.get("parameter_confirmation"),
+                    )
+                    if (
+                        result.get("ok") is True
+                        and result.get("data", {}).get("status") == "confirmed"
+                    ):
+                        result = {
+                            **result,
+                            "data": self._with_experience_record(
+                                result["data"],
+                                request["plan_token"],
+                                "plan_confirmed",
+                                catalog=catalog,
+                            ),
+                        }
+                    return result
+                capsule_ids = sorted(
+                    {
+                        str(binding["capsule_id"])
+                        for section in stored_plan["sections"]
+                        for item in section["work_items"]
+                        for binding in item["capsule_bindings"]
+                    }
+                )
+                parameter_capsules: list[dict[str, Any]] = []
+                if capsule_ids:
+                    loaded, _scope = self._load_generation_capsules(
+                        capsule_ids,
+                        read_only=True,
+                    )
+                    parameter_capsules = [
+                        {
+                            key: capsule[key]
+                            for key in (
+                                "capsule_id",
+                                "version_id",
+                                "canonical_hash",
+                                "capability_key",
+                                "capability_kind",
+                                "input_contract",
+                                "output_contract",
+                            )
+                        }
+                        for capsule in loaded
+                    ]
+                catalog = self._product_planning_catalog()
+                result = self._product_planner.confirm(
+                    request["plan_token"],
+                    request["plan_digest"],
+                    request["reviewed_plan"],
+                    catalog,
+                    parameter_capsules,
+                    request.get("parameter_confirmation"),
+                )
+                if (
+                    result.get("ok") is True
+                    and result.get("data", {}).get("status") == "confirmed"
+                ):
+                    result = {
+                        **result,
+                        "data": self._with_experience_record(
+                            result["data"],
+                            request["plan_token"],
+                            "plan_confirmed",
+                            catalog=catalog,
+                        ),
+                    }
+                return result
+        except (
+            CapsuleStoreError,
+            OSError,
+            ProductGenerationError,
+            ProductPlanningError,
+            ValueError,
+        ) as exc:
+            return self._exception_error(exc, "product_plan_confirmation_failed")
+
+    def _record_product_experience(
+        self,
+        plan_token: str,
+        milestone: str,
+        *,
+        catalog: dict[str, Any] | None = None,
+        candidate: dict[str, Any] | None = None,
+        export_status: str | None = None,
+    ) -> dict[str, Any] | None:
+        try:
+            return self._product_planner.record_product_experience(
+                plan_token,
+                catalog or self._product_planning_catalog(),
+                milestone,
+                candidate=candidate,
+                export_status=export_status,
+            )
+        except ProductPlanningError as exc:
+            raise ProductGenerationError(exc.code) from exc
+
+    def _with_experience_record(
+        self,
+        data: dict[str, Any],
+        plan_token: str,
+        milestone: str,
+        *,
+        catalog: dict[str, Any] | None = None,
+        candidate: dict[str, Any] | None = None,
+        export_status: str | None = None,
+    ) -> dict[str, Any]:
+        enriched = dict(data)
+        try:
+            self._record_product_experience(
+                plan_token,
+                milestone,
+                catalog=catalog,
+                candidate=candidate,
+                export_status=export_status,
+            )
+        except Exception as exc:
+            code = self._exception_error(
+                exc,
+                "project_experience_record_failed",
+            )["error"]["code"]
+            enriched["experience_record_status"] = "failed"
+            enriched["experience_record_error_code"] = code
+        else:
+            enriched["experience_record_status"] = "recorded"
+        return enriched
+
+    def retrieve_product_experience(
+        self,
+        plan_token: str,
+        limit: int = 3,
+    ) -> dict[str, Any]:
+        with self._capsule_operation_lock:
+            return self._product_planner.retrieve_product_experience(
+                plan_token,
+                limit,
+            )
+
+    @_serialized_management
+    def record_product_capability_gap_decision(
+        self,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if set(request) != {
+                "plan_token",
+                "plan_digest",
+                "projection_digest",
+                "expected_previous_decision_digest",
+                "decision",
+                "behavior_intent",
+                "reason",
+                "acceptance_cases",
+            }:
+                return self._error("capability_gap_decision_invalid")
+            with self._capsule_operation_lock:
+                return self._product_planner.record_capability_gap_decision(
+                    request["plan_token"],
+                    request["plan_digest"],
+                    request["projection_digest"],
+                    request["expected_previous_decision_digest"],
+                    request["decision"],
+                    request["behavior_intent"],
+                    request["reason"],
+                    request["acceptance_cases"],
+                    self._product_planning_catalog(),
+                )
+        except (
+            CapsuleStoreError,
+            OSError,
+            ProductGenerationError,
+            ValueError,
+        ) as exc:
+            return self._exception_error(
+                exc,
+                "capability_gap_decision_failed",
+            )
+
+    @_serialized_management
+    def prepare_product_capability_source_proposal(
+        self,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if set(request) != {
+                "plan_token",
+                "plan_digest",
+                "projection_digest",
+                "authorize_decision_digest",
+            }:
+                return self._error(
+                    "capability_source_proposal_authorization_invalid"
+                )
+            with self._capsule_operation_lock:
+                return (
+                    self._product_planner.prepare_capability_source_proposal(
+                        request["plan_token"],
+                        request["plan_digest"],
+                        request["projection_digest"],
+                        request["authorize_decision_digest"],
+                        self._product_planning_catalog(),
+                    )
+                )
+        except (
+            CapsuleStoreError,
+            OSError,
+            ProductGenerationError,
+            ValueError,
+        ) as exc:
+            return self._exception_error(
+                exc,
+                "capability_source_proposal_authorization_failed",
+            )
+
+    @staticmethod
+    def _source_proposal_error_code(exc: BaseException) -> str:
+        code = getattr(exc, "code", None)
+        return (
+            code
+            if type(code) is str
+            and re.fullmatch(r"[a-z][a-z0-9_]{1,95}", code)
+            else "capability_source_proposal_run_failed"
+        )
+
+    @staticmethod
+    def _prepared_review_runtime_digests(prepared: Any) -> dict[str, str]:
+        return {
+            "capture_digest": hashlib.sha256(
+                prepared.candidate_payload_json
+            ).hexdigest(),
+            "runtime_digest": hashlib.sha256(
+                prepared.preflight_receipt_json
+            ).hexdigest(),
+        }
+
+    @staticmethod
+    def _utf16_length(value: str) -> int:
+        try:
+            return len(value.encode("utf-16-le")) // 2
+        except UnicodeEncodeError as exc:
+            raise SourceDerivationError(
+                "source_derivation_request_invalid"
+            ) from exc
+
+    def _source_derived_authorization_values(
+        self,
+        request: dict[str, Any],
+    ) -> tuple[
+        dict[str, Any],
+        list[dict[str, Any]],
+        dict[str, Any],
+        dict[str, str],
+    ]:
+        if set(request) != {
+            "source_root_id",
+            "source_relpath",
+            "behavior_intent",
+            "input_field",
+            "input_min_length",
+            "input_max_length",
+            "result_field",
+            "result_enum",
+            "acceptance_cases",
+        }:
+            raise SourceDerivationError(
+                "source_derivation_request_invalid"
+            )
+        source_root_id = request["source_root_id"]
+        source_relpath = request["source_relpath"]
+        behavior_intent = request["behavior_intent"]
+        input_field = request["input_field"]
+        result_field = request["result_field"]
+        minimum = request["input_min_length"]
+        maximum = request["input_max_length"]
+        result_enum = request["result_enum"]
+        acceptance = request["acceptance_cases"]
+        field_pattern = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
+        try:
+            behavior_size = (
+                len(behavior_intent.encode("utf-8"))
+                if type(behavior_intent) is str
+                else 0
+            )
+        except UnicodeEncodeError as exc:
+            raise SourceDerivationError(
+                "source_derivation_request_invalid"
+            ) from exc
+        if (
+            type(source_root_id) is not str
+            or re.fullmatch(r"[A-Za-z0-9_.:-]{1,128}", source_root_id)
+            is None
+            or type(source_relpath) is not str
+            or type(behavior_intent) is not str
+            or not behavior_intent.strip()
+            or behavior_size > 2_000
+            or type(input_field) is not str
+            or field_pattern.fullmatch(input_field) is None
+            or type(result_field) is not str
+            or field_pattern.fullmatch(result_field) is None
+            or result_field == input_field
+            or type(minimum) is not int
+            or type(maximum) is not int
+            or not 0 <= minimum <= maximum <= 10_000
+            or type(result_enum) is not list
+            or not 2 <= len(result_enum) <= 32
+            or any(
+                type(item) is not str
+                or not item
+                or self._utf16_length(item) > 10_000
+                for item in result_enum
+            )
+            or len(set(result_enum)) != len(result_enum)
+            or type(acceptance) is not list
+            or not 1 <= len(acceptance) <= 16
+        ):
+            raise SourceDerivationError(
+                "source_derivation_request_invalid"
+            )
+        if not javascript_source_snapshot_supported():
+            raise SourceDerivationError("source_platform_unsupported_v1")
+        root = self._capsule_intake.get_source_root(source_root_id)
+        if root.get("status") != "bound":
+            raise SourceDerivationError("source_derivation_source_stale")
+        evidence = read_source_derived_evidence(
+            str(root["current_path"]),
+            source_relpath,
+        )
+        lengths = [self._utf16_length(item) for item in result_enum]
+        input_contract = {
+            "schema": "data_contract.v1",
+            "type": "object",
+            "properties": {
+                input_field: {
+                    "type": "string",
+                    "min_length": minimum,
+                    "max_length": maximum,
+                }
+            },
+            "required": [input_field],
+            "additional_properties": False,
+        }
+        output_contract = {
+            "schema": "data_contract.v1",
+            "type": "object",
+            "properties": {
+                result_field: {
+                    "type": "string",
+                    "min_length": min(lengths),
+                    "max_length": max(lengths),
+                    "enum": copy.deepcopy(result_enum),
+                }
+            },
+            "required": [result_field],
+            "additional_properties": False,
+        }
+        cases: list[dict[str, Any]] = []
+        seen: dict[str, str] = {}
+        for raw in acceptance:
+            if (
+                type(raw) is not dict
+                or set(raw) != {"input_text", "expected_result"}
+                or type(raw["input_text"]) is not str
+                or not minimum
+                <= self._utf16_length(raw["input_text"])
+                <= maximum
+                or raw["expected_result"] not in result_enum
+            ):
+                raise SourceDerivationError(
+                    "source_derivation_acceptance_invalid"
+                )
+            input_digest = canonical_json_digest(raw["input_text"])
+            expected_digest = canonical_json_digest(
+                raw["expected_result"]
+            )
+            if (
+                input_digest in seen
+                and seen[input_digest] != expected_digest
+            ):
+                raise SourceDerivationError(
+                    "source_derivation_acceptance_invalid"
+                )
+            seen[input_digest] = expected_digest
+            cases.append(
+                {
+                    "input": {input_field: raw["input_text"]},
+                    "expected_output": {
+                        result_field: raw["expected_result"]
+                    },
+                }
+            )
+        source_model = self._product_planner._model_identity(
+            self._product_planner._selected_model(
+                check_current=False
+            )
+        )
+        selected_supervisor = self._capsule_supervisor.selected_model()
+        supervisor = {
+            "name": selected_supervisor["name"],
+            "digest": selected_supervisor["digest"],
+        }
+        catalog = self._product_planning_catalog()
+        authorization = build_source_derived_authorization(
+            source_snapshot_sha256=evidence[0]["sha256"],
+            project_graph_digest=source_derived_project_graph_digest(
+                evidence
+            ),
+            evidence=[
+                {
+                    key: evidence[0][key]
+                    for key in (
+                        "logical_path",
+                        "sha256",
+                        "size_bytes",
+                    )
+                }
+            ],
+            behavior_intent=behavior_intent,
+            input_contract=input_contract,
+            output_contract=output_contract,
+            error_contract=(
+                self._product_planner
+                ._capability_source_proposal_error_contract()
+            ),
+            result_field=result_field,
+            acceptance_cases=cases,
+            source_proposal_model={
+                "name": source_model["name"],
+                "digest": source_model["digest"],
+            },
+            warehouse_revision=catalog["warehouse_revision"],
+            catalog_digest=canonical_json_digest(catalog),
+            authorized_at=_now(),
+        )
+        return authorization, evidence, source_model, supervisor
+
+    def _source_derived_run_context(
+        self,
+        run_id: str,
+    ) -> dict[str, Any]:
+        record = get_source_derived_run(self._state_root, run_id)
+        authorization = record["authorization"]
+        identity = record["identity"]
+        root = self._capsule_intake.get_source_root(
+            identity["source_root_id"]
+        )
+        if root.get("status") != "bound":
+            raise SourceDerivationError(
+                "source_derivation_run_stale"
+            )
+        evidence = read_source_derived_evidence(
+            str(root["current_path"]),
+            identity["source_relpath"],
+        )
+        request = build_source_derived_request(
+            authorization,
+            evidence,
+        )
+        catalog = self._product_planning_catalog()
+        source_model = self._product_planner._model_identity(
+            self._product_planner._selected_model(
+                check_current=False
+            )
+        )
+        selected_supervisor = self._capsule_supervisor.selected_model()
+        supervisor = {
+            "name": selected_supervisor["name"],
+            "digest": selected_supervisor["digest"],
+        }
+        if (
+            evidence[0]["sha256"]
+            != identity["source_snapshot_sha256"]
+            or source_derived_project_graph_digest(evidence)
+            != identity["project_graph_digest"]
+            or request["request_digest"] != identity["request_digest"]
+            or catalog["warehouse_revision"]
+            != identity["warehouse_revision"]
+            or canonical_json_digest(catalog)
+            != identity["catalog_digest"]
+            or source_model != identity["source_proposal_model"]
+            or supervisor != identity["supervision_model"]
+        ):
+            raise SourceDerivationError(
+                "source_derivation_run_stale"
+            )
+        return {
+            **record,
+            "evidence": evidence,
+            "request": request,
+        }
+
+    @staticmethod
+    def _source_derivation_error_code(exc: BaseException) -> str:
+        code = getattr(exc, "code", None)
+        return (
+            code
+            if type(code) is str
+            and re.fullmatch(r"[a-z][a-z0-9_]{1,95}", code)
+            else "source_derivation_run_failed"
+        )
+
+    def _run_source_derived_computation(
+        self,
+        run_id: str,
+        cancel: threading.Event,
+    ) -> dict[str, Any]:
+        stage = "source_proposal"
+
+        def cancelled() -> None:
+            if cancel.is_set():
+                raise SourceDerivationError("cancelled_by_user")
+
+        def running(
+            next_stage: str,
+            evidence: dict[str, Any] | None = None,
+        ) -> None:
+            nonlocal stage
+            stage = next_stage
+            append_source_derived_run_event(
+                self._state_root,
+                run_id,
+                status="running",
+                stage=stage,
+                evidence=evidence,
+                created_at=_now(),
+            )
+
+        try:
+            context = self._source_derived_run_context(run_id)
+            running("source_proposal")
+            generated = (
+                self._product_planner
+                .run_source_derived_capability_source_proposal(
+                    context["request"],
+                    context["authorization"],
+                    context["evidence"],
+                    context["identity"]["source_proposal_model"],
+                    cancel.is_set,
+                )
+            )
+            cancelled()
+            proposal = validate_source_derived_response(
+                generated["response"],
+                context["request"],
+                context["authorization"],
+                context["evidence"],
+            )
+            source = write_source_derived_proposal(
+                self._state_root,
+                run_id,
+                proposal["files"][0]["content"],
+            )
+            running(
+                "intake",
+                {
+                    "source_sha256": source["source_sha256"],
+                    "source_relpath": source["source_relpath"],
+                    "model_response_digest": generated["evidence"][
+                        "response_digest"
+                    ],
+                },
+            )
+            cancelled()
+            context = self._source_derived_run_context(run_id)
+            authorization = context["authorization"]
+            identity = context["identity"]
+            paths = context["paths"]
+            validation_database = paths["validation_database"]
+            if (
+                validation_database.exists()
+                or validation_database.is_symlink()
+            ):
+                raise SourceDerivationError(
+                    "source_derivation_run_conflict"
+                )
+            self._capsule_store.create_consistent_snapshot(
+                validation_database,
+                expected_revision=identity["warehouse_revision"],
+            )
+            isolated_store = CapsuleWarehouseStore(validation_database)
+            isolated_intake = ReweaveCapsuleIntake(isolated_store)
+            isolated_source = JavascriptSourceService(isolated_store)
+            isolated_supervisor = OllamaSupervisor(isolated_store)
+            supervise = isolated_supervisor.supervise
+
+            def supervise_with_cancellation(
+                summary: dict[str, Any],
+                capability_kind: str,
+            ) -> tuple[dict[str, Any], str, dict[str, Any]]:
+                result = supervise(summary, capability_kind)
+                cancelled()
+                return result
+
+            isolated_supervisor.supervise = supervise_with_cancellation
+            isolated_stage3 = ReweaveCapsuleStage3(
+                isolated_store,
+                intake=isolated_intake,
+                supervisor=isolated_supervisor,
+            )
+            isolated_selected = isolated_supervisor.selected_model()
+            if {
+                "name": isolated_selected["name"],
+                "digest": isolated_selected["digest"],
+            } != identity["supervision_model"]:
+                raise SourceDerivationError(
+                    "source_derivation_supervision_model_changed"
+                )
+            root = isolated_intake.bind_source_root(
+                paths["source_dir"],
+                root_kind="single_project",
+            )
+            owner = isolated_source.ensure_owner(str(root["root_id"]))
+            snapshot = isolated_source.scan(
+                str(owner["project_id"]),
+                cancel_event=cancel,
+            )
+            offers = inspect_ephemeral_computation_offers_v2(snapshot)
+            if len(offers["offers"]) != 1:
+                raise SourceDerivationError(
+                    "source_derivation_capture_invalid"
+                )
+            selection, mapping = (
+                self._capability_source_proposal_capture_request(
+                    authorization,
+                    offers["offers"][0],
+                    proposal,
+                )
+            )
+            running(
+                "security",
+                {
+                    "source_identity_sha256": (
+                        snapshot.source_identity_sha256
+                    ),
+                    "security_digest": canonical_json_digest(
+                        {
+                            "selection": selection,
+                            "rejection_summary": offers[
+                                "rejection_summary"
+                            ],
+                        }
+                    ),
+                },
+            )
+            cancelled()
+            prepared = (
+                isolated_stage3
+                .prepare_ephemeral_computation_capture_v5(
+                    snapshot,
+                    selection,
+                    mapping,
+                )
+            )
+            if type(prepared) is dict:
+                raise SourceDerivationError(
+                    "source_derivation_review_not_ready"
+                )
+            running(
+                "runtime",
+                self._prepared_review_runtime_digests(prepared),
+            )
+            cancelled()
+            self._source_derived_run_context(run_id)
+            running("supervision")
+            result = isolated_stage3.process_ephemeral_capture(prepared)
+            cancelled()
+            review_id = str(result.get("review_id") or "")
+            if result.get("status") != "review_required" or not review_id:
+                raise SourceDerivationError(
+                    "source_derivation_review_not_ready"
+                )
+            with isolated_store.read_connection() as connection:
+                review = connection.execute(
+                    "SELECT supervision_result_json FROM review_items "
+                    "WHERE review_id = ?",
+                    (review_id,),
+                ).fetchone()
+            if review is None or not review["supervision_result_json"]:
+                raise SourceDerivationError(
+                    "source_derivation_review_not_ready"
+                )
+            return append_source_derived_run_event(
+                self._state_root,
+                run_id,
+                status="review_required",
+                stage="supervision",
+                evidence={
+                    "review_id": review_id,
+                    "canonical_hash": result["canonical_hash"],
+                    "supervision_digest": hashlib.sha256(
+                        str(review["supervision_result_json"]).encode(
+                            "utf-8"
+                        )
+                    ).hexdigest(),
+                    "validation_database_sha256": _sha256_file(
+                        validation_database
+                    ),
+                },
+                created_at=_now(),
+            )
+        except BaseException as exc:
+            code = self._source_derivation_error_code(exc)
+            status = (
+                "cancelled"
+                if cancel.is_set()
+                or code
+                in {"cancelled_by_user", "product_plan_cancelled"}
+                else "failed"
+            )
+            try:
+                return append_source_derived_run_event(
+                    self._state_root,
+                    run_id,
+                    status=status,
+                    stage=stage,
+                    error_code=(
+                        "cancelled_by_user"
+                        if status == "cancelled"
+                        else code
+                    ),
+                    created_at=_now(),
+                )
+            except SourceDerivationError:
+                raise exc
+
+    def _start_source_derived_authorization(
+        self,
+        authorization: dict[str, Any],
+        evidence: list[dict[str, Any]],
+        source_model: dict[str, Any],
+        supervisor: dict[str, str],
+        *,
+        source_root_id: str,
+        source_relpath: str,
+    ) -> dict[str, Any]:
+        model_request = build_source_derived_request(
+            authorization,
+            evidence,
+        )
+        prepared = prepare_source_derived_run(
+            self._state_root,
+            authorization,
+            model_request,
+            source_root_id=source_root_id,
+            source_relpath=source_relpath,
+            source_proposal_model=source_model,
+            supervision_model=supervisor,
+            created_at=_now(),
+        )
+        run_id = prepared["run_id"]
+        if not prepared["created"]:
+            with self._management_lock:
+                live = self._management_tasks.get(run_id)
+            if live is not None:
+                return self._ok(prepared)
+            if prepared["status"] in {"pending", "running"}:
+                prepared = append_source_derived_run_event(
+                    self._state_root,
+                    run_id,
+                    status="failed",
+                    stage=prepared["stage"],
+                    error_code="manual_recovery_required",
+                    created_at=_now(),
+                )
+            return self._ok(prepared)
+        submitted = self._submit_management_task(
+            "source_derived_computation",
+            lambda cancel: self._run_source_derived_computation(
+                run_id,
+                cancel,
+            ),
+            run_id=run_id,
+            cancellable=True,
+        )
+        if submitted.get("ok") is not True:
+            append_source_derived_run_event(
+                self._state_root,
+                run_id,
+                status="failed",
+                stage=prepared["stage"],
+                error_code=str(
+                    (submitted.get("error") or {}).get("code")
+                    or "source_derivation_start_failed"
+                ),
+                created_at=_now(),
+            )
+        return submitted
+
+    def authorize_and_start_source_derived_computation(
+        self,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            with self._management_lock:
+                self._ensure_capsule_management()
+                (
+                    authorization,
+                    evidence,
+                    source_model,
+                    supervisor,
+                ) = self._source_derived_authorization_values(request)
+                return self._start_source_derived_authorization(
+                    authorization,
+                    evidence,
+                    source_model,
+                    supervisor,
+                    source_root_id=request["source_root_id"],
+                    source_relpath=request["source_relpath"],
+                )
+        except (
+            CapsuleStoreError,
+            IntakeError,
+            OSError,
+            ProductGenerationError,
+            ProductPlanningError,
+            SourceDerivationError,
+            Stage3Error,
+            ValueError,
+        ) as exc:
+            return self._exception_error(
+                exc,
+                "source_derivation_start_failed",
+            )
+
+    def _run_product_capability_source_proposal(
+        self,
+        run_id: str,
+        cancel: threading.Event,
+    ) -> dict[str, Any]:
+        stage = "source_proposal"
+
+        def cancelled() -> None:
+            if cancel.is_set():
+                raise ProductPlanningError("cancelled_by_user")
+
+        def running(
+            next_stage: str,
+            evidence: dict[str, Any] | None = None,
+        ) -> None:
+            nonlocal stage
+            stage = next_stage
+            self._product_planner.append_capability_source_proposal_run_event(
+                run_id,
+                status="running",
+                stage=stage,
+                evidence=evidence or {},
+            )
+
+        try:
+            running("source_proposal")
+            generated = (
+                self._product_planner.run_capability_source_proposal_model(
+                    run_id,
+                    cancel.is_set,
+                )
+            )
+            cancelled()
+            proposal = generated["proposal"]
+            content = proposal["files"][0]["content"]
+            source = self._product_planner.write_capability_source_proposal(
+                run_id,
+                content,
+            )
+            running(
+                "intake",
+                {
+                    "source_sha256": source["source_sha256"],
+                    "source_relpath": source["source_relpath"],
+                    "model_response_digest": generated["evidence"][
+                        "response_digest"
+                    ],
+                },
+            )
+            cancelled()
+
+            context = (
+                self._product_planner.capability_source_proposal_run_context(
+                    run_id
+                )
+            )
+            authorization = context["authorization"]
+            identity = context["identity"]
+            paths = self._product_planner.capability_source_proposal_run_paths(
+                run_id
+            )
+            validation_database = paths["validation_database"]
+            if validation_database.exists() or validation_database.is_symlink():
+                raise ProductPlanningError(
+                    "capability_source_proposal_run_conflict"
+                )
+            self._capsule_store.create_consistent_snapshot(
+                validation_database,
+                expected_revision=identity["warehouse_revision"],
+            )
+            isolated_store = CapsuleWarehouseStore(validation_database)
+            isolated_intake = ReweaveCapsuleIntake(isolated_store)
+            isolated_source = JavascriptSourceService(isolated_store)
+            isolated_supervisor = OllamaSupervisor(isolated_store)
+            isolated_stage3 = ReweaveCapsuleStage3(
+                isolated_store,
+                intake=isolated_intake,
+                supervisor=isolated_supervisor,
+            )
+            selected_supervisor = isolated_supervisor.selected_model()
+            if {
+                "name": selected_supervisor["name"],
+                "digest": selected_supervisor["digest"],
+            } != identity["supervision_model"]:
+                raise ProductPlanningError(
+                    "capability_source_proposal_supervision_model_changed"
+                )
+            with self._capsule_store.read_connection() as connection:
+                target_selected = connection.execute(
+                    "SELECT value_json FROM app_settings WHERE setting_key = "
+                    "'capsule_supervision_model'"
+                ).fetchone()
+            try:
+                target_model = json.loads(target_selected[0])
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise ProductPlanningError(
+                    "capability_source_proposal_supervision_model_changed"
+                ) from exc
+            if {
+                "name": target_model.get("name"),
+                "digest": target_model.get("digest"),
+            } != identity["supervision_model"]:
+                raise ProductPlanningError(
+                    "capability_source_proposal_supervision_model_changed"
+                )
+
+            with isolated_store.read_connection() as connection:
+                existing_root = connection.execute(
+                    "SELECT root_id FROM source_roots WHERE current_path = ?",
+                    (str(paths["source_dir"].resolve()),),
+                ).fetchone()
+            if existing_root is None:
+                root = isolated_intake.bind_source_root(
+                    paths["source_dir"],
+                    root_kind="single_project",
+                )
+                root_id = str(root["root_id"])
+            else:
+                root_id = str(existing_root["root_id"])
+            owner = isolated_source.ensure_owner(root_id)
+            snapshot = isolated_source.scan(
+                str(owner["project_id"]),
+                cancel_event=cancel,
+            )
+            offers = inspect_ephemeral_computation_offers_v2(snapshot)
+            if len(offers["offers"]) != 1:
+                raise ProductPlanningError(
+                    "capability_source_proposal_capture_invalid"
+                )
+            offer = offers["offers"][0]
+            selection, mapping = (
+                self._capability_source_proposal_capture_request(
+                    authorization,
+                    offer,
+                    proposal,
+                )
+            )
+            running(
+                "security",
+                {
+                    "source_identity_sha256": (
+                        snapshot.source_identity_sha256
+                    ),
+                    "security_digest": canonical_json_digest(
+                        {
+                            "selection": selection,
+                            "rejection_summary": offers[
+                                "rejection_summary"
+                            ],
+                        }
+                    ),
+                },
+            )
+            cancelled()
+            prepare = {
+                COMPUTATION_ADAPTER_V2: (
+                    isolated_stage3.prepare_ephemeral_computation_capture_v2
+                ),
+                COMPUTATION_ADAPTER_V3: (
+                    isolated_stage3.prepare_ephemeral_computation_capture_v3
+                ),
+                COMPUTATION_ADAPTER_V4: (
+                    isolated_stage3.prepare_ephemeral_computation_capture_v4
+                ),
+                COMPUTATION_ADAPTER_V5: (
+                    isolated_stage3.prepare_ephemeral_computation_capture_v5
+                ),
+            }.get(authorization["adapter_contract_version"])
+            if prepare is None:
+                raise ProductPlanningError(
+                    "capability_source_proposal_capture_invalid"
+                )
+            prepared = prepare(
+                snapshot,
+                selection,
+                mapping,
+            )
+            if type(prepared) is dict:
+                raise ProductPlanningError(
+                    "capability_source_proposal_review_not_ready"
+                )
+            running(
+                "runtime",
+                self._prepared_review_runtime_digests(prepared),
+            )
+            cancelled()
+            running("supervision")
+            result = isolated_stage3.process_ephemeral_capture(prepared)
+            cancelled()
+            review_id = str(result.get("review_id") or "")
+            if result.get("status") != "review_required" or not review_id:
+                raise ProductPlanningError(
+                    "capability_source_proposal_review_not_ready"
+                )
+            with isolated_store.read_connection() as connection:
+                review = connection.execute(
+                    "SELECT supervision_result_json FROM review_items "
+                    "WHERE review_id = ?",
+                    (review_id,),
+                ).fetchone()
+            if review is None or not review["supervision_result_json"]:
+                raise ProductPlanningError(
+                    "capability_source_proposal_review_not_ready"
+                )
+            running(
+                "admission",
+                {
+                    "supervision_digest": hashlib.sha256(
+                        str(review["supervision_result_json"]).encode(
+                            "utf-8"
+                        )
+                    ).hexdigest(),
+                    "validation_database_sha256": _sha256_file(
+                        validation_database
+                    ),
+                },
+            )
+            cancelled()
+            current_catalog = self._product_planning_catalog()
+            if (
+                current_catalog["warehouse_revision"]
+                != identity["warehouse_revision"]
+                or canonical_json_digest(current_catalog)
+                != identity["catalog_digest"]
+            ):
+                raise ProductPlanningError(
+                    "capability_source_proposal_run_stale"
+                )
+            admission = self.admit_frozen_review(
+                {
+                    "source_database_path": str(validation_database),
+                    "source_directory_path": str(paths["source_dir"]),
+                    "source_database_sha256": _sha256_file(
+                        validation_database
+                    ),
+                    "review_id": review_id,
+                    "expected_warehouse_revision": identity[
+                        "warehouse_revision"
+                    ],
+                    "plan_token": identity["plan_token"],
+                    "plan_digest": identity["plan_digest"],
+                    "projection_digest": identity[
+                        "projection_digest"
+                    ],
+                    "authorize_decision_digest": identity[
+                        "authorize_decision_digest"
+                    ],
+                    "source_proposal_authorization_digest": identity[
+                        "authorization_digest"
+                    ],
+                }
+            )
+            if admission.get("ok") is not True:
+                error = admission.get("error") or {}
+                raise ProductPlanningError(
+                    str(
+                        error.get("code")
+                        or "frozen_review_admission_failed"
+                    )
+                )
+            receipt = admission["data"]
+            return (
+                self._product_planner
+                .append_capability_source_proposal_run_event(
+                    run_id,
+                    status="review_required",
+                    stage="admission",
+                    evidence={
+                        "review_id": review_id,
+                        "admission_digest": receipt[
+                            "admission_digest"
+                        ],
+                        "canonical_hash": result["canonical_hash"],
+                        "warehouse_revision": receipt[
+                            "warehouse_revision"
+                        ],
+                    },
+                )
+            )
+        except BaseException as exc:
+            code = self._source_proposal_error_code(exc)
+            status = (
+                "cancelled"
+                if cancel.is_set() or code == "cancelled_by_user"
+                else "failed"
+            )
+            try:
+                return (
+                    self._product_planner
+                    .append_capability_source_proposal_run_event(
+                        run_id,
+                        status=status,
+                        stage=stage,
+                        error_code=(
+                            "cancelled_by_user"
+                            if status == "cancelled"
+                            else code
+                        ),
+                    )
+                )
+            except ProductPlanningError:
+                raise exc
+
+    def start_product_capability_source_proposal(
+        self,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if set(request) != {
+                "plan_token",
+                "plan_digest",
+                "projection_digest",
+                "authorization_digest",
+            } or any(
+                type(request.get(key)) is not str or not request[key]
+                for key in request
+            ):
+                return self._error(
+                    "capability_source_proposal_run_invalid"
+                )
+            with self._capsule_operation_lock:
+                self._ensure_capsule_management()
+                selected = self._capsule_supervisor.selected_model()
+                prepared = (
+                    self._product_planner
+                    .prepare_capability_source_proposal_run(
+                        request["plan_token"],
+                        request["plan_digest"],
+                        request["projection_digest"],
+                        request["authorization_digest"],
+                        {
+                            "name": selected["name"],
+                            "digest": selected["digest"],
+                        },
+                        self._product_planning_catalog(),
+                    )
+                )
+            run_id = prepared["run_id"]
+            if not prepared["created"]:
+                with self._management_lock:
+                    live = self._management_tasks.get(run_id)
+                if live is not None:
+                    return {
+                        "ok": True,
+                        "run_id": run_id,
+                        "status": prepared["status"],
+                    }
+                if prepared["status"] in {"pending", "running"}:
+                    recovered = (
+                        self._product_planner
+                        .append_capability_source_proposal_run_event(
+                            run_id,
+                            status="failed",
+                            stage=prepared["stage"],
+                            error_code="manual_recovery_required",
+                        )
+                    )
+                    return {
+                        "ok": True,
+                        "run_id": run_id,
+                        "status": recovered["status"],
+                    }
+                return {
+                    "ok": True,
+                    "run_id": run_id,
+                    "status": prepared["status"],
+                }
+            submitted = self._submit_management_task(
+                "capability_source_proposal",
+                lambda cancel: self._run_product_capability_source_proposal(
+                    run_id,
+                    cancel,
+                ),
+                run_id=run_id,
+                cancellable=True,
+            )
+            if submitted.get("ok") is not True:
+                self._product_planner.append_capability_source_proposal_run_event(
+                    run_id,
+                    status="failed",
+                    stage=prepared["stage"],
+                    error_code=str(
+                        (submitted.get("error") or {}).get("code")
+                        or "capability_source_proposal_start_failed"
+                    ),
+                )
+            return submitted
+        except (
+            CapsuleStoreError,
+            IntakeError,
+            JavascriptSourceError,
+            ProductGenerationError,
+            ProductPlanningError,
+            Stage3Error,
+            OSError,
+            RuntimeError,
+            ValueError,
+            sqlite3.Error,
+        ) as exc:
+            return self._exception_error(
+                exc,
+                "capability_source_proposal_run_failed",
+            )
+
+    def _confirmed_candidate_context(
+        self,
+        plan_token: str,
+    ) -> tuple[
+        dict[str, Any],
+        list[dict[str, Any]],
+        dict[str, Any],
+        list[dict[str, Any]],
+    ]:
+        restored = self._product_planner.get(plan_token)
+        data = restored.get("data") if type(restored) is dict else None
+        plan = data.get("plan") if type(data) is dict else None
+        confirmation = data.get("confirmation") if type(data) is dict else None
+        if (
+            restored.get("ok") is not True
+            or type(data) is not dict
+            or data.get("status") != "confirmed"
+            or type(plan) is not dict
+            or type(confirmation) is not dict
+        ):
+            code = (
+                restored.get("error", {}).get("code")
+                if type(restored) is dict
+                and type(restored.get("error")) is dict
+                else None
+            )
+            raise ProductGenerationError(
+                code
+                if type(code) is str
+                else "product_candidate_plan_not_confirmed"
+            )
+        capsule_ids = sorted(
+            {
+                str(binding["capsule_id"])
+                for section in plan["sections"]
+                for item in section["work_items"]
+                for binding in item["capsule_bindings"]
+            }
+        )
+        capsules, product_scope, page_contracts = self._load_composer_capsules(
+            capsule_ids,
+            read_only=True,
+        )
+        current = {
+            (capsule["capsule_id"], capsule["version_id"]): capsule
+            for capsule in capsules
+        }
+        if any(
+            (binding["capsule_id"], binding["version_id"]) not in current
+            or current[(binding["capsule_id"], binding["version_id"])][
+                "canonical_hash"
+            ]
+            != binding["canonical_hash"]
+            for section in plan["sections"]
+            for item in section["work_items"]
+            for binding in item["capsule_bindings"]
+        ):
+            raise ProductGenerationError("product_candidate_plan_stale")
+        parameter_capsules = [
+            {
+                key: capsule[key]
+                for key in (
+                    "capsule_id",
+                    "version_id",
+                    "canonical_hash",
+                    "capability_key",
+                    "capability_kind",
+                    "input_contract",
+                    "output_contract",
+                )
+            }
+            for capsule in capsules
+        ]
+        verified = self._product_planner.get(
+            plan_token,
+            None,
+            parameter_capsules,
+        )
+        if verified.get("ok") is not True:
+            code = (
+                verified.get("error", {}).get("code")
+                if type(verified.get("error")) is dict
+                else None
+            )
+            raise ProductGenerationError(
+                code
+                if type(code) is str
+                else "product_candidate_plan_not_confirmed"
+            )
+        return verified["data"], capsules, product_scope, page_contracts
+
+    @staticmethod
+    def _agent_handoff_capsule_facts_digest(
+        capsules: list[dict[str, Any]],
+        product_scope: dict[str, Any],
+        page_contracts: list[dict[str, Any]],
+    ) -> str:
+        return plan_execution_digest(
+            {
+                "schema_version": "agent_handoff_capsule_facts.v1",
+                "capsules": sorted(
+                    [
+                        {
+                            key: capsule[key]
+                            for key in (
+                                "capsule_id",
+                                "version_id",
+                                "canonical_hash",
+                                "capability_key",
+                                "role_key",
+                                "variant_key",
+                                "capability_kind",
+                            )
+                        }
+                        for capsule in capsules
+                    ],
+                    key=lambda item: (
+                        item["capsule_id"],
+                        item["version_id"],
+                    ),
+                ),
+                "page_contracts": sorted(
+                    page_contracts,
+                    key=lambda item: (
+                        item["capsule_id"],
+                        item["version_id"],
+                    ),
+                ),
+                "product_scope": product_scope,
+            }
+        )
+
+    def _validated_candidate_acceptance_confirmation(
+        self,
+        plan_token: str,
+        workspace: dict[str, Any],
+        capsules: list[dict[str, Any]],
+        page_contracts: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        restored = self._product_planner.get_candidate_acceptance_confirmation(
+            plan_token
+        )
+        if restored.get("ok") is not True:
+            error = restored.get("error") if type(restored) is dict else None
+            code = error.get("code") if type(error) is dict else None
+            raise ProductGenerationError(
+                code
+                if type(code) is str
+                else "candidate_acceptance_confirmation_required"
+            )
+        try:
+            execution = self._compile_candidate_execution(
+                workspace["plan"],
+                workspace["confirmation"],
+                capsules,
+                page_contracts,
+            )
+            input_contract, output_contract = (
+                self._candidate_acceptance_contracts(capsules, execution)
+            )
+            return validate_candidate_acceptance_confirmation(
+                workspace["plan"],
+                workspace["confirmation"],
+                restored["data"]["acceptance_confirmation"],
+                input_contract,
+                output_contract,
+            )
+        except CandidateAcceptanceError as exc:
+            raise ProductGenerationError(exc.code) from exc
+
+    @_serialized_management
+    def create_local_agent_handoff(
+        self,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if (
+                set(request) != {"plan_token"}
+                or type(request["plan_token"]) is not str
+            ):
+                return self._error("agent_handoff_request_invalid")
+            with self._capsule_operation_lock:
+                workspace, capsules, product_scope, page_contracts = (
+                    self._confirmed_candidate_context(request["plan_token"])
+                )
+                acceptance = (
+                    self._validated_candidate_acceptance_confirmation(
+                        request["plan_token"],
+                        workspace,
+                        capsules,
+                        page_contracts,
+                    )
+                )
+                result = self._product_planner.create_agent_handoff(
+                    request["plan_token"],
+                    acceptance["canonical_digest"],
+                    self._agent_handoff_capsule_facts_digest(
+                        capsules,
+                        product_scope,
+                        page_contracts,
+                    ),
+                )
+            return result
+        except (
+            CapsuleStoreError,
+            OSError,
+            ProductGenerationError,
+            ValueError,
+        ) as exc:
+            return self._exception_error(exc, "agent_handoff_create_failed")
+
+    @_serialized_management
+    def revoke_local_agent_handoff(
+        self,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            by_token = (
+                set(request) == {"handoff_token"}
+                and type(request["handoff_token"]) is str
+            )
+            by_plan = (
+                set(request) == {"plan_token"}
+                and type(request["plan_token"]) is str
+            )
+            if not (by_token or by_plan):
+                return self._error("agent_handoff_request_invalid")
+            with self._capsule_operation_lock:
+                return (
+                    self._product_planner.revoke_agent_handoff(
+                        request["handoff_token"]
+                    )
+                    if by_token
+                    else self._product_planner.revoke_agent_handoff_for_plan(
+                        request["plan_token"]
+                    )
+                )
+        except (OSError, ValueError) as exc:
+            return self._exception_error(exc, "agent_handoff_revoke_failed")
+
+    def _resolve_local_agent_handoff(
+        self,
+        handoff_token: str,
+    ) -> dict[str, Any]:
+        with self._capsule_operation_lock:
+            resolved = self._product_planner.resolve_agent_handoff(
+                handoff_token
+            )
+            if resolved.get("ok") is not True:
+                error = (
+                    resolved.get("error")
+                    if type(resolved) is dict
+                    else None
+                )
+                code = error.get("code") if type(error) is dict else None
+                raise ProductGenerationError(
+                    code if type(code) is str else "agent_handoff_invalid"
+                )
+            binding = resolved["data"]
+            try:
+                workspace, capsules, product_scope, page_contracts = (
+                    self._confirmed_candidate_context(binding["plan_token"])
+                )
+                acceptance = (
+                    self._validated_candidate_acceptance_confirmation(
+                        binding["plan_token"],
+                        workspace,
+                        capsules,
+                        page_contracts,
+                    )
+                )
+            except ProductGenerationError as exc:
+                raise ProductGenerationError("agent_handoff_stale") from exc
+            facts_digest = self._agent_handoff_capsule_facts_digest(
+                capsules,
+                product_scope,
+                page_contracts,
+            )
+            if (
+                workspace["plan"]["canonical_digest"]
+                != binding["plan_digest"]
+                or workspace["confirmation"]["receipt_digest"]
+                != binding["plan_confirmation_digest"]
+                or acceptance["canonical_digest"]
+                != binding["acceptance_confirmation_digest"]
+                or facts_digest != binding["capsule_facts_digest"]
+            ):
+                raise ProductGenerationError("agent_handoff_stale")
+        return {
+            "plan_token": binding["plan_token"],
+            "plan_digest": binding["plan_digest"],
+            "acceptance_confirmation_digest": binding[
+                "acceptance_confirmation_digest"
+            ],
+        }
+
+    @_serialized_management
+    def confirm_product_candidate_acceptance(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if (
+                set(request)
+                != {"plan_token", "plan_digest", "acceptance_cases"}
+                or type(request["plan_token"]) is not str
+                or type(request["plan_digest"]) is not str
+                or _MANIFEST_DIGEST.fullmatch(request["plan_digest"]) is None
+                or type(request["acceptance_cases"]) is not list
+            ):
+                return self._error(
+                    "candidate_acceptance_confirmation_request_invalid"
+                )
+            with self._capsule_operation_lock:
+                workspace, capsules, _scope, page_contracts = (
+                    self._confirmed_candidate_context(request["plan_token"])
+                )
+                plan = workspace["plan"]
+                confirmation = workspace["confirmation"]
+                if plan["canonical_digest"] != request["plan_digest"]:
+                    return self._error(
+                        "candidate_acceptance_confirmation_stale"
+                    )
+                execution = self._compile_candidate_execution(
+                    plan,
+                    confirmation,
+                    capsules,
+                    page_contracts,
+                )
+                input_contract, output_contract = (
+                    self._candidate_acceptance_contracts(capsules, execution)
+                )
+                record = build_candidate_acceptance_confirmation(
+                    plan,
+                    confirmation,
+                    request["acceptance_cases"],
+                    input_contract,
+                    output_contract,
+                    _now(),
+                )
+                persisted = self._product_planner.confirm_candidate_acceptance(
+                    request["plan_token"],
+                    record,
+                )
+                if persisted.get("ok") is not True:
+                    return persisted
+            return self._ok(record)
+        except (
+            CandidateAcceptanceError,
+            CapsuleStoreError,
+            OSError,
+            ProductGenerationError,
+            ValueError,
+        ) as exc:
+            return self._exception_error(
+                exc,
+                "candidate_acceptance_confirmation_failed",
+            )
+
+    def get_confirmed_product_plan(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if (
+                set(request) != {"plan_token"}
+                or type(request["plan_token"]) is not str
+            ):
+                return self._error("product_plan_token_invalid")
+            with self._capsule_operation_lock:
+                workspace, capsules, _scope, page_contracts = (
+                    self._confirmed_candidate_context(request["plan_token"])
+                )
+                acceptance = (
+                    self._product_planner.get_candidate_acceptance_confirmation(
+                        request["plan_token"]
+                    )
+                )
+            plan = workspace["plan"]
+            confirmation = workspace["confirmation"]
+            acceptance_data = (
+                acceptance["data"]["acceptance_confirmation"]
+                if acceptance.get("ok") is True
+                else None
+            )
+            if (
+                acceptance.get("ok") is not True
+                and acceptance.get("error", {}).get("code")
+                != "candidate_acceptance_confirmation_required"
+            ):
+                return acceptance
+            if type(acceptance_data) is dict:
+                execution = self._compile_candidate_execution(
+                    plan,
+                    confirmation,
+                    capsules,
+                    page_contracts,
+                )
+                input_contract, output_contract = (
+                    self._candidate_acceptance_contracts(capsules, execution)
+                )
+                try:
+                    acceptance_data = (
+                        validate_candidate_acceptance_confirmation(
+                            plan,
+                            confirmation,
+                            acceptance_data,
+                            input_contract,
+                            output_contract,
+                        )
+                    )
+                except CandidateAcceptanceError as exc:
+                    raise ProductGenerationError(exc.code) from exc
+            parameters = [
+                {
+                    "name": binding["input_field"],
+                    "value": binding["value"],
+                    "source": binding["source"],
+                }
+                for binding in confirmation.get("parameter_binding", {}).get(
+                    "bindings",
+                    [],
+                )
+            ]
+            sections = []
+            for section in plan["sections"]:
+                sections.append(
+                    {
+                        "section_id": section["section_id"],
+                        "work_items": [
+                            {
+                                "title": item["title"],
+                                "summary": item["description"],
+                                "acceptance_intent": item[
+                                    "acceptance_intent"
+                                ],
+                                "delivery_wave": item.get("delivery_wave"),
+                                "dependency_count": len(item["depends_on"]),
+                                "capabilities": [
+                                    {
+                                        key: binding[key]
+                                        for key in (
+                                            "display_name",
+                                            "capability_kind",
+                                            "identity_status",
+                                        )
+                                    }
+                                    for binding in item["capsule_bindings"]
+                                ],
+                            }
+                            for item in section["work_items"]
+                        ],
+                    }
+                )
+            return self._ok(
+                {
+                    "schema_version": "agent_confirmed_product_plan.v1",
+                    "plan_token": request["plan_token"],
+                    "status": "confirmed",
+                    "goal": plan["goal"],
+                    "product_name": plan["product_name"],
+                    "plan_version": plan["plan_version"],
+                    "plan_digest": plan["canonical_digest"],
+                    "requirements": [
+                        {
+                            "statement": requirement["statement"],
+                            "source": requirement["source"],
+                        }
+                        for requirement in plan["requirements"]
+                    ],
+                    "sections": sections,
+                    "confirmation": {
+                        "schema_version": confirmation["schema_version"],
+                        "confirmed_at": confirmation["confirmed_at"],
+                        "parameters": parameters,
+                    },
+                    "candidate_acceptance": (
+                        {
+                            "confirmed": True,
+                            "confirmation_digest": acceptance_data[
+                                "canonical_digest"
+                            ],
+                            "confirmed_at": acceptance_data["confirmed_at"],
+                            "source": acceptance_data[
+                                "confirmation_source"
+                            ],
+                            "cases": [
+                                {
+                                    key: case[key]
+                                    for key in (
+                                        "input",
+                                        "expected_output",
+                                    )
+                                }
+                                for case in acceptance_data["cases"]
+                            ],
+                        }
+                        if type(acceptance_data) is dict
+                        else {"confirmed": False}
+                    ),
+                }
+            )
+        except (
+            CapsuleStoreError,
+            OSError,
+            ProductGenerationError,
+            ValueError,
+        ) as exc:
+            return self._exception_error(exc, "product_plan_workspace_failed")
+
+    def _product_candidate_root(self) -> Path:
+        return self._state_root / PRODUCT_CANDIDATES_DIRNAME
+
+    def _formal_product_root(self) -> Path:
+        return self._state_root / PRODUCTS_DIRNAME
+
+    @staticmethod
+    def _compile_candidate_execution(
+        plan: dict[str, Any],
+        confirmation: dict[str, Any],
+        capsules: list[dict[str, Any]],
+        page_contracts: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        computation_count = sum(
+            capsule.get("capability_kind") == "computation"
+            for capsule in capsules
+        )
+        if computation_count == 2:
+            if confirmation.get("schema_version") != "product_plan_confirmation.v1":
+                raise ProductGenerationError(
+                    "multi_computation_parameter_binding_unsupported"
+                )
+            return compile_multi_computation_plan_execution(
+                plan,
+                confirmation,
+                capsules,
+                verified_page_contracts=page_contracts,
+            )
+        return (
+            compile_parameterized_plan_execution(
+                plan,
+                confirmation,
+                capsules,
+                verified_page_contracts=page_contracts,
+            )
+            if confirmation.get("schema_version")
+            == "product_plan_confirmation.v2"
+            else compile_plan_execution(
+                plan,
+                confirmation,
+                capsules,
+                verified_page_contracts=page_contracts,
+            )
+        )
+
+    @staticmethod
+    def _candidate_acceptance_contracts(
+        capsules: list[dict[str, Any]],
+        execution: dict[str, Any] | None = None,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        computations = [
+            item for item in capsules if item.get("capability_kind") == "computation"
+        ]
+        interactions = [
+            item for item in capsules if item.get("capability_kind") == "interaction"
+        ]
+        if len(computations) not in {1, 2} or len(interactions) > 1:
+            raise ProductGenerationError("candidate_acceptance_computation_required")
+        first = terminal = computations[0]
+        if len(computations) == 2:
+            if (
+                type(execution) is not dict
+                or execution.get("schema_version")
+                != MULTI_COMPUTATION_PLAN_EXECUTION_VERSION
+                or type(execution.get("connections")) is not list
+            ):
+                raise ProductGenerationError(
+                    "candidate_acceptance_connection_required"
+                )
+            by_version = {
+                computation["version_id"]: computation
+                for computation in computations
+            }
+            computation_edges = [
+                connection
+                for connection in execution["connections"]
+                if connection.get("source_version_id") in by_version
+                and connection.get("target_version_id") in by_version
+            ]
+            if len(computation_edges) != 1:
+                raise ProductGenerationError(
+                    "candidate_acceptance_terminal_ambiguous"
+                )
+            edge = computation_edges[0]
+            first = by_version[edge["source_version_id"]]
+            terminal = by_version[edge["target_version_id"]]
+        input_contract = first.get("input_contract")
+        if interactions:
+            event_contract = interactions[0].get("output_contract")
+            events = (
+                event_contract.get("events")
+                if type(event_contract) is dict
+                and event_contract.get("schema") == "event_outputs.v1"
+                else None
+            )
+            if type(events) is not dict or len(events) != 1:
+                raise ProductGenerationError("candidate_acceptance_contract_invalid")
+            input_contract = next(iter(events.values()))
+        output_contract = terminal.get("output_contract")
+        if type(input_contract) is not dict or type(output_contract) is not dict:
+            raise ProductGenerationError("candidate_acceptance_contract_invalid")
+        return input_contract, output_contract
+
+    @staticmethod
+    def _assert_candidate_path_safe(path: Path) -> None:
+        absolute = Path(os.path.abspath(path))
+        for component in reversed((absolute, *absolute.parents)):
+            try:
+                metadata = component.lstat()
+            except FileNotFoundError:
+                continue
+            if stat.S_ISLNK(metadata.st_mode):
+                raise ProductGenerationError("product_candidate_directory_unsafe")
+
+    @staticmethod
+    def _candidate_projection(record: dict[str, Any]) -> dict[str, Any]:
+        projection = {
+            key: json.loads(json.dumps(value, ensure_ascii=False))
+            for key, value in record.items()
+            if key not in {"candidate_id", "record_digest"}
+        }
+        if record.get("schema_version") == "product_candidate.v1":
+            projection["status"] = "legacy_unverified"
+            projection["product_goal_conformance"] = "not_available"
+        return projection
+
+    def _read_candidate_record_path(self, candidate_dir: Path) -> dict[str, Any]:
+        root = self._product_candidate_root()
+        self._assert_candidate_path_safe(root)
+        self._assert_candidate_path_safe(candidate_dir)
+        try:
+            candidate_dir.resolve().relative_to(root.resolve())
+        except (OSError, ValueError) as exc:
+            raise ProductGenerationError("product_candidate_directory_unsafe") from exc
+        metadata = candidate_dir / "candidate.json"
+        execution_metadata = candidate_dir / "execution_plan.json"
+        product_root = candidate_dir / "product"
+        if (
+            metadata.is_symlink()
+            or not metadata.is_file()
+            or execution_metadata.is_symlink()
+            or not execution_metadata.is_file()
+            or product_root.is_symlink()
+            or not product_root.is_dir()
+        ):
+            raise ProductGenerationError("product_candidate_invalid")
+        try:
+            record = _strict_json_bytes(metadata.read_bytes())
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+            raise ProductGenerationError("product_candidate_invalid") from exc
+        v1_required = {
+            "schema_version", "status", "candidate_id", "candidate_token",
+            "candidate_digest", "record_digest", "created_at", "plan", "execution_digest",
+            "composer_version", "entry", "files", "file_changes", "provenance",
+            "validation", "permissions",
+        }
+        if type(record) is not dict:
+            raise ProductGenerationError("product_candidate_invalid")
+        schema_version = record.get("schema_version")
+        if schema_version == "product_candidate.v1":
+            required = v1_required
+        elif schema_version == "product_candidate.v2":
+            required = v1_required | {"candidate_content_digest", "acceptance"}
+        else:
+            raise ProductGenerationError("product_candidate_invalid")
+        if set(record) != required:
+            raise ProductGenerationError("product_candidate_invalid")
+        core = {
+            key: value
+            for key, value in record.items()
+            if key not in {"candidate_token", "candidate_digest", "record_digest"}
+        }
+        record_body = {
+            key: value for key, value in record.items() if key != "record_digest"
+        }
+        if (
+            record["status"]
+            not in (
+                {"review_ready"}
+                if schema_version == "product_candidate.v1"
+                else {"review_ready", "acceptance_failed"}
+            )
+            or _CANDIDATE_ID.fullmatch(str(record["candidate_id"])) is None
+            or record["candidate_id"] != candidate_dir.name
+            or _CANDIDATE_TOKEN.fullmatch(str(record["candidate_token"])) is None
+            or _MANIFEST_DIGEST.fullmatch(str(record["candidate_digest"])) is None
+            or record["candidate_digest"] != plan_execution_digest(core)
+            or _MANIFEST_DIGEST.fullmatch(str(record["record_digest"])) is None
+            or record["record_digest"] != plan_execution_digest(record_body)
+            or _MANIFEST_DIGEST.fullmatch(str(record["execution_digest"])) is None
+            or (
+                schema_version == "product_candidate.v2"
+                and _MANIFEST_DIGEST.fullmatch(
+                    str(record["candidate_content_digest"])
+                )
+                is None
+            )
+            or type(record["created_at"]) is not str
+            or type(record["plan"]) is not dict
+            or set(record["plan"]) != {"plan_id", "plan_version", "plan_digest"}
+            or not re.fullmatch(r"plan_[0-9a-f]{32}", str(record["plan"]["plan_id"]))
+            or type(record["plan"]["plan_version"]) is not int
+            or record["plan"]["plan_version"] < 1
+            or _MANIFEST_DIGEST.fullmatch(str(record["plan"]["plan_digest"])) is None
+            or type(record["composer_version"]) is not str
+            or not record["composer_version"]
+            or type(record["entry"]) is not dict
+            or record["entry"] != {"path": "index.html", "kind": "static_html"}
+            or type(record["files"]) is not list
+            or not record["files"]
+            or type(record["file_changes"]) is not list
+            or type(record["provenance"]) is not dict
+            or type(record["validation"]) is not dict
+            or (
+                schema_version == "product_candidate.v2"
+                and type(record["acceptance"]) is not dict
+            )
+            or record["permissions"]
+            != {
+                "source_project_write": False,
+                "target_project_write": False,
+                "product_store_write": False,
+                "product_usage_write": False,
+            }
+        ):
+            raise ProductGenerationError("product_candidate_invalid")
+        try:
+            execution = _strict_json_bytes(execution_metadata.read_bytes())
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+            raise ProductGenerationError("product_candidate_invalid") from exc
+        if (
+            type(execution) is not dict
+            or execution.get("schema_version")
+            not in {
+                PLAN_EXECUTION_VERSION,
+                PARAMETERIZED_PLAN_EXECUTION_VERSION,
+                MULTI_COMPUTATION_PLAN_EXECUTION_VERSION,
+            }
+            or execution.get("execution_digest") != record["execution_digest"]
+            or plan_execution_digest(
+                {
+                    key: value
+                    for key, value in execution.items()
+                    if key != "execution_digest"
+                }
+            )
+            != record["execution_digest"]
+            or execution.get("plan_id") != record["plan"].get("plan_id")
+            or execution.get("plan_version") != record["plan"].get("plan_version")
+            or execution.get("plan_digest") != record["plan"].get("plan_digest")
+        ):
+            raise ProductGenerationError("product_candidate_invalid")
+        file_paths: set[str] = set()
+        file_text: dict[str, bool] = {}
+        file_data: dict[str, bytes] = {}
+        for item in record["files"]:
+            if (
+                type(item) is not dict
+                or set(item) != {"path", "sha256", "size_bytes", "text"}
+                or type(item["path"]) is not str
+                or type(item["size_bytes"]) is not int
+                or item["size_bytes"] < 0
+                or type(item["text"]) is not bool
+                or _MANIFEST_DIGEST.fullmatch(str(item["sha256"])) is None
+            ):
+                raise ProductGenerationError("product_candidate_invalid")
+            logical = _safe_product_relative(item["path"])
+            if logical in file_paths:
+                raise ProductGenerationError("product_candidate_invalid")
+            file_paths.add(logical)
+            file_text[logical] = item["text"]
+            path = product_root.joinpath(*PurePosixPath(logical).parts)
+            self._assert_candidate_path_safe(path)
+            if path.is_symlink() or not path.is_file():
+                raise ProductGenerationError("product_candidate_invalid")
+            data = path.read_bytes()
+            file_data[logical] = data
+            if (
+                len(data) != item["size_bytes"]
+                or hashlib.sha256(data).hexdigest() != item["sha256"]
+            ):
+                raise ProductGenerationError("product_candidate_invalid")
+        if record["entry"]["path"] not in file_paths:
+            raise ProductGenerationError("product_candidate_invalid")
+        if (
+            schema_version == "product_candidate.v2"
+            and record["candidate_content_digest"]
+            != _candidate_content_digest(
+                record["execution_digest"],
+                record["composer_version"],
+                record["entry"],
+                record["files"],
+            )
+        ):
+            raise ProductGenerationError("product_candidate_invalid")
+        change_paths: set[str] = set()
+        for change in record["file_changes"]:
+            if (
+                type(change) is not dict
+                or set(change) != {"path", "operation", "text_diff_sha256"}
+                or type(change["path"]) is not str
+                or change["operation"] != "added"
+                or (
+                    change["text_diff_sha256"] is not None
+                    and _MANIFEST_DIGEST.fullmatch(str(change["text_diff_sha256"]))
+                    is None
+                )
+            ):
+                raise ProductGenerationError("product_candidate_invalid")
+            logical = _safe_product_relative(change["path"])
+            if logical in change_paths or logical not in file_paths:
+                raise ProductGenerationError("product_candidate_invalid")
+            if file_text[logical] != (change["text_diff_sha256"] is not None):
+                raise ProductGenerationError("product_candidate_invalid")
+            if file_text[logical]:
+                try:
+                    text = file_data[logical].decode("utf-8")
+                except UnicodeDecodeError as exc:
+                    raise ProductGenerationError("product_candidate_invalid") from exc
+                expected_diff = "".join(
+                    difflib.unified_diff(
+                        [],
+                        text.splitlines(keepends=True),
+                        fromfile="/dev/null",
+                        tofile=logical,
+                    )
+                )
+                if (
+                    hashlib.sha256(expected_diff.encode("utf-8")).hexdigest()
+                    != change["text_diff_sha256"]
+                ):
+                    raise ProductGenerationError("product_candidate_invalid")
+            change_paths.add(logical)
+        if change_paths != file_paths:
+            raise ProductGenerationError("product_candidate_invalid")
+        receipts = record["provenance"].get("file_provenance")
+        parameterized_execution = (
+            execution["schema_version"] == PARAMETERIZED_PLAN_EXECUTION_VERSION
+        )
+        multi_computation_execution = (
+            execution["schema_version"]
+            == MULTI_COMPUTATION_PLAN_EXECUTION_VERSION
+        )
+        expected_provenance_version = (
+            "product_candidate_provenance.v3"
+            if multi_computation_execution
+            else (
+                "product_candidate_provenance.v2"
+                if parameterized_execution
+                else "product_candidate_provenance.v1"
+            )
+        )
+        provenance_keys = {
+            "schema_version",
+            "plan_id",
+            "plan_version",
+            "plan_digest",
+            "execution_digest",
+            "composer_version",
+            "file_provenance",
+            "source_project_write",
+            "target_project_write",
+            "model_source_generation",
+        }
+        if parameterized_execution:
+            provenance_keys.update({"confirmation_digest", "parameter_binding"})
+        if multi_computation_execution:
+            provenance_keys.update(
+                {"connections", "connection_digest", "terminal_output"}
+            )
+        if (
+            set(record["provenance"]) != provenance_keys
+            or
+            record["provenance"].get("schema_version")
+            != expected_provenance_version
+            or type(receipts) is not list
+            or {receipt.get("path") for receipt in receipts if type(receipt) is dict}
+            != file_paths
+            or record["validation"].get("static", {}).get("status") != "passed"
+            or record["validation"].get("runtime", {}).get("status") != "passed"
+        ):
+            raise ProductGenerationError("product_candidate_invalid")
+        if parameterized_execution and (
+            type(execution.get("parameter_binding")) is not dict
+            or record["provenance"].get("confirmation_digest")
+            != execution.get("confirmation_digest")
+            or record["provenance"].get("parameter_binding")
+            != execution.get("parameter_binding")
+        ):
+            raise ProductGenerationError("product_candidate_invalid")
+        if multi_computation_execution:
+            by_version = {
+                capsule["version_id"]: capsule
+                for capsule in execution["capsules"]
+            }
+            terminal_edges = [
+                connection
+                for connection in execution["connections"]
+                if by_version[connection["source_version_id"]][
+                    "capability_kind"
+                ]
+                == "computation"
+                and by_version[connection["target_version_id"]][
+                    "capability_kind"
+                ]
+                == "presentation"
+            ]
+            expected_terminal = (
+                {
+                    "capsule_id": terminal_edges[0]["source_capsule_id"],
+                    "version_id": terminal_edges[0]["source_version_id"],
+                    "canonical_hash": terminal_edges[0][
+                        "source_canonical_hash"
+                    ],
+                    "output": terminal_edges[0]["source_output"],
+                }
+                if len(terminal_edges) == 1
+                else None
+            )
+            if (
+                record["provenance"].get("connections")
+                != execution.get("connections")
+                or record["provenance"].get("connection_digest")
+                != execution.get("connection_digest")
+                or record["provenance"].get("terminal_output")
+                != expected_terminal
+            ):
+                raise ProductGenerationError("product_candidate_invalid")
+        for receipt in receipts:
+            if (
+                type(receipt) is not dict
+                or set(receipt)
+                != {
+                    "path",
+                    "execution_unit_ids",
+                    "work_item_ids",
+                    "capsule_version_ids",
+                }
+                or receipt["path"] not in file_paths
+                or any(
+                    type(receipt[key]) is not list
+                    or not receipt[key]
+                    or len(receipt[key]) != len(set(receipt[key]))
+                    or any(type(value) is not str or not value for value in receipt[key])
+                    for key in (
+                        "execution_unit_ids",
+                        "work_item_ids",
+                        "capsule_version_ids",
+                    )
+                )
+            ):
+                raise ProductGenerationError("product_candidate_invalid")
+        if schema_version == "product_candidate.v1":
+            if set(record["validation"]) != {"static", "runtime"}:
+                raise ProductGenerationError("product_candidate_invalid")
+            return record
+
+        acceptance_contract_path = candidate_dir / "acceptance_contract.json"
+        acceptance_receipt_path = candidate_dir / "acceptance_receipt.json"
+        if (
+            acceptance_contract_path.is_symlink()
+            or not acceptance_contract_path.is_file()
+            or acceptance_receipt_path.is_symlink()
+            or not acceptance_receipt_path.is_file()
+        ):
+            raise ProductGenerationError("product_candidate_invalid")
+        self._assert_candidate_path_safe(acceptance_contract_path)
+        self._assert_candidate_path_safe(acceptance_receipt_path)
+        try:
+            acceptance_contract = _strict_json_bytes(
+                acceptance_contract_path.read_bytes()
+            )
+            acceptance_receipt = _strict_json_bytes(
+                acceptance_receipt_path.read_bytes()
+            )
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+            raise ProductGenerationError("product_candidate_invalid") from exc
+        contract_keys = {
+            "schema_version",
+            "plan_digest",
+            "confirmation_digest",
+            "candidate_content_digest",
+            "requirement_ids",
+            "input_contract_digest",
+            "output_contract_digest",
+            "cases",
+            "canonical_digest",
+        }
+        receipt_keys = {
+            "schema_version",
+            "contract_digest",
+            "candidate_content_digest",
+            "status",
+            "runtime_operational",
+            "product_goal_conformance",
+            "cases",
+            "receipt_digest",
+        }
+        contract_body = (
+            {
+                key: value
+                for key, value in acceptance_contract.items()
+                if key != "canonical_digest"
+            }
+            if type(acceptance_contract) is dict
+            else {}
+        )
+        receipt_body = (
+            {
+                key: value
+                for key, value in acceptance_receipt.items()
+                if key != "receipt_digest"
+            }
+            if type(acceptance_receipt) is dict
+            else {}
+        )
+        contract_cases = (
+            acceptance_contract.get("cases", [])
+            if type(acceptance_contract) is dict
+            else []
+        )
+        receipt_cases = (
+            acceptance_receipt.get("cases", [])
+            if type(acceptance_receipt) is dict
+            else []
+        )
+        if (
+            type(acceptance_contract) is not dict
+            or set(acceptance_contract) != contract_keys
+            or acceptance_contract.get("schema_version")
+            != CANDIDATE_ACCEPTANCE_VERSION
+            or acceptance_contract.get("plan_digest") != record["plan"]["plan_digest"]
+            or acceptance_contract.get("confirmation_digest")
+            != execution.get("confirmation_digest")
+            or acceptance_contract.get("candidate_content_digest")
+            != record["candidate_content_digest"]
+            or acceptance_contract.get("canonical_digest")
+            != plan_execution_digest(contract_body)
+            or type(contract_cases) is not list
+            or not 1 <= len(contract_cases) <= MAX_CANDIDATE_ACCEPTANCE_CASES
+            or type(acceptance_receipt) is not dict
+            or set(acceptance_receipt) != receipt_keys
+            or acceptance_receipt.get("schema_version")
+            != CANDIDATE_ACCEPTANCE_RECEIPT_VERSION
+            or acceptance_receipt.get("contract_digest")
+            != acceptance_contract.get("canonical_digest")
+            or acceptance_receipt.get("candidate_content_digest")
+            != record["candidate_content_digest"]
+            or acceptance_receipt.get("runtime_operational") != "passed"
+            or acceptance_receipt.get("status") not in {"passed", "failed"}
+            or acceptance_receipt.get("product_goal_conformance")
+            != acceptance_receipt.get("status")
+            or acceptance_receipt.get("receipt_digest")
+            != plan_execution_digest(receipt_body)
+            or type(receipt_cases) is not list
+            or len(receipt_cases) != len(contract_cases)
+            or set(record["validation"]) != {"static", "runtime", "acceptance"}
+            or record["validation"]["acceptance"] != acceptance_receipt
+            or record["status"]
+            != (
+                "review_ready"
+                if acceptance_receipt.get("status") == "passed"
+                else "acceptance_failed"
+            )
+        ):
+            raise ProductGenerationError("product_candidate_invalid")
+        for contract_case, receipt_case in zip(
+            contract_cases, receipt_cases, strict=True
+        ):
+            if (
+                type(contract_case) is not dict
+                or set(contract_case)
+                != {"case_id", "requirement_ids", "input", "expected_output"}
+                or type(contract_case["case_id"]) is not str
+                or not contract_case["case_id"]
+                or type(contract_case["requirement_ids"]) is not list
+                or not contract_case["requirement_ids"]
+                or type(receipt_case) is not dict
+                or set(receipt_case)
+                != {
+                    "case_id",
+                    "status",
+                    "actual_output",
+                    "failure_code",
+                }
+                or receipt_case["case_id"] != contract_case["case_id"]
+                or receipt_case["status"] not in {"passed", "failed"}
+                or (
+                    receipt_case["status"] == "passed"
+                    and receipt_case["failure_code"] is not None
+                )
+                or (
+                    receipt_case["status"] == "failed"
+                    and receipt_case["failure_code"]
+                    not in {
+                        "candidate_case_execution_failed",
+                        "candidate_output_contract_invalid",
+                        "candidate_output_mismatch",
+                    }
+                )
+            ):
+                raise ProductGenerationError("product_candidate_invalid")
+        expected_acceptance = {
+            "contract_digest": acceptance_contract["canonical_digest"],
+            "status": acceptance_receipt["status"],
+            "runtime_operational": acceptance_receipt["runtime_operational"],
+            "product_goal_conformance": acceptance_receipt[
+                "product_goal_conformance"
+            ],
+            "cases": [
+                {
+                    "case_id": contract_case["case_id"],
+                    "input": contract_case["input"],
+                    "expected_output": contract_case["expected_output"],
+                    "actual_output": receipt_case["actual_output"],
+                    "status": receipt_case["status"],
+                    "failure_code": receipt_case["failure_code"],
+                }
+                for contract_case, receipt_case in zip(
+                    contract_cases,
+                    receipt_cases,
+                    strict=True,
+                )
+            ],
+        }
+        if record["acceptance"] != expected_acceptance:
+            raise ProductGenerationError("product_candidate_invalid")
+        return record
+
+    def _read_candidate_record(self, candidate_token: str) -> tuple[Path, dict[str, Any]]:
+        if _CANDIDATE_TOKEN.fullmatch(candidate_token) is None:
+            raise ProductGenerationError("product_candidate_token_invalid")
+        root = self._product_candidate_root()
+        self._assert_candidate_path_safe(root)
+        if not root.is_dir():
+            raise ProductGenerationError("product_candidate_not_found")
+        # ponytail: bounded app-state scan; add an index only if candidate volume proves it necessary.
+        for candidate_dir in sorted(root.glob("candidate_*")):
+            if not candidate_dir.is_dir() or candidate_dir.is_symlink():
+                continue
+            record = self._read_candidate_record_path(candidate_dir)
+            if record["candidate_token"] == candidate_token:
+                return candidate_dir, record
+        raise ProductGenerationError("product_candidate_not_found")
+
+    def _build_product_candidate(
+        self,
+        plan_token: str,
+        plan_digest: str,
+        acceptance_cases: list[dict[str, Any]] | None,
+        *,
+        acceptance_confirmation: dict[str, Any] | None = None,
+        read_only_plan: bool = False,
+    ) -> dict[str, Any]:
+        if read_only_plan:
+            workspace, capsules, product_scope, page_contracts = (
+                self._confirmed_candidate_context(plan_token)
+            )
+        else:
+            catalog = self._product_planning_catalog()
+            restored = self._product_planner.get(plan_token, catalog)
+            if (
+                restored.get("ok") is not True
+                or type(restored.get("data")) is not dict
+            ):
+                error = restored.get("error") if type(restored) is dict else None
+                code = error.get("code") if type(error) is dict else None
+                raise ProductGenerationError(
+                    code
+                    if type(code) is str
+                    else "product_candidate_plan_unavailable"
+                )
+            workspace = restored["data"]
+        plan = workspace.get("plan")
+        confirmation = workspace.get("confirmation")
+        if (
+            workspace.get("status") != "confirmed"
+            or type(plan) is not dict
+            or type(confirmation) is not dict
+            or plan.get("canonical_digest") != plan_digest
+        ):
+            raise ProductGenerationError("product_candidate_plan_not_confirmed")
+        if not read_only_plan:
+            capsule_ids = sorted(
+                {
+                    str(binding["capsule_id"])
+                    for section in plan.get("sections", [])
+                    for item in section.get("work_items", [])
+                    for binding in item.get("capsule_bindings", [])
+                    if type(binding) is dict and binding.get("capsule_id")
+                }
+            )
+            capsules, product_scope, page_contracts = (
+                self._load_composer_capsules(
+                    capsule_ids,
+                    read_only=True,
+                )
+            )
+        execution = self._compile_candidate_execution(
+            plan,
+            confirmation,
+            capsules,
+            page_contracts,
+        )
+        selected_by_id = {capsule["capsule_id"]: capsule for capsule in capsules}
+        selected = [
+            selected_by_id[capsule_id]
+            for capsule_id in execution["composer_request"]["capsule_ids"]
+        ]
+        input_contract, output_contract = self._candidate_acceptance_contracts(
+            selected,
+            execution,
+        )
+        if acceptance_confirmation is not None:
+            try:
+                confirmed_acceptance = (
+                    validate_candidate_acceptance_confirmation(
+                        plan,
+                        confirmation,
+                        acceptance_confirmation,
+                        input_contract,
+                        output_contract,
+                    )
+                )
+            except CandidateAcceptanceError as exc:
+                raise ProductGenerationError(exc.code) from exc
+            acceptance_cases = [
+                {
+                    key: case[key]
+                    for key in (
+                        "requirement_ids",
+                        "input",
+                        "expected_output",
+                    )
+                }
+                for case in confirmed_acceptance["cases"]
+            ]
+        if acceptance_cases is None:
+            raise ProductGenerationError(
+                "candidate_acceptance_confirmation_required"
+            )
+        expected_composer_version = (
+            ADAPTER_V5_FORMAL_PRODUCT_COMPOSER_VERSION
+            if any(
+                capsule.get("adapter_contract_version")
+                == COMPUTATION_ADAPTER_V5
+                for capsule in selected
+            )
+            else ADAPTER_V4_FORMAL_PRODUCT_COMPOSER_VERSION
+            if any(
+                capsule.get("adapter_contract_version")
+                == COMPUTATION_ADAPTER_V4
+                for capsule in selected
+            )
+            else ADAPTER_V3_FORMAL_PRODUCT_COMPOSER_VERSION
+            if any(
+                capsule.get("adapter_contract_version")
+                == COMPUTATION_ADAPTER_V3
+                for capsule in selected
+            )
+            else {
+                MULTI_COMPUTATION_PLAN_EXECUTION_VERSION: (
+                    MULTI_COMPUTATION_FORMAL_PRODUCT_COMPOSER_VERSION
+                ),
+                PARAMETERIZED_PLAN_EXECUTION_VERSION: (
+                    PARAMETERIZED_FORMAL_PRODUCT_COMPOSER_VERSION
+                ),
+            }.get(execution["schema_version"], FORMAL_PRODUCT_COMPOSER_VERSION)
+        )
+        candidate_id = "candidate_" + plan_execution_digest(
+            {
+                "execution_digest": execution["execution_digest"],
+                "composer_version": expected_composer_version,
+            }
+        )[:32]
+        root = self._product_candidate_root()
+        self._assert_candidate_path_safe(root)
+        root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        if os.name == "posix":
+            root.chmod(0o700)
+        final = root / candidate_id
+        if final.exists() or final.is_symlink():
+            if final.is_symlink() or not final.is_dir():
+                raise ProductGenerationError("product_candidate_directory_unsafe")
+            existing = self._read_candidate_record_path(final)
+            if existing["execution_digest"] != execution["execution_digest"]:
+                raise ProductGenerationError("product_candidate_conflict")
+            if existing["schema_version"] != "product_candidate.v2":
+                raise ProductGenerationError(
+                    "candidate_acceptance_contract_conflict"
+                )
+            try:
+                requested_contract = build_candidate_acceptance(
+                    plan,
+                    confirmation,
+                    acceptance_cases,
+                    input_contract,
+                    output_contract,
+                    existing["candidate_content_digest"],
+                )
+                stored_contract = _strict_json_bytes(
+                    (final / "acceptance_contract.json").read_bytes()
+                )
+            except (
+                CandidateAcceptanceError,
+                OSError,
+                UnicodeError,
+                ValueError,
+                json.JSONDecodeError,
+            ) as exc:
+                code = (
+                    exc.code
+                    if isinstance(exc, CandidateAcceptanceError)
+                    else "candidate_acceptance_contract_conflict"
+                )
+                raise ProductGenerationError(code) from exc
+            if requested_contract != stored_contract:
+                raise ProductGenerationError(
+                    "candidate_acceptance_contract_conflict"
+                )
+            return self._with_experience_record(
+                self._candidate_projection(existing),
+                plan_token,
+                "candidate_terminal",
+                candidate=existing,
+            )
+        try:
+            composition = compose_capsule_product(
+                task=execution["composer_request"]["task"],
+                product_id=execution["composer_request"]["product_id"],
+                generated_at=execution["composer_request"]["generated_at"],
+                capsules=selected,
+                candidate_acceptance_port=True,
+                parameter_binding=execution.get("parameter_binding"),
+                verified_page_contracts=page_contracts,
+                verified_connections=execution.get("connections"),
+                connection_digest=execution.get("connection_digest"),
+            )
+        except ValueError as exc:
+            code = str(exc)
+            raise ProductGenerationError(
+                code
+                if re.fullmatch(r"[a-z][a-z0-9_]{1,95}", code)
+                else "product_candidate_composition_failed"
+            ) from exc
+        if (
+            type(composition) is not dict
+            or composition.get("status") != "composed"
+            or composition.get("composer_version") != expected_composer_version
+            or type(composition.get("files")) is not dict
+            or type(composition.get("assets")) is not dict
+            or type(composition.get("provenance")) is not dict
+        ):
+            raise ProductGenerationError("product_candidate_composition_invalid")
+
+        temporary = Path(tempfile.mkdtemp(prefix=f".{candidate_id}-", dir=root))
+        try:
+            product_root = temporary / "product"
+            product_root.mkdir(mode=0o700)
+            paths: set[str] = set()
+            for relative, content in {
+                **composition["files"],
+                **composition["assets"],
+            }.items():
+                logical = _safe_product_relative(relative)
+                if logical in paths:
+                    raise ProductGenerationError("product_candidate_file_duplicate")
+                paths.add(logical)
+                _write_product_file(product_root, logical, content)
+
+            units = {
+                unit["execution_unit_id"]: unit
+                for unit in execution["execution_units"]
+            }
+            version_units: dict[str, set[str]] = {}
+            for unit_id, unit in units.items():
+                for capsule in unit["capsules"]:
+                    version_units.setdefault(capsule["version_id"], set()).add(unit_id)
+            composer_provenance = composition["provenance"]
+            if (
+                type(composer_provenance.get("file_provenance")) is not dict
+                or type(composer_provenance.get("asset_provenance")) is not dict
+            ):
+                raise ProductGenerationError("product_candidate_provenance_invalid")
+            file_versions: dict[str, set[str]] = {
+                str(path): {str(version) for version in versions}
+                for path, versions in composer_provenance["file_provenance"].items()
+                if type(path) is str and type(versions) is list
+            }
+            for path, receipt in composer_provenance["asset_provenance"].items():
+                if type(path) is not str or type(receipt) is not dict:
+                    raise ProductGenerationError("product_candidate_provenance_invalid")
+                sources = receipt.get("sources")
+                if type(sources) is not list:
+                    raise ProductGenerationError("product_candidate_provenance_invalid")
+                file_versions[path] = {
+                    str(source["version_id"])
+                    for source in sources
+                    if type(source) is dict and type(source.get("version_id")) is str
+                }
+            known_versions = set(version_units)
+            file_versions = {
+                path: versions or set(known_versions)
+                for path, versions in file_versions.items()
+            }
+            if set(file_versions) != paths or any(
+                not versions or any(version not in version_units for version in versions)
+                for versions in file_versions.values()
+            ):
+                raise ProductGenerationError("product_candidate_provenance_invalid")
+
+            def file_receipt(path: str, versions: set[str]) -> dict[str, Any]:
+                unit_ids = sorted(
+                    {
+                        unit_id
+                        for version in versions
+                        for unit_id in version_units[version]
+                    }
+                )
+                return {
+                    "path": path,
+                    "execution_unit_ids": unit_ids,
+                    "work_item_ids": sorted(
+                        {units[unit_id]["work_item_id"] for unit_id in unit_ids}
+                    ),
+                    "capsule_version_ids": sorted(versions),
+                }
+
+            all_unit_ids = sorted(units)
+            all_versions = set(version_units)
+            multi_computation_execution = (
+                execution["schema_version"]
+                == MULTI_COMPUTATION_PLAN_EXECUTION_VERSION
+            )
+            provenance = {
+                "schema_version": (
+                    "product_candidate_provenance.v3"
+                    if multi_computation_execution
+                    else (
+                        "product_candidate_provenance.v2"
+                        if execution["schema_version"]
+                        == PARAMETERIZED_PLAN_EXECUTION_VERSION
+                        else "product_candidate_provenance.v1"
+                    )
+                ),
+                "plan_id": execution["plan_id"],
+                "plan_version": execution["plan_version"],
+                "plan_digest": execution["plan_digest"],
+                "execution_digest": execution["execution_digest"],
+                "composer_version": str(composition.get("composer_version") or ""),
+                "file_provenance": [
+                    file_receipt(path, file_versions[path])
+                    for path in sorted(file_versions)
+                ]
+                + [
+                    {
+                        "path": path,
+                        "execution_unit_ids": all_unit_ids,
+                        "work_item_ids": sorted(
+                            {units[unit_id]["work_item_id"] for unit_id in all_unit_ids}
+                        ),
+                        "capsule_version_ids": sorted(all_versions),
+                    }
+                    for path in (
+                        "manifest.json",
+                        "provenance.json",
+                        "quality_gate.json",
+                        "runtime_validation.json",
+                    )
+                ],
+                "source_project_write": False,
+                "target_project_write": False,
+                "model_source_generation": False,
+            }
+            if execution["schema_version"] == PARAMETERIZED_PLAN_EXECUTION_VERSION:
+                provenance["confirmation_digest"] = execution[
+                    "confirmation_digest"
+                ]
+                provenance["parameter_binding"] = execution["parameter_binding"]
+            if multi_computation_execution:
+                provenance["connections"] = execution["connections"]
+                provenance["connection_digest"] = execution[
+                    "connection_digest"
+                ]
+                provenance["terminal_output"] = composer_provenance[
+                    "terminal_output"
+                ]
+            _write_product_file(
+                product_root,
+                "provenance.json",
+                json.dumps(provenance, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            )
+            _fsync_product_tree(product_root)
+            content_files = []
+            for path in sorted(product_root.rglob("*")):
+                if not path.is_file() or path.is_symlink():
+                    continue
+                data = path.read_bytes()
+                content_files.append(
+                    {
+                        "path": path.relative_to(product_root).as_posix(),
+                        "sha256": hashlib.sha256(data).hexdigest(),
+                        "size_bytes": len(data),
+                    }
+                )
+            candidate_content_digest = _candidate_content_digest(
+                execution["execution_digest"],
+                str(composition.get("composer_version") or ""),
+                {"path": "index.html", "kind": "static_html"},
+                content_files,
+            )
+            try:
+                acceptance_contract = build_candidate_acceptance(
+                    plan,
+                    confirmation,
+                    acceptance_cases,
+                    input_contract,
+                    output_contract,
+                    candidate_content_digest,
+                )
+            except CandidateAcceptanceError as exc:
+                raise ProductGenerationError(exc.code) from exc
+            quality = _validate_product_static(product_root)
+            runtime = _validate_product_runtime(product_root)
+            acceptance_worker = _validate_product_acceptance(
+                product_root,
+                acceptance_contract,
+            )
+            try:
+                acceptance = evaluate_candidate_acceptance(
+                    acceptance_contract,
+                    acceptance_worker,
+                    input_contract,
+                    output_contract,
+                )
+            except CandidateAcceptanceError as exc:
+                raise ProductGenerationError(exc.code) from exc
+            _write_product_file(
+                product_root,
+                "quality_gate.json",
+                json.dumps(quality, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            )
+            _write_product_file(
+                product_root,
+                "runtime_validation.json",
+                json.dumps(runtime, ensure_ascii=False, sort_keys=True, indent=2) + "\n",
+            )
+            _write_product_file(
+                temporary,
+                "acceptance_contract.json",
+                plan_execution_bytes(acceptance_contract) + b"\n",
+            )
+            _write_product_file(
+                temporary,
+                "acceptance_receipt.json",
+                plan_execution_bytes(acceptance) + b"\n",
+            )
+            pre_manifest = []
+            for path in sorted(product_root.rglob("*")):
+                if not path.is_file() or path.is_symlink():
+                    continue
+                data = path.read_bytes()
+                pre_manifest.append(
+                    {
+                        "path": path.relative_to(product_root).as_posix(),
+                        "sha256": hashlib.sha256(data).hexdigest(),
+                        "size_bytes": len(data),
+                    }
+                )
+            manifest = {
+                "schema_version": "reweave_candidate_manifest.v1",
+                "created_at": confirmation["confirmed_at"],
+                "plan": {
+                    "plan_id": plan["plan_id"],
+                    "plan_version": plan["plan_version"],
+                    "plan_digest": plan["canonical_digest"],
+                },
+                "execution_digest": execution["execution_digest"],
+                "composer_version": str(composition.get("composer_version") or ""),
+                "product_usage_scope": product_scope,
+                "entry": {"path": "index.html", "kind": "static_html"},
+                "capsules": execution["capsules"],
+                "connections": composition.get("composition_manifest", {}).get(
+                    "connections", []
+                ),
+                "files": pre_manifest,
+                "permissions": {
+                    "source_project_write": False,
+                    "target_project_write": False,
+                    "product_store_write": False,
+                    "product_usage_write": False,
+                },
+            }
+            if multi_computation_execution:
+                manifest["connection_digest"] = execution[
+                    "connection_digest"
+                ]
+                manifest["terminal_output"] = provenance["terminal_output"]
+            _write_product_file(
+                product_root,
+                "manifest.json",
+                plan_execution_bytes(manifest) + b"\n",
+            )
+            with self._capsule_store.read_connection() as connection:
+                self._assert_generation_capsules_current(connection, selected)
+
+            files: list[dict[str, Any]] = []
+            changes: list[dict[str, Any]] = []
+            for path in sorted(product_root.rglob("*")):
+                if not path.is_file() or path.is_symlink():
+                    continue
+                data = path.read_bytes()
+                logical = path.relative_to(product_root).as_posix()
+                try:
+                    text = data.decode("utf-8")
+                except UnicodeDecodeError:
+                    text = None
+                files.append(
+                    {
+                        "path": logical,
+                        "sha256": hashlib.sha256(data).hexdigest(),
+                        "size_bytes": len(data),
+                        "text": text is not None,
+                    }
+                )
+                changes.append(
+                    {
+                        "path": logical,
+                        "operation": "added",
+                        "text_diff_sha256": (
+                            hashlib.sha256(
+                                "".join(
+                                    difflib.unified_diff(
+                                        [],
+                                        text.splitlines(keepends=True),
+                                        fromfile="/dev/null",
+                                        tofile=logical,
+                                    )
+                                ).encode("utf-8")
+                            ).hexdigest()
+                            if text is not None
+                            else None
+                        ),
+                    }
+                )
+            acceptance_projection = {
+                "contract_digest": acceptance_contract["canonical_digest"],
+                "status": acceptance["status"],
+                "runtime_operational": acceptance["runtime_operational"],
+                "product_goal_conformance": acceptance[
+                    "product_goal_conformance"
+                ],
+                "cases": [
+                    {
+                        "case_id": contract_case["case_id"],
+                        "input": contract_case["input"],
+                        "expected_output": contract_case["expected_output"],
+                        "actual_output": receipt_case["actual_output"],
+                        "status": receipt_case["status"],
+                        "failure_code": receipt_case["failure_code"],
+                    }
+                    for contract_case, receipt_case in zip(
+                        acceptance_contract["cases"],
+                        acceptance["cases"],
+                        strict=True,
+                    )
+                ],
+            }
+            core = {
+                "schema_version": "product_candidate.v2",
+                "status": (
+                    "review_ready"
+                    if acceptance["status"] == "passed"
+                    else "acceptance_failed"
+                ),
+                "candidate_id": candidate_id,
+                "created_at": confirmation["confirmed_at"],
+                "plan": {
+                    "plan_id": plan["plan_id"],
+                    "plan_version": plan["plan_version"],
+                    "plan_digest": plan["canonical_digest"],
+                },
+                "execution_digest": execution["execution_digest"],
+                "candidate_content_digest": candidate_content_digest,
+                "composer_version": str(composition.get("composer_version") or ""),
+                "entry": {"path": "index.html", "kind": "static_html"},
+                "acceptance": acceptance_projection,
+                "files": files,
+                "file_changes": changes,
+                "provenance": provenance,
+                "validation": {
+                    "static": quality,
+                    "runtime": runtime,
+                    "acceptance": acceptance,
+                },
+                "permissions": {
+                    "source_project_write": False,
+                    "target_project_write": False,
+                    "product_store_write": False,
+                    "product_usage_write": False,
+                },
+            }
+            candidate_token = "candidate_token_" + uuid.uuid4().hex + uuid.uuid4().hex[:16]
+            record = {
+                **core,
+                "candidate_token": candidate_token,
+                "candidate_digest": plan_execution_digest(core),
+            }
+            record["record_digest"] = plan_execution_digest(record)
+            _write_product_file(
+                temporary,
+                "execution_plan.json",
+                plan_execution_bytes(execution) + b"\n",
+            )
+            _write_product_file(
+                temporary,
+                "candidate.json",
+                plan_execution_bytes(record) + b"\n",
+            )
+            _fsync_product_tree(temporary)
+            if final.exists() or final.is_symlink():
+                raise ProductGenerationError("product_candidate_conflict")
+            os.replace(temporary, final)
+            if os.name == "posix":
+                descriptor = os.open(root, os.O_RDONLY)
+                try:
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
+            persisted = self._read_candidate_record_path(final)
+            return self._with_experience_record(
+                self._candidate_projection(persisted),
+                plan_token,
+                "candidate_terminal",
+                candidate=persisted,
+            )
+        except (OSError, sqlite3.Error) as exc:
+            raise ProductGenerationError("product_candidate_write_failed") from exc
+        finally:
+            if temporary.exists():
+                shutil.rmtree(temporary, ignore_errors=True)
+
+    def start_product_candidate(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if (
+                set(request)
+                != {"plan_token", "plan_digest", "acceptance_cases"}
+                or type(request["plan_token"]) is not str
+                or type(request["plan_digest"]) is not str
+                or _MANIFEST_DIGEST.fullmatch(request["plan_digest"]) is None
+                or type(request["acceptance_cases"]) is not list
+                or not 1
+                <= len(request["acceptance_cases"])
+                <= MAX_CANDIDATE_ACCEPTANCE_CASES
+                or any(
+                    type(item) is not dict
+                    or set(item)
+                    != {"requirement_ids", "input", "expected_output"}
+                    for item in request["acceptance_cases"]
+                )
+            ):
+                return self._error("product_candidate_request_invalid")
+            return self._submit_management_task(
+                "product_candidate_start",
+                lambda _cancel: self._candidate_task_result(
+                    self._build_product_candidate(
+                        request["plan_token"],
+                        request["plan_digest"],
+                        request["acceptance_cases"],
+                    )
+                ),
+                read_only_candidate=True,
+            )
+        except ValueError as exc:
+            return self._exception_error(exc, "product_candidate_request_invalid")
+
+    @classmethod
+    def _candidate_task_result(
+        cls,
+        candidate: dict[str, Any],
+    ) -> dict[str, Any]:
+        projection = dict(candidate)
+        result = cls._ok(projection)
+        for key in (
+            "experience_record_status",
+            "experience_record_error_code",
+        ):
+            if key in projection:
+                result[key] = projection.pop(key)
+        return result
+
+    def _build_confirmed_product_candidate(
+        self,
+        plan_token: str,
+        plan_digest: str,
+        acceptance_confirmation_digest: str,
+    ) -> dict[str, Any]:
+        restored = self._product_planner.get_candidate_acceptance_confirmation(
+            plan_token
+        )
+        if restored.get("ok") is not True:
+            error = restored.get("error") if type(restored) is dict else None
+            code = error.get("code") if type(error) is dict else None
+            raise ProductGenerationError(
+                code
+                if type(code) is str
+                else "candidate_acceptance_confirmation_required"
+            )
+        record = restored["data"]["acceptance_confirmation"]
+        if record.get("canonical_digest") != acceptance_confirmation_digest:
+            raise ProductGenerationError(
+                "candidate_acceptance_confirmation_stale"
+            )
+        return self._build_product_candidate(
+            plan_token,
+            plan_digest,
+            None,
+            acceptance_confirmation=record,
+            read_only_plan=True,
+        )
+
+    def start_confirmed_product_candidate(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if (
+                set(request)
+                != {
+                    "plan_token",
+                    "plan_digest",
+                    "acceptance_confirmation_digest",
+                }
+                or type(request["plan_token"]) is not str
+                or type(request["plan_digest"]) is not str
+                or type(request["acceptance_confirmation_digest"]) is not str
+                or _MANIFEST_DIGEST.fullmatch(request["plan_digest"]) is None
+                or _MANIFEST_DIGEST.fullmatch(
+                    request["acceptance_confirmation_digest"]
+                )
+                is None
+            ):
+                return self._error("product_candidate_request_invalid")
+            return self._submit_management_task(
+                "product_candidate_start_confirmed",
+                lambda _cancel: self._candidate_task_result(
+                    self._build_confirmed_product_candidate(
+                        request["plan_token"],
+                        request["plan_digest"],
+                        request["acceptance_confirmation_digest"],
+                    )
+                ),
+                run_id=(
+                    "run_"
+                    + canonical_json_digest(
+                        {
+                            "schema_version": (
+                                "confirmed_product_candidate_run.v1"
+                            ),
+                            "plan_token": request["plan_token"],
+                            "plan_digest": request["plan_digest"],
+                            "acceptance_confirmation_digest": request[
+                                "acceptance_confirmation_digest"
+                            ],
+                        }
+                    )[:32]
+                ),
+                read_only_candidate=True,
+                retry_terminal=True,
+            )
+        except ValueError as exc:
+            return self._exception_error(exc, "product_candidate_request_invalid")
+
+    def get_product_candidate_run(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if set(request) != {"run_id"} or type(request["run_id"]) is not str:
+                return self._error("product_candidate_run_id_required")
+            with self._management_lock:
+                task = self._management_tasks.get(request["run_id"])
+                if task is None or not str(task["kind"]).startswith("product_candidate_"):
+                    return self._error("product_candidate_run_not_found")
+                return self._ok(self._task_view(task))
+        except ValueError as exc:
+            return self._exception_error(exc, "product_candidate_run_invalid")
+
+    def get_product_candidate(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if (
+                set(request) != {"candidate_token"}
+                or type(request["candidate_token"]) is not str
+            ):
+                return self._error("product_candidate_token_invalid")
+            _path, record = self._read_candidate_record(request["candidate_token"])
+            return self._ok(self._candidate_projection(record))
+        except (OSError, ProductGenerationError, ValueError) as exc:
+            return self._exception_error(exc, "product_candidate_read_failed")
+
+    def _validated_export_candidate(
+        self,
+        plan_token: str,
+        candidate_token: str,
+    ) -> tuple[Path, dict[str, Any], dict[str, Any]]:
+        candidate_dir, record = self._read_candidate_record(candidate_token)
+        if (
+            record.get("schema_version") != "product_candidate.v2"
+            or record.get("status") != "review_ready"
+            or record.get("acceptance", {}).get("status") != "passed"
+            or record.get("acceptance", {}).get("runtime_operational")
+            != "passed"
+            or record.get("acceptance", {}).get("product_goal_conformance")
+            != "passed"
+        ):
+            raise ProductGenerationError(
+                "product_candidate_export_not_ready"
+            )
+        try:
+            workspace, capsules, _scope, page_contracts = (
+                self._confirmed_candidate_context(plan_token)
+            )
+            acceptance_confirmation = (
+                self._validated_candidate_acceptance_confirmation(
+                    plan_token,
+                    workspace,
+                    capsules,
+                    page_contracts,
+                )
+            )
+        except ProductGenerationError as exc:
+            raise ProductGenerationError(
+                "product_candidate_export_stale"
+            ) from exc
+        plan = workspace["plan"]
+        if record["plan"] != {
+            "plan_id": plan["plan_id"],
+            "plan_version": plan["plan_version"],
+            "plan_digest": plan["canonical_digest"],
+        }:
+            raise ProductGenerationError("product_candidate_export_stale")
+        try:
+            expected_execution = self._compile_candidate_execution(
+                plan,
+                workspace["confirmation"],
+                capsules,
+                page_contracts,
+            )
+            stored_execution = _strict_json_bytes(
+                (candidate_dir / "execution_plan.json").read_bytes()
+            )
+        except PlanExecutionError as exc:
+            raise ProductGenerationError(
+                "product_candidate_export_stale"
+            ) from exc
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+            raise ProductGenerationError("product_candidate_invalid") from exc
+        if expected_execution != stored_execution:
+            raise ProductGenerationError("product_candidate_export_stale")
+        input_contract, output_contract = self._candidate_acceptance_contracts(
+            capsules,
+            expected_execution,
+        )
+        cases = [
+            {
+                key: case[key]
+                for key in ("requirement_ids", "input", "expected_output")
+            }
+            for case in acceptance_confirmation["cases"]
+        ]
+        try:
+            expected_contract = build_candidate_acceptance(
+                plan,
+                workspace["confirmation"],
+                cases,
+                input_contract,
+                output_contract,
+                record["candidate_content_digest"],
+            )
+            stored_contract = _strict_json_bytes(
+                (candidate_dir / "acceptance_contract.json").read_bytes()
+            )
+        except CandidateAcceptanceError as exc:
+            raise ProductGenerationError(
+                "product_candidate_export_stale"
+            ) from exc
+        except (OSError, UnicodeError, ValueError, json.JSONDecodeError) as exc:
+            raise ProductGenerationError("product_candidate_invalid") from exc
+        if expected_contract != stored_contract:
+            raise ProductGenerationError("product_candidate_export_stale")
+        return candidate_dir, record, workspace
+
+    @_serialized_management
+    def export_product_candidate(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if (
+                set(request)
+                != {"plan_token", "candidate_token", "destination_parent"}
+                or type(request["plan_token"]) is not str
+                or not request["plan_token"]
+                or type(request["candidate_token"]) is not str
+                or type(request["destination_parent"]) is not str
+            ):
+                return self._error("product_candidate_export_request_invalid")
+            if os.name != "posix":
+                return self._error(
+                    "product_candidate_export_platform_unsupported"
+                )
+            candidate_dir, record, workspace = (
+                self._validated_export_candidate(
+                    request["plan_token"],
+                    request["candidate_token"],
+                )
+            )
+            parent = _safe_export_parent(request["destination_parent"])
+            _validated_export_paths(record["files"])
+            directory_name = _safe_export_directory_name(
+                workspace["plan"]["product_name"],
+                record["candidate_content_digest"],
+            )
+
+            def result(status: str) -> dict[str, Any]:
+                return self._ok(
+                    self._with_experience_record(
+                        {
+                            "schema_version": (
+                                "product_candidate_export.v1"
+                            ),
+                            "status": status,
+                            "directory_name": directory_name,
+                            "file_count": len(record["files"]),
+                        },
+                        request["plan_token"],
+                        "export_terminal",
+                        candidate=record,
+                        export_status=status,
+                    )
+                )
+
+            source = candidate_dir / "product"
+            self._assert_candidate_path_safe(source)
+            file_data = [
+                (item["path"], _read_export_file(source, item))
+                for item in record["files"]
+            ]
+
+            parent_descriptor = _open_export_directory(
+                parent,
+                self._state_root,
+            )
+            temporary_name = f".reweave-export-{uuid.uuid4().hex}"
+            temporary_identity: tuple[int, int] | None = None
+            published = False
+
+            def existing_target_descriptor() -> int | None:
+                matches = [
+                    entry
+                    for entry in os.scandir(parent_descriptor)
+                    if unicodedata.normalize("NFC", entry.name).casefold()
+                    == directory_name.casefold()
+                ]
+                if not matches:
+                    return None
+                if len(matches) != 1 or matches[0].name != directory_name:
+                    raise ProductGenerationError(
+                        "product_candidate_export_conflict"
+                    )
+                details = matches[0].stat(follow_symlinks=False)
+                if stat.S_ISLNK(details.st_mode):
+                    raise ProductGenerationError(
+                        "product_candidate_export_destination_unsafe"
+                    )
+                if not stat.S_ISDIR(details.st_mode):
+                    raise ProductGenerationError(
+                        "product_candidate_export_conflict"
+                    )
+                return _open_export_directory_at(
+                    parent_descriptor,
+                    directory_name,
+                )
+
+            try:
+                existing_descriptor = existing_target_descriptor()
+                if existing_descriptor is not None:
+                    try:
+                        _verify_export_tree(
+                            existing_descriptor,
+                            record["files"],
+                            error_code="product_candidate_export_conflict",
+                        )
+                    finally:
+                        os.close(existing_descriptor)
+                    return result("already_saved")
+                os.mkdir(
+                    temporary_name,
+                    0o700,
+                    dir_fd=parent_descriptor,
+                )
+                temporary_details = os.stat(
+                    temporary_name,
+                    dir_fd=parent_descriptor,
+                    follow_symlinks=False,
+                )
+                temporary_identity = (
+                    temporary_details.st_dev,
+                    temporary_details.st_ino,
+                )
+                temporary_descriptor = _open_export_directory_at(
+                    parent_descriptor,
+                    temporary_name,
+                )
+                if (
+                    os.fstat(temporary_descriptor).st_dev,
+                    os.fstat(temporary_descriptor).st_ino,
+                ) != temporary_identity:
+                    os.close(temporary_descriptor)
+                    raise ProductGenerationError(
+                        "product_candidate_export_destination_unsafe"
+                    )
+                try:
+                    os.fchmod(temporary_descriptor, 0o700)
+                    for logical, data in file_data:
+                        _write_export_file(
+                            temporary_descriptor,
+                            logical,
+                            data,
+                        )
+                    _verify_export_tree(
+                        temporary_descriptor,
+                        record["files"],
+                        error_code="product_candidate_export_failed",
+                    )
+                    _rename_export_no_replace(
+                        parent_descriptor,
+                        temporary_name,
+                        directory_name,
+                    )
+                    published = True
+                    os.fsync(parent_descriptor)
+                    _verify_export_tree(
+                        temporary_descriptor,
+                        record["files"],
+                        error_code="product_candidate_export_failed",
+                    )
+                finally:
+                    os.close(temporary_descriptor)
+                return result("saved")
+            finally:
+                if not published and temporary_identity is not None:
+                    _remove_export_tree_at(
+                        parent_descriptor,
+                        temporary_name,
+                        temporary_identity,
+                    )
+                os.close(parent_descriptor)
+        except (
+            CapsuleStoreError,
+            OSError,
+            ProductGenerationError,
+            ValueError,
+        ) as exc:
+            return self._exception_error(
+                exc,
+                "product_candidate_export_failed",
+            )
+
+    def read_product_candidate_file(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if (
+                set(request) != {"candidate_token", "relative_path"}
+                or type(request["candidate_token"]) is not str
+                or type(request["relative_path"]) is not str
+            ):
+                return self._error("product_candidate_file_request_invalid")
+            candidate_dir, record = self._read_candidate_record(
+                request["candidate_token"]
+            )
+            logical = _safe_product_relative(request["relative_path"])
+            metadata = next(
+                (item for item in record["files"] if item["path"] == logical),
+                None,
+            )
+            if metadata is None:
+                raise ProductGenerationError("product_candidate_file_not_found")
+            if metadata["size_bytes"] > 1024 * 1024:
+                raise ProductGenerationError("product_candidate_file_too_large")
+            product_root = candidate_dir / "product"
+            if _descriptor_relative_reads_supported():
+                product_descriptor, _identity_chain = (
+                    _open_no_follow_directory(product_root)
+                )
+                try:
+                    data = _read_export_file_at(product_descriptor, metadata)
+                finally:
+                    os.close(product_descriptor)
+            else:
+                data = _read_export_file(product_root, metadata)
+            if metadata["text"]:
+                content = data.decode("utf-8")
+                diff = "".join(
+                    difflib.unified_diff(
+                        [],
+                        content.splitlines(keepends=True),
+                        fromfile="/dev/null",
+                        tofile=logical,
+                    )
+                )
+                encoding = "utf-8"
+            else:
+                content = base64.b64encode(data).decode("ascii")
+                diff = None
+                encoding = "base64"
+            return self._ok(
+                {
+                    "candidate_token": record["candidate_token"],
+                    "candidate_digest": record["candidate_digest"],
+                    "path": logical,
+                    "sha256": metadata["sha256"],
+                    "size_bytes": metadata["size_bytes"],
+                    "encoding": encoding,
+                    "content": content,
+                    "text_diff": diff,
+                }
+            )
+        except (OSError, UnicodeError, ProductGenerationError, ValueError) as exc:
+            return self._exception_error(exc, "product_candidate_file_read_failed")
 
     @_serialized_management
     def list_review_items(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -2068,7 +10707,12 @@ class ReweaveAppService:
                     _retired_v1_adapter_candidate(candidate)
                 )
                 item["resume_contract"] = candidate.get("resume_contract")
-                if item["resume_contract"] == "resubmit_ephemeral_capture.v1":
+                if item["resume_contract"] in {
+                    CAPTURE_RESUME_V1,
+                    CAPTURE_RESUME_V2,
+                    CAPTURE_RESUME_V3,
+                    CAPTURE_RESUME_V4,
+                }:
                     redaction = item.get("redaction") or {}
                     item["capture_summary"] = {
                         key: redaction.get(key)
@@ -2084,7 +10728,12 @@ class ReweaveAppService:
                     and not item["allowed_decisions"]
                     and not (
                         item.get("resume_contract")
-                        == "resubmit_ephemeral_capture.v1"
+                        in {
+                            CAPTURE_RESUME_V1,
+                            CAPTURE_RESUME_V2,
+                            CAPTURE_RESUME_V3,
+                            CAPTURE_RESUME_V4,
+                        }
                         and item.get("candidate_status") == "waiting_user"
                     )
                     and not item["adapter_contract_version_expired"]
@@ -2094,6 +10743,261 @@ class ReweaveAppService:
             return self._ok({"items": items})
         except (CapsuleStoreError, OSError, ValueError, sqlite3.Error) as exc:
             return self._exception_error(exc, "list_review_items_failed")
+
+    @_serialized_management
+    def admit_frozen_review(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Controlled internal entry for a previously frozen Stage 3 review."""
+
+        try:
+            self._ensure_capsule_management()
+            request = self._payload(payload)
+            if set(request) != {
+                "source_database_path",
+                "source_directory_path",
+                "source_database_sha256",
+                "review_id",
+                "expected_warehouse_revision",
+                "plan_token",
+                "plan_digest",
+                "projection_digest",
+                "authorize_decision_digest",
+                "source_proposal_authorization_digest",
+            } or any(
+                type(request.get(key)) is not str or not request[key]
+                for key in (
+                    "source_database_path",
+                    "source_directory_path",
+                    "source_database_sha256",
+                    "review_id",
+                    "plan_token",
+                    "plan_digest",
+                    "projection_digest",
+                    "authorize_decision_digest",
+                    "source_proposal_authorization_digest",
+                )
+            ) or type(request["expected_warehouse_revision"]) is not int:
+                return self._error("frozen_review_admission_invalid")
+            catalog = self._product_planner._catalog(
+                self._product_planning_catalog()
+            )
+            workspace = self._product_planner._workspace_by_token(
+                request["plan_token"]
+            )
+            plan = workspace.get("plan")
+            projection = (
+                self._product_planner._read_capability_gap_projection(
+                    workspace
+                )
+                if type(plan) is dict
+                else None
+            )
+            expected_projection, projection_status = (
+                self._product_planner._capability_gap_projection_for_workspace(
+                    workspace,
+                    plan,
+                    catalog,
+                )
+                if type(plan) is dict
+                else (None, "capability_gap_projection_missing")
+            )
+            authorized_catalog_digest = canonical_json_digest(
+                {
+                    "warehouse_revision": projection.get(
+                        "warehouse_revision"
+                    )
+                    if projection is not None
+                    else -1,
+                    "capsules": catalog["capsules"],
+                }
+            )
+            # Admission bumps warehouse revision but cannot change formal capability facts.
+            target_catalog_digest = canonical_json_digest(
+                {"capsules": catalog["capsules"]}
+            )
+            initial_target = bool(
+                projection is not None
+                and catalog["warehouse_revision"]
+                == projection.get("warehouse_revision")
+            )
+            repeated_target = bool(
+                projection is not None
+                and catalog["warehouse_revision"]
+                == projection.get("warehouse_revision", -2) + 1
+            )
+            if (
+                workspace.get("status") != "plan_review"
+                or type(plan) is not dict
+                or plan.get("canonical_digest") != request["plan_digest"]
+                or projection is None
+                or not (initial_target or repeated_target)
+                or (
+                    initial_target
+                    and (
+                        projection_status != "available"
+                        or expected_projection != projection
+                    )
+                )
+                or projection.get("projection_digest")
+                != request["projection_digest"]
+                or projection.get("catalog_digest")
+                != authorized_catalog_digest
+            ):
+                raise ProductPlanningError(
+                    "frozen_review_admission_authorization_stale"
+                )
+            decisions = self._product_planner._capability_gap_decisions(
+                workspace,
+                projection,
+            )
+            decision = decisions[-1] if decisions else None
+            if (
+                decision is None
+                or decision.get("decision") != "authorize"
+                or decision.get("canonical_digest")
+                != request["authorize_decision_digest"]
+            ):
+                raise ProductPlanningError(
+                    "frozen_review_admission_authorization_invalid"
+                )
+            authorization = (
+                self._product_planner
+                ._read_capability_source_proposal_authorization(
+                    workspace,
+                    projection,
+                    decision,
+                )
+            )
+            if (
+                authorization is None
+                or authorization.get("authorization_digest")
+                != request["source_proposal_authorization_digest"]
+                or authorization.get("plan_digest")
+                != request["plan_digest"]
+                or authorization.get("projection_digest")
+                != request["projection_digest"]
+                or authorization.get("authorize_decision_digest")
+                != request["authorize_decision_digest"]
+                or authorization.get("catalog_digest")
+                != authorized_catalog_digest
+            ):
+                raise ProductPlanningError(
+                    "frozen_review_admission_authorization_invalid"
+                )
+            authorization_binding = {
+                "plan_digest": authorization["plan_digest"],
+                "gap_id": authorization["gap_id"],
+                "projection_digest": authorization["projection_digest"],
+                "authorize_decision_digest": authorization[
+                    "authorize_decision_digest"
+                ],
+                "source_proposal_authorization_digest": authorization[
+                    "authorization_digest"
+                ],
+                "capability_key": authorization["capability_key"],
+                "adapter_contract_version": authorization[
+                    "adapter_contract_version"
+                ],
+                "input_contract": authorization["input_contract"],
+                "output_contract": authorization["output_contract"],
+                "error_contract": authorization["error_contract"],
+                "authorization_warehouse_revision": authorization[
+                    "warehouse_revision"
+                ],
+                "authorization_catalog_digest": authorization[
+                    "catalog_digest"
+                ],
+                "target_catalog_digest": target_catalog_digest,
+            }
+            result = self._capsule_stage3.admit_frozen_review(
+                Path(str(request["source_database_path"])),
+                Path(str(request["source_directory_path"])),
+                str(request["review_id"]),
+                expected_source_sha256=str(request["source_database_sha256"]),
+                expected_warehouse_revision=request["expected_warehouse_revision"],
+                authorization_binding=authorization_binding,
+            )
+            return self._ok(result)
+        except (
+            CapsuleStoreError,
+            ProductPlanningError,
+            Stage3Error,
+            OSError,
+            ValueError,
+            sqlite3.Error,
+        ) as exc:
+            return self._exception_error(exc, "frozen_review_admission_failed")
+
+    def admit_frozen_ui_review_batch(
+        self, payload: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Controlled internal entry for one frozen compatible UI pair."""
+
+        try:
+            self._ensure_capsule_management()
+            request = self._payload(payload)
+            if (
+                set(request)
+                != {
+                    "source_database_path",
+                    "source_directory_path",
+                    "source_database_sha256",
+                    "expected_warehouse_revision",
+                    "authorization",
+                }
+                or any(
+                    type(request.get(key)) is not str or not request[key]
+                    for key in (
+                        "source_database_path",
+                        "source_directory_path",
+                        "source_database_sha256",
+                    )
+                )
+                or type(request["expected_warehouse_revision"]) is not int
+                or type(request["authorization"]) is not dict
+                or request["authorization"].get("schema")
+                != FROZEN_UI_REVIEW_ADMISSION_AUTHORIZATION_VERSION
+            ):
+                return self._error("frozen_ui_review_admission_invalid")
+            catalog = self._product_planner._catalog(
+                self._product_planning_catalog()
+            )
+            target_catalog_digest = canonical_json_digest(
+                {"capsules": catalog["capsules"]}
+            )
+            authorization = request["authorization"]
+            if (
+                authorization.get("target_warehouse_revision")
+                != request["expected_warehouse_revision"]
+                or authorization.get("target_catalog_digest")
+                != target_catalog_digest
+            ):
+                return self._error("frozen_ui_review_admission_target_stale")
+            result = self._capsule_stage3.admit_frozen_ui_review_batch(
+                Path(str(request["source_database_path"])),
+                Path(str(request["source_directory_path"])),
+                expected_source_sha256=str(
+                    request["source_database_sha256"]
+                ),
+                expected_warehouse_revision=request[
+                    "expected_warehouse_revision"
+                ],
+                authorization_binding=authorization,
+            )
+            return self._ok(result)
+        except (
+            CapsuleStoreError,
+            ProductPlanningError,
+            Stage3Error,
+            OSError,
+            ValueError,
+            sqlite3.Error,
+        ) as exc:
+            return self._exception_error(
+                exc,
+                "frozen_ui_review_admission_failed",
+            )
 
     @_serialized_management
     def decide_review_item(self, payload: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -2122,13 +11026,105 @@ class ReweaveAppService:
             if decision not in item["allowed_decisions"]:
                 return self._error("review_decision_not_allowed")
             candidate = item.get("candidate") or {}
+            frozen_admission = candidate.get("frozen_review_admission")
+            product_source_review = (
+                type(frozen_admission) is dict
+                and frozen_admission.get("schema")
+                == FROZEN_REVIEW_ADMISSION_VERSION
+            )
+            frozen_ui_admission = candidate.get(
+                "frozen_ui_review_admission"
+            )
+            ui_source_review = (
+                type(frozen_ui_admission) is dict
+                and frozen_ui_admission.get("schema")
+                == FROZEN_UI_REVIEW_ADMISSION_VERSION
+            )
+            if product_source_review or ui_source_review:
+                if decision not in {"publish_general", "reject"}:
+                    return self._error("review_decision_not_allowed")
+                if decision == "publish_general":
+                    capability_key = str(
+                        request.get("capability_key") or ""
+                    ).strip()
+                    role_key = str(request.get("role_key") or "").strip()
+                    variant_key = str(
+                        request.get("variant_key") or "default"
+                    ).strip()
+                    display_name = str(
+                        request.get("display_name") or ""
+                    ).strip()
+                    with self._capsule_store.read_connection() as connection:
+                        group = connection.execute(
+                            "SELECT display_name FROM capability_groups "
+                            "WHERE capability_key = ?",
+                            (capability_key,),
+                        ).fetchone()
+                    authorized_capability_key = (
+                        frozen_ui_admission.get(
+                            "authorized_capability_key"
+                        )
+                        if ui_source_review
+                        else frozen_admission.get(
+                            "authorized_capability_key"
+                        )
+                    )
+                    authorized_display_name = (
+                        frozen_ui_admission.get("authorized_display_name")
+                        if ui_source_review
+                        else (
+                            str(group["display_name"])
+                            if group is not None
+                            else None
+                        )
+                    )
+                    if (
+                        capability_key != authorized_capability_key
+                        or display_name != authorized_display_name
+                        or (
+                            group is not None
+                            and display_name != str(group["display_name"])
+                        )
+                        or (group is None and not ui_source_review)
+                        or re.fullmatch(
+                            r"[a-z][a-z0-9_]{0,63}",
+                            role_key,
+                        )
+                        is None
+                        or re.fullmatch(
+                            r"[a-z][a-z0-9_]{0,63}",
+                            variant_key,
+                        )
+                        is None
+                    ):
+                        return self._error(
+                            "frozen_review_publication_identity_invalid"
+                        )
             ephemeral_capture = (
                 candidate.get("candidate_origin")
                 == "deterministic_computation_adapter"
-                and candidate.get("adapter_contract_version")
-                == COMPUTATION_ADAPTER_V2
-                and item.get("resume_contract")
-                == "resubmit_ephemeral_capture.v1"
+                and (
+                    (
+                        candidate.get("adapter_contract_version")
+                        == COMPUTATION_ADAPTER_V2
+                        and item.get("resume_contract") == CAPTURE_RESUME_V1
+                    )
+                    or (
+                        candidate.get("adapter_contract_version")
+                        == COMPUTATION_ADAPTER_V3
+                        and item.get("resume_contract") == CAPTURE_RESUME_V2
+                    )
+                    or (
+                        candidate.get("adapter_contract_version")
+                        == COMPUTATION_ADAPTER_V4
+                        and item.get("resume_contract") == CAPTURE_RESUME_V3
+                    )
+                    or (
+                        candidate.get("adapter_contract_version")
+                        == COMPUTATION_ADAPTER_V5
+                        and item.get("resume_contract") == CAPTURE_RESUME_V4
+                    )
+                )
             )
             if ephemeral_capture and decision in {
                 "confirm_fictional_fixture",
@@ -2163,7 +11159,7 @@ class ReweaveAppService:
                     {
                         **recorded,
                         "capture_resubmission_required": True,
-                        "resume_contract": "resubmit_ephemeral_capture.v1",
+                        "resume_contract": item.get("resume_contract"),
                     }
                 )
             if decision in {
@@ -2476,7 +11472,14 @@ class ReweaveAppService:
                     "assets": assets,
                 }
             )
-            if canonical.sha256 != row["canonical_hash"]:
+            try:
+                verify_formal_capsule_identity(
+                    capability_kind=str(row["capability_kind"]),
+                    canonical_payload_digest=canonical.sha256,
+                    stored_canonical_hash=row["canonical_hash"],
+                    extraction_summary=parsed["extraction_summary"],
+                )
+            except ValueError:
                 return self._error("capsule_core_code_projection_unavailable")
 
             activation = canonical.payload["activation"]
@@ -2515,7 +11518,7 @@ class ReweaveAppService:
                     "version_id": version_id,
                     "project_id": project_id,
                     "source_identity": source_identity,
-                    "canonical_hash": canonical.sha256,
+                    "canonical_hash": str(row["canonical_hash"]),
                     "capability_kind": row["capability_kind"],
                     "validation": {
                         "contract_version": validation_fields[0],
@@ -3445,7 +12448,9 @@ class ReweaveAppService:
                 raise StaticWebTargetError(
                     "target_snapshot_mismatch", {"phase": "authorization"}
                 )
-            capsules, product_scope = self._load_generation_capsules(list(raw_ids))
+            capsules, product_scope, page_contracts = self._load_composer_capsules(
+                list(raw_ids)
+            )
             if product_scope != {"kind": "general"}:
                 raise StaticWebTargetError(
                     "target_usage_scope_mismatch", {"phase": "authorization"}
@@ -3462,14 +12467,8 @@ class ReweaveAppService:
                     task=task,
                     product_id=identity["product_id"],
                     generated_at="content-addressed",
-                    capsules=[
-                        {
-                            key: value
-                            for key, value in capsule.items()
-                            if key != "canonical_hash"
-                        }
-                        for capsule in capsules
-                    ],
+                    capsules=capsules,
+                    verified_page_contracts=page_contracts,
                 )
             except ValueError as exc:
                 code = str(exc)
@@ -3527,15 +12526,25 @@ class ReweaveAppService:
             capsule_ids = list(raw_ids)
             return self._submit_management_task(
                 "generate_product",
-                lambda _cancel: self._generate_formal_product(task, capsule_ids),
+                lambda cancel: self._generate_formal_product(
+                    task,
+                    capsule_ids,
+                    cancel,
+                ),
+                cancellable=True,
             )
         except ValueError as exc:
             return self._exception_error(exc, "generate_product_invalid")
 
     def _load_generation_capsules(
-        self, capsule_ids: list[str]
+        self,
+        capsule_ids: list[str],
+        *,
+        read_only: bool = False,
+        _page_contracts: list[dict[str, Any]] | None = None,
     ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
-        self._ensure_capsule_management()
+        if not read_only:
+            self._ensure_capsule_management()
         placeholders = ",".join("?" for _ in capsule_ids)
         with self._capsule_store.read_connection() as connection:
             rows = connection.execute(
@@ -3645,10 +12654,46 @@ class ReweaveAppService:
                         ],
                     }
                 )
-                if canonical.sha256 != row["canonical_hash"]:
-                    raise ProductGenerationError("formal_capsule_canonical_mismatch")
-                loaded.append(
-                    {
+                try:
+                    identity = verify_formal_capsule_identity(
+                        capability_kind=str(row["capability_kind"]),
+                        canonical_payload_digest=canonical.sha256,
+                        stored_canonical_hash=row["canonical_hash"],
+                        extraction_summary=extraction_summary,
+                    )
+                except ValueError as exc:
+                    code = (
+                        "formal_capsule_canonical_mismatch"
+                        if "page_capability_declaration" not in extraction_summary
+                        and "formal_identity_binding" not in extraction_summary
+                        else "formal_capsule_identity_invalid"
+                    )
+                    raise ProductGenerationError(code) from exc
+                if identity is not None and _page_contracts is not None:
+                    if (
+                        connection.execute(
+                            "SELECT 1 FROM capsule_sources WHERE version_id = ? "
+                            "AND relationship IN ('exact', 'published_implementation') "
+                            "AND candidate_canonical_hash = ? LIMIT 1",
+                            (row["version_id"], row["canonical_hash"]),
+                        ).fetchone()
+                        is None
+                    ):
+                        raise ProductGenerationError(
+                            "formal_capsule_source_identity_invalid"
+                        )
+                    _page_contracts.append(
+                        {
+                            "capsule_id": capsule_id,
+                            "version_id": str(row["version_id"]),
+                            "capability_kind": str(row["capability_kind"]),
+                            "canonical_hash": str(row["canonical_hash"]),
+                            "page_capability_declaration": extraction_summary[
+                                "page_capability_declaration"
+                            ],
+                        }
+                    )
+                loaded_capsule = {
                         "capsule_id": capsule_id,
                         "version_id": str(row["version_id"]),
                         "canonical_hash": str(row["canonical_hash"]),
@@ -3670,7 +12715,17 @@ class ReweaveAppService:
                         "javascript_modules": values["javascript_modules"],
                         "assets": assets,
                     }
-                )
+                if adapter_contract_version in {
+                    COMPUTATION_ADAPTER_V4,
+                    COMPUTATION_ADAPTER_V5,
+                }:
+                    evidence = extraction_summary.get("ephemeral_capture_payload")
+                    if type(evidence) is not dict:
+                        raise ProductGenerationError(
+                            "formal_capsule_contract_invalid"
+                        )
+                    loaded_capsule["adapter_evidence"] = evidence
+                loaded.append(loaded_capsule)
         if len(limited_scopes) > 1 or any(not all(item) for item in limited_scopes):
             raise ProductGenerationError("product_brand_scope_conflict")
         product_scope = (
@@ -3683,6 +12738,35 @@ class ReweaveAppService:
             else {"kind": "general"}
         )
         return loaded, product_scope
+
+    def _load_generation_capsules_with_page_contracts(
+        self,
+        capsule_ids: list[str],
+        *,
+        read_only: bool = False,
+    ) -> tuple[list[dict[str, Any]], dict[str, Any], list[dict[str, Any]]]:
+        verified: list[dict[str, Any]] = []
+        capsules, product_scope = self._load_generation_capsules(
+            capsule_ids,
+            read_only=read_only,
+            _page_contracts=verified,
+        )
+        return capsules, product_scope, verified
+
+    def _load_composer_capsules(
+        self,
+        capsule_ids: list[str],
+        *,
+        read_only: bool = False,
+    ) -> tuple[
+        list[dict[str, Any]],
+        dict[str, Any],
+        list[dict[str, Any]],
+    ]:
+        return self._load_generation_capsules_with_page_contracts(
+            capsule_ids,
+            read_only=read_only,
+        )
 
     def _assert_generation_capsules_current(
         self, connection: sqlite3.Connection, capsules: list[dict[str, Any]]
@@ -3833,9 +12917,20 @@ class ReweaveAppService:
             self._capsule_store.bump_revision(connection)
 
     def _generate_formal_product(
-        self, task: str, capsule_ids: list[str]
+        self,
+        task: str,
+        capsule_ids: list[str],
+        cancel_event: threading.Event | None = None,
     ) -> dict[str, Any]:
-        capsules, product_scope = self._load_generation_capsules(capsule_ids)
+        def raise_if_cancelled() -> None:
+            if cancel_event is not None and cancel_event.is_set():
+                raise ProductGenerationError("cancelled_by_user")
+
+        raise_if_cancelled()
+        capsules, product_scope, page_contracts = self._load_composer_capsules(
+            capsule_ids
+        )
+        raise_if_cancelled()
         product_id = f"product_{uuid.uuid4().hex}"
         generated_at = _now()
         try:
@@ -3843,16 +12938,16 @@ class ReweaveAppService:
                 task=task,
                 product_id=product_id,
                 generated_at=generated_at,
-                capsules=[
-                    {key: value for key, value in capsule.items() if key != "canonical_hash"}
-                    for capsule in capsules
-                ],
+                capsules=capsules,
+                verified_page_contracts=page_contracts,
+                cancel_check=raise_if_cancelled,
             )
         except ValueError as exc:
             code = str(exc)
             raise ProductGenerationError(
                 code if re.fullmatch(r"[a-z][a-z0-9_]{1,95}", code) else "product_composition_failed"
             ) from exc
+        raise_if_cancelled()
         if (
             type(composition) is not dict
             or composition.get("status") != "composed"
@@ -3861,7 +12956,7 @@ class ReweaveAppService:
             or type(composition.get("provenance")) is not dict
         ):
             raise ProductGenerationError("product_composition_invalid")
-        products = _product_directory()
+        products = self._formal_product_root()
         if products.is_symlink():
             raise ProductGenerationError("products_directory_unsafe")
         products.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -3907,8 +13002,11 @@ class ReweaveAppService:
                 )
                 + "\n",
             )
+            _fsync_product_tree(temporary)
             quality = _validate_product_static(temporary)
+            raise_if_cancelled()
             runtime = _validate_product_runtime(temporary)
+            raise_if_cancelled()
             _write_product_file(
                 temporary,
                 "quality_gate.json",
@@ -3952,6 +13050,7 @@ class ReweaveAppService:
             with self._capsule_store.read_connection() as connection:
                 self._assert_generation_capsules_current(connection, capsules)
             _fsync_product_tree(temporary)
+            raise_if_cancelled()
             if final.exists() or final.is_symlink():
                 raise ProductGenerationError("product_id_collision")
             os.replace(temporary, final)
@@ -3962,6 +13061,7 @@ class ReweaveAppService:
                     os.fsync(descriptor)
                 finally:
                     os.close(descriptor)
+            raise_if_cancelled()
             self._register_product_usage(manifest, manifest_digest, capsules)
             usage_registered = True
         except (OSError, sqlite3.Error) as exc:
@@ -4141,7 +13241,7 @@ class ReweaveAppService:
 
     def _read_product_record(self, directory: Path) -> dict[str, Any]:
         product_id = directory.name
-        base = _product_directory().resolve()
+        base = self._formal_product_root().resolve()
         try:
             resolved = directory.resolve(strict=True)
             resolved.relative_to(base)
@@ -4255,7 +13355,7 @@ class ReweaveAppService:
         }
 
     def _product_records(self) -> list[dict[str, Any]]:
-        root = _product_directory()
+        root = self._formal_product_root()
         if root.is_symlink() or not root.is_dir():
             return []
         records: list[dict[str, Any]] = []
@@ -4281,7 +13381,7 @@ class ReweaveAppService:
         )
 
     def _latest_pre_restore_backup_path(self) -> str | None:
-        root = self._capsule_store.path.parent / BACKUP_DIRECTORY
+        root = self._state_root / BACKUP_DIRECTORY
         try:
             if root.is_symlink() or not root.is_dir():
                 return None
@@ -4332,6 +13432,7 @@ class ReweaveAppService:
         record: dict[str, Any],
         capsules: list[dict[str, Any]],
         product_scope: dict[str, Any],
+        page_contracts: list[dict[str, Any]],
     ) -> None:
         manifest = record["manifest"]
         try:
@@ -4339,10 +13440,8 @@ class ReweaveAppService:
                 task=manifest["task"],
                 product_id=manifest["product_id"],
                 generated_at=manifest["generated_at"],
-                capsules=[
-                    {key: value for key, value in capsule.items() if key != "canonical_hash"}
-                    for capsule in capsules
-                ],
+                capsules=capsules,
+                verified_page_contracts=page_contracts,
             )
         except ValueError as exc:
             raise ProductGenerationError("formal_capsule_selection_expired") from exc
@@ -4424,13 +13523,17 @@ class ReweaveAppService:
             product_id = str(request.get("product_id") or "")
             if _PRODUCT_ID.fullmatch(product_id) is None:
                 return self._error("product_id_invalid")
-            record = self._read_product_record(_product_directory() / product_id)
+            record = self._read_product_record(
+                self._formal_product_root() / product_id
+            )
             if record["status"] == "registered":
                 return self._ok({"product_id": product_id, "status": "registered"})
             if record["status"] != "usage_registration_incomplete":
                 return self._error(str(record["status"]))
             capsule_ids = [str(row["capsule_id"]) for row in record["manifest"]["capsules"]]
-            capsules, product_scope = self._load_generation_capsules(capsule_ids)
+            capsules, product_scope, page_contracts = (
+                self._load_composer_capsules(capsule_ids)
+            )
             product_root = Path(record["path"])
             for filename, validator in (
                 ("quality_gate.json", _validate_product_static),
@@ -4456,12 +13559,14 @@ class ReweaveAppService:
                         "product_validation_receipt_mismatch"
                     )
             self._assert_recoverable_product_matches_composition(
-                record, capsules, product_scope
+                record, capsules, product_scope, page_contracts
             )
             self._register_product_usage(
                 record["manifest"], record["manifest_digest"], capsules
             )
-            confirmed = self._read_product_record(_product_directory() / product_id)
+            confirmed = self._read_product_record(
+                self._formal_product_root() / product_id
+            )
             if confirmed["status"] != "registered":
                 return self._error("product_usage_registration_incomplete")
             return self._ok({"product_id": product_id, "status": "registered"})
@@ -4483,7 +13588,7 @@ class ReweaveAppService:
                 continue
             try:
                 resolved = candidate.resolve(strict=True)
-                resolved.relative_to(_product_directory().resolve())
+                resolved.relative_to(self._formal_product_root().resolve())
             except (OSError, ValueError):
                 continue
             return str(resolved)

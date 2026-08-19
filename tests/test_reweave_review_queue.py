@@ -162,6 +162,7 @@ class ReweaveAppServiceReviewQueueTest(unittest.TestCase):
         self.service = ReweaveAppService()
 
     def tearDown(self) -> None:
+        self.service.close()
         self._env.stop()
         self._tmpdir.cleanup()
 

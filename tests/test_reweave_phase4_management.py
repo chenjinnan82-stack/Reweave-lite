@@ -13,6 +13,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from pimos_lite.reweave_app_service import ReweaveAppService
+from pimos_lite.reweave_canonical import canonical_json_digest
 from pimos_lite.reweave_capsule_intake import (
     COMPUTATION_ADAPTER_CONTRACT_VERSION,
     EXTRACTION_CONTRACT_VERSION,
@@ -21,6 +22,14 @@ from pimos_lite.reweave_capsule_store import CapsuleWarehouseStore
 from pimos_lite.reweave_engine.local import LocalReweaveEngine
 from pimos_lite.reweave_javascript_source import (
     _descriptor_relative_snapshot_supported,
+    javascript_source_snapshot_supported,
+)
+from pimos_lite.reweave_agent_stdio import (
+    AGENT_PROTOCOL_VERSION,
+    dispatch_agent_request,
+)
+from pimos_lite.reweave_source_derivation import (
+    get_source_derived_run,
 )
 
 
@@ -42,14 +51,29 @@ class Phase4ManagementTest(unittest.TestCase):
         self.temp.cleanup()
 
     def _wait(self, run_id: str) -> dict[str, object]:
-        for _ in range(300):
+        for _ in range(3_000):
             result = self.service.get_intake_run({"run_id": run_id})
+            self.assertTrue(result["ok"])
+            task = result["data"]
+            if task["status"] in {
+                "completed",
+                "review_required",
+                "failed",
+                "cancelled",
+            }:
+                return task
+            time.sleep(0.01)
+        self.fail("management task did not finish")
+
+    def _wait_product_plan(self, run_id: str) -> dict[str, object]:
+        for _ in range(300):
+            result = self.service.get_product_plan_run({"run_id": run_id})
             self.assertTrue(result["ok"])
             task = result["data"]
             if task["status"] in {"completed", "failed", "cancelled"}:
                 return task
             time.sleep(0.01)
-        self.fail("management task did not finish")
+        self.fail("product planning task did not finish")
 
     def _ready_project(self) -> str:
         source = self.root / "project"
@@ -66,12 +90,1364 @@ class Phase4ManagementTest(unittest.TestCase):
         )
         return str(project["project_id"])
 
+    def _ready_complete_project(self) -> tuple[str, Path]:
+        source = self.root / "complete-project"
+        source.mkdir()
+        (source / "index.html").write_text(
+            """<!doctype html>
+<html><body>
+<main data-capsule-root>
+  <span data-ref="title"></span>
+  <input data-ref="quantity" type="number" min="1" max="10" step="1">
+  <button data-action="calculate" type="button">Calculate</button>
+</main>
+<script type="module" src="./presentation.js"></script>
+<script type="module" src="./interaction.js"></script>
+<script type="module" src="./compute.js"></script>
+</body></html>
+""",
+            encoding="utf-8",
+        )
+        (source / "presentation.js").write_text(
+            """export function render(root, input) {
+  if (typeof input.title !== "string" || input.title.length > 40) {
+    return {ok: false, error: {code: "INVALID_TITLE"}};
+  }
+  const title = root.querySelector("[data-ref='title']");
+  title.textContent = input.title;
+}
+""",
+            encoding="utf-8",
+        )
+        (source / "interaction.js").write_text(
+            """export function mount(root, ports) {
+  const quantity = root.querySelector("[data-ref='quantity']");
+  const button = root.querySelector("[data-action='calculate']");
+  const onClick = (event) => {
+    event.preventDefault();
+    const value = Number(quantity.value);
+    if (!Number.isInteger(value) || value < 1 || value > 10) return;
+    ports.emit("calculate_requested", {quantity: value});
+  };
+  button.addEventListener("click", onClick);
+  return () => { button.removeEventListener("click", onClick); };
+}
+""",
+            encoding="utf-8",
+        )
+        (source / "compute.js").write_text(
+            """export function compute(input) {
+  if (!input || typeof input !== "object" || Object.keys(input).length !== 1) {
+    return {ok: false, error: {code: "INVALID_INPUT", field: null, details: {}}};
+  }
+  if (!Number.isInteger(input.quantity) || input.quantity < 1 || input.quantity > 10) {
+    return {ok: false, error: {code: "INVALID_QUANTITY", field: "quantity", details: {}}};
+  }
+  return {ok: true, value: {total: input.quantity * 2}};
+}
+""",
+            encoding="utf-8",
+        )
+        root = self.service._capsule_intake.bind_source_root(
+            source,
+            root_kind="single_project",
+        )
+        project = self.service._capsule_intake.discover_projects(
+            str(root["root_id"])
+        )[0]
+        confirmed = self.service._capsule_intake.confirm_project(
+            str(project["project_id"])
+        )
+        return str(confirmed["project_id"]), source
+
+    def _select_test_supervision_model(self) -> None:
+        selected = {
+            "base_url": "http://127.0.0.1:11434",
+            "name": "source-handoff-test-model",
+            "digest": "b" * 64,
+            "selected_at": "2026-08-16T00:00:00Z",
+        }
+        with self.store.transaction() as connection:
+            connection.execute(
+                "INSERT INTO app_settings(setting_key, value_json, updated_at) "
+                "VALUES ('capsule_supervision_model', ?, ?)",
+                (
+                    json.dumps(
+                        selected,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ),
+                    selected["selected_at"],
+                ),
+            )
+
+    def _source_derived_platform_supported(
+        self,
+        payload: dict[str, object],
+    ) -> bool:
+        state = self.state / "source_derived_computations"
+        model_guard = patch.object(
+            self.service._product_planner,
+            "_selected_model",
+            side_effect=AssertionError("source model must not be read"),
+        )
+        supervisor_guard = patch.object(
+            self.service._capsule_supervisor,
+            "selected_model",
+            side_effect=AssertionError("supervisor must not be read"),
+        )
+        with patch(
+            "pimos_lite.reweave_app_service.javascript_source_snapshot_supported",
+            return_value=False,
+        ), model_guard, supervisor_guard:
+            result = (
+                self.service
+                .authorize_and_start_source_derived_computation(payload)
+            )
+        self.assertFalse(result["ok"])
+        self.assertEqual(
+            result["error"]["code"],
+            "source_platform_unsupported_v1",
+        )
+        self.assertFalse(state.exists())
+        if javascript_source_snapshot_supported():
+            return True
+        with model_guard, supervisor_guard:
+            result = (
+                self.service
+                .authorize_and_start_source_derived_computation(payload)
+            )
+        self.assertFalse(result["ok"])
+        self.assertEqual(
+            result["error"]["code"],
+            "source_platform_unsupported_v1",
+        )
+        self.assertFalse(state.exists())
+        return False
+
+    def test_source_derived_developer_run_reaches_only_isolated_review(
+        self,
+    ) -> None:
+        source = self.root / "source-derived"
+        evidence_file = source / "src" / "rules.ts"
+        evidence_file.parent.mkdir(parents=True)
+        evidence_file.write_text(
+            'export function classify(value: string) { return value; }\n',
+            encoding="utf-8",
+        )
+        self.store.initialize()
+        self.store.migrate_v1_to_v2()
+        root = self.service._capsule_intake.bind_source_root(
+            source,
+            root_kind="project_collection",
+        )
+        self._select_test_supervision_model()
+        source_model = {
+            "name": "source-derived-test:1b",
+            "digest": "a" * 64,
+            "parameter_count": 1_000_000_000,
+            "parameter_size": "1B",
+        }
+        proposal = {
+            "schema": "capability_source_proposal.v2",
+            "entry": {
+                "module_relpath": "capability.js",
+                "export_name": "compute",
+            },
+            "files": [
+                {
+                    "path": "capability.js",
+                    "content": (
+                        "export function compute(arg0) {\n"
+                        '  return arg0.includes("urgent") '
+                        '? "urgent" : "normal";\n'
+                        "}\n"
+                    ),
+                }
+            ],
+            "witnesses": [
+                {
+                    "input": {"message": "routine"},
+                    "expected_scalar_result": "normal",
+                },
+                {
+                    "input": {"message": "urgent"},
+                    "expected_scalar_result": "urgent",
+                },
+            ],
+        }
+        source_calls: list[str] = []
+        supervisor_calls: list[str] = []
+
+        def generate(*_args, **_kwargs):
+            source_calls.append("generate")
+            return {
+                "response": proposal,
+                "evidence": {"response_digest": "c" * 64},
+            }
+
+        def approve(_self, _summary, capability_kind):
+            supervisor_calls.append(capability_kind)
+            return (
+                {
+                    "schema_version": "capsule_supervision.v1",
+                    "verdict": "approve",
+                    "capability_kind": capability_kind,
+                    "semantic_summary": "Bounded local computation.",
+                    "keep_reason_codes": [
+                        "DECLARED_LOCAL_CAPABILITY"
+                    ],
+                    "remove_reason_codes": [],
+                    "brand_signals": [],
+                    "sensitive_data_status": "clear",
+                    "hidden_dependency_codes": [],
+                    "duplicate_suggestions": [],
+                    "review_required": False,
+                },
+                "d" * 64,
+                {
+                    "name": "source-handoff-test-model",
+                    "digest": "b" * 64,
+                },
+            )
+
+        payload = {
+            "source_root_id": str(root["root_id"]),
+            "source_relpath": "src/rules.ts",
+            "behavior_intent": "Classify bounded text.",
+            "input_field": "message",
+            "input_min_length": 1,
+            "input_max_length": 1000,
+            "result_field": "classification",
+            "result_enum": ["normal", "urgent"],
+            "acceptance_cases": [
+                {
+                    "input_text": "routine task",
+                    "expected_result": "normal",
+                },
+                {
+                    "input_text": "urgent task",
+                    "expected_result": "urgent",
+                },
+            ],
+        }
+        if not self._source_derived_platform_supported(payload):
+            return
+        with self.store.read_connection() as connection:
+            formal_before = {
+                table: int(
+                    connection.execute(
+                        f"SELECT COUNT(*) FROM {table}"
+                    ).fetchone()[0]
+                )
+                for table in ("review_items", "capsules", "capsule_versions")
+            }
+        revision_before = self.store.current_revision()
+        with patch.object(
+            self.service._product_planner,
+            "_selected_model",
+            return_value=source_model,
+        ), patch.object(
+            self.service._product_planner,
+            "run_source_derived_capability_source_proposal",
+            side_effect=generate,
+        ), patch(
+            "pimos_lite.reweave_capsule_stage3.OllamaSupervisor.supervise",
+            new=approve,
+        ):
+            gate = threading.Barrier(3)
+            starts: list[dict[str, object]] = []
+
+            def start() -> None:
+                gate.wait()
+                starts.append(
+                    self.service.authorize_and_start_source_derived_computation(
+                        payload
+                    )
+                )
+
+            threads = [threading.Thread(target=start) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            gate.wait()
+            for thread in threads:
+                thread.join(5)
+                self.assertFalse(thread.is_alive())
+            self.assertEqual(len(starts), 2)
+            self.assertTrue(all(item["ok"] for item in starts), starts)
+            run_ids = {
+                str(item.get("run_id") or item["data"]["run_id"])
+                for item in starts
+            }
+            self.assertEqual(len(run_ids), 1)
+            run_id = run_ids.pop()
+            result = self._wait(run_id)
+            self.assertEqual(
+                result["status"],
+                "review_required",
+                result,
+            )
+            self.assertEqual(result["review_scope"], "isolated")
+            self.assertEqual(result["attempt_count"], 1)
+            self.assertNotIn("review_id", result)
+            self.assertNotIn("source_relpath", result)
+            self.assertNotIn("source_root_id", result)
+            self.assertNotIn("model", result)
+            repeated = (
+                self.service
+                .authorize_and_start_source_derived_computation(payload)
+            )
+            self.assertTrue(repeated["ok"], repeated)
+            self.assertEqual(repeated["data"]["run_id"], run_id)
+            self.assertEqual(
+                repeated["data"]["status"],
+                "review_required",
+            )
+
+        self.assertEqual(source_calls, ["generate"])
+        self.assertEqual(supervisor_calls, ["computation"])
+        self.assertEqual(self.store.current_revision(), revision_before)
+        with self.store.read_connection() as connection:
+            formal_after = {
+                table: int(
+                    connection.execute(
+                        f"SELECT COUNT(*) FROM {table}"
+                    ).fetchone()[0]
+                )
+                for table in ("review_items", "capsules", "capsule_versions")
+            }
+        self.assertEqual(formal_after, formal_before)
+        run_directories = list(
+            (self.state / "source_derived_computations").glob(
+                "[0-9a-f]" * 64
+            )
+        )
+        self.assertEqual(len(run_directories), 1)
+        durable = get_source_derived_run(self.service._state_root, run_id)
+        self.assertEqual(
+            [
+                (event["status"], event["stage"])
+                for event in durable["events"]
+            ],
+            [
+                ("pending", "source_proposal"),
+                ("running", "source_proposal"),
+                ("running", "intake"),
+                ("running", "security"),
+                ("running", "runtime"),
+                ("running", "supervision"),
+                ("review_required", "supervision"),
+            ],
+        )
+        validation_database = (
+            run_directories[0]
+            / "validation"
+            / "capsule_warehouse.sqlite3"
+        )
+        isolated = CapsuleWarehouseStore(validation_database)
+        with isolated.read_connection() as connection:
+            self.assertEqual(
+                int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM review_items "
+                        "WHERE candidate_status = 'review_required'"
+                    ).fetchone()[0]
+                ),
+                formal_before["review_items"] + 1,
+            )
+            self.assertEqual(
+                int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM capsules"
+                    ).fetchone()[0]
+                ),
+                formal_before["capsules"],
+            )
+            self.assertEqual(
+                int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM capsule_versions"
+                    ).fetchone()[0]
+                ),
+                formal_before["capsule_versions"],
+            )
+        database_bytes = validation_database.read_bytes()
+        validation_database.write_bytes(database_bytes + b"tampered")
+        if os.name == "posix":
+            validation_database.chmod(0o600)
+        tampered = self.service.get_intake_run({"run_id": run_id})
+        self.assertFalse(tampered["ok"])
+        self.assertEqual(
+            tampered["error"]["code"],
+            "source_derivation_validation_conflict",
+        )
+        validation_database.write_bytes(database_bytes)
+        if os.name == "posix":
+            validation_database.chmod(0o600)
+
+    def test_source_derived_agent_handoff_requires_desktop_approval(
+        self,
+    ) -> None:
+        source = self.root / "source-derived-agent"
+        evidence_file = source / "src" / "rules.ts"
+        evidence_file.parent.mkdir(parents=True)
+        evidence_file.write_text(
+            'export function classify(value: string) { return value; }\n',
+            encoding="utf-8",
+        )
+        self.store.initialize()
+        self.store.migrate_v1_to_v2()
+        root = self.service._capsule_intake.bind_source_root(
+            source,
+            root_kind="project_collection",
+        )
+        root_id = str(root["root_id"])
+        self._select_test_supervision_model()
+        source_model = {
+            "name": "source-derived-test:1b",
+            "digest": "a" * 64,
+            "parameter_count": 1_000_000_000,
+            "parameter_size": "1B",
+        }
+        payload = {
+            "source_relpath": "src/rules.ts",
+            "behavior_intent": "Classify bounded text.",
+            "input_field": "message",
+            "input_min_length": 1,
+            "input_max_length": 1000,
+            "result_field": "classification",
+            "result_enum": ["normal", "urgent"],
+            "acceptance_cases": [
+                {
+                    "input_text": "routine task",
+                    "expected_result": "normal",
+                },
+                {
+                    "input_text": "urgent task",
+                    "expected_result": "urgent",
+                },
+            ],
+        }
+        if not self._source_derived_platform_supported(
+            {"source_root_id": root_id, **payload}
+        ):
+            return
+        proposal = {
+            "schema": "capability_source_proposal.v2",
+            "entry": {
+                "module_relpath": "capability.js",
+                "export_name": "compute",
+            },
+            "files": [
+                {
+                    "path": "capability.js",
+                    "content": (
+                        "export function compute(arg0) {\n"
+                        '  return arg0.includes("urgent") '
+                        '? "urgent" : "normal";\n'
+                        "}\n"
+                    ),
+                }
+            ],
+            "witnesses": [
+                {
+                    "input": {"message": "routine"},
+                    "expected_scalar_result": "normal",
+                },
+                {
+                    "input": {"message": "urgent"},
+                    "expected_scalar_result": "urgent",
+                },
+            ],
+        }
+        source_calls: list[str] = []
+        supervisor_calls: list[str] = []
+
+        def generate(*_args, **_kwargs):
+            source_calls.append("source")
+            return {
+                "response": proposal,
+                "evidence": {"response_digest": "c" * 64},
+            }
+
+        def approve(_self, _summary, capability_kind):
+            supervisor_calls.append(capability_kind)
+            return (
+                {
+                    "schema_version": "capsule_supervision.v1",
+                    "verdict": "approve",
+                    "capability_kind": capability_kind,
+                    "semantic_summary": "Bounded local computation.",
+                    "keep_reason_codes": [
+                        "DECLARED_LOCAL_CAPABILITY"
+                    ],
+                    "remove_reason_codes": [],
+                    "brand_signals": [],
+                    "sensitive_data_status": "clear",
+                    "hidden_dependency_codes": [],
+                    "duplicate_suggestions": [],
+                    "review_required": False,
+                },
+                "d" * 64,
+                {
+                    "name": "source-handoff-test-model",
+                    "digest": "b" * 64,
+                },
+            )
+
+        def request(
+            session: dict[str, object],
+            action: str,
+            action_payload: dict[str, object],
+        ) -> dict[str, object]:
+            return dispatch_agent_request(
+                self.service,
+                {
+                    "protocol": AGENT_PROTOCOL_VERSION,
+                    "id": action,
+                    "action": action,
+                    "payload": action_payload,
+                },
+                session,
+            )
+
+        with self.store.read_connection() as connection:
+            formal_before = {
+                table: int(
+                    connection.execute(
+                        f"SELECT COUNT(*) FROM {table}"
+                    ).fetchone()[0]
+                )
+                for table in ("review_items", "capsules", "capsule_versions")
+            }
+        revision_before = self.store.current_revision()
+        with patch.object(
+            self.service._product_planner,
+            "_selected_model",
+            return_value=source_model,
+        ), patch.object(
+            self.service._product_planner,
+            "run_source_derived_capability_source_proposal",
+            side_effect=generate,
+        ), patch(
+            "pimos_lite.reweave_capsule_stage3.OllamaSupervisor.supervise",
+            new=approve,
+        ):
+            created = self.service.create_local_source_derived_handoff(
+                {"source_root_id": root_id}
+            )
+            self.assertTrue(created["ok"], created)
+            token = created["data"]["source_derived_handoff_token"]
+            self.assertEqual(source_calls, [])
+            session: dict[str, object] = {}
+            self.assertTrue(
+                request(
+                    session,
+                    "bind_user_handoff",
+                    {"handoff_token": token},
+                )["ok"]
+            )
+            prepared = request(
+                session,
+                "prepare_source_derived_computation",
+                payload,
+            )
+            self.assertTrue(prepared["ok"], prepared)
+            self.assertEqual(
+                prepared["data"]["proposal_status"], "pending"
+            )
+            prepared_json = json.dumps(
+                prepared, ensure_ascii=False, sort_keys=True
+            )
+            for private in (
+                root_id,
+                "input_field",
+                "result_field",
+                "catalog_digest",
+                "adapter",
+                "proof",
+                "source_proposal_model",
+                "supervision_model",
+            ):
+                self.assertNotIn(private, prepared_json)
+            self.assertEqual(source_calls, [])
+            self.assertFalse(
+                (
+                    self.state / "source_derived_computations"
+                ).exists()
+            )
+            blocked = request(
+                session,
+                "start_source_derived_computation",
+                {},
+            )
+            self.assertFalse(blocked["ok"])
+            self.assertEqual(
+                blocked["error"]["code"],
+                "source_derived_handoff_approval_required",
+            )
+            approved = (
+                self.service
+                .decide_local_source_derived_handoff_proposal(
+                    {
+                        "source_root_id": root_id,
+                        "decision": "approve",
+                    }
+                )
+            )
+            self.assertTrue(approved["ok"], approved)
+            self.assertEqual(
+                approved["data"]["proposal_status"], "approved"
+            )
+            self.assertEqual(source_calls, [])
+            started = request(
+                session,
+                "start_source_derived_computation",
+                {},
+            )
+            self.assertTrue(started["ok"], started)
+            run_id = str(started["data"]["run_id"])
+            for _ in range(3_000):
+                current = request(
+                    session, "get_source_derived_run", {}
+                )
+                self.assertTrue(current["ok"], current)
+                if current["data"]["status"] in {
+                    "review_required",
+                    "failed",
+                    "cancelled",
+                }:
+                    break
+                time.sleep(0.01)
+            else:
+                self.fail("source-derived Agent run did not finish")
+            self.assertEqual(
+                current["data"]["status"], "review_required", current
+            )
+            self.assertEqual(
+                current["data"]["review_scope"], "isolated"
+            )
+            summary = request(
+                session,
+                "get_source_derived_review_summary",
+                {},
+            )
+            self.assertTrue(summary["ok"], summary)
+            self.assertEqual(
+                summary["data"]["acceptance_passed_count"], 2
+            )
+            self.assertNotIn(
+                token,
+                json.dumps(
+                    {
+                        "prepared": prepared,
+                        "approved": approved,
+                        "started": started,
+                        "current": current,
+                        "summary": summary,
+                    }
+                ),
+            )
+            repeated = request(
+                session,
+                "start_source_derived_computation",
+                {},
+            )
+            self.assertTrue(repeated["ok"], repeated)
+            self.assertEqual(repeated["data"]["run_id"], run_id)
+            self.assertEqual(source_calls, ["source"])
+            self.assertEqual(supervisor_calls, ["computation"])
+            revoked = (
+                self.service.revoke_local_source_derived_handoff(
+                    {"source_root_id": root_id}
+                )
+            )
+            self.assertTrue(revoked["ok"], revoked)
+            after_revoke = request(
+                session, "get_source_derived_run", {}
+            )
+            self.assertFalse(after_revoke["ok"])
+            self.assertEqual(
+                after_revoke["error"]["code"],
+                "source_derived_handoff_revoked",
+            )
+            rejected_create = (
+                self.service.create_local_source_derived_handoff(
+                    {"source_root_id": root_id}
+                )
+            )
+            self.assertTrue(rejected_create["ok"], rejected_create)
+            rejected_token = rejected_create["data"][
+                "source_derived_handoff_token"
+            ]
+            rejected_session: dict[str, object] = {}
+            self.assertTrue(
+                request(
+                    rejected_session,
+                    "bind_user_handoff",
+                    {"handoff_token": rejected_token},
+                )["ok"]
+            )
+            self.assertTrue(
+                request(
+                    rejected_session,
+                    "prepare_source_derived_computation",
+                    payload,
+                )["ok"]
+            )
+            rejected = (
+                self.service
+                .decide_local_source_derived_handoff_proposal(
+                    {
+                        "source_root_id": root_id,
+                        "decision": "reject",
+                    }
+                )
+            )
+            self.assertTrue(rejected["ok"], rejected)
+            self.assertEqual(
+                rejected["data"]["proposal_status"], "rejected"
+            )
+            rejected_start = request(
+                rejected_session,
+                "start_source_derived_computation",
+                {},
+            )
+            self.assertFalse(rejected_start["ok"])
+            self.assertEqual(
+                rejected_start["error"]["code"],
+                "source_derived_handoff_approval_required",
+            )
+            self.assertEqual(source_calls, ["source"])
+            self.assertEqual(supervisor_calls, ["computation"])
+
+        self.assertEqual(self.store.current_revision(), revision_before)
+        with self.store.read_connection() as connection:
+            self.assertEqual(
+                {
+                    table: int(
+                        connection.execute(
+                            f"SELECT COUNT(*) FROM {table}"
+                        ).fetchone()[0]
+                    )
+                    for table in (
+                        "review_items",
+                        "capsules",
+                        "capsule_versions",
+                    )
+                },
+                formal_before,
+            )
+
+    @patch(
+        "pimos_lite.reweave_app_service.javascript_source_snapshot_supported",
+        return_value=True,
+    )
+    def test_source_derived_handoff_recovers_and_rejects_drift(
+        self, _snapshot_supported
+    ) -> None:
+        source = self.root / "source-derived-handoff-recovery"
+        source.mkdir()
+        evidence_file = source / "rules.ts"
+        evidence_file.write_text(
+            'export const rules = ["urgent"];\n',
+            encoding="utf-8",
+        )
+        self.store.initialize()
+        self.store.migrate_v1_to_v2()
+        root = self.service._capsule_intake.bind_source_root(
+            source,
+            root_kind="project_collection",
+        )
+        root_id = str(root["root_id"])
+        self._select_test_supervision_model()
+        model = {
+            "name": "source-derived-test:1b",
+            "digest": "a" * 64,
+            "parameter_count": 1_000_000_000,
+            "parameter_size": "1B",
+        }
+        target = {
+            "source_relpath": "rules.ts",
+            "behavior_intent": "Classify bounded text.",
+            "input_field": "message",
+            "input_min_length": 1,
+            "input_max_length": 1000,
+            "result_field": "classification",
+            "result_enum": ["normal", "urgent"],
+            "acceptance_cases": [
+                {
+                    "input_text": "urgent",
+                    "expected_result": "urgent",
+                }
+            ],
+        }
+        with patch.object(
+            self.service._product_planner,
+            "_selected_model",
+            return_value=model,
+        ):
+            created = self.service.create_local_source_derived_handoff(
+                {"source_root_id": root_id}
+            )
+            self.assertTrue(created["ok"], created)
+            token = created["data"]["source_derived_handoff_token"]
+            binding = (
+                self.service._resolve_local_source_derived_handoff(token)
+            )
+            prepared = (
+                self.service
+                ._prepare_authorized_source_derived_computation(
+                    binding, target
+                )
+            )
+            self.assertEqual(prepared["proposal_status"], "pending")
+        token_digest = hashlib.sha256(token.encode()).hexdigest()
+        sidecar = (
+            self.state
+            / "source_derived_handoffs"
+            / f"source_derived_handoff_v1_{token_digest}.json"
+        )
+        original_sidecar = sidecar.read_bytes()
+        self.assertNotIn(token.encode(), original_sidecar)
+        self.assertNotIn(str(source).encode(), original_sidecar)
+
+        self.service.close()
+        self.store = CapsuleWarehouseStore(
+            self.state / "capsule_warehouse.sqlite3"
+        )
+        self.service = ReweaveAppService(
+            engine=LocalReweaveEngine(),
+            capsule_store=self.store,
+        )
+        with patch.object(
+            self.service._product_planner,
+            "_selected_model",
+            return_value=model,
+        ):
+            recovered = (
+                self.service._resolve_local_source_derived_handoff(token)
+            )
+            self.assertEqual(recovered, binding)
+            self.assertEqual(
+                self.service
+                ._get_authorized_source_derived_authorization(
+                    recovered
+                )["proposal_status"],
+                "pending",
+            )
+            evidence_before = evidence_file.read_bytes()
+            evidence_file.write_bytes(evidence_before + b"// drift\n")
+            with self.assertRaisesRegex(
+                Exception, "source_derived_handoff_stale"
+            ):
+                self.service._resolve_local_source_derived_handoff(token)
+            evidence_file.write_bytes(evidence_before)
+
+            tampered = json.loads(original_sidecar)
+            tampered["proposal"]["request"][
+                "behavior_intent"
+            ] = "tampered"
+            sidecar.write_bytes(
+                json.dumps(
+                    tampered,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            )
+            if os.name == "posix":
+                sidecar.chmod(0o600)
+            with self.assertRaisesRegex(
+                Exception, "source_derived_handoff_conflict"
+            ):
+                self.service._resolve_local_source_derived_handoff(token)
+            sidecar.write_bytes(original_sidecar)
+            if os.name == "posix":
+                sidecar.chmod(0o600)
+            surrogate = json.loads(original_sidecar)
+            surrogate["source_proposal_model"]["name"] = "\ud800"
+            sidecar.write_bytes(
+                json.dumps(
+                    surrogate,
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            )
+            if os.name == "posix":
+                sidecar.chmod(0o600)
+            with self.assertRaisesRegex(
+                Exception, "source_derived_handoff_conflict"
+            ):
+                self.service._resolve_local_source_derived_handoff(token)
+            sidecar.write_bytes(original_sidecar)
+            if os.name == "posix":
+                sidecar.chmod(0o600)
+            surrogate = json.loads(original_sidecar)
+            surrogate["proposal"]["request"][
+                "behavior_intent"
+            ] = "\ud800"
+            sidecar.write_bytes(
+                json.dumps(
+                    surrogate,
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            )
+            if os.name == "posix":
+                sidecar.chmod(0o600)
+            with self.assertRaisesRegex(
+                Exception, "source_derived_handoff_conflict"
+            ):
+                self.service._resolve_local_source_derived_handoff(token)
+            sidecar.write_bytes(original_sidecar)
+            if os.name == "posix":
+                sidecar.chmod(0o600)
+            with patch.object(
+                self.service._product_planner,
+                "_selected_model",
+                return_value={**model, "digest": "8" * 64},
+            ):
+                with self.assertRaisesRegex(
+                    Exception, "source_derived_handoff_stale"
+                ):
+                    self.service._resolve_local_source_derived_handoff(
+                        token
+                    )
+
+            other_digest = "9" * 64
+            duplicate = json.loads(original_sidecar)
+            duplicate["token_digest"] = other_digest
+            body = {
+                key: value
+                for key, value in duplicate.items()
+                if key != "canonical_digest"
+            }
+            duplicate["canonical_digest"] = canonical_json_digest(body)
+            duplicate_path = (
+                sidecar.parent
+                / f"source_derived_handoff_v1_{other_digest}.json"
+            )
+            duplicate_path.write_bytes(
+                json.dumps(
+                    duplicate,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            )
+            if os.name == "posix":
+                duplicate_path.chmod(0o600)
+            with self.assertRaisesRegex(
+                Exception, "source_derived_handoff_conflict"
+            ):
+                self.service._resolve_local_source_derived_handoff(token)
+            duplicate_path.unlink()
+            with self.store.transaction() as connection:
+                self.store.bump_revision(connection)
+            with self.assertRaisesRegex(
+                Exception, "source_derived_handoff_stale"
+            ):
+                self.service._resolve_local_source_derived_handoff(token)
+
+    def test_source_derived_run_fails_closed_on_restart_and_tamper(
+        self,
+    ) -> None:
+        source = self.root / "source-derived-recovery"
+        source.mkdir()
+        (source / "rules.ts").write_text(
+            'export const rules = ["urgent"];\n',
+            encoding="utf-8",
+        )
+        self.store.initialize()
+        self.store.migrate_v1_to_v2()
+        root = self.service._capsule_intake.bind_source_root(
+            source,
+            root_kind="project_collection",
+        )
+        self._select_test_supervision_model()
+        model = {
+            "name": "source-derived-test:1b",
+            "digest": "a" * 64,
+            "parameter_count": 1_000_000_000,
+            "parameter_size": "1B",
+        }
+        payload = {
+            "source_root_id": str(root["root_id"]),
+            "source_relpath": "rules.ts",
+            "behavior_intent": "Classify bounded text.",
+            "input_field": "message",
+            "input_min_length": 1,
+            "input_max_length": 1000,
+            "result_field": "classification",
+            "result_enum": ["normal", "urgent"],
+            "acceptance_cases": [
+                {
+                    "input_text": "routine",
+                    "expected_result": "normal",
+                },
+                {
+                    "input_text": "urgent",
+                    "expected_result": "urgent",
+                },
+            ],
+        }
+        with patch.object(
+            self.service._product_planner,
+            "_selected_model",
+            return_value=model,
+        ), patch(
+            "pimos_lite.reweave_app_service.javascript_source_snapshot_supported",
+            return_value=True,
+        ), patch.object(
+            self.service,
+            "_submit_management_task",
+            side_effect=lambda _kind, _action, **kwargs: {
+                "ok": True,
+                "run_id": kwargs["run_id"],
+                "status": "queued",
+            },
+        ):
+            started = (
+                self.service
+                .authorize_and_start_source_derived_computation(payload)
+            )
+            self.assertTrue(started["ok"], started)
+            recovered = self.service.get_intake_run(
+                {"run_id": started["run_id"]}
+            )
+            self.assertTrue(recovered["ok"], recovered)
+            self.assertEqual(
+                recovered["data"]["error_code"],
+                "manual_recovery_required",
+            )
+            repeated = (
+                self.service
+                .authorize_and_start_source_derived_computation(payload)
+            )
+            self.assertEqual(
+                repeated["data"]["run_id"],
+                started["run_id"],
+            )
+            self.assertEqual(repeated["data"]["status"], "failed")
+
+            original_source = (source / "rules.ts").read_bytes()
+            (source / "rules.ts").write_bytes(original_source + b"\n")
+            source_stale = (
+                self.service
+                .authorize_and_start_source_derived_computation(payload)
+            )
+            self.assertFalse(source_stale["ok"])
+            self.assertEqual(
+                source_stale["error"]["code"],
+                "source_derivation_run_stale",
+            )
+            (source / "rules.ts").write_bytes(original_source)
+
+            changed_model = {**model, "digest": "f" * 64}
+            with patch.object(
+                self.service._product_planner,
+                "_selected_model",
+                return_value=changed_model,
+            ):
+                model_stale = (
+                    self.service
+                    .authorize_and_start_source_derived_computation(payload)
+                )
+            self.assertFalse(model_stale["ok"])
+            self.assertEqual(
+                model_stale["error"]["code"],
+                "source_derivation_run_stale",
+            )
+
+            catalog = self.service._product_planning_catalog()
+            changed_catalog = {
+                **catalog,
+                "warehouse_revision": catalog["warehouse_revision"] + 1,
+            }
+            with patch.object(
+                self.service,
+                "_product_planning_catalog",
+                return_value=changed_catalog,
+            ):
+                catalog_stale = (
+                    self.service
+                    .authorize_and_start_source_derived_computation(payload)
+                )
+            self.assertFalse(catalog_stale["ok"])
+            self.assertEqual(
+                catalog_stale["error"]["code"],
+                "source_derivation_run_stale",
+            )
+            self.assertEqual(
+                len(
+                    list(
+                        (
+                            self.state
+                            / "source_derived_computations"
+                        ).glob("[0-9a-f]" * 64)
+                    )
+                ),
+                1,
+            )
+
+            run_path = next(
+                (
+                    self.state
+                    / "source_derived_computations"
+                ).glob("*/run.json")
+            )
+            run = json.loads(run_path.read_text(encoding="utf-8"))
+            run["attempt_count"] = 2
+            run_path.write_bytes(
+                (
+                    json.dumps(
+                        run,
+                        ensure_ascii=False,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    )
+                    + "\n"
+                ).encode("utf-8")
+            )
+            if os.name == "posix":
+                run_path.chmod(0o600)
+            conflict = self.service.get_intake_run(
+                {"run_id": started["run_id"]}
+            )
+            self.assertFalse(conflict["ok"])
+            self.assertEqual(
+                conflict["error"]["code"],
+                "source_derivation_run_conflict",
+            )
+
+        invalid = dict(payload)
+        invalid["source_relpath"] = "../rules.ts"
+        with patch(
+            "pimos_lite.reweave_app_service.javascript_source_snapshot_supported",
+            return_value=True,
+        ):
+            rejected = (
+                self.service
+                .authorize_and_start_source_derived_computation(invalid)
+            )
+        self.assertFalse(rejected["ok"])
+        self.assertEqual(
+            rejected["error"]["code"],
+            "source_derivation_evidence_invalid",
+        )
+
+    def test_source_derived_cancel_discards_model_result(
+        self,
+    ) -> None:
+        source = self.root / "source-derived-cancel"
+        source.mkdir()
+        (source / "rules.ts").write_text(
+            'export const rules = ["urgent"];\n',
+            encoding="utf-8",
+        )
+        self.store.initialize()
+        self.store.migrate_v1_to_v2()
+        root = self.service._capsule_intake.bind_source_root(
+            source,
+            root_kind="project_collection",
+        )
+        self._select_test_supervision_model()
+        model = {
+            "name": "source-derived-test:1b",
+            "digest": "a" * 64,
+            "parameter_count": 1_000_000_000,
+            "parameter_size": "1B",
+        }
+        entered = threading.Event()
+        release = threading.Event()
+        source_calls: list[str] = []
+
+        def generate(*_args, **_kwargs):
+            source_calls.append("generate")
+            entered.set()
+            self.assertTrue(release.wait(5))
+            return {
+                "response": {
+                    "schema": "capability_source_proposal.v2",
+                    "entry": {
+                        "module_relpath": "capability.js",
+                        "export_name": "compute",
+                    },
+                    "files": [
+                        {
+                            "path": "capability.js",
+                            "content": (
+                                "export function compute(arg0) { "
+                                'return arg0.includes("urgent") '
+                                '? "urgent" : "normal"; }\n'
+                            ),
+                        }
+                    ],
+                    "witnesses": [
+                        {
+                            "input": {"message": "routine"},
+                            "expected_scalar_result": "normal",
+                        },
+                        {
+                            "input": {"message": "urgent"},
+                            "expected_scalar_result": "urgent",
+                        },
+                    ],
+                },
+                "evidence": {"response_digest": "c" * 64},
+            }
+
+        payload = {
+            "source_root_id": str(root["root_id"]),
+            "source_relpath": "rules.ts",
+            "behavior_intent": "Classify bounded text.",
+            "input_field": "message",
+            "input_min_length": 1,
+            "input_max_length": 1000,
+            "result_field": "classification",
+            "result_enum": ["normal", "urgent"],
+            "acceptance_cases": [
+                {
+                    "input_text": "routine",
+                    "expected_result": "normal",
+                },
+                {
+                    "input_text": "urgent",
+                    "expected_result": "urgent",
+                },
+            ],
+        }
+        if not self._source_derived_platform_supported(payload):
+            return
+        with patch.object(
+            self.service._product_planner,
+            "_selected_model",
+            return_value=model,
+        ), patch.object(
+            self.service._product_planner,
+            "run_source_derived_capability_source_proposal",
+            side_effect=generate,
+        ):
+            started = (
+                self.service
+                .authorize_and_start_source_derived_computation(payload)
+            )
+            self.assertTrue(started["ok"], started)
+            self.assertTrue(entered.wait(5))
+            cancelled = self.service.cancel_intake_run(
+                {"run_id": started["run_id"]}
+            )
+            self.assertTrue(cancelled["ok"], cancelled)
+            release.set()
+            result = self._wait(started["run_id"])
+        self.assertEqual(source_calls, ["generate"])
+        self.assertEqual(result["status"], "cancelled")
+        self.assertEqual(result["stage"], "source_proposal")
+        run_dir = next(
+            (
+                self.state / "source_derived_computations"
+            ).glob("[0-9a-f]" * 64)
+        )
+        self.assertFalse((run_dir / "source" / "capability.js").exists())
+        self.assertFalse(
+            (run_dir / "validation" / "capsule_warehouse.sqlite3").exists()
+        )
+
+        supervisor_entered = threading.Event()
+        supervisor_release = threading.Event()
+
+        def approve_after_cancel(_self, _summary, capability_kind):
+            supervisor_entered.set()
+            self.assertTrue(supervisor_release.wait(5))
+            return (
+                {
+                    "schema_version": "capsule_supervision.v1",
+                    "verdict": "approve",
+                    "capability_kind": capability_kind,
+                    "semantic_summary": "Bounded local computation.",
+                    "keep_reason_codes": ["DECLARED_LOCAL_CAPABILITY"],
+                    "remove_reason_codes": [],
+                    "brand_signals": [],
+                    "sensitive_data_status": "clear",
+                    "hidden_dependency_codes": [],
+                    "duplicate_suggestions": [],
+                    "review_required": False,
+                },
+                "d" * 64,
+                {
+                    "name": "source-handoff-test-model",
+                    "digest": "b" * 64,
+                },
+            )
+
+        second_payload = {
+            **payload,
+            "behavior_intent": "Classify another bounded text task.",
+        }
+        with patch.object(
+            self.service._product_planner,
+            "_selected_model",
+            return_value=model,
+        ), patch.object(
+            self.service._product_planner,
+            "run_source_derived_capability_source_proposal",
+            side_effect=generate,
+        ), patch(
+            "pimos_lite.reweave_capsule_stage3.OllamaSupervisor.supervise",
+            new=approve_after_cancel,
+        ):
+            second = (
+                self.service
+                .authorize_and_start_source_derived_computation(
+                    second_payload
+                )
+            )
+            self.assertTrue(second["ok"], second)
+            self.assertTrue(supervisor_entered.wait(15))
+            cancelled = self.service.cancel_intake_run(
+                {"run_id": second["run_id"]}
+            )
+            self.assertTrue(cancelled["ok"], cancelled)
+            supervisor_release.set()
+            second_result = self._wait(second["run_id"])
+        self.assertEqual(source_calls, ["generate", "generate"])
+        self.assertEqual(second_result["status"], "cancelled")
+        self.assertEqual(second_result["stage"], "supervision")
+        second_run_dir = next(
+            path
+            for path in (
+                self.state / "source_derived_computations"
+            ).glob("[0-9a-f]" * 64)
+            if json.loads(
+                (path / "run.json").read_text(encoding="utf-8")
+            )["run_id"]
+            == second["run_id"]
+        )
+        isolated = CapsuleWarehouseStore(
+            second_run_dir
+            / "validation"
+            / "capsule_warehouse.sqlite3"
+        )
+        with isolated.read_connection() as connection:
+            self.assertEqual(
+                int(
+                    connection.execute(
+                        "SELECT COUNT(*) FROM review_items"
+                    ).fetchone()[0]
+                ),
+                0,
+            )
+
     def _seed_project_contribution(
         self,
         project_id: str,
         *,
         extraction_version: str = EXTRACTION_CONTRACT_VERSION,
         extraction_summary: dict[str, object] | None = None,
+        formal_contracts: bool = False,
     ) -> tuple[str, str]:
         capsule_id = "capsule-brand"
         version_id = "version-brand"
@@ -89,9 +1465,23 @@ class Phase4ManagementTest(unittest.TestCase):
             "canonicalization_version": 1,
             "canonical_hash": digest,
             "activation_json": "{}",
-            "input_contract_json": "{}",
-            "output_contract_json": "{}",
-            "error_contract_json": "{}",
+            "input_contract_json": (
+                '{"additional_properties":false,"properties":{},"required":[],'
+                '"schema":"data_contract.v1","type":"object"}'
+                if formal_contracts
+                else "{}"
+            ),
+            "output_contract_json": (
+                '{"additional_properties":false,"properties":{},"required":[],'
+                '"schema":"data_contract.v1","type":"object"}'
+                if formal_contracts
+                else "{}"
+            ),
+            "error_contract_json": (
+                '{"errors":{},"schema":"error_contract.v1"}'
+                if formal_contracts
+                else "{}"
+            ),
             "runtime_allowlist_json": "[]",
             "dom_scope_json": "{}",
             "usage_scope_json": '{"kind":"general"}',
@@ -264,6 +1654,474 @@ class Phase4ManagementTest(unittest.TestCase):
         self.assertEqual(failed["error"]["code"], "secret_probe_failed")
         self.assertNotIn("customer-secret", str(failed))
         self.assertEqual(maximum, 1)
+
+    def test_close_cancels_queued_tasks_and_waits_for_running_action(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        queued_ran = threading.Event()
+
+        def running(_cancel: threading.Event) -> dict[str, bool]:
+            entered.set()
+            release.wait(2)
+            return {"committed": True}
+
+        first = self.service._submit_management_task(
+            "product_plan_close_running",
+            running,
+            read_only_planning=True,
+        )
+        self.assertTrue(entered.wait(1))
+        second = self.service._submit_management_task(
+            "product_plan_close_queued",
+            lambda _cancel: (
+                queued_ran.set(),
+                {"should_not_run": True},
+            )[1],
+            read_only_planning=True,
+        )
+        closed = threading.Event()
+
+        def close_service() -> None:
+            self.service.close()
+            closed.set()
+
+        closer = threading.Thread(target=close_service)
+        closer.start()
+        deadline = time.monotonic() + 2
+        while not self.service._management_closed:
+            self.assertLess(time.monotonic(), deadline)
+            time.sleep(0.01)
+        rejected = self.service._submit_management_task(
+            "product_plan_after_close",
+            lambda _cancel: {"should_not_run": True},
+            read_only_planning=True,
+        )
+        self.assertEqual(
+            rejected["error"]["code"],
+            "capsule_management_closed",
+        )
+        with patch.object(
+            self.service,
+            "_ensure_capsule_management",
+            side_effect=AssertionError("closed service touched state"),
+        ):
+            self.assertEqual(
+                self.service._submit_management_task(
+                    "ordinary_after_close",
+                    lambda _cancel: {"should_not_run": True},
+                )["error"]["code"],
+                "capsule_management_closed",
+            )
+        self.assertFalse(closed.is_set())
+        release.set()
+        closer.join(2)
+        self.assertTrue(closed.is_set())
+        self.assertFalse(queued_ran.is_set())
+        self.assertEqual(
+            self.service._management_tasks[first["run_id"]]["status"],
+            "completed",
+        )
+        self.assertEqual(
+            self.service._management_tasks[second["run_id"]]["status"],
+            "cancelled",
+        )
+        self.service.close()
+
+    def test_read_only_product_planning_task_does_not_initialize_warehouse(self) -> None:
+        self.assertFalse(self.store.path.exists())
+
+        started = self.service._submit_management_task(
+            "product_plan_probe",
+            lambda _cancel: {"read_only": True},
+            read_only_planning=True,
+        )
+
+        task = self._wait_product_plan(started["run_id"])
+        self.assertEqual(task["status"], "completed")
+        self.assertEqual(task["data"], {"read_only": True})
+        self.assertFalse(self.store.path.exists())
+        with self.assertRaisesRegex(ValueError, "read_only_planning_kind_invalid"):
+            self.service._submit_management_task(
+                "refresh_project",
+                lambda _cancel: {},
+                read_only_planning=True,
+            )
+
+    def test_product_planning_catalog_is_exact_eligible_and_code_free(self) -> None:
+        project_id = self._ready_project()
+        capsule_id, version_id = self._seed_project_contribution(
+            project_id,
+            formal_contracts=True,
+        )
+        before = self.store.current_revision()
+
+        with patch.object(self.service._capsule_stage3, "_eligible_exact", return_value=True):
+            catalog = self.service._product_planning_catalog()
+
+        self.assertEqual(catalog["warehouse_revision"], before)
+        self.assertEqual(len(catalog["capsules"]), 1)
+        capsule = catalog["capsules"][0]
+        self.assertEqual(
+            (capsule["capsule_id"], capsule["version_id"]),
+            (capsule_id, version_id),
+        )
+        self.assertEqual(capsule["identity_status"], "formal_exact_version")
+        self.assertEqual(capsule["input_contract"]["schema"], "data_contract.v1")
+        self.assertIn(
+            capsule["output_contract"]["schema"],
+            {"data_contract.v1", "event_outputs.v1", "no_output.v1"},
+        )
+        self.assertEqual(capsule["error_contract"]["schema"], "error_contract.v1")
+        self.assertNotIn("html_text", capsule)
+        self.assertNotIn("css_text", capsule)
+        self.assertNotIn("javascript_modules_json", capsule)
+        self.assertNotIn("source_relpath", capsule)
+        self.assertNotIn(str(self.root), str(catalog))
+        self.assertEqual(self.store.current_revision(), before)
+
+    def test_product_workspace_restore_receives_current_exact_catalog(self) -> None:
+        current = {"warehouse_revision": 11, "capsules": []}
+        with patch.object(
+            self.service,
+            "_product_planning_catalog",
+            return_value=current,
+        ), patch.object(
+            self.service._product_planner,
+            "get",
+            return_value={"ok": True, "data": {"status": "plan_review"}},
+        ) as get_workspace:
+            result = self.service.get_product_plan_workspace(
+                {"plan_token": "plan_token_" + "a" * 48}
+            )
+        self.assertTrue(result["ok"])
+        get_workspace.assert_called_once_with(
+            "plan_token_" + "a" * 48,
+            current,
+        )
+
+    def test_product_planning_actions_are_read_only_and_task_types_are_isolated(
+        self,
+    ) -> None:
+        self.assertFalse(self.store.path.exists())
+        with patch.object(
+            self.service._product_planner,
+            "list_models",
+            return_value={"ok": True, "data": {"models": []}},
+        ):
+            started = self.service.list_product_planning_models({})
+            task = self._wait_product_plan(started["run_id"])
+        self.assertEqual(task["status"], "completed")
+        self.assertEqual(task["data"]["data"]["models"], [])
+        self.assertFalse(self.store.path.exists())
+        self.assertEqual(
+            self.service.get_intake_run({"run_id": started["run_id"]})["error"]["code"],
+            "intake_run_not_found",
+        )
+
+        entered = threading.Event()
+        release = threading.Event()
+
+        def blocked(_cancel: threading.Event) -> dict[str, bool]:
+            entered.set()
+            release.wait(2)
+            return {"ok": True}
+
+        planning = self.service._submit_management_task(
+            "product_plan_start",
+            blocked,
+            cancellable=True,
+            read_only_planning=True,
+        )
+        self.assertTrue(entered.wait(1))
+        self.assertEqual(
+            self.service.cancel_intake_run({"run_id": planning["run_id"]})["error"]["code"],
+            "intake_run_not_cancellable",
+        )
+        cancelled = self.service.cancel_product_plan_run(
+            {"run_id": planning["run_id"]}
+        )
+        self.assertTrue(cancelled["ok"])
+        release.set()
+        self.assertIn(
+            self._wait_product_plan(planning["run_id"])["status"],
+            {"completed", "cancelled"},
+        )
+
+        ordinary = self.service._submit_management_task(
+            "probe",
+            lambda _cancel: {"ok": True},
+        )
+        self.assertEqual(
+            self.service.get_product_plan_run({"run_id": ordinary["run_id"]})[
+                "error"
+            ]["code"],
+            "product_plan_run_not_found",
+        )
+        self.assertEqual(
+            self.service.cancel_product_plan_run({"run_id": ordinary["run_id"]})[
+                "error"
+            ]["code"],
+            "product_plan_run_not_cancellable",
+        )
+        self.assertEqual(self._wait(ordinary["run_id"])["status"], "completed")
+
+    def test_product_plan_action_suggestion_is_thin_and_read_only(self) -> None:
+        self.assertFalse(self.store.path.exists())
+        with patch.object(
+            self.service._product_planner,
+            "suggest_action",
+            return_value={
+                "ok": True,
+                "data": {
+                    "suggested_action": "ask_plan",
+                    "recommendation_available": True,
+                    "suggestion_receipt": "suggestion_receipt_" + "b" * 48,
+                    "suggestion_digest": "c" * 64,
+                },
+            },
+        ) as suggest:
+            started = self.service.suggest_product_plan_action(
+                {
+                    "plan_token": "plan_token_" + "a" * 48,
+                    "feedback": "解释当前计划",
+                }
+            )
+            task = self._wait_product_plan(started["run_id"])
+        self.assertEqual(task["status"], "completed")
+        self.assertEqual(task["data"]["data"]["suggested_action"], "ask_plan")
+        suggest.assert_called_once()
+        args = suggest.call_args.args
+        self.assertEqual(args[:2], ("plan_token_" + "a" * 48, "解释当前计划"))
+        self.assertTrue(callable(args[2]))
+        self.assertFalse(self.store.path.exists())
+
+    def test_product_planning_error_envelopes_drive_task_terminal_status(self) -> None:
+        failed = self.service._submit_management_task(
+            "product_plan_list_models",
+            lambda _cancel: {
+                "ok": False,
+                "error": {
+                    "code": "ollama_unavailable",
+                    "message_key": "ollama_unavailable",
+                },
+            },
+            read_only_planning=True,
+        )
+        failed_task = self._wait_product_plan(failed["run_id"])
+        self.assertEqual(failed_task["status"], "failed")
+        self.assertEqual(failed_task["error"]["code"], "ollama_unavailable")
+
+        cancelled = self.service._submit_management_task(
+            "product_plan_start",
+            lambda _cancel: {
+                "ok": False,
+                "error": {
+                    "code": "product_plan_cancelled",
+                    "message_key": "product_plan_cancelled",
+                },
+            },
+            cancellable=True,
+            read_only_planning=True,
+        )
+        cancelled_task = self._wait_product_plan(cancelled["run_id"])
+        self.assertEqual(cancelled_task["status"], "cancelled")
+
+    def test_confirmed_candidate_terminal_retry_is_explicit_and_bounded(self) -> None:
+        request = {
+            "plan_token": "plan_token_" + "a" * 48,
+            "plan_digest": "b" * 64,
+            "acceptance_confirmation_digest": "c" * 64,
+        }
+        calls = 0
+
+        def build(*_args: object) -> dict[str, object]:
+            nonlocal calls
+            calls += 1
+            if calls == 1:
+                raise RuntimeError("transient")
+            return {"candidate_token": "candidate_" + "d" * 32}
+
+        with patch.object(
+            self.service,
+            "_build_confirmed_product_candidate",
+            side_effect=build,
+        ):
+            first = self.service.start_confirmed_product_candidate(request)
+            self.assertEqual(
+                self._wait(first["run_id"])["status"],
+                "failed",
+            )
+            self.service._management_tasks[first["run_id"]]["future"].result(
+                timeout=2
+            )
+            retried = self.service.start_confirmed_product_candidate(request)
+            self.assertEqual(retried["run_id"], first["run_id"])
+            self.assertEqual(
+                self._wait(retried["run_id"])["status"],
+                "completed",
+            )
+            completed = self.service.start_confirmed_product_candidate(request)
+            self.assertEqual(completed["run_id"], first["run_id"])
+            self.assertEqual(completed["status"], "completed")
+        self.assertEqual(calls, 2)
+
+        cancelled_run = "run_" + "e" * 32
+        cancelled = self.service._submit_management_task(
+            "product_candidate_start_confirmed",
+            lambda _cancel: {"status": "cancelled"},
+            run_id=cancelled_run,
+            cancellable=True,
+            read_only_candidate=True,
+            retry_terminal=True,
+        )
+        self.assertEqual(
+            self._wait(cancelled["run_id"])["status"],
+            "cancelled",
+        )
+        self.service._management_tasks[cancelled["run_id"]]["future"].result(
+            timeout=2
+        )
+        retry_calls = 0
+
+        def retry(_cancel: threading.Event) -> dict[str, bool]:
+            nonlocal retry_calls
+            retry_calls += 1
+            return {"retried": True}
+
+        restarted = self.service._submit_management_task(
+            "product_candidate_start_confirmed",
+            retry,
+            run_id=cancelled_run,
+            read_only_candidate=True,
+            retry_terminal=True,
+        )
+        self.assertEqual(
+            self._wait(restarted["run_id"])["status"],
+            "completed",
+        )
+        self.assertEqual(retry_calls, 1)
+
+    def test_confirmed_candidate_concurrent_starts_share_one_attempt(self) -> None:
+        request = {
+            "plan_token": "plan_token_" + "1" * 48,
+            "plan_digest": "2" * 64,
+            "acceptance_confirmation_digest": "3" * 64,
+        }
+        entered = threading.Event()
+        release = threading.Event()
+        calls = 0
+
+        def build(*_args: object) -> dict[str, object]:
+            nonlocal calls
+            calls += 1
+            entered.set()
+            release.wait(2)
+            return {"candidate_token": "candidate_" + "4" * 32}
+
+        with patch.object(
+            self.service,
+            "_build_confirmed_product_candidate",
+            side_effect=build,
+        ):
+            first = self.service.start_confirmed_product_candidate(request)
+            self.assertTrue(entered.wait(1))
+            responses: list[dict[str, object]] = []
+
+            def start() -> None:
+                responses.append(
+                    self.service.start_confirmed_product_candidate(request)
+                )
+
+            threads = [threading.Thread(target=start) for _ in range(100)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join(2)
+            release.set()
+            self.assertEqual(
+                self._wait(first["run_id"])["status"],
+                "completed",
+            )
+        self.assertEqual(
+            {response["run_id"] for response in responses},
+            {first["run_id"]},
+        )
+        self.assertEqual(calls, 1)
+
+    def test_product_planning_payloads_reject_unknown_fields(self) -> None:
+        cases = (
+            (
+                self.service.list_product_planning_models,
+                {"unexpected": True},
+                "product_planning_request_invalid",
+            ),
+            (
+                self.service.select_product_planning_model,
+                {"name": "small", "digest": "a" * 64, "unexpected": True},
+                "product_planning_model_required",
+            ),
+            (
+                self.service.start_product_plan,
+                {"goal": "plan", "unexpected": True},
+                "product_plan_goal_invalid",
+            ),
+            (
+                self.service.submit_product_plan_answers,
+                {
+                    "plan_token": "token",
+                    "question_set_digest": "a" * 64,
+                    "answers": [],
+                    "unexpected": True,
+                },
+                "product_plan_answers_invalid",
+            ),
+            (
+                self.service.suggest_product_plan_action,
+                {
+                    "plan_token": "token",
+                    "feedback": "change",
+                    "unexpected": True,
+                },
+                "product_plan_action_suggestion_invalid",
+            ),
+            (
+                self.service.revise_product_plan,
+                {
+                    "plan_token": "token",
+                    "action": "request",
+                    "message": "change",
+                    "unexpected": True,
+                },
+                "product_plan_revision_invalid",
+            ),
+            (
+                self.service.get_product_plan_workspace,
+                {"plan_token": "token", "unexpected": True},
+                "product_plan_token_invalid",
+            ),
+            (
+                self.service.get_product_plan_run,
+                {"run_id": "run", "unexpected": True},
+                "product_plan_run_id_required",
+            ),
+            (
+                self.service.cancel_product_plan_run,
+                {"run_id": "run", "unexpected": True},
+                "product_plan_run_id_required",
+            ),
+            (
+                self.service.confirm_product_plan,
+                {
+                    "plan_token": "token",
+                    "plan_digest": "a" * 64,
+                    "unexpected": True,
+                },
+                "product_plan_confirmation_invalid",
+            ),
+        )
+        for method, payload, code in cases:
+            with self.subTest(method=method.__name__):
+                self.assertEqual(method(payload)["error"]["code"], code)
 
     def test_cancel_after_action_commit_keeps_completed_task_status(self) -> None:
         entered = threading.Event()
@@ -525,6 +2383,138 @@ class Phase4ManagementTest(unittest.TestCase):
         )
         self.assertFalse(forged["ok"])
         self.assertEqual(forged["error"]["code"], "capture_request_invalid")
+
+    def test_v3_create_requires_explicit_schema_and_routes_exact_mapping(self) -> None:
+        static_id = self._ready_project()
+        owner_id, offer = self._scan_v2_offer(static_id)
+        request = {
+            "schema": "computation_capture_mapping.v3",
+            "project_id": owner_id,
+            "offer_id": offer["offer_id"],
+            "review_id": None,
+            "arguments": [
+                {
+                    "parameter_binding_id": "c" * 64,
+                    "input_field": "quantity",
+                    "kind": "integer",
+                    "minimum": 1,
+                    "maximum": 10,
+                }
+            ],
+            "result_field": "unit_price",
+            "passthrough_fields": ["quantity"],
+            "examples": [
+                {
+                    "input": {"quantity": 5},
+                    "expected": {"quantity": 5, "unit_price": 80},
+                }
+            ],
+        }
+        waiting = {
+            "schema": "ephemeral_capture_outcome.v1",
+            "status": "waiting_user",
+            "review_id": "review-v3",
+            "resume_contract": "resubmit_ephemeral_capture.v2",
+        }
+        with patch.object(
+            self.service._capsule_stage3,
+            "prepare_ephemeral_computation_capture_v3",
+            return_value=waiting,
+        ) as prepare:
+            started = self.service.start_create_computation_adapter(request)
+            task = self._wait(started["run_id"])
+        self.assertEqual(task["data"], waiting)
+        self.assertEqual(
+            prepare.call_args.args[1],
+            {
+                "module_relpath": "calculate.js",
+                "export_name": "calculate",
+                "target_binding_id": "b" * 64,
+            },
+        )
+        self.assertEqual(
+            prepare.call_args.args[2],
+            {
+                "schema": "computation_capture_mapping.v3",
+                "arguments": request["arguments"],
+                "result_field": "unit_price",
+                "passthrough_fields": ["quantity"],
+                "examples": request["examples"],
+            },
+        )
+        invalid = self.service.start_create_computation_adapter(
+            {**request, "schema": "computation_capture_mapping.future"}
+        )
+        self.assertFalse(invalid["ok"])
+        self.assertEqual(invalid["error"]["code"], "capture_request_invalid")
+        self.assertEqual(
+            self.service._allowed_review_decisions(
+                {
+                    "candidate_status": "review_required",
+                    "candidate": {
+                        "candidate_origin": "deterministic_computation_adapter",
+                        "adapter_contract_version": "computation_adapter.v3",
+                        "usage_scope": {"kind": "general"},
+                    },
+                    "comparison": {},
+                }
+            ),
+            ["reject"],
+        )
+
+    def test_v4_create_requires_explicit_schema_and_routes_exact_mapping(self) -> None:
+        static_id = self._ready_project()
+        owner_id, offer = self._scan_v2_offer(static_id)
+        request = {
+            "schema": "computation_capture_mapping.v4",
+            "project_id": owner_id,
+            "offer_id": offer["offer_id"],
+            "review_id": None,
+            "arguments": [
+                {
+                    "parameter_binding_id": "c" * 64,
+                    "input_field": "enabled",
+                    "kind": "boolean",
+                }
+            ],
+            "result_field": "state",
+            "result_enum": ["disabled", "enabled"],
+            "proof_schema": "source_graph_proof.v2",
+            "examples": [
+                {"input": {"enabled": False}, "expected": {"state": "disabled"}},
+                {"input": {"enabled": True}, "expected": {"state": "enabled"}},
+            ],
+        }
+        waiting = {
+            "schema": "ephemeral_capture_outcome.v1",
+            "status": "waiting_user",
+            "review_id": "review-v4",
+            "resume_contract": "resubmit_ephemeral_capture.v3",
+        }
+        with patch.object(
+            self.service._capsule_stage3,
+            "prepare_ephemeral_computation_capture_v4",
+            return_value=waiting,
+        ) as prepare:
+            started = self.service.start_create_computation_adapter(request)
+            task = self._wait(started["run_id"])
+        self.assertEqual(task["data"], waiting)
+        self.assertEqual(
+            prepare.call_args.args[2],
+            {
+                "schema": "computation_capture_mapping.v4",
+                "arguments": request["arguments"],
+                "result_field": "state",
+                "result_enum": ["disabled", "enabled"],
+                "proof_schema": "source_graph_proof.v2",
+                "examples": request["examples"],
+            },
+        )
+        guessed = dict(request)
+        guessed.pop("schema")
+        invalid = self.service.start_create_computation_adapter(guessed)
+        self.assertFalse(invalid["ok"])
+        self.assertEqual(invalid["error"]["code"], "capture_request_invalid")
 
     def test_v2_real_record_resubmission_terminates_waiting_review(self) -> None:
         static_id = self._ready_project()
@@ -994,6 +2984,73 @@ class Phase4ManagementTest(unittest.TestCase):
             )
             self.assertEqual(self._wait(started["run_id"])["status"], "completed")
 
+    def test_restore_pending_rejects_all_synchronous_product_writes(self) -> None:
+        actions = (
+            self.service.confirm_product_plan,
+            self.service.record_product_capability_gap_decision,
+            self.service.prepare_product_capability_source_proposal,
+            self.service.confirm_product_candidate_acceptance,
+            self.service.create_local_agent_handoff,
+            self.service.revoke_local_agent_handoff,
+        )
+        self.service._restore_pending = True
+        try:
+            with patch.object(
+                self.service,
+                "_payload",
+                side_effect=AssertionError("write method entered"),
+            ):
+                for action in actions:
+                    with self.subTest(action=action.__name__):
+                        rejected = action({})
+                        self.assertEqual(
+                            rejected["error"]["code"],
+                            "restore_in_progress",
+                        )
+        finally:
+            self.service._restore_pending = False
+        self.assertFalse((self.state / "product_workspaces").exists())
+
+    def test_restore_barrier_checks_again_after_operation_lock_wait(self) -> None:
+        entered = threading.Event()
+        release = threading.Event()
+        real_lock = self.service._capsule_operation_lock
+
+        class BlockingLock:
+            def __enter__(self) -> object:
+                entered.set()
+                release.wait(2)
+                real_lock.acquire()
+                return self
+
+            def __exit__(self, *_args: object) -> None:
+                real_lock.release()
+
+        self.service._capsule_operation_lock = BlockingLock()
+        result: list[dict[str, object]] = []
+        with patch.object(
+            self.service._product_planner,
+            "revoke_agent_handoff_for_plan",
+            side_effect=AssertionError("write method entered"),
+        ):
+            thread = threading.Thread(
+                target=lambda: result.append(
+                    self.service.revoke_local_agent_handoff(
+                        {"plan_token": "plan_token_" + "a" * 48}
+                    )
+                )
+            )
+            thread.start()
+            self.assertTrue(entered.wait(1))
+            with self.service._management_lock:
+                self.service._restore_pending = True
+            release.set()
+            thread.join(2)
+        self.service._restore_pending = False
+        self.service._capsule_operation_lock = real_lock
+        self.assertFalse(thread.is_alive())
+        self.assertEqual(result[0]["error"]["code"], "restore_in_progress")
+
     def test_corrupt_database_still_exposes_and_restores_valid_backup(self) -> None:
         self.store.initialize()
         with self.store.transaction() as connection:
@@ -1047,6 +3104,489 @@ class Phase4ManagementTest(unittest.TestCase):
                 {"name": "local", "digest": "a" * 64}
             )
             self.assertEqual(self._wait(model["run_id"])["status"], "completed")
+
+    def test_source_handoff_is_single_scoped_recoverable_and_runs_real_gates(
+        self,
+    ) -> None:
+        project_id, source = self._ready_complete_project()
+        self._select_test_supervision_model()
+        source_before = {
+            path.relative_to(source).as_posix(): hashlib.sha256(
+                path.read_bytes()
+            ).hexdigest()
+            for path in sorted(source.iterdir())
+            if path.is_file()
+        }
+
+        created = self.service.create_local_source_handoff(
+            {"project_id": project_id}
+        )
+        self.assertTrue(created["ok"], created)
+        token = created["data"]["source_handoff_token"]
+        self.assertRegex(token, r"^source_handoff_token_[0-9a-f]{48}$")
+        duplicate = self.service.create_local_source_handoff(
+            {"project_id": project_id}
+        )
+        self.assertEqual(
+            duplicate["error"]["code"],
+            "source_handoff_already_active",
+        )
+        sidecars = list((self.state / "source_handoffs").glob("*.json"))
+        self.assertEqual(len(sidecars), 1)
+        sidecar_text = sidecars[0].read_text(encoding="utf-8")
+        self.assertNotIn(token, sidecar_text)
+        self.assertNotIn(str(source), sidecar_text)
+        safe_status = next(
+            project["source_handoff"]
+            for project in self.service._capsule_management_state()[
+                "projects"
+            ]
+            if project["project_id"] == project_id
+        )
+        self.assertEqual(
+            set(safe_status),
+            {
+                "schema_version",
+                "status",
+                "created_at",
+                "revoked_at",
+                "run_id",
+                "run_status",
+            },
+        )
+        self.assertEqual(safe_status["status"], "active")
+        self.assertNotIn(token, json.dumps(safe_status))
+
+        binding = self.service._resolve_local_source_handoff(token)
+        calls: list[str] = []
+
+        def approve(_summary, capability_kind):
+            calls.append(capability_kind)
+            return (
+                {
+                    "schema_version": "capsule_supervision.v1",
+                    "verdict": "approve",
+                    "capability_kind": capability_kind,
+                    "semantic_summary": "Bounded local capability.",
+                    "keep_reason_codes": ["DECLARED_LOCAL_CAPABILITY"],
+                    "remove_reason_codes": [],
+                    "brand_signals": [],
+                    "sensitive_data_status": "clear",
+                    "hidden_dependency_codes": [],
+                    "duplicate_suggestions": [],
+                    "review_required": False,
+                },
+                "a" * 64,
+                {
+                    "name": "source-handoff-test-model",
+                    "digest": "b" * 64,
+                },
+            )
+
+        original_runtime = self.service._capsule_stage3._runtime_validation
+
+        def layered_runtime(prepared):
+            kind = prepared.artifact.canonical_payload["capability_kind"]
+            if kind == "computation":
+                return original_runtime(prepared)
+            normal = len(prepared.fixtures["normal"])
+            boundary = len(prepared.fixtures["boundary"])
+            result = {
+                "schema_version": "qweb_validation.v1",
+                "status": "passed",
+                "normal_cases": normal,
+                "boundary_cases": boundary,
+                "invalid_cases": len(prepared.fixtures["invalid"]),
+                "repeated_render": kind == "presentation",
+                "dispose_idempotent": kind == "interaction",
+                "remount_checked": (
+                    kind == "interaction" and normal + boundary > 1
+                ),
+                "acceptance_scope": (
+                    "real_qwebengine_interaction"
+                    if kind == "interaction"
+                    else "real_qwebengine_render"
+                ),
+            }
+            if kind == "interaction":
+                names = sorted(
+                    prepared.artifact.canonical_payload[
+                        "output_contract"
+                    ]["events"]
+                )
+                result.update(
+                    {
+                        "emission_count": len(names),
+                        "emission_names": names,
+                    }
+                )
+            return result
+
+        with patch.object(
+            self.service._capsule_supervisor,
+            "supervise",
+            side_effect=approve,
+        ), patch.object(
+            self.service._capsule_stage3,
+            "_runtime_validation",
+            side_effect=layered_runtime,
+        ):
+            # Layer isolation only: the 29-node process gate remains the QWeb authority.
+            started = self.service._start_authorized_source_intake(binding)
+            repeated = self.service._start_authorized_source_intake(binding)
+            self.assertTrue(started["ok"], started)
+            self.assertEqual(repeated["run_id"], started["run_id"])
+            self.service._management_tasks[started["run_id"]][
+                "future"
+            ].result(timeout=30)
+
+        run = self.service._get_authorized_source_intake_run(binding)
+        reviews = self.service._get_authorized_source_review_summaries(
+            binding
+        )
+        self.assertTrue(run["ok"], run)
+        self.assertIn(
+            run["data"]["status"],
+            {"completed", "completed_with_pending"},
+        )
+        self.assertTrue(reviews["ok"], reviews)
+        self.assertEqual(
+            {item["status"] for item in reviews["data"]["items"]},
+            {"review_required"},
+        )
+        self.assertEqual(
+            {item["capability_kind"] for item in reviews["data"]["items"]},
+            {"interaction", "presentation", "computation"},
+        )
+        self.assertEqual(
+            sorted(calls),
+            ["computation", "interaction", "presentation"],
+        )
+        with self.store.transaction() as connection:
+            interrupted_review = connection.execute(
+                "SELECT review_id FROM review_items WHERE run_id = ? "
+                "ORDER BY review_id LIMIT 1",
+                (binding["run_id"],),
+            ).fetchone()[0]
+            connection.execute(
+                "UPDATE review_items SET candidate_status = "
+                "'waiting_validation' WHERE review_id = ?",
+                (interrupted_review,),
+            )
+        interrupted = self.service._get_authorized_source_intake_run(
+            binding
+        )
+        self.assertEqual(interrupted["data"]["status"], "interrupted")
+        self.assertEqual(
+            interrupted["data"]["error_code"],
+            "manual_recovery_required",
+        )
+        with self.store.transaction() as connection:
+            connection.execute(
+                "UPDATE review_items SET candidate_status = "
+                "'review_required' WHERE review_id = ?",
+                (interrupted_review,),
+            )
+        with self.store.read_connection() as connection:
+            self.assertEqual(
+                connection.execute(
+                    "SELECT count(*) FROM intake_runs WHERE run_id = ?",
+                    (binding["run_id"],),
+                ).fetchone()[0],
+                1,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT count(*) FROM review_items WHERE run_id = ?",
+                    (binding["run_id"],),
+                ).fetchone()[0],
+                3,
+            )
+            self.assertEqual(
+                connection.execute(
+                    "SELECT count(*) FROM capsules"
+                ).fetchone()[0],
+                0,
+            )
+        self.assertEqual(
+            source_before,
+            {
+                path.relative_to(source).as_posix(): hashlib.sha256(
+                    path.read_bytes()
+                ).hexdigest()
+                for path in sorted(source.iterdir())
+                if path.is_file()
+            },
+        )
+
+        self.service.close()
+        self.service = ReweaveAppService(
+            engine=LocalReweaveEngine(),
+            capsule_store=self.store,
+        )
+        restored = self.service._resolve_local_source_handoff(token)
+        self.assertEqual(restored, binding)
+        self.assertTrue(
+            self.service._get_authorized_source_intake_run(restored)["ok"]
+        )
+        self.assertEqual(
+            self.service._start_authorized_source_intake(restored)["run_id"],
+            binding["run_id"],
+        )
+        revoked = self.service.revoke_local_source_handoff(
+            {"project_id": project_id}
+        )
+        self.assertEqual(revoked["data"]["status"], "revoked")
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "source_handoff_revoked",
+        ):
+            self.service._resolve_local_source_handoff(token)
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "source_handoff_revoked",
+        ):
+            self.service._run_authorized_source_intake(
+                binding,
+                threading.Event(),
+            )
+        self.assertEqual(
+            self.service.revoke_local_source_handoff(
+                {"project_id": project_id}
+            )["data"]["status"],
+            "revoked",
+        )
+
+    def test_source_handoff_stale_tamper_and_multiple_active_fail_closed(
+        self,
+    ) -> None:
+        project_id = self._ready_project()
+        self._select_test_supervision_model()
+        source = self.root / "project" / "index.html"
+        original = source.read_bytes()
+        first = self.service.create_local_source_handoff(
+            {"project_id": project_id}
+        )
+        self.assertTrue(first["ok"], first)
+        first_token = first["data"]["source_handoff_token"]
+
+        source.write_bytes(original + b"\n")
+        stale_status = next(
+            project["source_handoff"]
+            for project in self.service._capsule_management_state()[
+                "projects"
+            ]
+            if project["project_id"] == project_id
+        )
+        self.assertEqual(stale_status["status"], "stale")
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "source_handoff_stale",
+        ):
+            self.service._resolve_local_source_handoff(first_token)
+        source.write_bytes(original)
+        self.assertTrue(
+            self.service.revoke_local_source_handoff(
+                {"project_id": project_id}
+            )["ok"]
+        )
+
+        model_bound = self.service.create_local_source_handoff(
+            {"project_id": project_id}
+        )
+        with patch.object(
+            self.service._capsule_supervisor,
+            "selected_model",
+            return_value={
+                "name": "changed-model",
+                "digest": "c" * 64,
+            },
+        ), self.assertRaisesRegex(
+            RuntimeError,
+            "source_handoff_stale",
+        ):
+            self.service._resolve_local_source_handoff(
+                model_bound["data"]["source_handoff_token"]
+            )
+        self.assertTrue(
+            self.service.revoke_local_source_handoff(
+                {"project_id": project_id}
+            )["ok"]
+        )
+
+        revision_bound = self.service.create_local_source_handoff(
+            {"project_id": project_id}
+        )
+        current_revision = self.store.current_revision()
+        with patch.object(
+            self.store,
+            "current_revision",
+            return_value=current_revision + 1,
+        ), self.assertRaisesRegex(
+            RuntimeError,
+            "source_handoff_stale",
+        ):
+            self.service._resolve_local_source_handoff(
+                revision_bound["data"]["source_handoff_token"]
+            )
+        self.assertTrue(
+            self.service.revoke_local_source_handoff(
+                {"project_id": project_id}
+            )["ok"]
+        )
+
+        brand_bound = self.service.create_local_source_handoff(
+            {"project_id": project_id}
+        )
+        with patch.object(
+            self.service,
+            "_source_handoff_brand_identity",
+            return_value={
+                "profile_id": "changed",
+                "profile_digest": "d" * 64,
+                "profile_version": 1,
+            },
+        ), self.assertRaisesRegex(
+            RuntimeError,
+            "source_handoff_stale",
+        ):
+            self.service._resolve_local_source_handoff(
+                brand_bound["data"]["source_handoff_token"]
+            )
+        self.assertTrue(
+            self.service.revoke_local_source_handoff(
+                {"project_id": project_id}
+            )["ok"]
+        )
+
+        second = self.service.create_local_source_handoff(
+            {"project_id": project_id}
+        )
+        second_token = second["data"]["source_handoff_token"]
+        second_digest = hashlib.sha256(
+            second_token.encode("utf-8")
+        ).hexdigest()
+        directory = self.state / "source_handoffs"
+        second_path = (
+            directory / f"source_handoff_v1_{second_digest}.json"
+        )
+        record = json.loads(second_path.read_text(encoding="utf-8"))
+        valid_record = dict(record)
+        fake_token = "source_handoff_token_" + "c" * 48
+        fake_digest = hashlib.sha256(
+            fake_token.encode("utf-8")
+        ).hexdigest()
+        fake = {
+            **record,
+            "token_digest": fake_digest,
+            "run_id": "run_" + "c" * 32,
+        }
+        fake["canonical_digest"] = canonical_json_digest(
+            {
+                key: value
+                for key, value in fake.items()
+                if key != "canonical_digest"
+            }
+        )
+        fake_path = (
+            directory / f"source_handoff_v1_{fake_digest}.json"
+        )
+        fake_path.write_text(
+            json.dumps(
+                fake,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        if os.name == "posix":
+            fake_path.chmod(0o600)
+        for token in (second_token, fake_token):
+            with self.subTest(token=token), self.assertRaisesRegex(
+                RuntimeError,
+                "source_handoff_conflict",
+            ):
+                self.service._resolve_local_source_handoff(token)
+        fake_path.unlink()
+
+        record["snapshot_digest"] = "0" * 64
+        second_path.write_text(
+            json.dumps(
+                record,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+            + "\n",
+            encoding="utf-8",
+        )
+        if os.name == "posix":
+            second_path.chmod(0o600)
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "source_handoff_conflict",
+        ):
+            self.service._resolve_local_source_handoff(second_token)
+        if os.name == "posix":
+            second_path.unlink()
+            symlink_target = self.root / "valid-source-handoff.json"
+            symlink_target.write_text(
+                json.dumps(
+                    valid_record,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            symlink_target.chmod(0o600)
+            second_path.symlink_to(symlink_target)
+            with self.assertRaisesRegex(
+                RuntimeError,
+                "source_handoff_conflict",
+            ):
+                self.service._resolve_local_source_handoff(second_token)
+
+    def test_source_handoff_rejects_a_preexisting_run_with_wrong_snapshot(
+        self,
+    ) -> None:
+        project_id = self._ready_project()
+        self._select_test_supervision_model()
+        created = self.service.create_local_source_handoff(
+            {"project_id": project_id}
+        )
+        token = created["data"]["source_handoff_token"]
+        binding = self.service._resolve_local_source_handoff(token)
+        now = "2026-08-16T23:59:59.000Z"
+        with self.store.transaction() as connection:
+            connection.execute(
+                "INSERT INTO intake_runs (run_id, project_id, run_kind, "
+                "status, snapshot_before, snapshot_after, "
+                "extraction_contract_version, redaction_rules_version, "
+                "security_rules_version, supervision_rules_version, "
+                "validation_contract_version, canonicalization_version, "
+                "counts_json, completed_at, created_at) VALUES "
+                "(?, ?, 'refresh_project', 'completed', ?, ?, "
+                "'extraction_contract.v2', 'redaction_rules.v1', "
+                "'not_run.stage2', 'not_run.stage2', 'not_run.stage2', "
+                "1, '{}', ?, ?)",
+                (
+                    binding["run_id"],
+                    project_id,
+                    "0" * 64,
+                    "0" * 64,
+                    now,
+                    now,
+                ),
+            )
+        with self.assertRaisesRegex(
+            RuntimeError,
+            "source_handoff_conflict",
+        ):
+            self.service._resolve_local_source_handoff(token)
 
     def test_completed_management_tasks_are_bounded(self) -> None:
         self.store.initialize()
@@ -1535,6 +4075,41 @@ class Phase4ManagementTest(unittest.TestCase):
             ],
         )
 
+    def test_v3_current_adapter_remains_active_when_evidence_is_current(self) -> None:
+        project_id = self._ready_project()
+        capsule_id, version_id = self._seed_project_contribution(
+            project_id,
+            extraction_summary={
+                "candidate_origin": "deterministic_computation_adapter",
+                "adapter_contract_version": "computation_adapter.v3",
+            },
+        )
+        before = self.store.current_revision()
+
+        with patch.object(
+            self.service._capsule_stage3,
+            "_stored_version_evidence_eligible",
+            return_value=True,
+        ) as eligible:
+            self.service._ensure_capsule_management()
+
+        eligible.assert_called_once()
+        checked = eligible.call_args.args[0]
+        self.assertEqual(checked["capsule_id"], capsule_id)
+        self.assertEqual(checked["version_id"], version_id)
+        with self.store.read_connection() as connection:
+            capsule = connection.execute(
+                "SELECT status, current_version_id FROM capsules WHERE capsule_id = ?",
+                (capsule_id,),
+            ).fetchone()
+            event_count = connection.execute(
+                "SELECT COUNT(*) FROM capsule_status_events WHERE capsule_id = ?",
+                (capsule_id,),
+            ).fetchone()[0]
+        self.assertEqual(tuple(capsule), ("active", version_id))
+        self.assertEqual(event_count, 0)
+        self.assertEqual(self.store.current_revision(), before)
+
     def test_adapter_contract_rule_does_not_revalidate_ordinary_extraction(self) -> None:
         project_id = self._ready_project()
         capsule_id, version_id = self._seed_project_contribution(
@@ -1616,6 +4191,573 @@ class Phase4ManagementTest(unittest.TestCase):
                     "SELECT asset_decision FROM review_items WHERE review_id = 'brand-review'"
                 ).fetchone()[0]
             )
+
+    def test_frozen_review_admission_routes_only_explicit_binding(self) -> None:
+        request = {
+            "source_database_path": str(self.root / "frozen.sqlite3"),
+            "source_directory_path": str(self.root / "frozen-source"),
+            "source_database_sha256": "a" * 64,
+            "review_id": "review-frozen",
+            "expected_warehouse_revision": 7,
+            "plan_token": "plan-token",
+            "plan_digest": "1" * 64,
+            "projection_digest": "2" * 64,
+            "authorize_decision_digest": "3" * 64,
+            "source_proposal_authorization_digest": "4" * 64,
+        }
+        catalog = {"warehouse_revision": 7, "capsules": []}
+        catalog_digest = hashlib.sha256(
+            json.dumps(
+                catalog,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        target_catalog_digest = hashlib.sha256(
+            b'{"capsules":[]}'
+        ).hexdigest()
+        plan = {"canonical_digest": request["plan_digest"]}
+        workspace = {"status": "plan_review", "plan": plan}
+        projection = {
+            "projection_digest": request["projection_digest"],
+            "catalog_digest": catalog_digest,
+            "warehouse_revision": 7,
+        }
+        decision = {
+            "decision": "authorize",
+            "canonical_digest": request["authorize_decision_digest"],
+        }
+        authorization = {
+            "plan_digest": request["plan_digest"],
+            "gap_id": "gap-test",
+            "projection_digest": request["projection_digest"],
+            "authorize_decision_digest": request[
+                "authorize_decision_digest"
+            ],
+            "authorization_digest": request[
+                "source_proposal_authorization_digest"
+            ],
+            "capability_key": "year_month_conversion",
+            "adapter_contract_version": "computation_adapter.v2",
+            "input_contract": {"input": True},
+            "output_contract": {"output": True},
+            "error_contract": {"error": True},
+            "warehouse_revision": 7,
+            "catalog_digest": catalog_digest,
+        }
+        binding = {
+            "plan_digest": request["plan_digest"],
+            "gap_id": "gap-test",
+            "projection_digest": request["projection_digest"],
+            "authorize_decision_digest": request[
+                "authorize_decision_digest"
+            ],
+            "source_proposal_authorization_digest": request[
+                "source_proposal_authorization_digest"
+            ],
+            "capability_key": "year_month_conversion",
+            "adapter_contract_version": "computation_adapter.v2",
+            "input_contract": {"input": True},
+            "output_contract": {"output": True},
+            "error_contract": {"error": True},
+            "authorization_warehouse_revision": 7,
+            "authorization_catalog_digest": catalog_digest,
+            "target_catalog_digest": target_catalog_digest,
+        }
+        expected = {
+            "review_id": "review-frozen",
+            "status": "review_required",
+            "canonical_hash": "b" * 64,
+            "admission_digest": "c" * 64,
+            "warehouse_revision": 8,
+        }
+        with patch.object(
+            self.service,
+            "_product_planning_catalog",
+            return_value=catalog,
+        ), patch.object(
+            self.service._product_planner,
+            "_catalog",
+            return_value=catalog,
+        ), patch.object(
+            self.service._product_planner,
+            "_workspace_by_token",
+            return_value=workspace,
+        ), patch.object(
+            self.service._product_planner,
+            "_read_capability_gap_projection",
+            return_value=projection,
+        ), patch.object(
+            self.service._product_planner,
+            "_capability_gap_projection_for_workspace",
+            return_value=(projection, "available"),
+        ) as project_for_workspace, patch.object(
+            self.service._product_planner,
+            "_capability_gap_projection",
+            side_effect=AssertionError("legacy_projection_entry_called"),
+        ) as legacy_projection, patch.object(
+            self.service._product_planner,
+            "_capability_gap_decisions",
+            return_value=[decision],
+        ), patch.object(
+            self.service._product_planner,
+            "_read_capability_source_proposal_authorization",
+            return_value=authorization,
+        ) as read_authorization, patch.object(
+            self.service._capsule_stage3,
+            "admit_frozen_review",
+            return_value=expected,
+        ) as admit:
+            result = self.service.admit_frozen_review(request)
+            tampered_results = {
+                field: self.service.admit_frozen_review(
+                    {**request, field: "f" * 64}
+                )
+                for field in (
+                    "plan_digest",
+                    "projection_digest",
+                    "authorize_decision_digest",
+                    "source_proposal_authorization_digest",
+                )
+            }
+            read_authorization.return_value = {
+                **authorization,
+                "catalog_digest": "e" * 64,
+            }
+            catalog_tampered = self.service.admit_frozen_review(request)
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["data"], expected)
+        project_for_workspace.assert_any_call(workspace, plan, catalog)
+        legacy_projection.assert_not_called()
+        admit.assert_called_once_with(
+            Path(request["source_database_path"]),
+            Path(request["source_directory_path"]),
+            "review-frozen",
+            expected_source_sha256="a" * 64,
+            expected_warehouse_revision=7,
+            authorization_binding=binding,
+        )
+        invalid = self.service.admit_frozen_review({**request, "extra": True})
+        self.assertEqual(
+            invalid["error"]["code"], "frozen_review_admission_invalid"
+        )
+        for field, result in tampered_results.items():
+            with self.subTest(field=field):
+                self.assertFalse(result["ok"])
+                self.assertIn(
+                    result["error"]["code"],
+                    {
+                        "frozen_review_admission_authorization_invalid",
+                        "frozen_review_admission_authorization_stale",
+                    },
+                )
+        self.assertEqual(
+            catalog_tampered["error"]["code"],
+            "frozen_review_admission_authorization_invalid",
+        )
+
+    def test_frozen_review_admission_honors_workspace_gap_selection(self) -> None:
+        request = {
+            "source_database_path": str(self.root / "frozen.sqlite3"),
+            "source_directory_path": str(self.root / "frozen-source"),
+            "source_database_sha256": "a" * 64,
+            "review_id": "review-frozen",
+            "expected_warehouse_revision": 71,
+            "plan_token": "plan-token",
+            "plan_digest": "1" * 64,
+            "projection_digest": "2" * 64,
+            "authorize_decision_digest": "3" * 64,
+            "source_proposal_authorization_digest": "4" * 64,
+        }
+        catalog = {"warehouse_revision": 71, "capsules": []}
+        catalog_digest = hashlib.sha256(
+            json.dumps(
+                catalog,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode()
+        ).hexdigest()
+        candidate_digest = "5" * 64
+        selection_body = {
+            "schema_version": "product_capability_gap_target_selection.v1",
+            "question_set_digest": "6" * 64,
+            "option_id": "option_selected",
+            "candidate_digest": candidate_digest,
+            "warehouse_revision": 71,
+            "catalog_digest": catalog_digest,
+            "user_answer_digest": "7" * 64,
+        }
+        selection = {
+            **selection_body,
+            "canonical_digest": hashlib.sha256(
+                json.dumps(
+                    selection_body,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            ).hexdigest(),
+        }
+        plan = {"canonical_digest": request["plan_digest"]}
+        workspace = {
+            "schema_version": "product_workspace.v8",
+            "status": "plan_review",
+            "plan": plan,
+            "capability_gap_target_selection": selection,
+        }
+        projection = {
+            "projection_digest": request["projection_digest"],
+            "catalog_digest": catalog_digest,
+            "warehouse_revision": 71,
+        }
+        decision = {
+            "decision": "authorize",
+            "canonical_digest": request["authorize_decision_digest"],
+        }
+        authorization = {
+            "plan_digest": request["plan_digest"],
+            "gap_id": "gap-test",
+            "projection_digest": request["projection_digest"],
+            "authorize_decision_digest": request[
+                "authorize_decision_digest"
+            ],
+            "authorization_digest": request[
+                "source_proposal_authorization_digest"
+            ],
+            "capability_key": "workflow_state_classification",
+            "adapter_contract_version": "computation_adapter.v4",
+            "input_contract": {"input": True},
+            "output_contract": {"output": True},
+            "error_contract": {"error": True},
+            "warehouse_revision": 71,
+            "catalog_digest": catalog_digest,
+        }
+        expected = {
+            "review_id": "review-frozen",
+            "status": "review_required",
+            "canonical_hash": "b" * 64,
+            "admission_digest": "c" * 64,
+            "warehouse_revision": 72,
+        }
+
+        def recalculate(_plan, current_catalog, selected_digest=None):
+            if (
+                current_catalog["capsules"] == []
+                and selected_digest in {None, candidate_digest}
+            ):
+                return projection, "available"
+            return None, "capability_gap_boundary_ambiguous"
+
+        with patch.object(
+            self.service,
+            "_product_planning_catalog",
+            return_value=catalog,
+        ), patch.object(
+            self.service._product_planner,
+            "_catalog",
+            side_effect=lambda value: value,
+        ), patch.object(
+            self.service._product_planner,
+            "_workspace_by_token",
+            return_value=workspace,
+        ), patch.object(
+            self.service._product_planner,
+            "_read_capability_gap_projection",
+            return_value=projection,
+        ), patch.object(
+            self.service._product_planner,
+            "_capability_gap_projection",
+            side_effect=recalculate,
+        ) as recalculate_projection, patch.object(
+            self.service._product_planner,
+            "_capability_gap_decisions",
+            return_value=[decision],
+        ), patch.object(
+            self.service._product_planner,
+            "_read_capability_source_proposal_authorization",
+            return_value=authorization,
+        ), patch.object(
+            self.service._capsule_stage3,
+            "admit_frozen_review",
+            return_value=expected,
+        ) as admit:
+            selected = self.service.admit_frozen_review(request)
+            self.assertTrue(selected["ok"])
+            recalculate_projection.assert_called_with(
+                plan,
+                catalog,
+                candidate_digest,
+            )
+            admit.assert_called_once()
+
+            admit.reset_mock()
+            wrong_body = {**selection_body, "candidate_digest": "8" * 64}
+            workspace["capability_gap_target_selection"] = {
+                **wrong_body,
+                "canonical_digest": hashlib.sha256(
+                    json.dumps(
+                        wrong_body,
+                        sort_keys=True,
+                        separators=(",", ":"),
+                    ).encode()
+                ).hexdigest(),
+            }
+            wrong = self.service.admit_frozen_review(request)
+            self.assertEqual(
+                wrong["error"]["code"],
+                "frozen_review_admission_authorization_stale",
+            )
+            admit.assert_not_called()
+
+            workspace["capability_gap_target_selection"] = {
+                **selection,
+                "canonical_digest": "9" * 64,
+            }
+            tampered = self.service.admit_frozen_review(request)
+            self.assertFalse(tampered["ok"])
+            admit.assert_not_called()
+
+            workspace["capability_gap_target_selection"] = selection
+            drifted_catalog = {
+                "warehouse_revision": 71,
+                "capsules": [{"drift": True}],
+            }
+            self.service._product_planning_catalog.return_value = (
+                drifted_catalog
+            )
+            drifted = self.service.admit_frozen_review(request)
+            self.assertEqual(
+                drifted["error"]["code"],
+                "frozen_review_admission_authorization_stale",
+            )
+            admit.assert_not_called()
+
+            self.service._product_planning_catalog.return_value = catalog
+            for schema_version in (
+                "product_workspace.v8",
+                "product_workspace.v7",
+                "product_workspace.v6",
+                "product_workspace.v5",
+            ):
+                workspace["schema_version"] = schema_version
+                workspace["capability_gap_target_selection"] = None
+                compatible = self.service.admit_frozen_review(request)
+                self.assertTrue(compatible["ok"], schema_version)
+
+            workspace["schema_version"] = "product_workspace.v8"
+            workspace["capability_gap_target_selection"] = selection
+            self.service._product_planning_catalog.return_value = {
+                "warehouse_revision": 72,
+                "capsules": [],
+            }
+            repeated = self.service.admit_frozen_review(
+                {**request, "expected_warehouse_revision": 72}
+            )
+            self.assertTrue(repeated["ok"])
+
+    def test_frozen_ui_review_batch_routes_and_locks_publication_identity(
+        self,
+    ) -> None:
+        catalog = {"warehouse_revision": 7, "capsules": []}
+        catalog_digest = hashlib.sha256(
+            json.dumps(
+                {"capsules": []},
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+        authorization = {
+            "schema": "frozen_stage3_ui_review_admission_authorization.v1",
+            "scope": "isolated_rehearsal",
+            "source_database_sha256": "a" * 64,
+            "source_project_id": "project-ui",
+            "source_run_id": "run-ui",
+            "source_file_index_digest": "b" * 64,
+            "capability_key": "rectangle_area_calculation",
+            "display_name": "Rectangle area",
+            "page_capability_contract_digest": "c" * 64,
+            "supervision_model_name": "test-model",
+            "supervision_model_digest": "d" * 64,
+            "target_warehouse_revision": 7,
+            "target_catalog_digest": catalog_digest,
+            "reviews": [
+                {
+                    "review_id": "review-interaction",
+                    "capability_kind": "interaction",
+                    "candidate_canonical_hash": "e" * 64,
+                    "source_relpath": "interaction.js",
+                    "source_file_sha256": "f" * 64,
+                    "validation_sha256": "1" * 64,
+                    "page_capability_declaration_digest": "2" * 64,
+                },
+                {
+                    "review_id": "review-presentation",
+                    "capability_kind": "presentation",
+                    "candidate_canonical_hash": "3" * 64,
+                    "source_relpath": "presentation.js",
+                    "source_file_sha256": "4" * 64,
+                    "validation_sha256": "5" * 64,
+                    "page_capability_declaration_digest": "6" * 64,
+                },
+            ],
+            "authorization_digest": "7" * 64,
+        }
+        request = {
+            "source_database_path": str(self.root / "source.sqlite3"),
+            "source_directory_path": str(self.root / "source"),
+            "source_database_sha256": "a" * 64,
+            "expected_warehouse_revision": 7,
+            "authorization": authorization,
+        }
+        expected = {
+            "status": "review_required",
+            "review_ids": [
+                "review-interaction",
+                "review-presentation",
+            ],
+            "admission_digests": ["8" * 64, "9" * 64],
+            "warehouse_revision": 9,
+        }
+        with patch.object(
+            self.service,
+            "_product_planning_catalog",
+            return_value=catalog,
+        ), patch.object(
+            self.service._product_planner,
+            "_catalog",
+            return_value=catalog,
+        ), patch.object(
+            self.service._capsule_stage3,
+            "admit_frozen_ui_review_batch",
+            return_value=expected,
+        ) as admit:
+            admitted = self.service.admit_frozen_ui_review_batch(request)
+        self.assertTrue(admitted["ok"])
+        self.assertEqual(admitted["data"], expected)
+        admit.assert_called_once_with(
+            Path(request["source_database_path"]),
+            Path(request["source_directory_path"]),
+            expected_source_sha256="a" * 64,
+            expected_warehouse_revision=7,
+            authorization_binding=authorization,
+        )
+        self.assertEqual(
+            self.service.admit_frozen_ui_review_batch(
+                {**request, "extra": True}
+            )["error"]["code"],
+            "frozen_ui_review_admission_invalid",
+        )
+
+        receipt = {
+            "schema": "frozen_stage3_ui_review_admission.v1",
+            "authorized_capability_key": "rectangle_area_calculation",
+            "authorized_display_name": "Rectangle area",
+        }
+        item = {
+            "review_id": "review-interaction",
+            "candidate_status": "review_required",
+            "candidate": {"frozen_ui_review_admission": receipt},
+            "comparison": {},
+            "allowed_decisions": ["publish_general", "reject"],
+        }
+        self.assertEqual(
+            self.service._allowed_review_decisions(item),
+            ["publish_general", "reject"],
+        )
+        published = {
+            "status": "published",
+            "capsule_id": "capsule-ui",
+            "version_id": "version-ui",
+        }
+        with patch.object(
+            self.service,
+            "list_review_items",
+            return_value={"ok": True, "data": {"items": [item]}},
+        ), patch.object(
+            self.service._capsule_stage3,
+            "publish_review",
+            return_value=published,
+        ) as publish:
+            result = self.service.decide_review_item(
+                {
+                    "review_id": "review-interaction",
+                    "decision": "publish_general",
+                    "capability_key": "rectangle_area_calculation",
+                    "display_name": "Rectangle area",
+                    "role_key": "rectangle_dimensions_input",
+                    "variant_key": "default",
+                }
+            )
+            wrong_name = self.service.decide_review_item(
+                {
+                    "review_id": "review-interaction",
+                    "decision": "publish_general",
+                    "capability_key": "rectangle_area_calculation",
+                    "display_name": "Wrong",
+                    "role_key": "rectangle_dimensions_input",
+                    "variant_key": "default",
+                }
+            )
+        self.assertTrue(result["ok"])
+        self.assertEqual(result["data"], published)
+        publish.assert_called_once()
+        self.assertEqual(
+            wrong_name["error"]["code"],
+            "frozen_review_publication_identity_invalid",
+        )
+        with self.store.transaction() as connection:
+            connection.execute(
+                "INSERT INTO capability_groups VALUES (?,?,?,?)",
+                (
+                    "rectangle_area_calculation",
+                    "Rectangle area",
+                    "2026-08-11T00:00:00.000Z",
+                    "2026-08-11T00:00:00.000Z",
+                ),
+            )
+        presentation = {
+            **item,
+            "review_id": "review-presentation",
+        }
+        with patch.object(
+            self.service,
+            "list_review_items",
+            return_value={
+                "ok": True,
+                "data": {"items": [presentation]},
+            },
+        ), patch.object(
+            self.service._capsule_stage3,
+            "publish_review",
+            return_value=published,
+        ) as publish_second:
+            second = self.service.decide_review_item(
+                {
+                    "review_id": "review-presentation",
+                    "decision": "publish_general",
+                    "capability_key": "rectangle_area_calculation",
+                    "display_name": "Rectangle area",
+                    "role_key": "rectangle_area_result",
+                    "variant_key": "default",
+                }
+            )
+            wrong_key = self.service.decide_review_item(
+                {
+                    "review_id": "review-presentation",
+                    "decision": "publish_general",
+                    "capability_key": "other_area",
+                    "display_name": "Rectangle area",
+                    "role_key": "rectangle_area_result",
+                    "variant_key": "default",
+                }
+            )
+        self.assertTrue(second["ok"])
+        publish_second.assert_called_once()
+        self.assertEqual(
+            wrong_key["error"]["code"],
+            "frozen_review_publication_identity_invalid",
+        )
 
     def test_default_review_queue_excludes_history_but_explicit_status_keeps_it(self) -> None:
         project_id = self._ready_project()

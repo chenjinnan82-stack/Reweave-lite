@@ -8,6 +8,9 @@
   <link rel="stylesheet" href="styles.css">
 </head>
 <body>
+  <div id="scene-thread-transition" class="scene-thread-transition" aria-hidden="true">
+    <span></span>
+  </div>
   <!-- State 1: Folder selection -->
   <section id="screen-welcome" class="screen screen-welcome" aria-label="Welcome">
     <div class="welcome-panel">
@@ -17,13 +20,13 @@
         <p class="brand-engine" data-i18n="welcomeKicker">Source Box · Current Runtime · Build notes</p>
         <p class="brand-tagline" data-i18n="welcomeTagline">Bind an old project folder and clean it into reusable capsules.</p>
         <p class="brand-tagline-zh" data-i18n="welcomePhilosophy">Digest first, then reweave.</p>
-        <div class="folder-slot">
+        <div class="folder-slot welcome-source-boundary">
           <span class="folder-slot-label" data-i18n="sourceBox">SOURCE BOX</span>
           <button type="button" id="btn-select-folder" class="btn-primary btn-folder" data-i18n="bindSourceBox">Bind Source Box</button>
           <p id="source-box-mode-note" class="source-box-mode-note" data-i18n="sourceBoxNote">Choose an old project folder to clean into capsules.</p>
         </div>
         <button type="button" id="btn-view-runtime" class="btn-ghost btn-view-runtime hidden" data-i18n="viewCurrentRuntime">View Current Runtime</button>
-        <button type="button" id="btn-welcome-lang" class="btn-ghost btn-welcome-lang" data-i18n-aria-label="switchLanguage">中 / EN</button>
+        <button type="button" id="btn-welcome-lang" class="btn-ghost btn-welcome-lang" data-i18n-aria-label="switchLanguage">中·EN</button>
         <p class="privacy-note">
           <span class="lock-glyph" aria-hidden="true"></span>
           <span data-i18n="privacy">All local. Nothing leaves your machine.</span>
@@ -49,33 +52,39 @@
 
   <!-- State 3: Main app -->
   <section id="screen-main" class="screen screen-main hidden" aria-label="Main" data-app-state="idle">
-    <header class="top-bar">
-      <div class="top-bar-left">
+    <header class="product-plan-bar reweave-workspace-bar compat-top-bar">
+      <div class="product-plan-brand">
         <img class="logo-mark tiny" src="assets/reweave-icon.svg" alt="" aria-hidden="true">
-        <span class="brand-name-inline">Reweave</span>
-        <span class="engine-dot" aria-hidden="true">●</span>
-          <span class="engine-label" data-i18n="currentRuntime">Current Runtime</span>
-        <span class="engine-sep" aria-hidden="true">·</span>
-        <span class="engine-label engine-label-sub" data-i18n="sourceReadOnly">source project read-only</span>
+        <strong>Reweave</strong>
       </div>
-      <nav class="delivery-switch" aria-label="Delivery mode" data-i18n-aria-label="deliveryMode">
-        <button type="button" class="delivery-switch-button active" aria-current="page" data-i18n="standaloneProduct">Standalone product</button>
-        <button type="button" id="btn-open-product-plan" class="delivery-switch-button">Product plan prototype</button>
-        <button type="button" id="btn-open-target" class="delivery-switch-button hidden" disabled data-i18n="targetIntegration">Target integration</button>
+      <nav class="product-delivery-switch" aria-label="Delivery mode" data-i18n-aria-label="deliveryMode">
+        <button type="button" id="btn-open-product-plan" class="product-delivery-button" data-i18n="buildProduct">Build product</button>
+        <button type="button" id="btn-compat-target-nav" class="product-delivery-button hidden" data-formal-target-nav data-i18n="targetIntegration">Target integration</button>
       </nav>
-      <div class="top-bar-right">
-        <button type="button" id="btn-lang" class="btn-ghost btn-lang" aria-label="Switch language" data-i18n-aria-label="switchLanguage">中 / EN</button>
+      <nav class="product-plan-tools compat-tool-rail" aria-label="Product tools">
+        <button type="button" id="btn-compat-warehouse-nav" class="btn-ghost" data-i18n="capsuleWarehouse">Capsule Warehouse</button>
+        <button type="button" id="btn-compat-ingestion-nav" class="btn-ghost" data-i18n="formalSourceIntake">Source intake</button>
+        <span class="btn-ghost is-current compat-current-tool" aria-current="page" data-i18n="compatibilityTools">Compatibility tools</span>
+        <button type="button" id="btn-lang" class="btn-ghost btn-lang" aria-label="Switch language" data-i18n-aria-label="switchLanguage">中·EN</button>
         <button type="button" id="btn-lumo-artifacts" class="btn-ghost btn-collapsed hidden" aria-expanded="false" aria-controls="lumo-artifacts-popover">
           <span class="btn-icon" aria-hidden="true">◎</span> <span data-i18n="artifacts">Build notes</span>
         </button>
         <button type="button" id="btn-capsule-warehouse" class="btn-ghost btn-collapsed hidden" aria-controls="screen-capsule-warehouse">
           <span class="btn-icon" aria-hidden="true">▦</span> <span data-i18n="capsuleWarehouse">Capsule Warehouse</span>
         </button>
+      </nav>
+    </header>
+    <div class="compat-context-note">
+      <div>
+        <strong data-i18n="compatibilityTitle">Compatibility tools / Quick compose</strong>
+        <span class="compat-disclaimer" data-i18n="compatibilityDisclaimer">Does not pass formal plan confirmation and is not a standalone product delivery.</span>
+      </div>
+      <div class="compat-context-actions">
         <button type="button" id="btn-history" class="btn-ghost btn-collapsed" aria-expanded="false" aria-controls="history-popover">
           <span class="btn-icon" aria-hidden="true">◷</span> <span data-i18n="history">History</span>
         </button>
       </div>
-    </header>
+    </div>
 
     <main class="main-stage">
       <div class="machine-core">
@@ -183,137 +192,387 @@ preview: pending</div>
     </footer>
   </section>
 
-  <!-- Prototype-only product planning. No model, bridge, network, candidate, or write path. -->
-  <section id="screen-product-plan" class="screen screen-product-plan hidden" aria-label="Product plan prototype">
+  <!-- Product flow. Internal identities remain in the service and scene closure. -->
+  <section id="screen-product-plan" class="screen screen-product-plan hidden" aria-label="Product">
     <header class="product-plan-bar">
-      <button type="button" id="btn-product-plan-back" class="btn-ghost">Back to standalone product</button>
-      <div>
-        <span id="product-plan-kicker" class="product-plan-kicker">READ-ONLY LOW-FIDELITY PROTOTYPE</span>
-        <strong id="product-plan-title">Product plan overview</strong>
+      <div class="product-plan-brand">
+        <img class="logo-mark tiny" src="assets/reweave-icon.svg" alt="" aria-hidden="true">
+        <strong>Reweave</strong>
       </div>
-      <label class="product-plan-mode" for="product-plan-developer-mode">
-        <input type="checkbox" id="product-plan-developer-mode">
-        <span id="product-plan-developer-label">Developer mode</span>
-      </label>
+      <nav class="product-delivery-switch" aria-label="Delivery mode">
+        <button type="button" id="btn-product-nav" class="product-delivery-button active" aria-current="page">Build product</button>
+        <button type="button" id="btn-open-target" class="product-delivery-button hidden" disabled>Target integration</button>
+      </nav>
+      <nav class="product-plan-tools" aria-label="Product tools">
+        <button type="button" id="btn-product-open-warehouse" class="btn-ghost">Capsule library</button>
+        <button type="button" id="btn-product-open-ingestion" class="btn-ghost">Source intake</button>
+        <button type="button" id="btn-product-plan-back" class="btn-ghost">Compatibility tools</button>
+        <button type="button" id="btn-product-lang" class="btn-ghost btn-lang" aria-label="Switch language">中 / EN</button>
+      </nav>
     </header>
     <main id="product-plan-stage" class="product-plan-stage">
-      <section id="product-plan-overview" class="product-plan-overview" aria-labelledby="product-plan-overview-title">
-        <h1 id="product-plan-overview-title" class="sr-only">Product plan overview</h1>
+      <div class="product-plan-context">
+        <div>
+          <span id="product-plan-kicker" class="product-plan-kicker">LOCAL PRODUCT WORKFLOW</span>
+          <strong id="product-plan-title">Create a product</strong>
+        </div>
+        <span id="product-plan-status" class="product-plan-status" aria-live="polite"></span>
+      </div>
+      <ol id="product-evidence-thread" class="product-evidence-thread" aria-label="Delivery progress">
+        <li id="product-evidence-goal">
+          <span class="product-evidence-node" aria-hidden="true"></span>
+          <span id="product-evidence-goal-label">Goal</span>
+        </li>
+        <li id="product-evidence-plan">
+          <span class="product-evidence-node" aria-hidden="true"></span>
+          <span id="product-evidence-plan-label">Plan</span>
+        </li>
+        <li id="product-evidence-verify">
+          <span class="product-evidence-node" aria-hidden="true"></span>
+          <span id="product-evidence-verify-label">Verify</span>
+        </li>
+        <li id="product-evidence-save">
+          <span class="product-evidence-node" aria-hidden="true"></span>
+          <span id="product-evidence-save-label">Save</span>
+        </li>
+      </ol>
+      <section id="product-plan-compose" class="product-plan-flow" aria-labelledby="product-plan-compose-title">
+        <h1 id="product-plan-compose-title">What do you want to build?</h1>
+        <p id="product-plan-compose-copy" class="product-plan-lede"></p>
         <label class="product-plan-goal-field" for="product-plan-goal">
           <span id="product-plan-goal-label">Product goal</span>
           <textarea id="product-plan-goal" rows="3" autocomplete="off"></textarea>
         </label>
-        <button type="button" id="btn-submit-product-goal" class="btn-amber">Build prototype plan</button>
-        <div id="product-plan-fixture" class="product-plan-fixture hidden">
-          <p id="product-plan-prototype-note" class="prototype-note">Prototype data</p>
-          <div id="product-plan-sections" tabindex="-1"></div>
-        </div>
+        <section id="product-planner-setup" class="product-planner-setup" aria-labelledby="product-planner-label">
+          <div class="product-planner-summary">
+            <span id="product-planner-label" class="product-planner-label">Local planning model</span>
+            <strong id="product-planner-status"></strong>
+            <span id="product-planner-detail"></span>
+          </div>
+          <button type="button" id="btn-product-planner-configure" class="product-plan-text-action" aria-expanded="false" aria-controls="product-planner-picker">Configure</button>
+          <div id="product-planner-picker" class="product-planner-picker hidden">
+            <label for="product-planner-select">
+              <span id="product-planner-select-label">Planning model</span>
+              <select id="product-planner-select"></select>
+            </label>
+            <div class="product-planner-actions">
+              <button type="button" id="btn-product-planner-refresh" class="btn-ghost">Refresh models</button>
+              <button type="button" id="btn-product-planner-use" class="btn-secondary" disabled>Verify and use</button>
+            </div>
+            <p id="product-planner-message" aria-live="polite"></p>
+          </div>
+        </section>
+        <button type="button" id="btn-submit-product-goal" class="btn-primary">Create plan</button>
       </section>
-      <section id="product-plan-review" class="product-plan-review hidden" aria-labelledby="product-review-title">
-        <button type="button" id="btn-product-review-back" class="btn-ghost">Back to plan overview</button>
-        <p id="product-review-path" class="product-review-path"></p>
+
+      <section id="product-plan-progress" class="product-plan-flow hidden" aria-labelledby="product-plan-progress-title">
+        <p class="product-plan-progress-mark" aria-hidden="true">◌</p>
+        <h1 id="product-plan-progress-title" tabindex="-1">Preparing your product plan</h1>
+        <p id="product-plan-progress-copy"></p>
+        <button type="button" id="btn-cancel-product-plan" class="product-plan-text-action">Cancel</button>
+      </section>
+
+      <section id="product-plan-questions" class="product-plan-flow hidden" aria-labelledby="product-plan-questions-title">
+        <h1 id="product-plan-questions-title" tabindex="-1">A decision is needed</h1>
+        <p id="product-plan-questions-copy"></p>
+        <form id="product-plan-question-form"></form>
+        <button type="button" id="btn-submit-product-answers" class="btn-primary">Continue</button>
+      </section>
+
+      <section id="product-plan-review" class="product-plan-flow hidden" aria-labelledby="product-review-title">
+        <p id="product-review-goal" class="product-review-path"></p>
         <h1 id="product-review-title" tabindex="-1"></h1>
-        <p id="product-review-prototype-note" class="prototype-note">Prototype data</p>
-        <p id="product-review-summary" class="product-review-summary"></p>
-        <div id="product-review-items" class="product-review-items"></div>
-        <section class="product-review-empty" aria-live="polite">
-          <h2 id="product-review-empty">Real candidates have not been generated</h2>
-          <p>No files, Diff, plan evidence, or validation result exists in this prototype.</p>
+        <div id="product-plan-sections"></div>
+        <section class="product-acceptance" aria-labelledby="product-acceptance-title">
+          <h2 id="product-acceptance-title">Key outcomes</h2>
+          <p id="product-acceptance-copy"></p>
+          <div id="product-acceptance-cases"></div>
+          <button type="button" id="btn-add-product-acceptance-case" class="product-plan-text-action">Add outcome</button>
+          <div id="product-parameter-confirmation" class="product-parameter-confirmation hidden"></div>
         </section>
-        <section class="product-plan-developer-only" aria-labelledby="product-plan-developer-title">
-          <h2 id="product-plan-developer-title">Prototype state</h2>
-          <pre id="product-plan-developer-evidence"></pre>
-        </section>
+        <p id="product-plan-review-error" class="product-plan-inline-error hidden" aria-live="polite"></p>
+        <button type="button" id="btn-confirm-and-generate" class="btn-primary">Confirm and generate</button>
+        <button type="button" id="btn-confirm-and-agent" class="btn-secondary">Confirm and hand to Agent</button>
+      </section>
+
+      <section id="product-agent-handoff" class="product-plan-flow hidden" aria-labelledby="product-agent-handoff-title">
+        <h1 id="product-agent-handoff-title" tabindex="-1">Agent handoff</h1>
+        <p id="product-agent-handoff-status" aria-live="polite"></p>
+        <p id="product-agent-handoff-warning"></p>
+        <p id="product-agent-handoff-error" class="product-plan-inline-error hidden" aria-live="assertive"></p>
+        <button type="button" id="btn-reissue-agent-handoff" class="btn-secondary">Issue again</button>
+        <button type="button" id="btn-direct-after-handoff" class="btn-primary">Continue in Reweave</button>
+        <button type="button" id="btn-revoke-agent-handoff" class="product-plan-text-action">Revoke authorization</button>
+      </section>
+
+      <section id="product-plan-section-review" class="product-plan-flow product-plan-section-review hidden" aria-labelledby="product-plan-section-title">
+        <button type="button" id="btn-product-plan-section-back" class="product-plan-text-action">Back to plan</button>
+        <p id="product-plan-section-path" class="product-review-path"></p>
+        <h1 id="product-plan-section-title" tabindex="-1"></h1>
+        <div id="product-plan-section-body"></div>
+      </section>
+
+      <section id="product-candidate-review" class="product-plan-flow hidden" aria-labelledby="product-candidate-title">
+        <p id="product-candidate-state" class="product-candidate-state"></p>
+        <h1 id="product-candidate-title" tabindex="-1"></h1>
+        <p id="product-candidate-summary"></p>
+        <div id="product-candidate-validation" class="product-candidate-validation"></div>
+        <div class="product-candidate-actions">
+          <button type="button" id="btn-save-product-candidate" class="btn-primary">Save product</button>
+          <button type="button" id="btn-preview-product-candidate" class="product-plan-text-action">Preview product</button>
+        </div>
+        <p id="product-candidate-action-result" aria-live="polite"></p>
+        <details class="product-candidate-files">
+          <summary id="product-candidate-files-summary">Files</summary>
+          <div class="product-candidate-file-review">
+            <div id="product-candidate-file-list" role="list"></div>
+            <div>
+              <div class="product-candidate-file-tabs" role="tablist">
+                <button type="button" id="btn-product-file-content" class="product-plan-text-action" role="tab" aria-selected="true">Content</button>
+                <button type="button" id="btn-product-file-diff" class="product-plan-text-action" role="tab" aria-selected="false">Changes</button>
+              </div>
+              <pre id="product-candidate-file-body" tabindex="0"></pre>
+            </div>
+          </div>
+        </details>
+        <details class="product-candidate-details">
+          <summary id="product-candidate-details-summary">Implementation details</summary>
+          <div id="product-candidate-details-body"></div>
+        </details>
+      </section>
+
+      <section id="product-plan-failed" class="product-plan-flow hidden" aria-labelledby="product-plan-failed-title">
+        <h1 id="product-plan-failed-title" tabindex="-1">This step could not be completed</h1>
+        <p id="product-plan-failed-copy"></p>
+        <button type="button" id="btn-retry-product-flow" class="btn-primary">Try again</button>
       </section>
     </main>
   </section>
 
   <!-- Read-only Capsule Warehouse browser. Formal data remains owned by the desktop state. -->
   <section id="screen-capsule-warehouse" class="screen screen-capsule-warehouse hidden" aria-label="Capsule Warehouse">
-    <header class="warehouse-scene-bar">
-      <button type="button" id="btn-warehouse-scene-back" class="btn-ghost warehouse-scene-back" data-i18n="back">Back</button>
-      <button type="button" id="btn-warehouse-return-product-plan" class="btn-ghost hidden">Back to plan Review</button>
-      <div class="warehouse-scene-identity">
-        <span class="warehouse-scene-kicker" data-i18n="warehouseReadOnly">READ-ONLY WAREHOUSE</span>
-        <strong data-i18n="capsuleWarehouse">Capsule Warehouse</strong>
+    <header class="product-plan-bar reweave-workspace-bar">
+      <div class="product-plan-brand">
+        <img class="logo-mark tiny" src="assets/reweave-icon.svg" alt="" aria-hidden="true">
+        <strong>Reweave</strong>
       </div>
-      <label class="warehouse-scene-search" for="warehouse-scene-query">
-        <span class="sr-only" data-i18n="searchWarehouse">Search projects or capsules</span>
-        <input id="warehouse-scene-query" type="search" autocomplete="off" spellcheck="false" data-i18n-placeholder="searchWarehouse">
-      </label>
-      <div class="warehouse-scene-zoom" aria-label="Canvas zoom" data-i18n-aria-label="canvasZoom">
-        <button type="button" id="btn-warehouse-zoom-out" class="btn-ghost" data-i18n-aria-label="zoomOut">−</button>
-        <output id="warehouse-zoom-value" for="btn-warehouse-zoom-out btn-warehouse-zoom-in">100%</output>
-        <button type="button" id="btn-warehouse-zoom-in" class="btn-ghost" data-i18n-aria-label="zoomIn">+</button>
-        <button type="button" id="btn-warehouse-zoom-reset" class="btn-ghost" data-i18n="resetView">Reset</button>
-      </div>
+      <nav class="product-delivery-switch" aria-label="Delivery mode" data-i18n-aria-label="deliveryMode">
+        <button type="button" id="btn-warehouse-product-nav" class="product-delivery-button" data-i18n="buildProduct">Build product</button>
+        <button type="button" id="btn-warehouse-target-nav" class="product-delivery-button hidden" data-formal-target-nav data-i18n="targetIntegration">Target integration</button>
+      </nav>
+      <nav class="product-plan-tools" aria-label="Product tools">
+        <button type="button" id="btn-warehouse-current-nav" class="btn-ghost is-current" aria-current="page" data-i18n="capsuleWarehouse">Capsule library</button>
+        <button type="button" id="btn-open-capsule-ingestion" class="btn-ghost hidden" aria-controls="screen-capsule-ingestion" data-i18n="formalSourceIntake">Source intake</button>
+        <button type="button" id="btn-warehouse-compat-nav" class="btn-ghost" data-i18n="compatibilityTools">Compatibility tools</button>
+        <button type="button" id="btn-warehouse-lang" class="btn-ghost btn-lang" data-i18n-aria-label="switchLanguage">中 / EN</button>
+      </nav>
     </header>
 
     <main class="warehouse-scene-stage">
-      <section id="warehouse-browser-view" class="warehouse-browser-view" aria-labelledby="warehouse-browser-title">
-        <h1 id="warehouse-browser-title" class="sr-only" data-i18n="sourceProjectOverview">Source project overview</h1>
-        <p id="warehouse-scene-breadcrumb" class="warehouse-scene-breadcrumb" aria-live="polite"></p>
-        <div id="warehouse-scene-canvas" class="warehouse-scene-canvas" tabindex="0" role="region" data-i18n-aria-label="warehouseCanvasHelp">
-          <div class="warehouse-web-atmosphere" aria-hidden="true"></div>
-          <div id="warehouse-scene-world" class="warehouse-scene-world">
-            <svg id="warehouse-scene-links" class="warehouse-scene-links" viewBox="0 0 1200 760" aria-hidden="true"></svg>
-            <div id="warehouse-scene-nodes" class="warehouse-scene-nodes"></div>
-          </div>
-          <p id="warehouse-scene-empty" class="warehouse-scene-empty hidden" aria-live="polite"></p>
+      <section class="warehouse-scene-intro">
+        <button type="button" id="btn-warehouse-scene-back" class="product-plan-text-action reweave-context-back" data-i18n="backToContext">Back to context</button>
+        <div class="warehouse-scene-identity">
+          <h1 data-i18n="capsuleWarehouse">Capsule Warehouse</h1>
+          <output id="warehouse-source-count" aria-live="polite"></output>
         </div>
+        <label class="warehouse-scene-search" for="warehouse-scene-query">
+          <span class="sr-only" data-i18n="searchWarehouse">Search projects or capsules</span>
+          <input id="warehouse-scene-query" type="search" autocomplete="off" spellcheck="false" data-i18n-placeholder="searchWarehouse">
+          <output id="warehouse-search-status" for="warehouse-scene-query" aria-live="polite"></output>
+        </label>
       </section>
 
-      <section id="warehouse-code-view" class="warehouse-code-view hidden" aria-labelledby="warehouse-code-title">
-        <header class="warehouse-code-head">
-          <div>
-            <p id="warehouse-code-path" class="warehouse-code-path"></p>
-            <h1 id="warehouse-code-title" tabindex="-1"></h1>
+      <section class="warehouse-chamber">
+        <section id="warehouse-browser-view" class="warehouse-browser-view" aria-labelledby="warehouse-browser-title">
+          <h2 id="warehouse-browser-title" class="sr-only" data-i18n="sourceProjectOverview">Source project overview</h2>
+          <div class="warehouse-scene-context">
+            <p id="warehouse-scene-breadcrumb" class="warehouse-scene-breadcrumb" aria-live="polite"></p>
+            <p id="warehouse-context-status" class="warehouse-context-status hidden" role="status"></p>
           </div>
-          <label class="warehouse-code-mode" for="warehouse-code-developer-mode">
-            <input type="checkbox" id="warehouse-code-developer-mode">
-            <span data-i18n="developerMode">Developer mode</span>
-          </label>
-        </header>
-        <div class="warehouse-code-toolbar" aria-label="Code zoom" data-i18n-aria-label="codeZoom">
-          <button type="button" id="btn-warehouse-code-zoom-out" class="btn-ghost" data-i18n-aria-label="zoomOut">−</button>
-          <output id="warehouse-code-zoom-value" for="btn-warehouse-code-zoom-out btn-warehouse-code-zoom-in">100%</output>
-          <button type="button" id="btn-warehouse-code-zoom-in" class="btn-ghost" data-i18n-aria-label="zoomIn">+</button>
-          <button type="button" id="btn-warehouse-code-zoom-reset" class="btn-ghost" data-i18n="resetCodeSize">Reset code size</button>
-        </div>
-        <div class="warehouse-code-surface">
-          <pre id="warehouse-core-code" class="warehouse-core-code hidden"><code></code></pre>
-          <p id="warehouse-core-code-empty" class="warehouse-core-code-empty" data-i18n="noVerifiedCoreCode">No verified core code is available.</p>
-        </div>
-        <section id="warehouse-developer-details" class="warehouse-developer-details hidden" aria-labelledby="warehouse-developer-title">
-          <h2 id="warehouse-developer-title" data-i18n="developerEvidence">Developer evidence</h2>
-          <pre id="warehouse-developer-evidence"></pre>
+          <div id="warehouse-scene-canvas" class="warehouse-ledger-scroll" tabindex="0" role="region" data-i18n-aria-label="warehouseRackHelp">
+            <div id="warehouse-scene-world" class="warehouse-ledger-world">
+              <div id="warehouse-scene-nodes" class="warehouse-source-ledger"></div>
+              <section id="warehouse-unresolved-shelf" class="warehouse-unresolved-shelf hidden" aria-labelledby="warehouse-unresolved-title">
+                <div>
+                  <h3 id="warehouse-unresolved-title" data-i18n="sourceEvidenceShelf">Source evidence insufficient</h3>
+                  <p data-i18n="sourceEvidenceShelfCopy">These formal capsules are not assigned to a project without one exact source identity.</p>
+                </div>
+                <div id="warehouse-unresolved-nodes" class="warehouse-unresolved-nodes"></div>
+              </section>
+            </div>
+            <p id="warehouse-scene-empty" class="warehouse-scene-empty hidden" aria-live="polite"></p>
+          </div>
+        </section>
+
+        <section id="warehouse-code-view" class="warehouse-code-view hidden" aria-labelledby="warehouse-code-title">
+          <div id="warehouse-code-proof" class="warehouse-code-proof" aria-live="polite">
+            <span id="warehouse-evidence-source" class="warehouse-source-seal"></span>
+            <span class="warehouse-proof-segment is-source"><span id="warehouse-evidence-capsule"></span></span>
+            <span class="warehouse-proof-segment is-version"><span id="warehouse-evidence-version"></span></span>
+            <span class="warehouse-proof-segment is-validation"><span id="warehouse-evidence-validation"></span></span>
+          </div>
+          <header class="warehouse-code-head">
+            <div>
+              <p id="warehouse-code-path" class="warehouse-code-path"></p>
+              <h2 id="warehouse-code-title" tabindex="-1"></h2>
+            </div>
+            <label class="warehouse-code-mode" for="warehouse-code-developer-mode">
+              <input type="checkbox" id="warehouse-code-developer-mode">
+              <span data-i18n="showValidationEvidence">Show validation evidence</span>
+            </label>
+          </header>
+          <div class="warehouse-code-meta-row">
+            <div id="warehouse-code-summary" class="warehouse-code-summary" aria-live="polite">
+              <span id="warehouse-code-kind"></span>
+              <span id="warehouse-code-version"></span>
+              <span id="warehouse-code-status"></span>
+              <span id="warehouse-code-validation"></span>
+            </div>
+            <div class="warehouse-code-toolbar" aria-label="Code zoom" data-i18n-aria-label="codeZoom">
+              <button type="button" id="btn-warehouse-code-zoom-out" class="btn-ghost" data-i18n-aria-label="zoomOut">−</button>
+              <output id="warehouse-code-zoom-value" for="btn-warehouse-code-zoom-out btn-warehouse-code-zoom-in">100%</output>
+              <button type="button" id="btn-warehouse-code-zoom-in" class="btn-ghost" data-i18n-aria-label="zoomIn">+</button>
+              <button type="button" id="btn-warehouse-code-zoom-reset" class="btn-ghost" data-i18n="resetCodeSize">Reset code size</button>
+            </div>
+          </div>
+          <div class="warehouse-code-surface">
+            <pre id="warehouse-core-code" class="warehouse-core-code hidden"><code></code></pre>
+            <p id="warehouse-core-code-empty" class="warehouse-core-code-empty" aria-live="polite" data-i18n="noVerifiedCoreCode">No verified core code is available.</p>
+          </div>
+          <section id="warehouse-developer-details" class="warehouse-developer-details hidden" aria-labelledby="warehouse-developer-title">
+            <h3 id="warehouse-developer-title" data-i18n="validationEvidence">Validation evidence</h3>
+            <div id="warehouse-evidence-summary" class="warehouse-evidence-summary"></div>
+            <details id="warehouse-raw-evidence" class="warehouse-raw-evidence">
+              <summary data-i18n="rawEvidence">Raw evidence JSON</summary>
+              <pre id="warehouse-developer-evidence"></pre>
+            </details>
+          </section>
         </section>
       </section>
-
-      <button type="button" id="btn-open-capsule-ingestion" class="btn-ghost warehouse-ingestion-entry hidden" aria-expanded="false" aria-controls="capsule-warehouse-popover" data-i18n="warehouseManagement">Ingestion management</button>
     </main>
   </section>
 
-  <!-- Static Web target integration. The target remains review-only. -->
-  <section id="screen-target" class="screen screen-target hidden" aria-label="Target integration">
-    <header class="top-bar">
-      <div class="top-bar-left">
-        <img class="logo-mark tiny" src="assets/reweave-icon.svg" alt="" aria-hidden="true">
-        <span class="brand-name-inline">Reweave</span>
-        <span class="engine-dot" aria-hidden="true">●</span>
-        <span class="engine-label" data-i18n="targetReadOnly">review-only target</span>
-      </div>
-      <nav class="delivery-switch" aria-label="Delivery mode" data-i18n-aria-label="deliveryMode">
-        <button type="button" id="btn-target-back" class="delivery-switch-button" data-i18n="standaloneProduct">Standalone product</button>
-        <button type="button" class="delivery-switch-button active" aria-current="page" data-i18n="targetIntegration">Target integration</button>
-      </nav>
-      <div class="top-bar-right">
-        <label class="target-mode-toggle" for="target-developer-mode">
-          <input type="checkbox" id="target-developer-mode">
-          <span data-i18n="developerMode">Developer mode</span>
+  <section id="screen-capsule-ingestion" class="screen screen-capsule-ingestion hidden" aria-label="Source intake and review">
+    <div id="capsule-warehouse-popover" class="capsule-ingestion-shell" data-i18n-title="warehousePurpose">
+      <header class="product-plan-bar reweave-workspace-bar">
+        <div class="product-plan-brand">
+          <img class="logo-mark tiny" src="assets/reweave-icon.svg" alt="" aria-hidden="true">
+          <strong>Reweave</strong>
+        </div>
+        <nav class="product-delivery-switch" aria-label="Delivery mode" data-i18n-aria-label="deliveryMode">
+          <button type="button" id="btn-ingestion-product-nav" class="product-delivery-button" data-i18n="buildProduct">Build product</button>
+          <button type="button" id="btn-ingestion-target-nav" class="product-delivery-button hidden" data-formal-target-nav data-i18n="targetIntegration">Target integration</button>
+        </nav>
+        <nav class="product-plan-tools" aria-label="Product tools">
+          <button type="button" id="btn-ingestion-warehouse-nav" class="btn-ghost" data-i18n="capsuleWarehouse">Capsule library</button>
+          <button type="button" id="btn-ingestion-current-nav" class="btn-ghost is-current" aria-current="page" data-i18n="formalSourceIntake">Source intake</button>
+          <button type="button" id="btn-ingestion-compat-nav" class="btn-ghost" data-i18n="compatibilityTools">Compatibility tools</button>
+          <button type="button" id="btn-ingestion-lang" class="btn-ghost btn-lang" data-i18n-aria-label="switchLanguage">中 / EN</button>
+        </nav>
+      </header>
+      <section class="capsule-ingestion-context">
+        <button type="button" id="btn-ingestion-back" class="product-plan-text-action reweave-context-back" data-i18n="backToContext">Back to context</button>
+        <div class="capsule-ingestion-identity">
+          <h1 data-i18n="sourceIntakeReview">Source intake and review</h1>
+        </div>
+        <label class="warehouse-mode" for="warehouse-developer-mode" data-i18n-title="developerModeHelp">
+          <input type="checkbox" id="warehouse-developer-mode">
+          <span data-i18n="showManagementAdvanced">Show management advanced options</span>
         </label>
-        <button type="button" id="btn-target-lang" class="btn-ghost btn-lang" data-i18n-aria-label="switchLanguage">中 / EN</button>
+      </section>
+      <section id="capsule-ingestion-specimen" class="capsule-ingestion-source-context" aria-live="polite">
+        <div class="capsule-specimen-identity">
+          <span data-i18n="intakeSourceContextLabel">Source context</span>
+          <strong id="ingestion-specimen-name" data-i18n="intakeSpecimenEmpty">Choose a source project to begin inspection</strong>
+          <small id="ingestion-specimen-context"></small>
+        </div>
+        <div class="capsule-specimen-counts" aria-label="Capability counts" data-i18n-aria-label="warehouseLegend">
+          <span data-capability-kind="presentation"><i class="warehouse-capsule-core is-presentation" aria-hidden="true"></i><span data-i18n="presentationCapability">Presentation</span><b id="ingestion-specimen-presentation">—</b></span>
+          <span data-capability-kind="interaction"><i class="warehouse-capsule-core is-interaction" aria-hidden="true"></i><span data-i18n="interactionCapability">Interaction</span><b id="ingestion-specimen-interaction">—</b></span>
+          <span data-capability-kind="computation"><i class="warehouse-capsule-core is-computation" aria-hidden="true"></i><span data-i18n="computationCapability">Computation</span><b id="ingestion-specimen-computation">—</b></span>
+        </div>
+      </section>
+      <nav class="capsule-ingestion-stations" role="tablist" aria-orientation="horizontal" aria-label="Intake workstations" data-i18n-aria-label="intakeWorkstations">
+        <button type="button" id="ingestion-tab-source" role="tab" class="is-active" data-ingestion-station="source" aria-selected="true" aria-controls="ingestion-panel-source" tabindex="0"><span data-i18n="sourceStation">Sources</span><output id="ingestion-source-count">0</output></button>
+        <button type="button" id="ingestion-tab-supervision" role="tab" data-ingestion-station="supervision" aria-selected="false" aria-controls="ingestion-panel-supervision" tabindex="-1"><span data-i18n="supervisionStation">Supervision</span><output id="ingestion-supervision-status">—</output></button>
+        <button type="button" id="ingestion-tab-review" role="tab" data-ingestion-station="review" aria-selected="false" aria-controls="ingestion-panel-review" tabindex="-1"><span data-i18n="reviewStation">To review</span><output id="warehouse-review-count">0</output></button>
+        <button type="button" id="ingestion-tab-formal" role="tab" data-ingestion-station="formal" aria-selected="false" aria-controls="ingestion-panel-formal" tabindex="-1"><span data-i18n="formalStation">Formal capabilities</span><output id="ingestion-formal-count">0</output></button>
+      </nav>
+      <p id="capsule-warehouse-status" class="warehouse-status" aria-live="polite"></p>
+      <main class="capsule-ingestion-workbench">
+        <section id="ingestion-panel-source" class="capsule-ingestion-station is-active" role="tabpanel" data-ingestion-panel="source" aria-labelledby="ingestion-tab-source">
+          <div class="capsule-ingestion-station-head">
+            <div><p data-i18n="currentWorkstation">Current workstation</p><h2 id="ingestion-source-title" tabindex="-1" data-i18n="sourceProjects">Source projects</h2></div>
+            <button type="button" id="btn-warehouse-discover" class="btn-primary" data-i18n="discoverSource" data-i18n-title="discoverSourceHelp">Discover source</button>
+          </div>
+          <div id="warehouse-projects" class="warehouse-list"></div>
+        </section>
+        <section id="ingestion-panel-supervision" class="capsule-ingestion-station" role="tabpanel" hidden data-ingestion-panel="supervision" aria-labelledby="ingestion-tab-supervision" data-i18n-title="modelTimeoutNote">
+          <div class="capsule-ingestion-station-head">
+            <div>
+              <p data-i18n="currentWorkstation">Current workstation</p>
+              <h2 id="ingestion-supervision-title" tabindex="-1" data-i18n="supervisionModel">Supervision model</h2>
+              <p data-i18n="supervisionRoleBoundary">Capsule supervision is separate from product planning and is never selected automatically.</p>
+            </div>
+          </div>
+          <div class="warehouse-actions warehouse-model-actions">
+            <label class="warehouse-field" for="supervision-model-select">
+              <span data-i18n="supervisionModel">Supervision model</span>
+              <select id="supervision-model-select" data-i18n-title="supervisionModelHelp">
+                <option value="" data-i18n="selectModel">Select a model</option>
+              </select>
+            </label>
+            <button type="button" id="btn-supervision-model-refresh" class="btn-ghost" data-i18n="refresh" data-i18n-title="refreshModelsHelp">Refresh</button>
+              <button type="button" id="btn-supervision-model-save" class="btn-primary" data-i18n="save" data-i18n-title="saveModelHelp">Save</button>
+          </div>
+        </section>
+        <section id="ingestion-panel-review" class="capsule-ingestion-station" role="tabpanel" hidden data-ingestion-panel="review" aria-labelledby="ingestion-tab-review">
+          <div class="capsule-ingestion-station-head">
+            <div><p data-i18n="currentWorkstation">Current workstation</p><h2 id="ingestion-review-title" tabindex="-1" data-i18n="reviewItems">Review items</h2></div>
+          </div>
+          <div id="warehouse-review-items" class="warehouse-list"></div>
+        </section>
+        <section id="ingestion-panel-formal" class="capsule-ingestion-station" role="tabpanel" hidden data-ingestion-panel="formal" aria-labelledby="ingestion-tab-formal">
+          <div class="capsule-ingestion-station-head">
+            <div><p data-i18n="currentWorkstation">Current workstation</p><h2 id="ingestion-formal-title" tabindex="-1" data-i18n="capabilityGroups">Capability groups</h2></div>
+          </div>
+          <div id="warehouse-capability-groups" class="warehouse-list"></div>
+        </section>
+        <aside class="capsule-ingestion-advanced warehouse-developer-only">
+          <div class="capsule-ingestion-advanced-head">
+            <h2 data-i18n="managementAdvanced">Management advanced options</h2>
+            <button type="button" id="btn-warehouse-refresh-all" class="btn-ghost warehouse-developer-only" data-i18n="refreshAll" data-i18n-title="refreshAllHelp">Refresh all</button>
+          </div>
+          <div class="warehouse-actions">
+            <button type="button" id="btn-warehouse-backup" class="btn-ghost" data-i18n="createBackup" data-i18n-title="createBackupHelp">Create backup</button>
+            <button type="button" id="btn-warehouse-import" class="btn-ghost" data-i18n="importLegacy" data-i18n-title="importLegacyHelp">Import legacy warehouse</button>
+          </div>
+          <div id="warehouse-legacy" class="warehouse-list"></div>
+          <div id="warehouse-backups" class="warehouse-list"></div>
+          <h3 data-i18n="intakeRuns">Intake runs</h3>
+          <div id="warehouse-runs" class="warehouse-list"></div>
+        </aside>
+      </main>
+    </div>
+  </section>
+
+  <!-- Static Web target integration. The target remains review-only. -->
+  <section id="screen-target" class="screen screen-target hidden" aria-label="Target integration" data-target-stage="select">
+    <header class="product-plan-bar reweave-workspace-bar target-top-bar">
+      <div class="product-plan-brand">
+        <img class="logo-mark tiny" src="assets/reweave-icon.svg" alt="" aria-hidden="true">
+        <strong>Reweave</strong>
       </div>
+      <nav class="product-delivery-switch" aria-label="Delivery mode" data-i18n-aria-label="deliveryMode">
+        <button type="button" id="btn-target-back" class="product-delivery-button" data-i18n="buildProduct">Build product</button>
+        <button type="button" class="product-delivery-button active" aria-current="page" data-i18n="targetIntegration">Target integration</button>
+      </nav>
+      <nav class="product-plan-tools target-tool-rail" aria-label="Product tools">
+        <button type="button" id="btn-target-open-warehouse" class="btn-ghost" data-i18n="capsuleWarehouse">Capsule library</button>
+        <button type="button" id="btn-target-open-ingestion" class="btn-ghost" data-i18n="formalSourceIntake">Source intake</button>
+        <button type="button" id="btn-target-open-compat" class="btn-ghost" data-i18n="compatibilityTools">Compatibility tools</button>
+        <button type="button" id="btn-target-lang" class="btn-ghost btn-lang" data-i18n-aria-label="switchLanguage">中 / EN</button>
+      </nav>
     </header>
 
     <main class="target-stage">
@@ -323,44 +582,71 @@ preview: pending</div>
           <h1 data-i18n="targetTitle">Integrate capsules into an existing site</h1>
           <p data-i18n="targetSubtitle">Analyze one explicit HTML entry, review every file change, then confirm the result. Reweave never writes the target.</p>
         </div>
-        <span class="target-read-only-badge" data-i18n="zeroTargetWrites">Target writes: 0</span>
+        <div class="target-heading-actions">
+          <span class="target-read-only-badge" data-i18n="zeroTargetWrites">Target writes: 0</span>
+          <label class="target-mode-toggle" for="target-developer-mode">
+            <input type="checkbox" id="target-developer-mode">
+            <span data-i18n="showTechnicalEvidence">Show technical evidence</span>
+          </label>
+        </div>
       </div>
 
-      <div class="target-grid">
-        <section class="target-card" aria-labelledby="target-source-title">
-          <span class="target-step">1</span>
-          <h2 id="target-source-title" data-i18n="chooseTarget">Choose target</h2>
-          <button type="button" id="btn-select-target" class="btn-primary" data-i18n="selectTargetFolder">Select Static Web folder</button>
-          <p id="target-selected-name" class="target-selection" data-i18n="noTargetSelected">No target selected</p>
-          <label class="target-field" for="target-entry-relpath">
-            <span data-i18n="targetEntry">HTML entry</span>
-            <input type="text" id="target-entry-relpath" value="index.html" autocomplete="off" spellcheck="false">
-          </label>
-          <button type="button" id="btn-analyze-target" class="btn-secondary" disabled data-i18n="analyzeTarget">Analyze target</button>
-          <p id="target-analysis-status" class="target-status" aria-live="polite"></p>
-          <div id="target-profile-summary" class="target-summary hidden"></div>
-          <pre id="target-profile-developer" class="target-developer-only target-raw hidden"></pre>
+      <div class="target-completed-context">
+        <section class="target-summary-strip" data-target-summary="select" hidden aria-label="Selected target summary">
+          <div>
+            <p class="target-panel-kicker" data-i18n="targetStageSelect">Select target</p>
+            <strong id="target-select-summary-title"></strong>
+            <p id="target-select-summary-copy"></p>
+          </div>
         </section>
-
-        <section class="target-card" aria-labelledby="target-compose-title">
-          <span class="target-step">2</span>
-          <h2 id="target-compose-title" data-i18n="composePatch">Compose Patch</h2>
-          <label class="target-field" for="target-task">
-            <span data-i18n="targetTask">What should be added?</span>
-            <textarea id="target-task" rows="3" maxlength="500" data-i18n-placeholder="targetTaskPlaceholder"></textarea>
-          </label>
-          <p class="target-label" data-i18n="chooseCapsules">Choose formal capsules</p>
-          <div id="target-capsule-cards" class="target-capsule-cards" role="list"></div>
-          <button type="button" id="btn-generate-target-patch" class="btn-primary" disabled data-i18n="generateReviewPatch">Generate review Patch</button>
-          <p id="target-patch-status" class="target-status" aria-live="polite"></p>
-          <pre id="target-rejection-evidence" class="target-developer-only target-raw hidden"></pre>
+        <section class="target-summary-strip" data-target-summary="compose" hidden aria-label="Compose summary">
+          <div>
+            <p class="target-panel-kicker" data-i18n="targetStageCompose">Compose review Patch</p>
+            <strong id="target-compose-summary-title"></strong>
+            <p id="target-compose-summary-copy"></p>
+          </div>
         </section>
       </div>
 
-      <section id="target-review" class="target-review hidden" aria-labelledby="target-review-title">
+      <section class="target-panel" data-target-panel="select" aria-labelledby="target-source-title">
+        <p class="target-panel-kicker" data-i18n="targetStageSelect">Select target</p>
+        <h2 id="target-source-title" data-i18n="chooseTarget">Choose target</h2>
+        <button type="button" id="btn-select-target" class="btn-secondary" data-i18n="selectTargetFolder">Select Static Web folder</button>
+        <p id="target-selected-name" class="target-selection" data-i18n="noTargetSelected">No target selected</p>
+        <label class="target-field" for="target-entry-relpath">
+          <span data-i18n="targetEntry">HTML entry</span>
+          <input type="text" id="target-entry-relpath" value="index.html" autocomplete="off" spellcheck="false">
+        </label>
+        <button type="button" id="btn-analyze-target" class="btn-primary" disabled data-i18n="analyzeTarget">Analyze target read-only</button>
+        <p id="target-analysis-status" class="target-status" aria-live="polite"></p>
+        <div id="target-profile-summary" class="target-summary hidden"></div>
+        <details class="target-developer-only target-developer-details">
+          <summary data-i18n="developerEvidence">Technical evidence</summary>
+          <pre id="target-profile-developer" class="target-raw"></pre>
+        </details>
+      </section>
+
+      <section class="target-panel" data-target-panel="compose" aria-labelledby="target-compose-title" hidden>
+        <p class="target-panel-kicker" data-i18n="targetStageCompose">Compose review Patch</p>
+        <h2 id="target-compose-title" data-i18n="composePatch">Compose Patch</h2>
+        <label class="target-field" for="target-task">
+          <span data-i18n="targetTask">What should be added?</span>
+          <textarea id="target-task" rows="3" maxlength="500" data-i18n-placeholder="targetTaskPlaceholder"></textarea>
+        </label>
+        <p class="target-label" data-i18n="chooseCapsules">Choose formal capsules</p>
+        <div id="target-capsule-cards" class="target-capsule-cards" role="list"></div>
+        <button type="button" id="btn-generate-target-patch" class="btn-primary" disabled data-i18n="generateReviewPatch">Generate review Patch</button>
+        <p id="target-patch-status" class="target-status" aria-live="polite"></p>
+        <details class="target-developer-only target-developer-details">
+          <summary data-i18n="developerEvidence">Technical evidence</summary>
+          <pre id="target-rejection-evidence" class="target-raw"></pre>
+        </details>
+      </section>
+
+      <section id="target-review" class="target-panel target-review" data-target-panel="review" aria-labelledby="target-review-title" hidden>
         <div class="target-review-head">
           <div>
-            <span class="target-step">3</span>
+            <p class="target-panel-kicker" data-i18n="targetStageReview">Review Patch</p>
             <h2 id="target-review-title" data-i18n="reviewPatch">Review Patch</h2>
           </div>
           <span id="target-review-badge" class="target-read-only-badge"></span>
@@ -368,14 +654,20 @@ preview: pending</div>
         <div id="target-evidence-summary" class="target-evidence"></div>
         <div id="target-file-diffs" class="target-file-diffs"></div>
         <details class="target-developer-only target-developer-details">
-          <summary data-i18n="developerEvidence">Developer evidence</summary>
+          <summary data-i18n="developerEvidence">Technical evidence</summary>
           <pre id="target-patch-developer" class="target-raw"></pre>
         </details>
-        <div class="target-confirmation">
+        <div class="target-confirmation" data-target-panel="confirm-action">
           <p data-i18n="confirmPatchBoundary">Confirmation records your review only. It does not apply, write, or commit anything.</p>
           <button type="button" id="btn-confirm-target-patch" class="btn-primary" disabled data-i18n="confirmPatch">Confirm reviewed Patch</button>
-          <p id="target-confirmation-receipt" class="target-status" aria-live="polite"></p>
         </div>
+      </section>
+
+      <section class="target-panel" data-target-panel="confirmed" aria-labelledby="target-confirmed-title" hidden>
+        <p class="target-panel-kicker" data-i18n="targetStageConfirmed">Review receipt</p>
+        <h2 id="target-confirmed-title" data-i18n="targetConfirmedTitle">Patch review confirmed</h2>
+        <p data-i18n="confirmPatchBoundary">Confirmation records your review only. It does not apply, write, or commit anything.</p>
+        <p id="target-confirmation-receipt" class="target-status" aria-live="polite"></p>
       </section>
     </main>
   </section>
@@ -433,67 +725,6 @@ preview: pending</div>
       <button type="button" class="popover-close" data-close="history" aria-label="Close" data-i18n-aria-label="close">×</button>
     </div>
     <ul id="history-list" class="history-list"></ul>
-  </aside>
-
-  <!-- Capsule ingestion and warehouse management. It is not a generation input before Phase 5. -->
-  <aside id="capsule-warehouse-popover" class="popover capsule-warehouse-popover hidden" role="dialog" aria-label="Capsule Warehouse" data-i18n-title="warehousePurpose">
-    <div class="popover-head">
-      <h3 data-i18n="capsuleWarehouse">Capsule Warehouse</h3>
-      <button type="button" class="popover-close" data-close="capsule-warehouse" aria-label="Close" data-i18n-aria-label="close">×</button>
-    </div>
-    <label class="warehouse-mode" for="warehouse-developer-mode" data-i18n-title="developerModeHelp">
-      <input type="checkbox" id="warehouse-developer-mode">
-      <span data-i18n="developerMode">Developer mode</span>
-    </label>
-    <p id="capsule-warehouse-status" class="warehouse-status" aria-live="polite"></p>
-
-    <details class="warehouse-section" open>
-      <summary data-i18n="sourceProjects">Source projects</summary>
-      <div class="warehouse-actions">
-        <button type="button" id="btn-warehouse-discover" class="btn-ghost" data-i18n="discoverSource" data-i18n-title="discoverSourceHelp">Discover source</button>
-        <button type="button" id="btn-warehouse-refresh-all" class="btn-ghost warehouse-developer-only" data-i18n="refreshAll" data-i18n-title="refreshAllHelp">Refresh all</button>
-      </div>
-      <div id="warehouse-projects" class="warehouse-list"></div>
-    </details>
-
-    <details class="warehouse-section" data-i18n-title="modelTimeoutNote">
-      <summary data-i18n="supervisionModel">Supervision model</summary>
-      <div class="warehouse-actions warehouse-model-actions">
-        <label class="warehouse-field" for="supervision-model-select">
-          <span data-i18n="supervisionModel">Supervision model</span>
-          <select id="supervision-model-select" data-i18n-title="supervisionModelHelp">
-            <option value="" data-i18n="selectModel">Select a model</option>
-          </select>
-        </label>
-        <button type="button" id="btn-supervision-model-refresh" class="btn-ghost" data-i18n="refresh" data-i18n-title="refreshModelsHelp">Refresh</button>
-        <button type="button" id="btn-supervision-model-save" class="btn-ghost" data-i18n="save" data-i18n-title="saveModelHelp">Save</button>
-      </div>
-    </details>
-
-    <details class="warehouse-section" open>
-      <summary><span data-i18n="reviewItems">Review items</span> <span id="warehouse-review-count">0</span></summary>
-      <div id="warehouse-review-items" class="warehouse-list"></div>
-    </details>
-
-    <details class="warehouse-section" open>
-      <summary data-i18n="capabilityGroups">Capability groups</summary>
-      <div id="warehouse-capability-groups" class="warehouse-list"></div>
-    </details>
-
-    <details class="warehouse-section warehouse-developer-only">
-      <summary data-i18n="backupRestore">Backup and restore</summary>
-      <div class="warehouse-actions">
-        <button type="button" id="btn-warehouse-backup" class="btn-ghost" data-i18n="createBackup" data-i18n-title="createBackupHelp">Create backup</button>
-        <button type="button" id="btn-warehouse-import" class="btn-ghost" data-i18n="importLegacy" data-i18n-title="importLegacyHelp">Import legacy warehouse</button>
-      </div>
-      <div id="warehouse-legacy" class="warehouse-list"></div>
-      <div id="warehouse-backups" class="warehouse-list"></div>
-    </details>
-
-    <details class="warehouse-section warehouse-developer-only">
-      <summary data-i18n="intakeRuns">Intake runs</summary>
-      <div id="warehouse-runs" class="warehouse-list"></div>
-    </details>
   </aside>
 
   <!-- Sources popover -->

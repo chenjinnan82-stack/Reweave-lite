@@ -13,6 +13,7 @@
     available: false,
     loaded: false,
     loading: false,
+    refreshPending: false,
     projects: [],
     discovery: null,
     models: [],
@@ -28,8 +29,18 @@
     captureReviewContext: {},
     developerMode: false,
     sourceRoots: [],
+    selectedSourceRootId: "",
+    sourceRootSelectionStale: false,
     runs: {},
     errorKey: "",
+  };
+  var ingestionNavigation = {
+    returnScene: "product",
+    station: "source",
+    focusId: "",
+    specimen: null,
+    productReview: null,
+    sourceHandoffReview: null,
   };
 
   var STR = {
@@ -37,16 +48,20 @@
       privacy: "本地运行，数据不会离开此设备。",
       history: "本次会话",
       artifacts: "构建资料",
-      welcomeKicker: "来源箱 · 当前运行状态 · 构建资料",
-      welcomeTagline: "绑定一个旧项目文件夹，将其整理为可复用胶囊。",
-      welcomePhilosophy: "不是复制，是消化后再织。",
-      sourceBox: "来源箱",
-      bindSourceBox: "绑定来源箱",
-      sourceBoxNote: "选择一个旧项目文件夹，整理为胶囊。",
+      welcomeKicker: "本地初始化 · 来源项目",
+      welcomeTagline: "选择一个本地项目文件夹，完成只读来源绑定。",
+      welcomePhilosophy: "这里只建立来源，不会发布或晋升胶囊。",
+      sourceBox: "本地来源",
+      bindSourceBox: "选择项目文件夹",
+      sourceBoxNote: "扫描只读，不写入所选项目。",
       sourceBoxReadOnlyNote: "本地绑定、只读扫描，不写入源项目。",
       sourceBoxBindingDisabled: "来源箱绑定尚未开放。",
       viewCurrentRuntime: "查看当前运行状态",
-      cleaningRuntime: "正在载入运行状态与构建资料",
+      cleaningRuntime: "正在进行受控本地初始化",
+      compatibilityTools: "兼容工具",
+      quickCompose: "快速组合",
+      compatibilityDisclaimer: "不经过正式计划确认，不构成独立产品交付。",
+      compatibilityTitle: "兼容工具 / 快速组合",
       capsules: "胶囊",
       taskPlaceholder: "描述你想从旧项目重新织出的页面或工具…",
       taskPackPlaceholder: "描述你想生成的小项目包…",
@@ -157,59 +172,144 @@
       copied: "已复制",
       enrichedContentPreview: "使用补充内容预览",
       capsuleWarehouse: "胶囊仓库",
-      warehouseReadOnly: "只读胶囊仓库",
+      warehouseReadOnly: "只读正式来源",
       back: "返回",
+      backToContext: "返回原位置",
       searchWarehouse: "搜索来源项目或胶囊",
-      canvasZoom: "画布缩放",
       codeZoom: "代码字号",
       zoomOut: "缩小",
       zoomIn: "放大",
-      resetView: "复位",
       resetCodeSize: "复位代码字号",
       sourceProjectOverview: "来源项目总览",
-      warehouseCanvasHelp: "胶囊仓库画布。方向键平移，加减键缩放，回车打开聚焦节点。",
+      formalSourceCount: "{count} 个正式来源",
+      warehouseRackHelp: "胶囊仓库来源项目列表。使用 Tab 浏览，回车打开当前项目或胶囊。",
+      warehouseEvidenceRail: "正式来源证据路径",
+      exactVersion: "精确版本",
       noFormalCapsules: "暂无可浏览的正式胶囊。",
       warehouseLoadingRelations: "正在读取正式胶囊的来源关系……",
       noFormalSourceIdentity: "正式胶囊尚未提供可展示的来源项目身份。",
       insufficientSourceEvidence: "来源证据不足",
+      sourceEvidenceShelf: "来源证据不足",
+      unwovenSources: "未织入",
+      sourceEvidenceShelfCopy: "这些正式胶囊尚不能唯一归入一个精确来源项目。",
       noVerifiedCoreCode: "暂无经验证的核心代码",
       warehouseManagement: "入库管理",
+      warehouseLegend: "胶囊库能力图例",
+      sourceProject: "来源项目",
+      presentationCapability: "展示",
+      interactionCapability: "交互",
+      computationCapability: "计算",
+      formalCapsuleCount: "{count} 个正式胶囊",
+      sourceVerifiedShort: "来源已证明",
+      searchResultCount: "{count} 个结果",
+      searchNoResults: "没有结果；当前来源项目和焦点保持不变。",
+      sourceFactVerified: "正式版本 · active · 精确来源已证明 · 验证通过",
+      sourceFactInsufficient: "正式版本 · 来源证据不足",
+      multipleExactSources: "存在多个精确项目来源，无法唯一归入一个来源项目。",
+      missingExactSource: "缺少当前精确版本的项目来源关系。",
+      missingFormalSource: "缺少可验证的正式项目来源身份。",
+      planContextResolved: "已按计划中的精确胶囊、版本与摘要定位。",
+      planContextMissing: "计划绑定无法唯一解析到正式来源；未选择近似版本。",
+      validationPassedShort: "验证通过",
+      validationIncompleteShort: "验证不足",
+      emptyCapabilityLane: "暂无正式{kind}胶囊",
+      formalContract: "正式契约",
+      contractStatus: "契约状态",
+      contractUnavailable: "当前精确版本的契约不可用。",
+      contractEntrypoint: "入口",
+      contractReceives: "接收",
+      contractProduces: "产生",
+      contractNoInput: "无输入",
+      contractNoOutput: "无输出",
+      viewVerifiedCodePath: "查看经验证代码：{path}",
+      focusSpoolForEvidence: "聚焦线轴以抽取证据",
+      showValidationEvidence: "显示验证证据",
+      validationEvidence: "验证证据",
+      rawEvidence: "原始证据 JSON",
+      evidenceIdentity: "正式身份与能力",
+      evidenceSource: "精确项目来源",
+      evidenceContracts: "输入、输出、错误与运行契约",
+      evidenceValidation: "验证与验收范围",
+      evidenceEntry: "入口模块",
+      evidenceAvailable: "验证通过",
+      evidenceUnavailable: "证据不可用",
       warehousePurpose: "管理只读来源、提取候选、人工复核并发布正式胶囊。",
       developerMode: "开发者模式",
       developerModeHelp: "显示输入类型、枚举、复核 ID、备份和任务等开发信息。",
+      formalSourceIntake: "来源入库",
+      sourceIntakeReview: "来源入库与复核",
+      intakeSourceContextLabel: "来源上下文",
+      intakeSpecimenLabel: "当前检验标本",
+      intakeSpecimenEmpty: "选择一个来源项目开始检验",
+      intakeSpecimenSelected: "已选择检验对象；尚未改变正式状态",
+      productReviewContext: "产品能力待复核",
+      productReviewExact: "仅显示从当前产品任务接纳的指定待复核项",
+      inspectSource: "检验此来源",
+      showManagementAdvanced: "显示管理高级选项",
+      intakeWorkstations: "来源入库工作站",
+      sourceStation: "来源",
+      supervisionStation: "监督",
+      reviewStation: "待复核",
+      formalStation: "正式能力",
+      currentWorkstation: "当前工作站",
+      supervisionRoleBoundary: "胶囊监督模型与产品规划模型是两个独立角色；这里不会自动选择模型。",
+      managementAdvanced: "管理高级选项",
       deliveryMode: "交付模式",
+      buildProduct: "构建产品",
       standaloneProduct: "独立产品",
       targetIntegration: "目标接入",
-      targetReadOnly: "目标只读 · 仅审查 Patch",
-      targetKicker: "STATIC WEB · REVIEW-ONLY PATCH",
+      targetReadOnly: "目标只读 · 仅审阅改动",
+      targetKicker: "静态站点 · 只读改动审阅",
       targetTitle: "把正式胶囊接入现有站点",
       targetSubtitle: "分析一个明确的 HTML 入口，逐文件审查改动，再确认结果。Reweave 不写入目标项目。",
       zeroTargetWrites: "目标写入：0",
       chooseTarget: "选择目标",
-      selectTargetFolder: "选择 Static Web 文件夹",
+      selectTargetFolder: "选择静态站点文件夹",
       noTargetSelected: "尚未选择目标",
       targetSelected: "已选择：{name}",
       targetEntry: "HTML 入口",
-      analyzeTarget: "分析目标",
+      analyzeTarget: "只读分析目标",
       targetAnalyzing: "正在只读分析目标……",
       targetProfileReady: "目标画像已就绪，来源快照未变化。",
       targetProfileRejected: "目标分析被拒绝：{code}",
+      targetAnalysisError_entry_not_found: "找不到所选 HTML 入口。",
+      targetAnalysisRecovery_entry_not_found: "请确认相对路径存在于目标文件夹内，然后再次只读分析。",
+      targetAnalysisError_frontend_contract_rejected: "目标画像未通过前端契约校验。",
+      targetAnalysisRecovery_frontend_contract_rejected: "请重新选择目标文件夹或检查 HTML 入口后重试。",
+      targetAnalysisError_invalid_response: "目标分析返回了无效响应。",
+      targetAnalysisRecovery_invalid_response: "请重新选择目标并再次只读分析。",
+      targetAnalysisRecoveryGeneric: "请修正目标选择或 HTML 入口后重试只读分析。",
+      targetPatchError_frontend_contract_rejected: "改动结果未通过前端契约校验。",
+      targetPatchRecovery_frontend_contract_rejected: "请调整任务或正式胶囊选择后重新生成审阅改动。",
+      targetPatchError_invalid_response: "改动生成返回了无效响应。",
+      targetPatchRecovery_invalid_response: "请检查任务与胶囊选择后重新生成。",
+      targetPatchRecoveryGeneric: "请调整任务或正式胶囊后重新生成审阅改动。",
       targetEntryRequired: "请填写目标根内的 HTML 相对路径。",
-      composePatch: "组合 Patch",
+      targetSelectSummary: "入口 {entry} · 已完成只读分析",
+      targetEntryPendingSummary: "入口 {entry} · 等待只读分析",
+      composePatch: "组合改动",
+      targetStageSelect: "选择目标",
+      targetStageCompose: "组合审阅改动",
+      targetStageReview: "审阅改动",
+      targetStageConfirmed: "确认回执",
+      targetComposeSummary: "{count} 个正式胶囊 · {task}",
+      targetComposeSummaryOne: "1 个正式胶囊 · {task}",
+      targetConfirmedTitle: "已确认审阅回执",
+      showTechnicalEvidence: "显示技术证据",
+      developerEvidence: "技术证据",
       targetTask: "希望加入什么？",
       targetTaskPlaceholder: "例如：加入报价计算器",
       chooseCapsules: "选择正式胶囊",
       targetNoCapsules: "暂无可生成的正式胶囊。",
       targetCapsuleRequired: "请选择 1–3 个同一能力的正式胶囊，并包含展示或交互角色。",
       targetTaskRequired: "请描述本次目标接入任务。",
-      generateReviewPatch: "生成可审查 Patch",
-      targetPatchGenerating: "正在生成 review-only Patch……",
-      targetPatchReady: "Patch 已就绪；请审查全部文件和验证证据。",
-      targetPatchRejected: "Patch 生成被拒绝：{code}",
-      reviewPatch: "审查 Patch",
-      developerEvidence: "开发者证据",
+      generateReviewPatch: "生成审阅改动",
+      targetPatchGenerating: "正在生成只读审阅改动……",
+      targetPatchReady: "改动已就绪；请审查全部文件和验证证据。",
+      targetPatchRejected: "改动生成被拒绝：{code}",
+      reviewPatch: "审查改动",
       confirmPatchBoundary: "确认只记录你已审查此结果，不会 apply、写入或 commit。",
-      confirmPatch: "确认已审查 Patch",
+      confirmPatch: "确认已审阅改动",
       targetConfirmed: "已确认 {plan}；目标写入仍为 0。",
       targetFileCount: "文件：{count}",
       targetResourceCount: "资源：{count}",
@@ -254,10 +354,61 @@
       brandProfileInvalid: "品牌配置必须是 JSON 对象。",
       projectConfirmationPartial: "部分项目未能确认，请查看项目状态。",
       refreshProject: "刷新项目",
+      authorizeSourceAgent: "授权 Agent 入库",
+      authorizeSourceAgentHelp: "复制一次性绑定请求。只写 Reweave Intake 与 Review 状态，不写来源项目；关闭桌面后再启动梭子。",
+      sourceAgentBindingCopied: "绑定请求已复制。请勿粘贴到聊天 Prompt；关闭桌面后写入梭子 stdin。",
+      sourceAgentActive: "Agent 入库已授权；必须先关闭 Reweave Desktop，再启动梭子。",
+      sourceAgentRevoked: "Agent 入库授权已撤销。",
+      sourceAgentStale: "来源或正式状态已变化；旧授权不可继续使用。",
+      sourceAgentConflict: "发现冲突的来源授权；已失败关闭。",
+      revokeSourceAgent: "撤销 Agent 入库授权",
+      reviewSourceAgent: "查看本次 Agent Review",
+      sourceAgentReviewMissing: "未找到与本次 Agent 入库精确绑定的 Review；不会显示其他 Review。",
+      source_handoff_request_invalid: "来源 Agent 授权请求无效。",
+      source_handoff_clipboard_failed: "剪贴板写入失败，来源 Agent 授权已撤销。",
+      source_handoff_clipboard_revoke_failed: "剪贴板写入失败，且授权撤销未能确认。请关闭梭子并刷新状态。",
+      sourceDerivedAgentTitle: "交给 Agent 准备单文件计算提案",
+      sourceDerivedAgentAuthorize: "授权 Agent 准备计算提案",
+      sourceDerivedAgentActive: "授权已复制。请关闭 Reweave Desktop 后再启动梭子。",
+      sourceDerivedAgentCopiedClose: "绑定已复制，请关闭 Reweave Desktop。",
+      sourceDerivedAgentWaiting: "等待 Agent 准备提案。",
+      sourceDerivedAgentApprove: "批准提案",
+      sourceDerivedAgentReject: "拒绝提案",
+      sourceDerivedAgentApproved: "提案已批准；请关闭 Desktop 后由 Agent 启动隔离运行。",
+      sourceDerivedAgentRejected: "提案已拒绝，未调用模型。",
+      sourceDerivedAgentRevoke: "撤销 Agent 授权",
+      sourceDerivedAgentRevokeConfirm: "确认撤销本次 Agent 计算提案授权？",
+      sourceDerivedAgentRevoked: "Agent 授权已撤销。",
+      sourceDerivedAgentStale: "来源、模型或正式仓库已漂移；只能撤销。",
+      sourceDerivedAgentConflict: "Agent 授权状态冲突；只能安全撤销。",
+      sourceDerivedAgentModelNotice: "批准后仍不会调用模型；Agent 启动时才会各调用一次源码模型和监督模型。",
+      source_derived_handoff_clipboard_failed: "剪贴板写入失败，授权已撤销。",
+      source_derived_handoff_clipboard_revoke_failed: "剪贴板写入失败且撤销未确认。请保持梭子关闭并刷新。",
+      sourceDerivedTitle: "从单一证据文件生成隔离计算提案",
+      sourceDerivedNotice: "将分别调用一次冻结源码提案模型和监督模型；失败后不会自动重试。本次只生成隔离 Review，不写正式能力仓库。",
+      sourceDerivedRelpath: "JS/TS 证据文件相对路径",
+      sourceDerivedBehavior: "行为说明",
+      sourceDerivedInputField: "输入字段",
+      sourceDerivedInputMin: "输入最短长度",
+      sourceDerivedInputMax: "输入最长长度",
+      sourceDerivedResultField: "输出字段",
+      sourceDerivedEnum: "输出枚举（每行一个）",
+      sourceDerivedCases: "业务验收例",
+      sourceDerivedCaseInput: "输入文本",
+      sourceDerivedCaseExpected: "期望枚举结果",
+      sourceDerivedAddCase: "增加验收例",
+      sourceDerivedRemoveCase: "移除此验收例",
+      sourceDerivedStart: "授权并生成隔离能力提案",
+      sourceDerivedReviewReady: "隔离验证已通过并到达 review_required；尚未正式接纳或发布。",
+      source_derivation_request_invalid: "单文件来源授权信息无效。",
+      source_derivation_evidence_invalid: "证据文件不安全、不可读取、超限或包含疑似秘密。",
+      source_derivation_run_stale: "来源、模型或正式 catalog 已变化；运行已失败关闭。",
       registerJavascriptSource: "登记 JavaScript 计算来源",
       registerJavascriptSourceHelp: "把所选来源根或子目录登记为只读 JavaScript 计算来源。",
       javascriptSourceRoot: "来源根",
       javascriptSourceRootHelp: "选择已经绑定的只读来源目录。",
+      sourceRootSelectionRequired: "请选择来源根。",
+      sourceRootSelectionStale: "先前选择的来源根已不可用，请重新选择；未改用其他来源。",
       javascriptProjectRelpath: "项目或子目录（. 表示整个来源根）",
       javascriptProjectRelpathHelp: "限定计算函数扫描范围；不会修改该目录。",
       javascriptDisplayName: "计算来源名称",
@@ -280,7 +431,7 @@
       projectScanUnknownType: "来源类型无法识别，请重新发现或登记该项目。",
       projectScanUnknownState: "项目状态未知，请刷新项目列表后重试。",
       adapterInputKind: "输入类型",
-      adapterInputKindHelp: "简单模式固定为整数；布尔和枚举只在开发者模式配置。",
+      adapterInputKindHelp: "简单模式固定为整数；布尔、枚举和有界字符串只在开发者模式配置。",
       adapterEnumValues: "枚举值（每行一个）",
       adapterEnumValuesHelp: "列出允许的精确字符串值，每行一个。",
       captureNeedsDecision: "等待你的安全确认；模型监督和运行验证尚未执行。",
@@ -297,6 +448,12 @@
       adapterMinimumHelp: "该输入允许的最小安全整数。必须依据实际业务填写。",
       adapterMaximum: "最大值",
       adapterMaximumHelp: "该输入允许的最大安全整数。必须依据实际业务填写。",
+      adapterMinimumLength: "最短长度",
+      adapterMaximumLength: "最长长度",
+      adapterResultEnum: "输出枚举（每行一个）",
+      adapterResultEnumHelp: "列出计算函数允许返回的全部精确字符串值，每行一个。",
+      adapterWitness: "{value} 的验收输入",
+      adapterWitnessHelp: "该输入必须让旧函数精确返回对应枚举值，并满足声明的 UTF-16 长度边界。",
       adapterResultField: "输出字段",
       adapterResultFieldHelp: "产品接收计算结果时使用的字段名，例如 total。",
       adapterResultFieldVisibleHelp: "这是计算结果在新产品中的名称。例如 total 可以表示总价。",
@@ -310,7 +467,7 @@
       adapterMappingConfirmShort: "我确认",
       createComputationAdapter: "创建计算胶囊候选",
       continueCaptureValidation: "继续验证",
-      adapterMappingInvalid: "请填写合法、唯一的 snake_case 字段和安全整数范围。",
+      adapterMappingInvalid: "请填写合法、唯一的字段、边界、枚举与逐枚举验收输入。",
       adapterInspectionComplete: "计算函数检查完成。",
       adapterCandidateCreated: "计算胶囊候选已创建，请继续复核。",
       captureWaitingModel: "等待本地监督模型；尚未完成验证。",
@@ -393,6 +550,7 @@
       renameCapabilityPrompt: "输入新的能力展示名称",
       manifestDigest: "Manifest 摘要",
       preRestoreBackup: "恢复前备份",
+      backupAvailable: "可用",
       backupUnavailable: "不可用",
       disableCapsule: "停用",
       enableCapsule: "启用",
@@ -430,16 +588,20 @@
       privacy: "All local. Nothing leaves your machine.",
       history: "Session history",
       artifacts: "Build notes",
-      welcomeKicker: "Source Box · Current Runtime · Build notes",
-      welcomeTagline: "Bind an old project folder and clean it into reusable capsules.",
-      welcomePhilosophy: "Digest first, then reweave.",
-      sourceBox: "Source Box",
-      bindSourceBox: "Bind Source Box",
-      sourceBoxNote: "Choose an old project folder to clean into capsules.",
+      welcomeKicker: "Local initialization · Source project",
+      welcomeTagline: "Choose a local project folder and bind it as a read-only source.",
+      welcomePhilosophy: "This establishes provenance only; it does not publish or promote capsules.",
+      sourceBox: "Local source",
+      bindSourceBox: "Choose project folder",
+      sourceBoxNote: "The scan is read-only and never writes the selected project.",
       sourceBoxReadOnlyNote: "Bind locally, scan read-only, no source writes.",
       sourceBoxBindingDisabled: "Source Box binding is not enabled.",
       viewCurrentRuntime: "View Current Runtime",
-      cleaningRuntime: "Loading runtime and build notes",
+      cleaningRuntime: "Running controlled local initialization",
+      compatibilityTools: "Compatibility tools",
+      quickCompose: "Quick compose",
+      compatibilityDisclaimer: "Does not pass formal plan confirmation and is not a standalone product delivery.",
+      compatibilityTitle: "Compatibility tools / Quick compose",
       capsules: "Capsules",
       taskPlaceholder: "Describe the tool or page to reweave...",
       taskPackPlaceholder: "Describe a small project pack...",
@@ -550,27 +712,90 @@
       copied: "Copied",
       enrichedContentPreview: "Use enriched content preview",
       capsuleWarehouse: "Capsule Warehouse",
-      warehouseReadOnly: "READ-ONLY WAREHOUSE",
+      warehouseReadOnly: "READ-ONLY FORMAL SOURCES",
       back: "Back",
+      backToContext: "Back to context",
       searchWarehouse: "Search source projects or capsules",
-      canvasZoom: "Canvas zoom",
       codeZoom: "Code size",
       zoomOut: "Zoom out",
       zoomIn: "Zoom in",
-      resetView: "Reset",
       resetCodeSize: "Reset code size",
       sourceProjectOverview: "Source project overview",
-      warehouseCanvasHelp: "Capsule Warehouse canvas. Use arrow keys to pan, plus or minus to zoom, and Enter to open a focused node.",
+      formalSourceCount: "{count} formal sources",
+      warehouseRackHelp: "Capsule Warehouse source projects. Use Tab to browse and Enter to open the current project or capsule.",
+      warehouseEvidenceRail: "Formal source evidence path",
+      exactVersion: "Exact version",
       noFormalCapsules: "No formal capsules are available to browse.",
       warehouseLoadingRelations: "Loading formal capsule source relationships…",
       noFormalSourceIdentity: "Formal capsules do not provide a displayable source project identity.",
       insufficientSourceEvidence: "Insufficient source evidence",
+      sourceEvidenceShelf: "Source evidence insufficient",
+      unwovenSources: "Unwoven",
+      sourceEvidenceShelfCopy: "These formal capsules cannot yet be assigned to one exact source project.",
       noVerifiedCoreCode: "No verified core code is available.",
       warehouseManagement: "Ingestion management",
+      warehouseLegend: "Capsule library capability legend",
+      sourceProject: "Source project",
+      presentationCapability: "Presentation",
+      interactionCapability: "Interaction",
+      computationCapability: "Computation",
+      formalCapsuleCount: "{count} formal capsules",
+      sourceVerifiedShort: "Source proven",
+      searchResultCount: "{count} results",
+      searchNoResults: "No results; the current source projects and focus are unchanged.",
+      sourceFactVerified: "Formal version · active · exact source proven · validation passed",
+      sourceFactInsufficient: "Formal version · insufficient source evidence",
+      multipleExactSources: "Multiple exact project sources prevent a unique source assignment.",
+      missingExactSource: "The current exact version has no project source relationship.",
+      missingFormalSource: "No verifiable formal project source identity is available.",
+      planContextResolved: "Located by the plan's exact capsule, version, and digest.",
+      planContextMissing: "The plan binding does not resolve to one formal source; no approximate version was selected.",
+      validationPassedShort: "Validation passed",
+      validationIncompleteShort: "Validation incomplete",
+      emptyCapabilityLane: "No formal {kind} capsules",
+      formalContract: "Formal contract",
+      contractStatus: "Contract status",
+      contractUnavailable: "The exact version contract is unavailable.",
+      contractEntrypoint: "Entrypoint",
+      contractReceives: "Receives",
+      contractProduces: "Produces",
+      contractNoInput: "No input",
+      contractNoOutput: "No output",
+      viewVerifiedCodePath: "View verified code: {path}",
+      focusSpoolForEvidence: "Focus a spool to extract evidence",
+      showValidationEvidence: "Show validation evidence",
+      validationEvidence: "Validation evidence",
+      rawEvidence: "Raw evidence JSON",
+      evidenceIdentity: "Formal identity and capability",
+      evidenceSource: "Exact project source",
+      evidenceContracts: "Input, output, error, and runtime contracts",
+      evidenceValidation: "Validation and acceptance scope",
+      evidenceEntry: "Entry module",
+      evidenceAvailable: "Validation passed",
+      evidenceUnavailable: "Evidence unavailable",
       warehousePurpose: "Manage read-only sources, capture candidates, review them, and publish formal capsules.",
       developerMode: "Developer mode",
       developerModeHelp: "Show input types, enums, review IDs, backups, and task diagnostics.",
+      formalSourceIntake: "Source intake",
+      sourceIntakeReview: "Source intake and review",
+      intakeSourceContextLabel: "Source context",
+      intakeSpecimenLabel: "Current inspection specimen",
+      intakeSpecimenEmpty: "Choose a source project to begin inspection",
+      intakeSpecimenSelected: "Inspection target selected; formal state is unchanged",
+      productReviewContext: "Product capability review",
+      productReviewExact: "Showing only the review admitted from this product task",
+      inspectSource: "Inspect this source",
+      showManagementAdvanced: "Show management advanced options",
+      intakeWorkstations: "Source intake workstations",
+      sourceStation: "Sources",
+      supervisionStation: "Supervision",
+      reviewStation: "To review",
+      formalStation: "Formal capabilities",
+      currentWorkstation: "Current workstation",
+      supervisionRoleBoundary: "Capsule supervision and product planning are separate roles; no model is selected automatically here.",
+      managementAdvanced: "Management advanced options",
       deliveryMode: "Delivery mode",
+      buildProduct: "Build product",
       standaloneProduct: "Standalone product",
       targetIntegration: "Target integration",
       targetReadOnly: "Target read-only · Review-only Patch",
@@ -583,12 +808,35 @@
       noTargetSelected: "No target selected",
       targetSelected: "Selected: {name}",
       targetEntry: "HTML entry",
-      analyzeTarget: "Analyze target",
+      analyzeTarget: "Analyze target read-only",
       targetAnalyzing: "Analyzing the target read-only…",
       targetProfileReady: "Target profile ready; the source snapshot is unchanged.",
       targetProfileRejected: "Target analysis rejected: {code}",
+      targetAnalysisError_entry_not_found: "The selected HTML entry was not found.",
+      targetAnalysisRecovery_entry_not_found: "Confirm the relative path exists in the target folder, then analyze read-only again.",
+      targetAnalysisError_frontend_contract_rejected: "The target profile failed the frontend contract checks.",
+      targetAnalysisRecovery_frontend_contract_rejected: "Reselect the target folder or check the HTML entry, then retry.",
+      targetAnalysisError_invalid_response: "Target analysis returned an invalid response.",
+      targetAnalysisRecovery_invalid_response: "Reselect the target and analyze read-only again.",
+      targetAnalysisRecoveryGeneric: "Fix the target selection or HTML entry, then retry read-only analysis.",
+      targetPatchError_frontend_contract_rejected: "The Patch failed the frontend contract checks.",
+      targetPatchRecovery_frontend_contract_rejected: "Adjust the task or formal capsule selection, then generate the review Patch again.",
+      targetPatchError_invalid_response: "Patch generation returned an invalid response.",
+      targetPatchRecovery_invalid_response: "Check the task and capsule selection, then generate again.",
+      targetPatchRecoveryGeneric: "Adjust the task or formal capsules, then generate the review Patch again.",
       targetEntryRequired: "Enter an HTML path relative to the target root.",
+      targetSelectSummary: "Entry {entry} · read-only analysis complete",
+      targetEntryPendingSummary: "Entry {entry} · waiting for read-only analysis",
       composePatch: "Compose Patch",
+      targetStageSelect: "Select target",
+      targetStageCompose: "Compose review Patch",
+      targetStageReview: "Review Patch",
+      targetStageConfirmed: "Review receipt",
+      targetComposeSummary: "{count} formal capsules · {task}",
+      targetComposeSummaryOne: "1 formal capsule · {task}",
+      targetConfirmedTitle: "Patch review confirmed",
+      showTechnicalEvidence: "Show technical evidence",
+      developerEvidence: "Technical evidence",
       targetTask: "What should be added?",
       targetTaskPlaceholder: "For example: add a quote calculator",
       chooseCapsules: "Choose formal capsules",
@@ -600,7 +848,6 @@
       targetPatchReady: "Patch ready; review every file and all validation evidence.",
       targetPatchRejected: "Patch generation rejected: {code}",
       reviewPatch: "Review Patch",
-      developerEvidence: "Developer evidence",
       confirmPatchBoundary: "Confirmation records that you reviewed this result. It does not apply, write, or commit anything.",
       confirmPatch: "Confirm reviewed Patch",
       targetConfirmed: "Confirmed {plan}; target writes remain 0.",
@@ -647,10 +894,61 @@
       brandProfileInvalid: "Brand profile must be a JSON object.",
       projectConfirmationPartial: "Some projects could not be confirmed; review their status.",
       refreshProject: "Refresh project",
+      authorizeSourceAgent: "Authorize Agent intake",
+      authorizeSourceAgentHelp: "Copy a one-time binding request. It writes only Reweave Intake and Review state, never the source project; close Desktop before starting the shuttle.",
+      sourceAgentBindingCopied: "The binding request was copied. Do not paste it into a chat prompt; close Desktop, then write it to the shuttle stdin.",
+      sourceAgentActive: "Agent intake is authorized. Close Reweave Desktop before starting the shuttle.",
+      sourceAgentRevoked: "Agent intake authorization was revoked.",
+      sourceAgentStale: "The source or formal state changed; the old authorization cannot be used.",
+      sourceAgentConflict: "Conflicting source authorizations were found and failed closed.",
+      revokeSourceAgent: "Revoke Agent intake",
+      reviewSourceAgent: "View this Agent review",
+      sourceAgentReviewMissing: "No Review is bound to this exact Agent intake; unrelated Reviews are not shown.",
+      source_handoff_request_invalid: "The source Agent authorization request is invalid.",
+      source_handoff_clipboard_failed: "Clipboard write failed and the source Agent authorization was revoked.",
+      source_handoff_clipboard_revoke_failed: "Clipboard write failed and revocation could not be confirmed. Keep the Shuttle closed and refresh state.",
+      sourceDerivedAgentTitle: "Let an Agent prepare a one-file computation proposal",
+      sourceDerivedAgentAuthorize: "Authorize Agent to prepare proposal",
+      sourceDerivedAgentActive: "Authorization copied. Close Reweave Desktop before starting the Shuttle.",
+      sourceDerivedAgentCopiedClose: "Binding copied. Close Reweave Desktop.",
+      sourceDerivedAgentWaiting: "Waiting for the Agent to prepare a proposal.",
+      sourceDerivedAgentApprove: "Approve proposal",
+      sourceDerivedAgentReject: "Reject proposal",
+      sourceDerivedAgentApproved: "Proposal approved. Close Desktop before the Agent starts the isolated run.",
+      sourceDerivedAgentRejected: "Proposal rejected; no model was called.",
+      sourceDerivedAgentRevoke: "Revoke Agent authorization",
+      sourceDerivedAgentRevokeConfirm: "Revoke this Agent computation-proposal authorization?",
+      sourceDerivedAgentRevoked: "Agent authorization revoked.",
+      sourceDerivedAgentStale: "The source, model, or formal warehouse drifted; only revocation is allowed.",
+      sourceDerivedAgentConflict: "Agent authorization state conflicts; only safe revocation is allowed.",
+      sourceDerivedAgentModelNotice: "Approval still does not call a model. The Agent run later calls the source model and supervisor once each.",
+      source_derived_handoff_clipboard_failed: "Clipboard write failed and the authorization was revoked.",
+      source_derived_handoff_clipboard_revoke_failed: "Clipboard write failed and revocation was not confirmed. Keep the Shuttle closed and refresh.",
+      sourceDerivedTitle: "Generate an isolated computation from one evidence file",
+      sourceDerivedNotice: "This calls the frozen source-proposal model once and the supervisor once. Failures are not retried. It creates only an isolated Review and does not write the formal capability warehouse.",
+      sourceDerivedRelpath: "Relative JS/TS evidence path",
+      sourceDerivedBehavior: "Behavior intent",
+      sourceDerivedInputField: "Input field",
+      sourceDerivedInputMin: "Minimum input length",
+      sourceDerivedInputMax: "Maximum input length",
+      sourceDerivedResultField: "Result field",
+      sourceDerivedEnum: "Result enum (one per line)",
+      sourceDerivedCases: "Acceptance cases",
+      sourceDerivedCaseInput: "Input text",
+      sourceDerivedCaseExpected: "Expected enum result",
+      sourceDerivedAddCase: "Add acceptance case",
+      sourceDerivedRemoveCase: "Remove this acceptance case",
+      sourceDerivedStart: "Authorize and generate isolated capability proposal",
+      sourceDerivedReviewReady: "Isolated validation reached review_required; no formal admission or publication occurred.",
+      source_derivation_request_invalid: "The one-file source authorization is invalid.",
+      source_derivation_evidence_invalid: "The evidence file is unsafe, unreadable, oversized, or contains a possible secret.",
+      source_derivation_run_stale: "The source, model, or formal catalog changed; the run failed closed.",
       registerJavascriptSource: "Register JavaScript computation source",
       registerJavascriptSourceHelp: "Register a source root or subdirectory as a read-only JavaScript computation source.",
       javascriptSourceRoot: "Source root",
       javascriptSourceRootHelp: "Choose an already bound read-only source directory.",
+      sourceRootSelectionRequired: "Select a source root.",
+      sourceRootSelectionStale: "The previously selected source root is unavailable. Select it again; no other source was substituted.",
       javascriptProjectRelpath: "Project or subdirectory (. means source root)",
       javascriptProjectRelpathHelp: "Limit the computation scan scope; this directory is never modified.",
       javascriptDisplayName: "Computation source name",
@@ -673,7 +971,7 @@
       projectScanUnknownType: "The source type is unknown. Discover or register the project again.",
       projectScanUnknownState: "The project state is unknown. Refresh the project list and try again.",
       adapterInputKind: "Input type",
-      adapterInputKindHelp: "Simple mode uses integers; configure booleans and enums in developer mode.",
+      adapterInputKindHelp: "Simple mode uses integers; configure booleans, enums, and bounded strings in developer mode.",
       adapterEnumValues: "Enum values (one per line)",
       adapterEnumValuesHelp: "List exact allowed string values, one per line.",
       captureNeedsDecision: "Waiting for your safety decision; model supervision and runtime validation have not run.",
@@ -690,6 +988,12 @@
       adapterMinimumHelp: "The smallest allowed safe integer. Enter a real business limit.",
       adapterMaximum: "Maximum",
       adapterMaximumHelp: "The largest allowed safe integer. Enter a real business limit.",
+      adapterMinimumLength: "Minimum length",
+      adapterMaximumLength: "Maximum length",
+      adapterResultEnum: "Result enum (one per line)",
+      adapterResultEnumHelp: "List every exact string value the computation may return, one per line.",
+      adapterWitness: "Acceptance input for {value}",
+      adapterWitnessHelp: "This input must make the old function return the matching enum value and satisfy the declared UTF-16 length bounds.",
       adapterResultField: "Result field",
       adapterResultFieldHelp: "The field used by products to receive this result, for example total.",
       adapterResultFieldVisibleHelp: "This is the result name used by the new product. For example, total can mean a total price.",
@@ -703,7 +1007,7 @@
       adapterMappingConfirmShort: "I confirm",
       createComputationAdapter: "Create computation candidate",
       continueCaptureValidation: "Continue validation",
-      adapterMappingInvalid: "Enter unique snake_case fields and safe integer ranges.",
+      adapterMappingInvalid: "Enter valid unique fields, bounds, enums, and one acceptance input per result.",
       adapterInspectionComplete: "Computation function inspection completed.",
       adapterCandidateCreated: "Computation candidate created; continue review.",
       captureWaitingModel: "Waiting for the local supervision model; validation is incomplete.",
@@ -786,6 +1090,7 @@
       renameCapabilityPrompt: "Enter a new capability display name",
       manifestDigest: "Manifest digest",
       preRestoreBackup: "Pre-restore backup",
+      backupAvailable: "Available",
       backupUnavailable: "Unavailable",
       disableCapsule: "Disable",
       enableCapsule: "Enable",
@@ -825,8 +1130,6 @@
   var desktopBridge = null;
   var bridgeReady = false;
   var desktopShellState = null;
-  var scanningSourceIds = {};
-  var preparingSourceIds = {};
   var verifyingSourceIds = {};
   var previewingSourceIds = {};
   var reviewingSourceIds = {};
@@ -886,38 +1189,69 @@
         return managementPayload(result);
       });
     },
-    openManagement: function () {
-      togglePopover("capsule-warehouse");
-      if (!ingestionManagement.loaded && !ingestionManagement.loading) refreshIngestionManagement();
-    },
-    capsuleReader: capsuleReader,
-    t: t,
-    showScreen: showScreen,
-    syncAppState: syncAppState,
-  });
-  var productPlanScene = window.ReweaveProductPlanScene.create({
-    getCapsules: function () {
-      return data && Array.isArray(data.capsules) ? data.capsules : [];
+    openManagement: function (specimenContext) {
+      openIngestionScene("warehouse", specimenContext || null);
     },
     getLocale: function () {
       return locale;
     },
+    targetAvailable: function () {
+      var button = $("btn-open-target");
+      return !!(button && !button.disabled && !button.classList.contains("hidden"));
+    },
+    openProduct: function () {
+      productPlanScene.open();
+    },
+    openTarget: function () {
+      var button = $("btn-open-target");
+      if (button && !button.disabled) button.click();
+    },
+    openCompatibility: function () {
+      var button = $("btn-product-plan-back");
+      if (button) button.click();
+      else {
+        showScreen("screen-main");
+        syncAppState();
+      }
+    },
+    toggleLocale: toggleLocale,
+    capsuleReader: capsuleReader,
+    t: t,
     showScreen: showScreen,
-    getWarehouseState: function () {
-      return capsuleWarehouseScene.getState();
+    syncAppState: syncAppState,
+    transition: runSceneThreadTransition,
+  });
+  var productPlanScene = window.ReweaveProductPlanScene.create({
+    canOpenProduct: function () {
+      return !!(
+        desktopShellState &&
+        desktopShellState.canPlanProduct === true &&
+        desktopShellState.productPlanning
+      );
     },
-    openWarehouse: function (capsuleId) {
-      var entry = $("btn-capsule-warehouse");
-      if (!entry) return;
-      entry.click();
-      window.setTimeout(function () {
-        var query = $("warehouse-scene-query");
-        if (!query) return;
-        query.value = capsuleId;
-        query.dispatchEvent(new Event("input", { bubbles: true }));
-        query.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true }));
-      }, 0);
+    getLocale: function () {
+      return locale;
     },
+    getPlanningState: function () {
+      return desktopShellState && desktopShellState.productPlanning;
+    },
+    setSelectedPlanningModel: function (model) {
+      if (!desktopShellState || !desktopShellState.productPlanning) return;
+      desktopShellState.productPlanning.selected_model = model;
+    },
+    call: function (method, payload) {
+      return bridgeCall(method, JSON.stringify(payload || {})).then(function (raw) {
+        return parseBridgeJson(raw);
+      });
+    },
+    openWarehouse: function (context) {
+      capsuleWarehouseScene.open(context || null);
+    },
+    openIngestion: function (context) {
+      openIngestionScene("product", context || null);
+    },
+    toggleLocale: toggleLocale,
+    showScreen: showScreen,
   });
   var targetIntegration = window.ReweaveTargetWorkflow.create({
     getBridge: function () {
@@ -937,6 +1271,19 @@
     },
     showScreen: showScreen,
     syncAppState: syncAppState,
+    openProduct: function () {
+      productPlanScene.open();
+    },
+    openWarehouse: function (context) {
+      capsuleWarehouseScene.open(context || null);
+    },
+    openIngestion: function () {
+      openIngestionScene("product", null);
+    },
+    openCompatTools: function () {
+      showScreen("screen-main");
+      syncAppState();
+    },
     toggleLocale: toggleLocale,
   });
 
@@ -949,7 +1296,7 @@
   }
 
   function hasDesktopBridge() {
-    return !!(desktopBridge && typeof desktopBridge.choose_source_folder === "function");
+    return !!(desktopBridge && typeof desktopBridge.get_initial_state === "function");
   }
 
   function desktopCapability(name) {
@@ -1019,9 +1366,8 @@
   function syncSourceControls() {
     var addSourceBtn = document.querySelector(".btn-add-source");
     if (!addSourceBtn) return;
-    var allowed = hasDesktopBridge() && desktopCapability("canChooseSourceFolder");
-    addSourceBtn.disabled = !allowed;
-    addSourceBtn.classList.toggle("hidden", !allowed);
+    addSourceBtn.disabled = true;
+    addSourceBtn.classList.add("hidden");
   }
 
   function syncWelcomeSourceBoxMode() {
@@ -1030,11 +1376,11 @@
     var runtimeBtn = $("btn-view-runtime");
     if (!bindBtn) return;
     var readOnly = hasDesktopBridge() && isLumoLiteReadOnly();
-    var canBind = !hasDesktopBridge() || desktopCapability("canChooseSourceFolder");
     bindBtn.textContent = t("bindSourceBox");
-    bindBtn.disabled = !canBind;
-    bindBtn.setAttribute("aria-disabled", canBind ? "false" : "true");
-    setOptionalTitle(bindBtn, canBind ? "" : t("sourceBoxBindingDisabled"));
+    bindBtn.disabled = true;
+    bindBtn.setAttribute("aria-disabled", "true");
+    bindBtn.classList.add("hidden");
+    setOptionalTitle(bindBtn, t("sourceBoxBindingDisabled"));
     if (note) {
       note.textContent = readOnly ? t("sourceBoxReadOnlyNote") : t("sourceBoxNote");
     }
@@ -1290,7 +1636,7 @@
     }
 
     function attach() {
-      if (window.reweaveBridge && typeof window.reweaveBridge.choose_source_folder === "function") {
+      if (window.reweaveBridge && typeof window.reweaveBridge.get_initial_state === "function") {
         desktopBridge = window.reweaveBridge;
         bridgeReady = true;
         bridgeCall("get_initial_state").then(function (raw) {
@@ -1518,7 +1864,20 @@
     if (!block || typeof block !== "object") return;
     var payload = block.data && typeof block.data === "object" ? block.data : block;
     ingestionManagement.available = payload.available !== false;
-    if (Array.isArray(payload.sourceRoots)) ingestionManagement.sourceRoots = payload.sourceRoots.slice();
+    if (Array.isArray(payload.sourceRoots)) {
+      ingestionManagement.sourceRoots = payload.sourceRoots.slice();
+      if (
+        ingestionManagement.selectedSourceRootId &&
+        !ingestionManagement.sourceRoots.some(function (root) {
+          return String(root.root_id || "") === ingestionManagement.selectedSourceRootId &&
+            String(root.status || "") === "bound";
+        })
+      ) {
+        ingestionManagement.selectedSourceRootId = "";
+        ingestionManagement.sourceRootSelectionStale = true;
+        ingestionManagement.errorKey = "sourceRootSelectionStale";
+      }
+    }
     if (Array.isArray(payload.projects)) ingestionManagement.projects = payload.projects.slice();
     if (Array.isArray(payload.review_items)) ingestionManagement.reviewItems = payload.review_items.slice();
     if (Array.isArray(payload.capability_groups)) ingestionManagement.capabilityGroups = payload.capability_groups.slice();
@@ -1558,6 +1917,8 @@
       "captureDuplicate",
       "restoreComplete",
       "importStarted",
+      "sourceAgentBindingCopied",
+      "sourceAgentRevoked",
     ].indexOf(key) < 0);
   }
 
@@ -1604,6 +1965,221 @@
     if (popover) popover.classList.toggle("developer-mode", ingestionManagement.developerMode === true);
   }
 
+  function syncIngestionSpecimen() {
+    var specimen = ingestionNavigation.specimen;
+    var productReview = ingestionNavigation.productReview;
+    var reviewItem = productReview
+      ? ingestionManagement.reviewItems.find(function (item) {
+          return String(item.review_id || "") === productReview.review_id;
+        })
+      : null;
+    var reviewCandidate =
+      reviewItem && reviewItem.candidate &&
+      typeof reviewItem.candidate === "object"
+        ? reviewItem.candidate
+        : {};
+    var surface = $("capsule-ingestion-specimen");
+    var name = $("ingestion-specimen-name");
+    var context = $("ingestion-specimen-context");
+    if (!surface || !name || !context) return;
+    surface.classList.toggle("is-empty", !specimen && !productReview);
+    surface.classList.toggle(
+      "is-exact",
+      !!productReview || !!(specimen && specimen.exact_source)
+    );
+    surface.dataset.capabilityKind = productReview
+      ? String(reviewItem && (
+          reviewItem.capability_kind ||
+          reviewCandidate.capability_kind
+        ) || "")
+      : specimen
+        ? String(specimen.capability_kind || "")
+        : "";
+    name.textContent = productReview
+      ? String(
+          reviewItem && (
+            reviewItem.display_name ||
+            reviewItem.suggested_name
+          ) || t("productReviewContext")
+        )
+      : specimen
+        ? String(specimen.display_name || t("sourceProject"))
+        : t("intakeSpecimenEmpty");
+    var kindKey = specimen && {
+      presentation: "presentationCapability",
+      interaction: "interactionCapability",
+      computation: "computationCapability",
+    }[String(specimen.capability_kind || "")];
+    var version = specimen ? String(specimen.version_id || "") : "";
+    context.textContent = productReview
+      ? t("productReviewExact")
+      : !specimen
+      ? ""
+      : specimen.capsule_name
+        ? [
+          kindKey ? t(kindKey) : "",
+          String(specimen.capsule_name),
+          version.length > 18 ? version.slice(0, 15) + "…" : version,
+        ].filter(Boolean).join(" · ")
+        : specimen.exact_source
+          ? formatText("formalCapsuleCount", { count: Number(specimen.formal_capsule_count || 0) })
+          : t("intakeSpecimenSelected");
+    ["presentation", "interaction", "computation"].forEach(function (kind) {
+      var value = $("ingestion-specimen-" + kind);
+      var counts = specimen && specimen.capsule_counts;
+      if (value) {
+        value.textContent = productReview
+          ? surface.dataset.capabilityKind === kind ? "1" : "—"
+          : counts && Number.isFinite(Number(counts[kind]))
+            ? String(Number(counts[kind]))
+            : "—";
+      }
+    });
+    document.querySelectorAll("[data-specimen-project-id]").forEach(function (button) {
+      button.setAttribute(
+        "aria-pressed",
+        specimen && specimen.project_id &&
+          String(specimen.project_id) === String(button.dataset.specimenProjectId || "")
+          ? "true"
+          : "false"
+      );
+    });
+  }
+
+  function syncIngestionStation() {
+    var station = ingestionNavigation.station;
+    document.querySelectorAll("[data-ingestion-station]").forEach(function (button) {
+      var active = button.dataset.ingestionStation === station;
+      button.classList.toggle("is-active", active);
+      button.setAttribute("aria-selected", active ? "true" : "false");
+      button.setAttribute("tabindex", active ? "0" : "-1");
+    });
+    document.querySelectorAll("[data-ingestion-panel]").forEach(function (panel) {
+      var active = panel.dataset.ingestionPanel === station;
+      panel.classList.toggle("is-active", active);
+      panel.hidden = !active;
+    });
+    var sourceCount = $("ingestion-source-count");
+    var formalCount = $("ingestion-formal-count");
+    var supervisionStatus = $("ingestion-supervision-status");
+    if (sourceCount) sourceCount.textContent = String(ingestionManagement.projects.length);
+    if (formalCount) formalCount.textContent = String(ingestionManagement.capabilityGroups.length);
+    if (supervisionStatus) supervisionStatus.textContent = ingestionManagement.selectedModel ? "✓" : "—";
+    syncIngestionSpecimen();
+  }
+
+  function syncFormalNavigation() {
+    var targetEntry = $("btn-open-target");
+    var targetAvailable = !!(
+      targetEntry &&
+      !targetEntry.disabled &&
+      !targetEntry.classList.contains("hidden")
+    );
+    document.querySelectorAll("[data-formal-target-nav]").forEach(function (button) {
+      button.classList.toggle("hidden", !targetAvailable);
+      button.disabled = !targetAvailable;
+      button.setAttribute("aria-disabled", targetAvailable ? "false" : "true");
+    });
+    document.querySelectorAll(".reweave-workspace-bar .btn-lang").forEach(function (button) {
+        button.textContent = locale === "zh" ? "中·EN" : "EN·中";
+    });
+  }
+
+  function runSceneThreadTransition(kind) {
+    var line = $("scene-thread-transition");
+    if (!line) return;
+    line.dataset.kind = kind || "warehouse";
+    line.classList.remove("is-active");
+    void line.offsetWidth;
+    line.classList.add("is-active");
+    window.setTimeout(function () { line.classList.remove("is-active"); }, 220);
+  }
+
+  function openIngestionScene(fromScene, specimenContext) {
+    var active = document.activeElement;
+    ingestionNavigation.returnScene = fromScene || "product";
+    ingestionNavigation.focusId = active && active.id ? active.id : "";
+    var productReview =
+      ingestionNavigation.returnScene === "product" &&
+      specimenContext &&
+      specimenContext.station === "review" &&
+      typeof specimenContext.review_id === "string"
+        ? {
+            review_id: specimenContext.review_id,
+            plan_token: String(specimenContext.plan_token || ""),
+            projection_digest: String(
+              specimenContext.projection_digest || ""
+            ),
+            return_focus_id: String(
+              specimenContext.return_focus_id || ""
+            ),
+          }
+        : null;
+    ingestionNavigation.productReview = productReview;
+    ingestionNavigation.sourceHandoffReview = null;
+    ingestionNavigation.station = productReview ? "review" : "source";
+    ingestionNavigation.specimen = !productReview &&
+      specimenContext && typeof specimenContext === "object"
+      ? {
+        project_id: specimenContext.project_id || null,
+        project_key: String(specimenContext.project_key || ""),
+        display_name: String(specimenContext.display_name || ""),
+        exact_source: specimenContext.exact_source === true,
+        formal_capsule_count: Number(specimenContext.formal_capsule_count || 0),
+        capsule_counts: specimenContext.capsule_counts || null,
+        capsule_id: specimenContext.capsule_id || null,
+        capsule_name: specimenContext.capsule_name || null,
+        capability_kind: specimenContext.capability_kind || null,
+        version_id: specimenContext.version_id || null,
+        canonical_hash: specimenContext.canonical_hash || null,
+      }
+      : null;
+    if (ingestionNavigation.returnScene === "warehouse") capsuleWarehouseScene.suspend();
+    runSceneThreadTransition("ingestion");
+    showScreen("screen-capsule-ingestion");
+    var ingestionScreen = $("screen-capsule-ingestion");
+    if (ingestionScreen) ingestionScreen.scrollTop = 0;
+    window.scrollTo(0, 0);
+    syncIngestionStation();
+    syncFormalNavigation();
+    if (!ingestionManagement.loaded && !ingestionManagement.loading) {
+      refreshIngestionManagement();
+    } else {
+      renderIngestionManagement();
+    }
+    window.setTimeout(function () {
+      var current = document.querySelector("[data-ingestion-station].is-active");
+      if (current) current.focus({ preventScroll: true });
+    }, 0);
+  }
+
+  function closeIngestionScene() {
+    var productReview = ingestionNavigation.productReview;
+    if (ingestionNavigation.returnScene === "warehouse") {
+      capsuleWarehouseScene.resume();
+    } else {
+      showScreen("screen-product-plan");
+      if (productReview && productReview.plan_token) {
+        productPlanScene.refreshCurrentWorkspace({
+          focusId:
+            productReview.return_focus_id ||
+            ingestionNavigation.focusId,
+        });
+      } else {
+        productPlanScene.resume();
+      }
+    }
+    ingestionNavigation.productReview = null;
+    ingestionNavigation.sourceHandoffReview = null;
+    window.setTimeout(function () {
+      var target =
+        !productReview && ingestionNavigation.focusId
+          ? $(ingestionNavigation.focusId)
+          : null;
+      if (target) target.focus();
+    }, 0);
+  }
+
   function reviewStatusLabel(status) {
     var key = {
       waiting_user: "reviewStatusWaitingUser",
@@ -1645,6 +2221,69 @@
       .replace(/_+/g, "_");
     if (!/^[a-z_][a-z0-9_]*$/.test(text)) return fallback;
     return text;
+  }
+
+  function looksPrivateManagementValue(value) {
+    var text = String(value || "").trim();
+    return (
+      /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(text) ||
+      /^\//.test(text) ||
+      /^[a-zA-Z]:[\\/]/.test(text) ||
+      /^\\\\/.test(text) ||
+      /^file:\/\//i.test(text) ||
+      /^~[\\/]/.test(text)
+    );
+  }
+
+  function managementFingerprint(value) {
+    var hash = 2166136261;
+    var input = String(value || "");
+    for (var index = 0; index < input.length; index += 1) {
+      hash ^= input.charCodeAt(index);
+      hash = Math.imul(hash, 16777619);
+    }
+    return ("000000" + (hash >>> 0).toString(16)).slice(-6);
+  }
+
+  function managementDisplayLabel(value, identity, fallbackKey) {
+    var label = String(value || "").trim();
+    if (label && label !== "." && !looksPrivateManagementValue(label)) return label;
+    return t(fallbackKey) + " · " + managementFingerprint(identity || label || fallbackKey);
+  }
+
+  function sourceRootDisplayLabel(root) {
+    var path = String(root && root.current_path || "").replace(/[\\/]+$/, "");
+    var basename = path.split(/[\\/]/).filter(Boolean).pop() || "";
+    if (!basename || basename === "." || basename === ".." || looksPrivateManagementValue(basename)) {
+      basename = t("javascriptSourceRoot");
+    }
+    return basename + " · " + managementFingerprint(root && root.root_id);
+  }
+
+  function selectDiscoveredSourceRoot(value) {
+    var payload = value && typeof value === "object" ? value : {};
+    var root = payload.source_root ||
+      (payload.discovery && payload.discovery.source_root) ||
+      null;
+    if (
+      !root ||
+      typeof root !== "object" ||
+      String(root.root_id || "") === "" ||
+      String(root.status || "") !== "bound"
+    ) {
+      return false;
+    }
+    if (!ingestionManagement.sourceRoots.some(function (item) {
+      return String(item.root_id || "") === String(root.root_id);
+    })) {
+      ingestionManagement.sourceRoots.push(root);
+    }
+    ingestionManagement.selectedSourceRootId = String(root.root_id);
+    ingestionManagement.sourceRootSelectionStale = false;
+    if (ingestionManagement.errorKey === "sourceRootSelectionStale") {
+      ingestionManagement.errorKey = "";
+    }
+    return true;
   }
 
   function reviewIdentityDefaults(item, candidate, reviewName) {
@@ -1885,7 +2524,9 @@
         row.appendChild(fieldHelp);
 
         var kind = controlHelp(document.createElement("select"), "adapterInputKindHelp");
-        [["integer", "integer"], ["boolean", "boolean"], ["enum", "enum"]].forEach(function (entry) {
+        var inputKinds = [["integer", "integer"], ["boolean", "boolean"], ["enum", "enum"]];
+        if (parameters.length === 1) inputKinds.push(["string", "string"]);
+        inputKinds.forEach(function (entry) {
           var option = document.createElement("option");
           option.value = entry[0];
           option.textContent = entry[1];
@@ -1948,16 +2589,20 @@
           values: values,
           valuesLabel: valuesLabel,
           example: example,
+          exampleLabel: exampleLabel,
         };
         function syncKind() {
           var integer = kind.value === "integer";
           var enumeration = kind.value === "enum";
-          minimumLabel.classList.toggle("hidden", !integer);
-          maximumLabel.classList.toggle("hidden", !integer);
+          var boundedString = kind.value === "string";
+          minimumLabel.classList.toggle("hidden", !integer && !boundedString);
+          maximumLabel.classList.toggle("hidden", !integer && !boundedString);
           valuesLabel.classList.toggle("hidden", !enumeration);
-          minimum.required = integer;
-          maximum.required = integer;
+          exampleLabel.classList.toggle("hidden", boundedString);
+          minimum.required = integer || boundedString;
+          maximum.required = integer || boundedString;
           values.required = enumeration;
+          example.required = !boundedString;
         }
         kind.addEventListener("change", syncKind);
         syncKind();
@@ -1995,21 +2640,90 @@
       expectedLabel.title = t("adapterExpectedHelp");
       expectedLabel.appendChild(expected);
       resultRow.appendChild(expectedLabel);
+      var resultEnum = controlHelp(document.createElement("textarea"), "adapterResultEnumHelp");
+      resultEnum.rows = 3;
+      var resultEnumLabel = document.createElement("label");
+      resultEnumLabel.className = "warehouse-field warehouse-developer-only hidden";
+      resultEnumLabel.textContent = t("adapterResultEnum");
+      resultEnumLabel.title = t("adapterResultEnumHelp");
+      resultEnumLabel.appendChild(resultEnum);
+      resultRow.appendChild(resultEnumLabel);
       details.appendChild(resultRow);
+      var witnessRows = document.createElement("div");
+      witnessRows.className = "warehouse-project-config warehouse-developer-only hidden";
+      details.appendChild(witnessRows);
+      var witnessControls = [];
+      function captureUsesBoundedString() {
+        return argumentControls.length === 1 &&
+          argumentControls[0].kind.value === "string";
+      }
+      function resultEnumValues() {
+        return String(resultEnum.value || "")
+          .split(/\r?\n/)
+          .map(function (value) { return value.trim(); })
+          .filter(Boolean);
+      }
+      function renderWitnessRows() {
+        var previous = {};
+        witnessControls.forEach(function (control) {
+          previous[control.result] = String(control.input.value || "");
+        });
+        witnessControls = [];
+        witnessRows.innerHTML = "";
+        resultEnumValues().forEach(function (value) {
+          var label = document.createElement("label");
+          label.className = "warehouse-field";
+          label.textContent = formatText("adapterWitness", { value: value });
+          label.title = t("adapterWitnessHelp");
+          var input = controlHelp(document.createElement("input"), "adapterWitnessHelp");
+          input.type = "text";
+          input.maxLength = 10000;
+          input.value = previous[value] || "";
+          label.appendChild(input);
+          witnessRows.appendChild(label);
+          witnessControls.push({ result: value, input: input });
+        });
+      }
+      function syncCaptureMode() {
+        var boundedString = captureUsesBoundedString();
+        expectedLabel.classList.toggle("hidden", boundedString);
+        expected.required = !boundedString;
+        resultEnumLabel.classList.toggle("hidden", !boundedString);
+        resultEnum.required = boundedString;
+        witnessRows.classList.toggle("hidden", !boundedString);
+        argumentControls.forEach(function (control) {
+          if (control.minimumLabel.firstChild) {
+            control.minimumLabel.firstChild.nodeValue =
+              t(boundedString ? "adapterMinimumLength" : "adapterMinimum");
+          }
+          if (control.maximumLabel.firstChild) {
+            control.maximumLabel.firstChild.nodeValue =
+              t(boundedString ? "adapterMaximumLength" : "adapterMaximum");
+          }
+        });
+        if (boundedString) renderWitnessRows();
+      }
 
       var preview = document.createElement("p");
       preview.className = "warehouse-meta warehouse-mapping-preview warehouse-developer-only";
       preview.title = t("adapterSimpleHelp");
       details.appendChild(preview);
       function updatePreview() {
+        var boundedString = captureUsesBoundedString();
         var parts = argumentControls.map(function (control) {
           var fieldName = String(control.field.value || "?").trim() || "?";
           var domain = control.kind.value === "integer"
             ? String(control.minimum.value || "?") + "…" + String(control.maximum.value || "?")
-            : (control.kind.value === "enum" ? String(control.values.value || "?").split(/\r?\n/).filter(Boolean).join("|") : "boolean");
-          return control.source_name + " → " + fieldName + " [" + domain + "] = " + String(control.example.value || "?");
+            : (control.kind.value === "enum"
+              ? String(control.values.value || "?").split(/\r?\n/).filter(Boolean).join("|")
+              : (control.kind.value === "string"
+                ? "string " + String(control.minimum.value || "?") + "…" + String(control.maximum.value || "?")
+                : "boolean"));
+          return control.source_name + " → " + fieldName + " [" + domain + "]" +
+            (boundedString ? "" : " = " + String(control.example.value || "?"));
         });
-        parts.push(String(resultField.value || "result") + " = " + String(expected.value || "?"));
+        parts.push(String(resultField.value || "result") + " = " +
+          (boundedString ? resultEnumValues().join("|") || "?" : String(expected.value || "?")));
         preview.textContent = formatText("adapterMappingPreview", { mapping: parts.join("；") });
       }
       argumentControls.forEach(function (control) {
@@ -2019,6 +2733,17 @@
         });
       });
       [resultField, expected].forEach(function (input) { input.addEventListener("input", updatePreview); });
+      argumentControls.forEach(function (control) {
+        control.kind.addEventListener("change", function () {
+          syncCaptureMode();
+          updatePreview();
+        });
+      });
+      resultEnum.addEventListener("input", function () {
+        renderWitnessRows();
+        updatePreview();
+      });
+      syncCaptureMode();
       updatePreview();
 
       var confirmationLabel = document.createElement("label");
@@ -2078,6 +2803,7 @@
         var argumentsPayload = [];
         var exampleInput = {};
         var fields = {};
+        var boundedString = captureUsesBoundedString();
         for (var index = 0; index < argumentControls.length; index += 1) {
           var control = argumentControls[index];
           var fieldName = String(control.field.value || "").trim();
@@ -2117,28 +2843,82 @@
               return;
             }
             argument.values = enumValues;
+          } else if (kindName === "string" && boundedString) {
+            var minimumLength = adapterSafeInteger(control.minimum);
+            var maximumLength = adapterSafeInteger(control.maximum);
+            if (
+              minimumLength === null ||
+              maximumLength === null ||
+              minimumLength < 0 ||
+              minimumLength > maximumLength ||
+              maximumLength > 10000
+            ) {
+              setManagementStatus("adapterMappingInvalid");
+              return;
+            }
+            argument.min_length = minimumLength;
+            argument.max_length = maximumLength;
           } else {
             setManagementStatus("adapterMappingInvalid");
             return;
           }
           fields[fieldName] = true;
           argumentsPayload.push(argument);
-          exampleInput[fieldName] = exampleValue;
+          if (!boundedString) exampleInput[fieldName] = exampleValue;
         }
         var resultName = String(resultField.value || "").trim();
-        var expectedValue = adapterSafeInteger(expected);
-        if (!resultField.checkValidity() || fields[resultName] || expectedValue === null) {
+        if (!resultField.checkValidity() || fields[resultName]) {
           setManagementStatus("adapterMappingInvalid");
           return;
         }
-        startManagementRun("start_create_computation_adapter", {
+        var capturePayload = {
           project_id: String(inspection.project_id || project.project_id || ""),
           offer_id: String(offer.offer_id || ""),
           review_id: String(resumeReview.value || "") || null,
           arguments: argumentsPayload,
           result_field: resultName,
-          examples: [{ input: exampleInput, expected: expectedValue }],
-        }, function (run) {
+        };
+        if (boundedString) {
+          var enumResults = resultEnumValues();
+          var uniqueResults = new Set(enumResults);
+          var argumentField = argumentsPayload[0] && argumentsPayload[0].input_field;
+          var minimumWitnessLength = argumentsPayload[0] && argumentsPayload[0].min_length;
+          var maximumWitnessLength = argumentsPayload[0] && argumentsPayload[0].max_length;
+          if (
+            !resultEnum.checkValidity() ||
+            !enumResults.length ||
+            enumResults.length > 32 ||
+            uniqueResults.size !== enumResults.length ||
+            witnessControls.length !== enumResults.length ||
+            witnessControls.some(function (control, witnessIndex) {
+              var text = String(control.input.value || "");
+              return control.result !== enumResults[witnessIndex] ||
+                text.length < minimumWitnessLength ||
+                text.length > maximumWitnessLength;
+            })
+          ) {
+            setManagementStatus("adapterMappingInvalid");
+            return;
+          }
+          capturePayload.schema = "computation_capture_mapping.v5";
+          capturePayload.result_enum = enumResults;
+          capturePayload.proof_schema = "source_graph_proof.v3";
+          capturePayload.examples = witnessControls.map(function (control) {
+            var input = {};
+            var output = {};
+            input[argumentField] = String(control.input.value || "");
+            output[resultName] = control.result;
+            return { input: input, expected: output };
+          });
+        } else {
+          var expectedValue = adapterSafeInteger(expected);
+          if (expectedValue === null) {
+            setManagementStatus("adapterMappingInvalid");
+            return;
+          }
+          capturePayload.examples = [{ input: exampleInput, expected: expectedValue }];
+        }
+        startManagementRun("start_create_computation_adapter", capturePayload, function (run) {
           var outcome = run && run.data && typeof run.data === "object" ? run.data : {};
           var statusKey = captureOutcomeStatusKey(outcome);
           offerStatus.textContent = t(statusKey);
@@ -2205,20 +2985,147 @@
     return { enabled: false, messageKey: "projectScanUnknownState" };
   }
 
+  function sourceHandoffStatusProjection(value) {
+    var raw = value && typeof value === "object" && !Array.isArray(value)
+      ? (value.source_handoff && typeof value.source_handoff === "object"
+        ? value.source_handoff
+        : value)
+      : null;
+    if (!raw) return null;
+    var statuses = ["none", "active", "revoked", "stale", "conflict"];
+    if (
+      raw.schema_version !== "source_handoff_status.v1" ||
+      statuses.indexOf(String(raw.status || "")) < 0
+    ) {
+      return {
+        schema_version: "source_handoff_status.v1",
+        status: "conflict",
+        created_at: null,
+        revoked_at: null,
+        run_id: null,
+        run_status: null,
+      };
+    }
+    return {
+      schema_version: "source_handoff_status.v1",
+      status: String(raw.status),
+      created_at: typeof raw.created_at === "string" ? raw.created_at : null,
+      revoked_at: typeof raw.revoked_at === "string" ? raw.revoked_at : null,
+      run_id: typeof raw.run_id === "string" ? raw.run_id : null,
+      run_status: typeof raw.run_status === "string" ? raw.run_status : null,
+    };
+  }
+
+  function updateProjectSourceHandoff(projectId, value, fallbackStatus) {
+    var projection = sourceHandoffStatusProjection(value);
+    if (!projection && fallbackStatus) {
+      projection = sourceHandoffStatusProjection({
+        schema_version: "source_handoff_status.v1",
+        status: fallbackStatus,
+      });
+    }
+    ingestionManagement.projects.forEach(function (project) {
+      if (String(project.project_id || "") === String(projectId || "")) {
+        project.source_handoff = projection;
+      }
+    });
+  }
+
+  function sourceHandoffStatusKey(status) {
+    return {
+      active: "sourceAgentActive",
+      revoked: "sourceAgentRevoked",
+      stale: "sourceAgentStale",
+      conflict: "sourceAgentConflict",
+    }[String(status || "")] || "";
+  }
+
+  function sourceDerivedHandoffProjection(value) {
+    var raw = value && typeof value === "object" && !Array.isArray(value)
+      ? value
+      : null;
+    var statuses = ["none", "active", "revoked", "stale", "conflict"];
+    var proposalStatuses = ["none", "pending", "approved", "rejected"];
+    if (
+      !raw ||
+      raw.schema_version !== "source_derived_handoff_status.v1" ||
+      statuses.indexOf(String(raw.status || "")) < 0 ||
+      proposalStatuses.indexOf(String(raw.proposal_status || "")) < 0
+    ) {
+      return {
+        schema_version: "source_derived_handoff_status.v1",
+        status: raw ? "conflict" : "none",
+        proposal_status: "none",
+        proposal: null,
+      };
+    }
+    return {
+      schema_version: "source_derived_handoff_status.v1",
+      status: String(raw.status),
+      proposal_status: String(raw.proposal_status),
+      proposal: raw.proposal && typeof raw.proposal === "object"
+        ? raw.proposal
+        : null,
+    };
+  }
+
   function renderManagementProjects() {
     var container = $("warehouse-projects");
     if (!container) return;
     container.innerHTML = "";
     if (ingestionManagement.sourceRoots.length) {
+      var boundSourceRoots = ingestionManagement.sourceRoots.filter(function (root) {
+        return String(root.status || "") === "bound" && String(root.root_id || "") !== "";
+      });
+      var sourceRootControls = [];
+      var sourceRootActions = [];
+      function selectedSourceRoot() {
+        return boundSourceRoots.find(function (root) {
+          return String(root.root_id || "") === ingestionManagement.selectedSourceRootId;
+        }) || null;
+      }
+      function syncSourceRootControls() {
+        var selected = selectedSourceRoot();
+        sourceRootControls.forEach(function (select) {
+          var index = selected ? boundSourceRoots.indexOf(selected) : -1;
+          select.value = index >= 0 ? String(index) : "";
+        });
+        sourceRootActions.forEach(function (button) {
+          button.disabled = !selected;
+        });
+      }
+      function sourceRootSelect() {
+        var select = controlHelp(document.createElement("select"), "javascriptSourceRootHelp");
+        select.dataset.sourceRootSelector = "session";
+        var placeholder = document.createElement("option");
+        placeholder.value = "";
+        placeholder.textContent = t("sourceRootSelectionRequired");
+        select.appendChild(placeholder);
+        boundSourceRoots.forEach(function (root, index) {
+          var option = document.createElement("option");
+          option.value = String(index);
+          option.textContent = sourceRootDisplayLabel(root);
+          select.appendChild(option);
+        });
+        select.addEventListener("change", function () {
+          var index = Number(select.value);
+          var root = Number.isInteger(index) ? boundSourceRoots[index] : null;
+          ingestionManagement.selectedSourceRootId = root ? String(root.root_id) : "";
+          ingestionManagement.sourceRootSelectionStale = false;
+          if (
+            ingestionManagement.errorKey === "sourceRootSelectionRequired" ||
+            ingestionManagement.errorKey === "sourceRootSelectionStale"
+          ) {
+            setManagementStatus("");
+          }
+          syncSourceRootControls();
+        });
+        sourceRootControls.push(select);
+        return select;
+      }
       var registration = document.createElement("div");
       registration.className = "warehouse-project-config";
-      var rootSelect = controlHelp(document.createElement("select"), "javascriptSourceRootHelp");
-      ingestionManagement.sourceRoots.forEach(function (root) {
-        var option = document.createElement("option");
-        option.value = String(root.root_id || "");
-        option.textContent = String(root.label || root.root_id || "source root");
-        rootSelect.appendChild(option);
-      });
+      var rootSelect = sourceRootSelect();
       var rootLabel = document.createElement("label");
       rootLabel.className = "warehouse-field";
       rootLabel.textContent = t("javascriptSourceRoot");
@@ -2248,16 +3155,20 @@
       register.setAttribute("data-action", "register-javascript-computation-source");
       register.textContent = t("registerJavascriptSource");
       register.addEventListener("click", function () {
+        var selected = selectedSourceRoot();
+        if (!selected) {
+          setManagementStatus("sourceRootSelectionRequired");
+          syncSourceRootControls();
+          return;
+        }
         var relpathValue = String(relpath.value || ".").trim() || ".";
-        var rootName = rootSelect.options[rootSelect.selectedIndex]
-          ? String(rootSelect.options[rootSelect.selectedIndex].textContent || "source")
-          : "source";
+        var rootName = sourceRootDisplayLabel(selected).split(" · ")[0];
         var inferredName = relpathValue === "."
           ? rootName.split(/[\\/]/).filter(Boolean).pop()
           : relpathValue.split("/").filter(Boolean).pop();
         var name = String(displayName.value || inferredName || "source").trim();
         bridgeCall("register_javascript_computation_source", JSON.stringify({
-          source_root_id: String(rootSelect.value || ""),
+          source_root_id: String(selected.root_id),
           project_relpath: relpathValue,
           display_name: name,
         })).then(function (raw) {
@@ -2273,7 +3184,339 @@
       registration.appendChild(relpathLabel);
       registration.appendChild(displayNameLabel);
       registration.appendChild(register);
+      sourceRootActions.push(register);
       container.appendChild(registration);
+
+      var sourceDerivedAgent = document.createElement("fieldset");
+      sourceDerivedAgent.className = "warehouse-project-config";
+      var sourceDerivedAgentLegend = document.createElement("legend");
+      sourceDerivedAgentLegend.textContent = t("sourceDerivedAgentTitle");
+      sourceDerivedAgent.appendChild(sourceDerivedAgentLegend);
+      boundSourceRoots.forEach(function (root) {
+        var rootId = String(root.root_id || "");
+        var projection = sourceDerivedHandoffProjection(
+          root.source_derived_handoff
+        );
+        var row = document.createElement("div");
+        row.className = "warehouse-project-config";
+        var name = document.createElement("strong");
+        name.textContent = sourceRootDisplayLabel(root);
+        row.appendChild(name);
+        var status = document.createElement("p");
+        status.className = "warehouse-meta";
+        var statusKey = {
+          active: "sourceDerivedAgentActive",
+          revoked: "sourceDerivedAgentRevoked",
+          stale: "sourceDerivedAgentStale",
+          conflict: "sourceDerivedAgentConflict",
+        }[projection.status] || "";
+        if (
+          projection.status === "active" &&
+          projection.proposal_status === "none"
+        ) {
+          statusKey = "sourceDerivedAgentWaiting";
+        } else if (projection.proposal_status === "approved") {
+          statusKey = "sourceDerivedAgentApproved";
+        } else if (projection.proposal_status === "rejected") {
+          statusKey = "sourceDerivedAgentRejected";
+        }
+        status.textContent = statusKey ? t(statusKey) : "";
+        row.appendChild(status);
+
+        if (
+          projection.status === "active" &&
+          projection.proposal_status === "pending" &&
+          projection.proposal
+        ) {
+          var proposal = projection.proposal;
+          var summary = document.createElement("dl");
+          [
+            [t("sourceDerivedRelpath"), proposal.source_relpath],
+            [t("sourceDerivedBehavior"), proposal.behavior_intent],
+            [
+              t("sourceDerivedInputMin") + "–" + t("sourceDerivedInputMax"),
+              proposal.input
+                ? String(proposal.input.min_length) + "–" +
+                  String(proposal.input.max_length)
+                : "",
+            ],
+            [
+              t("sourceDerivedEnum"),
+              Array.isArray(proposal.result_enum)
+                ? proposal.result_enum.join("、")
+                : "",
+            ],
+            [
+              t("sourceDerivedCases"),
+              Array.isArray(proposal.acceptance_cases)
+                ? proposal.acceptance_cases.map(function (item) {
+                    return String(item.input_text || "") + " → " +
+                      String(item.expected_result || "");
+                  }).join("；")
+                : "",
+            ],
+          ].forEach(function (item) {
+            var term = document.createElement("dt");
+            term.textContent = String(item[0] || "");
+            var description = document.createElement("dd");
+            description.textContent = String(item[1] || "");
+            summary.appendChild(term);
+            summary.appendChild(description);
+          });
+          row.appendChild(summary);
+          var notice = document.createElement("p");
+          notice.className = "warehouse-meta";
+          notice.textContent = t("sourceDerivedAgentModelNotice");
+          row.appendChild(notice);
+          ["approve", "reject"].forEach(function (decision) {
+            var decide = document.createElement("button");
+            decide.type = "button";
+            decide.className = decision === "approve"
+              ? "btn-primary"
+              : "btn-ghost";
+            decide.dataset.action = "decide-source-derived-agent-" + decision;
+            decide.textContent = t(
+              decision === "approve"
+                ? "sourceDerivedAgentApprove"
+                : "sourceDerivedAgentReject"
+            );
+            decide.addEventListener("click", function () {
+              bridgeCall(
+                "decide_local_source_derived_handoff_proposal",
+                JSON.stringify({
+                  source_root_id: rootId,
+                  decision: decision,
+                })
+              ).then(function (raw) {
+                var result = parseBridgeJson(raw);
+                if (!managementPayload(result)) {
+                  setManagementStatus(managementError(result));
+                  return;
+                }
+                refreshIngestionManagement();
+              });
+            });
+            row.appendChild(decide);
+          });
+        }
+
+        if (projection.status === "none" || projection.status === "revoked") {
+          var authorizeAgent = document.createElement("button");
+          authorizeAgent.type = "button";
+          authorizeAgent.className = "btn-ghost";
+          authorizeAgent.dataset.action = "authorize-source-derived-agent";
+          authorizeAgent.textContent = t("sourceDerivedAgentAuthorize");
+          authorizeAgent.addEventListener("click", function () {
+            authorizeAgent.disabled = true;
+            bridgeCall(
+              "copy_local_source_derived_handoff_binding",
+              JSON.stringify({ source_root_id: rootId })
+            ).then(function (raw) {
+              var result = parseBridgeJson(raw);
+              if (!managementPayload(result)) {
+                authorizeAgent.disabled = false;
+                authorizeAgent.textContent = t("sourceDerivedAgentAuthorize");
+                setManagementStatus(managementError(result));
+                return;
+              }
+              authorizeAgent.textContent = t("sourceDerivedAgentCopiedClose");
+              setManagementStatus("sourceDerivedAgentActive");
+            });
+          });
+          row.appendChild(authorizeAgent);
+        } else {
+          var revokeAgent = document.createElement("button");
+          revokeAgent.type = "button";
+          revokeAgent.className = "btn-ghost";
+          revokeAgent.dataset.action = "revoke-source-derived-agent";
+          revokeAgent.textContent = t("sourceDerivedAgentRevoke");
+          revokeAgent.addEventListener("click", function () {
+            if (!window.confirm(t("sourceDerivedAgentRevokeConfirm"))) return;
+            revokeAgent.disabled = true;
+            bridgeCall(
+              "revoke_local_source_derived_handoff",
+              JSON.stringify({ source_root_id: rootId })
+            ).then(function (raw) {
+              var result = parseBridgeJson(raw);
+              if (!managementPayload(result)) {
+                revokeAgent.disabled = false;
+                setManagementStatus(managementError(result));
+                return;
+              }
+              refreshIngestionManagement();
+            });
+          });
+          row.appendChild(revokeAgent);
+        }
+        sourceDerivedAgent.appendChild(row);
+      });
+      container.appendChild(sourceDerivedAgent);
+
+      var sourceDerived = document.createElement("fieldset");
+      sourceDerived.className = "warehouse-project-config warehouse-developer-only";
+      var sourceDerivedLegend = document.createElement("legend");
+      sourceDerivedLegend.textContent = t("sourceDerivedTitle");
+      sourceDerived.appendChild(sourceDerivedLegend);
+      var sourceDerivedNotice = document.createElement("p");
+      sourceDerivedNotice.className = "warehouse-meta";
+      sourceDerivedNotice.textContent = t("sourceDerivedNotice");
+      sourceDerived.appendChild(sourceDerivedNotice);
+
+      function sourceDerivedField(labelKey, element) {
+        var label = document.createElement("label");
+        label.className = "warehouse-field";
+        label.textContent = t(labelKey);
+        label.appendChild(element);
+        sourceDerived.appendChild(label);
+        return element;
+      }
+
+      var derivedRootSelect = sourceRootSelect();
+      sourceDerivedField("javascriptSourceRoot", derivedRootSelect);
+      var derivedRelpath = sourceDerivedField(
+        "sourceDerivedRelpath",
+        document.createElement("input")
+      );
+      derivedRelpath.type = "text";
+      derivedRelpath.maxLength = 1024;
+      derivedRelpath.placeholder = "src/utils/extractor.ts";
+      var derivedBehavior = sourceDerivedField(
+        "sourceDerivedBehavior",
+        document.createElement("textarea")
+      );
+      derivedBehavior.maxLength = 2000;
+      var derivedInputField = sourceDerivedField(
+        "sourceDerivedInputField",
+        document.createElement("input")
+      );
+      derivedInputField.type = "text";
+      derivedInputField.maxLength = 64;
+      derivedInputField.value = "message";
+      var derivedMinimum = sourceDerivedField(
+        "sourceDerivedInputMin",
+        document.createElement("input")
+      );
+      derivedMinimum.type = "number";
+      derivedMinimum.min = "0";
+      derivedMinimum.max = "10000";
+      derivedMinimum.value = "1";
+      var derivedMaximum = sourceDerivedField(
+        "sourceDerivedInputMax",
+        document.createElement("input")
+      );
+      derivedMaximum.type = "number";
+      derivedMaximum.min = "0";
+      derivedMaximum.max = "10000";
+      derivedMaximum.value = "1000";
+      var derivedResultField = sourceDerivedField(
+        "sourceDerivedResultField",
+        document.createElement("input")
+      );
+      derivedResultField.type = "text";
+      derivedResultField.maxLength = 64;
+      derivedResultField.value = "result";
+      var derivedEnum = sourceDerivedField(
+        "sourceDerivedEnum",
+        document.createElement("textarea")
+      );
+      var caseHeading = document.createElement("p");
+      caseHeading.className = "warehouse-meta";
+      caseHeading.textContent = t("sourceDerivedCases");
+      sourceDerived.appendChild(caseHeading);
+      var caseRows = document.createElement("div");
+      sourceDerived.appendChild(caseRows);
+
+      function addSourceDerivedCase() {
+        if (caseRows.children.length >= 16) return;
+        var row = document.createElement("div");
+        row.className = "warehouse-row";
+        var inputLabel = document.createElement("label");
+        inputLabel.className = "warehouse-field";
+        inputLabel.textContent = t("sourceDerivedCaseInput");
+        var input = document.createElement("input");
+        input.type = "text";
+        input.maxLength = 10000;
+        inputLabel.appendChild(input);
+        row.appendChild(inputLabel);
+        var expectedLabel = document.createElement("label");
+        expectedLabel.className = "warehouse-field";
+        expectedLabel.textContent = t("sourceDerivedCaseExpected");
+        var expected = document.createElement("input");
+        expected.type = "text";
+        expected.maxLength = 10000;
+        expectedLabel.appendChild(expected);
+        row.appendChild(expectedLabel);
+        var remove = document.createElement("button");
+        remove.type = "button";
+        remove.className = "btn-ghost";
+        remove.textContent = t("sourceDerivedRemoveCase");
+        remove.addEventListener("click", function () {
+          if (caseRows.children.length > 1) row.remove();
+        });
+        row.appendChild(remove);
+        caseRows.appendChild(row);
+      }
+      addSourceDerivedCase();
+      var addCase = document.createElement("button");
+      addCase.type = "button";
+      addCase.className = "btn-ghost";
+      addCase.textContent = t("sourceDerivedAddCase");
+      addCase.addEventListener("click", addSourceDerivedCase);
+      sourceDerived.appendChild(addCase);
+      var startDerived = document.createElement("button");
+      startDerived.type = "button";
+      startDerived.className = "btn-primary";
+      startDerived.dataset.action = "authorize-source-derived";
+      startDerived.textContent = t("sourceDerivedStart");
+      startDerived.addEventListener("click", function () {
+        var selected = selectedSourceRoot();
+        if (!selected) {
+          setManagementStatus("sourceRootSelectionRequired");
+          syncSourceRootControls();
+          return;
+        }
+        var acceptanceCases = Array.prototype.slice.call(
+          caseRows.children
+        ).map(function (row) {
+          var fields = row.querySelectorAll("input");
+          return {
+            input_text: String(fields[0] ? fields[0].value : ""),
+            expected_result: String(fields[1] ? fields[1].value : ""),
+          };
+        });
+        startDerived.disabled = true;
+        startManagementRun(
+          "authorize_and_start_source_derived_computation",
+          {
+            source_root_id: String(selected.root_id),
+            source_relpath: String(derivedRelpath.value || "").trim(),
+            behavior_intent: String(derivedBehavior.value || "").trim(),
+            input_field: String(derivedInputField.value || "").trim(),
+            input_min_length: Number(derivedMinimum.value),
+            input_max_length: Number(derivedMaximum.value),
+            result_field: String(derivedResultField.value || "").trim(),
+            result_enum: String(derivedEnum.value || "")
+              .split(/\r?\n/)
+              .map(function (value) { return value.trim(); })
+              .filter(Boolean),
+            acceptance_cases: acceptanceCases,
+          },
+          function (run) {
+            startDerived.disabled = false;
+            if (run.status === "review_required") {
+              setManagementStatus("sourceDerivedReviewReady");
+            }
+          },
+          false,
+          function () {
+            startDerived.disabled = false;
+          }
+        );
+      });
+      sourceDerived.appendChild(startDerived);
+      sourceRootActions.push(startDerived);
+      container.appendChild(sourceDerived);
+      syncSourceRootControls();
     }
     var discovery = ingestionManagement.discovery;
     var discovered = discovery && Array.isArray(discovery.projects) ? discovery.projects : [];
@@ -2292,7 +3535,11 @@
         input.value = String(project.project_id || project.id || "");
         input.title = t("confirmProjects");
         label.appendChild(input);
-        label.appendChild(document.createTextNode(" " + String(project.display_name || project.name || project.root_relpath || input.value)));
+        label.appendChild(document.createTextNode(" " + managementDisplayLabel(
+          project.display_name || project.name || project.root_relpath,
+          input.value,
+          "sourceProjects"
+        )));
         projectConfig.appendChild(label);
         var brandEditor = createBrandEditor(project);
         brandEditor.element.classList.add("warehouse-developer-only");
@@ -2338,11 +3585,40 @@
       var sourceType = project.source_type === "javascript_computation_source"
         ? t("javascriptSourceType")
         : (project.source_type === "static_web" ? t("staticWebSourceType") : t("unknownSourceType"));
-      var sourceRelpath = String(project.project_relpath || project.root_relpath || ".");
-      var projectName = String(project.display_name || project.name || project.project_key || sourceRelpath || project.project_id || "project");
+      var rawSourceRelpath = String(project.project_relpath || project.root_relpath || ".");
+      var sourceRelpath = looksPrivateManagementValue(rawSourceRelpath) ? "" : rawSourceRelpath;
+      var projectName = managementDisplayLabel(
+        project.display_name || project.name || project.project_key || sourceRelpath,
+        project.project_id,
+        "sourceProjects"
+      );
       text.textContent = projectName + " · " + sourceType;
-      text.title = [projectName, sourceType, sourceRelpath, String(projectStatus)].join(" · ");
+      text.title = [projectName, sourceType, sourceRelpath, String(projectStatus)].filter(Boolean).join(" · ");
       row.appendChild(text);
+      var inspect = document.createElement("button");
+      inspect.type = "button";
+      inspect.className = "btn-ghost warehouse-specimen-select";
+      inspect.textContent = t("inspectSource");
+      inspect.dataset.specimenProjectId = String(project.project_id || "");
+      inspect.setAttribute("aria-pressed", "false");
+      inspect.disabled = !project.project_id;
+      inspect.addEventListener("click", function () {
+        ingestionNavigation.specimen = {
+          project_id: project.project_id || null,
+          project_key: String(project.project_key || ""),
+          display_name: projectName,
+          exact_source: false,
+          formal_capsule_count: 0,
+          capsule_counts: null,
+          capsule_id: null,
+          capsule_name: null,
+          capability_kind: null,
+          version_id: null,
+          canonical_hash: null,
+        };
+        syncIngestionSpecimen();
+      });
+      row.appendChild(inspect);
       var projectMeta = document.createElement("span");
       projectMeta.className = "warehouse-meta warehouse-developer-only";
       projectMeta.textContent = " · " + sourceRelpath + " · " + String(projectStatus);
@@ -2359,6 +3635,128 @@
         startManagementRun("start_refresh_project", { project_id: project.project_id });
       });
       row.appendChild(refresh);
+      var sourceHandoff = sourceHandoffStatusProjection(project.source_handoff);
+      var sourceHandoffEligible =
+        String(project.source_type || "") === "static_web" &&
+        projectStatus === "ready";
+      if (sourceHandoffEligible) {
+        var sourceHandoffStatus = sourceHandoff
+          ? String(sourceHandoff.status || "none")
+          : "none";
+        var sourceHandoffNote = document.createElement("span");
+        sourceHandoffNote.className = "warehouse-meta warehouse-developer-only";
+        sourceHandoffNote.setAttribute("role", "status");
+        sourceHandoffNote.textContent = t(
+          sourceHandoffStatusKey(sourceHandoffStatus) ||
+          "authorizeSourceAgentHelp"
+        );
+        row.appendChild(sourceHandoffNote);
+        if (
+          sourceHandoffStatus === "none" ||
+          sourceHandoffStatus === "revoked"
+        ) {
+          var authorizeSourceAgent = document.createElement("button");
+          authorizeSourceAgent.type = "button";
+          authorizeSourceAgent.className = "btn-ghost warehouse-developer-only";
+          authorizeSourceAgent.dataset.action = "authorize-source-agent";
+          authorizeSourceAgent.textContent = t("authorizeSourceAgent");
+          authorizeSourceAgent.title = t("authorizeSourceAgentHelp");
+          authorizeSourceAgent.addEventListener("click", function () {
+            authorizeSourceAgent.disabled = true;
+            bridgeCall(
+              "copy_local_source_handoff_binding",
+              JSON.stringify({ project_id: project.project_id })
+            ).then(function (raw) {
+              var result = parseBridgeJson(raw);
+              var payload = managementPayload(result);
+              if (!payload) {
+                var errorKey = managementError(result);
+                if (errorKey === "source_handoff_clipboard_failed") {
+                  updateProjectSourceHandoff(
+                    project.project_id,
+                    null,
+                    "revoked"
+                  );
+                  renderManagementProjects();
+                } else {
+                  authorizeSourceAgent.disabled = false;
+                }
+                setManagementStatus(errorKey);
+                return;
+              }
+              updateProjectSourceHandoff(
+                project.project_id,
+                payload,
+                "active"
+              );
+              setManagementStatus("sourceAgentBindingCopied");
+              renderManagementProjects();
+            });
+          });
+          row.appendChild(authorizeSourceAgent);
+        }
+        if (
+          ["active", "stale", "conflict"].indexOf(sourceHandoffStatus) >= 0
+        ) {
+          var revokeSourceAgent = document.createElement("button");
+          revokeSourceAgent.type = "button";
+          revokeSourceAgent.className = "btn-ghost warehouse-developer-only";
+          revokeSourceAgent.dataset.action = "revoke-source-agent";
+          revokeSourceAgent.textContent = t("revokeSourceAgent");
+          revokeSourceAgent.addEventListener("click", function () {
+            revokeSourceAgent.disabled = true;
+            bridgeCall(
+              "revoke_local_source_handoff",
+              JSON.stringify({ project_id: project.project_id })
+            ).then(function (raw) {
+              var result = parseBridgeJson(raw);
+              var payload = managementPayload(result);
+              if (!payload) {
+                revokeSourceAgent.disabled = false;
+                setManagementStatus(managementError(result));
+                return;
+              }
+              updateProjectSourceHandoff(
+                project.project_id,
+                payload,
+                "revoked"
+              );
+              setManagementStatus("sourceAgentRevoked");
+              renderManagementProjects();
+            });
+          });
+          row.appendChild(revokeSourceAgent);
+        }
+        if (
+          sourceHandoff &&
+          sourceHandoff.run_id &&
+          [
+            "completed",
+            "completed_with_pending",
+            "no_change",
+            "failed",
+            "cancelled",
+            "interrupted",
+          ].indexOf(sourceHandoff.run_status) >= 0
+        ) {
+          var reviewSourceAgent = document.createElement("button");
+          reviewSourceAgent.type = "button";
+          reviewSourceAgent.className = "btn-ghost warehouse-developer-only";
+          reviewSourceAgent.dataset.action = "review-source-agent";
+          reviewSourceAgent.textContent = t("reviewSourceAgent");
+          reviewSourceAgent.addEventListener("click", function () {
+            ingestionNavigation.productReview = null;
+            ingestionNavigation.sourceHandoffReview = {
+              project_id: String(project.project_id || ""),
+              run_id: String(sourceHandoff.run_id || ""),
+            };
+            ingestionNavigation.station = "review";
+            renderManagementReviews();
+            syncIngestionStation();
+          });
+          row.appendChild(reviewSourceAgent);
+        }
+      }
       var scanJavascript = document.createElement("button");
       scanJavascript.type = "button";
       scanJavascript.className = "btn-ghost";
@@ -2478,24 +3876,90 @@
     return payload;
   }
 
+  function productReviewBinding(item, candidate) {
+    var context = ingestionNavigation.productReview;
+    var receipt = candidate && candidate.frozen_review_admission;
+    if (
+      !context ||
+      String(item.review_id || "") !== context.review_id ||
+      !receipt ||
+      receipt.schema !== "frozen_stage3_review_admission.v2" ||
+      String(receipt.projection_digest || "") !==
+        context.projection_digest
+    ) {
+      return null;
+    }
+    var capabilityKey = String(
+      receipt.authorized_capability_key || ""
+    );
+    var group = ingestionManagement.capabilityGroups.find(function (item) {
+      return String(item.capability_key || "") === capabilityKey;
+    });
+    if (!capabilityKey || !group) return null;
+    return {
+      capability_key: capabilityKey,
+      role_key: "",
+      variant_key: "default",
+      display_name: String(group.display_name || ""),
+    };
+  }
+
   function renderManagementReviews() {
     var container = $("warehouse-review-items");
     var count = $("warehouse-review-count");
     if (!container || !count) return;
-    count.textContent = String(ingestionManagement.reviewItems.length);
+    var productContext = ingestionNavigation.productReview;
+    var sourceHandoffContext = ingestionNavigation.sourceHandoffReview;
+    var reviewItems = ingestionManagement.reviewItems;
+    if (productContext) {
+      reviewItems = reviewItems.filter(function (item) {
+        return String(item.review_id || "") === productContext.review_id;
+      });
+    } else if (sourceHandoffContext) {
+      reviewItems = reviewItems.filter(function (item) {
+        return (
+          String(item.project_id || "") ===
+            sourceHandoffContext.project_id &&
+          String(item.run_id || "") === sourceHandoffContext.run_id
+        );
+      });
+    }
+    count.textContent = String(reviewItems.length);
     container.innerHTML = "";
-    if (!ingestionManagement.reviewItems.length) {
-      emptyManagementList(container, "noReviews");
+    if (!reviewItems.length) {
+      if (productContext) {
+        var missing = document.createElement("p");
+        missing.className = "warehouse-status is-error";
+        missing.setAttribute("role", "status");
+        missing.dataset.errorCode = "target_review_missing";
+        missing.textContent = "target_review_missing";
+        container.appendChild(missing);
+      } else if (sourceHandoffContext) {
+        var sourceMissing = document.createElement("p");
+        sourceMissing.className = "warehouse-status is-error";
+        sourceMissing.setAttribute("role", "status");
+        sourceMissing.dataset.errorCode = "source_handoff_review_missing";
+        sourceMissing.textContent = t("sourceAgentReviewMissing");
+        container.appendChild(sourceMissing);
+      } else {
+        emptyManagementList(container, "noReviews");
+      }
       return;
     }
-    ingestionManagement.reviewItems.forEach(function (item) {
+    reviewItems.forEach(function (item) {
       var candidate = item.candidate && typeof item.candidate === "object" ? item.candidate : {};
+      var productIdentity = productReviewBinding(item, candidate);
       var adapterContractExpired = item.adapter_contract_version_expired === true;
       var reviewContext = ingestionManagement.captureReviewContext[String(item.review_id || "")] || {};
       var details = document.createElement("details");
       details.className = "warehouse-review";
       details.title = t("reviewItems");
       var summary = document.createElement("summary");
+      if (productContext) {
+        summary.id = "target-review-summary-" + String(item.review_id || "");
+      } else if (sourceHandoffContext) {
+        summary.dataset.sourceHandoffReview = "true";
+      }
       var reviewName = reviewContext.offer_name || item.display_name || item.suggested_name || candidate.suggested_display_name || t("captureReview");
       var hasServerDecisions = Array.isArray(item.allowed_decisions) && item.allowed_decisions.length > 0;
       var reviewState = adapterContractExpired
@@ -2510,6 +3974,7 @@
       reviewId.textContent = " · " + String(item.review_id || "");
       summary.appendChild(reviewId);
       details.appendChild(summary);
+      details.open = !!productContext || !!sourceHandoffContext;
       var meta = document.createElement("p");
       meta.className = "warehouse-meta warehouse-developer-only";
       meta.textContent = [item.capability_kind || candidate.capability_kind, item.reason_code || item.error_code].filter(Boolean).join(" · ");
@@ -2535,6 +4000,13 @@
       var decisions = adapterContractExpired ? [] :
         (Array.isArray(item.allowed_decisions) ? item.allowed_decisions :
           (Array.isArray(item.decisions) ? item.decisions : []));
+      if (productContext) {
+        decisions = productIdentity
+          ? decisions.filter(function (decision) {
+              return decision === "publish_general" || decision === "reject";
+            })
+          : [];
+      }
       if (!adapterContractExpired && !decisions.length && item.candidate_status === "waiting_user") {
         var codes = item.redaction && Array.isArray(item.redaction.codes) ? item.redaction.codes : [];
         var stage3Code = candidate.stage3_failure && candidate.stage3_failure.error_code;
@@ -2558,7 +4030,9 @@
       var controls = {};
       var identityDecisions = ["publish_general", "publish_brand_limited", "create_variant", "semantic_split"];
       if (decisions.some(function (decision) { return identityDecisions.indexOf(decision) >= 0; })) {
-        var identityDefaults = reviewIdentityDefaults(item, candidate, reviewName);
+        var identityDefaults =
+          productIdentity ||
+          reviewIdentityDefaults(item, candidate, reviewName);
         var identityFields = document.createElement("div");
         identityFields.className = "warehouse-actions";
         ["capability_key", "role_key", "variant_key", "display_name"].forEach(function (name) {
@@ -2586,6 +4060,13 @@
           input.spellcheck = false;
           if (name !== "display_name") input.pattern = "[a-z_][a-z0-9_]*";
           input.value = String(identityDefaults[name] || "");
+          if (
+            productIdentity &&
+            (name === "capability_key" || name === "display_name")
+          ) {
+            input.readOnly = true;
+            input.setAttribute("aria-readonly", "true");
+          }
           if (name === "display_name") input.maxLength = 200;
           controls[name] = input;
           label.appendChild(input);
@@ -2637,19 +4118,35 @@
         details.appendChild(label);
       });
       var actions = document.createElement("div");
-      actions.className = "warehouse-actions";
+      actions.className = "warehouse-actions warehouse-review-decision";
+      var decisionSelect = document.createElement("select");
+      decisionSelect.setAttribute("aria-label", t("reviewItems"));
+      var decisionEmpty = document.createElement("option");
+      decisionEmpty.value = "";
+      decisionEmpty.textContent = t("reviewItems");
+      decisionSelect.appendChild(decisionEmpty);
       decisions.forEach(function (decision) {
         var copy = reviewDecisionCopy(decision);
-        var button = controlHelp(document.createElement("button"), copy ? copy[1] : "reviewItems");
-        button.type = "button";
-        button.className = "btn-ghost";
-        button.dataset.decision = String(decision);
-        button.textContent = copy ? t(copy[0]) : String(decision);
-        if (!copy) button.classList.add("warehouse-developer-only");
-        button.addEventListener("click", function () {
-          var decisionPayload = managementReviewDecisionPayload(item.review_id, decision, controls);
-          if (!decisionPayload) return;
-          bridgeCall("decide_review_item", JSON.stringify(decisionPayload)).then(function (raw) {
+        var option = document.createElement("option");
+        option.value = String(decision);
+        option.textContent = copy ? t(copy[0]) : String(decision);
+        decisionSelect.appendChild(option);
+      });
+      var submitDecision = document.createElement("button");
+      submitDecision.type = "button";
+      submitDecision.className = "btn-primary";
+      submitDecision.textContent = t("save");
+      submitDecision.disabled = true;
+      decisionSelect.addEventListener("change", function () {
+        submitDecision.disabled = !decisionSelect.value;
+        submitDecision.dataset.decision = decisionSelect.value;
+      });
+      submitDecision.addEventListener("click", function () {
+        var decision = String(decisionSelect.value || "");
+        if (!decision) return;
+        var decisionPayload = managementReviewDecisionPayload(item.review_id, decision, controls);
+        if (!decisionPayload) return;
+        bridgeCall("decide_review_item", JSON.stringify(decisionPayload)).then(function (raw) {
             var result = parseBridgeJson(raw);
             var decided = managementPayload(result);
             if (!decided) {
@@ -2687,19 +4184,110 @@
               });
               return;
             }
+            if (productContext) {
+              closeIngestionScene();
+              return;
+            }
             if (!trackManagementRuns(result, function () {
               setManagementStatus("decisionSaved");
             })) {
               setManagementStatus("decisionSaved");
               refreshIngestionManagement();
             }
-          });
         });
-        actions.appendChild(button);
       });
+      actions.appendChild(decisionSelect);
+      actions.appendChild(submitDecision);
       details.appendChild(actions);
+      if (productContext && !productIdentity) {
+        var invalid = document.createElement("p");
+        invalid.className = "warehouse-status is-error";
+        invalid.dataset.errorCode = "target_review_binding_invalid";
+        invalid.textContent = "target_review_binding_invalid";
+        details.appendChild(invalid);
+      }
       container.appendChild(details);
     });
+    if (productContext) {
+      window.setTimeout(function () {
+        var summary = $(
+          "target-review-summary-" + productContext.review_id
+        );
+        if (summary) summary.focus({ preventScroll: true });
+      }, 0);
+    } else if (sourceHandoffContext) {
+      window.setTimeout(function () {
+        var summary = container.querySelector(
+          "[data-source-handoff-review]"
+        );
+        if (summary) summary.focus({ preventScroll: true });
+      }, 0);
+    }
+  }
+
+  function managementJson(value) {
+    if (value && typeof value === "object" && !Array.isArray(value)) return value;
+    if (typeof value !== "string" || !value.trim()) return {};
+    try {
+      var parsed = JSON.parse(value);
+      return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : {};
+    } catch (_error) {
+      return {};
+    }
+  }
+
+  function managementFields(contract) {
+    var properties = managementJson(contract).properties;
+    return properties && typeof properties === "object" && !Array.isArray(properties)
+      ? Object.keys(properties).sort()
+      : [];
+  }
+
+  function managementContractSummary(kind, version) {
+    var activation = managementJson(version.activation_json || version.activation);
+    var input = managementJson(version.input_contract_json || version.input_contract);
+    var output = managementJson(version.output_contract_json || version.output_contract);
+    var parts = [t("contractEntrypoint") + ": " + String(activation.entrypoint || "—")];
+    if (kind === "interaction") {
+      var events = managementJson(output.events);
+      var names = Object.keys(events).sort().map(function (name) {
+        return name + "(" + managementFields(events[name]).join(", ") + ")";
+      });
+      parts.push(t("contractProduces") + ": " + (names.length ? names.join(" · ") : t("contractNoOutput")));
+      return parts.join(" · ");
+    }
+    var inputs = managementFields(input);
+    var outputs = managementFields(output);
+    parts.push(t("contractReceives") + ": " + (inputs.length ? inputs.join(", ") : t("contractNoInput")));
+    parts.push(t("contractProduces") + ": " + (outputs.length ? outputs.join(", ") : t("contractNoOutput")));
+    return parts.join(" · ");
+  }
+
+  function renderFormalCapsuleDetail(panel, capsule, detail) {
+    panel.replaceChildren();
+    var detailCapsule = detail.capsule || detail;
+    var versions = Array.isArray(detail.versions) ? detail.versions : [];
+    var currentVersionId = String(detailCapsule.current_version_id || capsule.version_id || "");
+    var version = versions.find(function (item) {
+      return String(item.version_id || "") === currentVersionId;
+    }) || versions[0] || {};
+    var identity = document.createElement("p");
+    identity.className = "ingestion-formal-identity";
+    identity.textContent = [
+      String(detailCapsule.capability_kind || capsule.capability_kind || ""),
+      version.version_number != null ? "v" + String(version.version_number) : "",
+      String(version.version_id || currentVersionId || ""),
+      String(detailCapsule.status || capsule.status || ""),
+    ].filter(Boolean).join(" · ");
+    panel.appendChild(identity);
+    var contract = document.createElement("p");
+    contract.className = "ingestion-formal-contract";
+    contract.textContent = managementContractSummary(
+      String(detailCapsule.capability_kind || capsule.capability_kind || ""),
+      version
+    );
+    panel.appendChild(contract);
+    panel.dataset.loaded = "true";
   }
 
   function renderManagementGroups() {
@@ -2746,37 +4334,89 @@
       details.appendChild(rename);
       var capsules = Array.isArray(group.capsules) ? group.capsules : (Array.isArray(group.roles) ? group.roles : []);
       capsules.forEach(function (capsule) {
-        var row = document.createElement("div");
-        row.className = "warehouse-row";
-        var label = document.createElement("span");
-        label.textContent = [capsule.role_key, capsule.variant_key, capsule.capability_kind, capsule.status].filter(Boolean).join(" · ");
-        row.appendChild(label);
-        if (capsule.capsule_id) {
-          var view = document.createElement("button");
-          view.type = "button";
-          view.className = "btn-ghost";
-          view.textContent = t("viewDetails");
-          view.title = t("viewDetailsHelp");
-          view.addEventListener("click", function () {
-            bridgeCall("get_capsule_detail", JSON.stringify({ capsule_id: capsule.capsule_id })).then(function (raw) {
-              var result = parseBridgeJson(raw);
-              var detail = managementPayload(result);
-              if (!detail) {
-                setManagementStatus(managementError(result));
-                return;
-              }
-              var detailCapsule = detail.capsule || detail;
-              var latestVersion = Array.isArray(detail.versions) && detail.versions.length ? detail.versions[0] : {};
-              label.textContent = [
-                detailCapsule.role_key || capsule.role_key,
-                detailCapsule.variant_key || capsule.variant_key,
-                detailCapsule.capability_kind || capsule.capability_kind,
-                detailCapsule.status || capsule.status,
-                latestVersion.version_number != null ? "v" + latestVersion.version_number : "",
-              ].filter(Boolean).join(" · ");
-            });
+        var unit = document.createElement("article");
+        unit.className = "ingestion-formal-capsule";
+        unit.dataset.capsuleId = String(capsule.capsule_id || "");
+        var panelId = "ingestion-formal-detail-" + String(capsule.capsule_id || "").replace(/[^a-zA-Z0-9_-]/g, "_");
+        var seal = document.createElement("button");
+        seal.type = "button";
+        seal.className = "warehouse-capsule-seal is-management";
+        seal.setAttribute("aria-expanded", "false");
+        seal.setAttribute("aria-controls", panelId);
+        var kind = String(capsule.capability_kind || "");
+        var kindSide = document.createElement("span");
+        kindSide.className = "warehouse-capsule-kind";
+        var mark = document.createElement("i");
+        mark.className = "warehouse-capsule-core is-" + kind;
+        mark.setAttribute("aria-hidden", "true");
+        kindSide.appendChild(mark);
+        var kindText = document.createElement("span");
+        kindText.textContent = t({
+          presentation: "presentationCapability",
+          interaction: "interactionCapability",
+          computation: "computationCapability",
+        }[kind] || kind);
+        kindSide.appendChild(kindText);
+        seal.appendChild(kindSide);
+        var capsuleIdentity = document.createElement("span");
+        capsuleIdentity.className = "warehouse-capsule-identity";
+        var capsuleName = document.createElement("strong");
+        capsuleName.textContent = String(group.display_name || group.capability_key || "capability");
+        capsuleIdentity.appendChild(capsuleName);
+        var capsuleMeta = document.createElement("p");
+        capsuleMeta.textContent = [
+          capsule.role_key,
+          capsule.variant_key,
+          capsule.status,
+          t("exactVersion") + " —",
+        ].filter(Boolean).join(" · ");
+        capsuleIdentity.appendChild(capsuleMeta);
+        seal.appendChild(capsuleIdentity);
+        unit.appendChild(seal);
+        var panel = document.createElement("section");
+        panel.id = panelId;
+        panel.className = "ingestion-formal-detail";
+        panel.hidden = true;
+        unit.appendChild(panel);
+        seal.addEventListener("click", function () {
+          var open = seal.getAttribute("aria-expanded") === "true";
+          container.querySelectorAll(".warehouse-capsule-seal.is-management").forEach(function (item) {
+            item.setAttribute("aria-expanded", "false");
           });
-          row.appendChild(view);
+          container.querySelectorAll(".ingestion-formal-detail").forEach(function (item) {
+            item.hidden = true;
+          });
+          if (open) return;
+          seal.setAttribute("aria-expanded", "true");
+          panel.hidden = false;
+          if (panel.dataset.loaded === "true") return;
+          panel.textContent = t("warehouseLoadingRelations");
+          bridgeCall("get_capsule_detail", JSON.stringify({ capsule_id: capsule.capsule_id })).then(function (raw) {
+            var result = parseBridgeJson(raw);
+            var detail = managementPayload(result);
+            if (!detail) {
+              panel.textContent = t("contractUnavailable");
+              setManagementStatus(managementError(result));
+              return;
+            }
+            renderFormalCapsuleDetail(panel, capsule, detail);
+            var detailCapsule = detail.capsule || detail;
+            var versions = Array.isArray(detail.versions) ? detail.versions : [];
+            var latestVersion = versions.find(function (item) {
+              return String(item.version_id || "") === String(detailCapsule.current_version_id || "");
+            }) || versions[0] || {};
+            capsuleMeta.textContent = [
+              capsule.role_key,
+              capsule.variant_key,
+              latestVersion.version_number != null ? "v" + latestVersion.version_number : "",
+              latestVersion.version_id ? String(latestVersion.version_id).slice(0, 15) + "…" : "",
+              detailCapsule.status || capsule.status,
+            ].filter(Boolean).join(" · ");
+          });
+        });
+        var actions = document.createElement("div");
+        actions.className = "ingestion-formal-actions";
+        if (capsule.capsule_id) {
           var statusButton = document.createElement("button");
           statusButton.type = "button";
           statusButton.className = "btn-ghost";
@@ -2790,9 +4430,10 @@
               else refreshIngestionManagement();
             });
           });
-          row.appendChild(statusButton);
+          actions.appendChild(statusButton);
         }
-        details.appendChild(row);
+        unit.appendChild(actions);
+        details.appendChild(unit);
       });
       container.appendChild(details);
     });
@@ -2815,7 +4456,6 @@
       t("legacyWarehouse"),
       legacy.status,
       String(legacy.recognizableEntries || 0),
-      legacy.path,
     ].filter(Boolean).join(" · ");
     container.appendChild(summary);
     var aliases = Array.isArray(legacy.aliases) ? legacy.aliases : [];
@@ -2956,7 +4596,7 @@
       backup.className = "warehouse-meta";
       backup.textContent =
         t("preRestoreBackup") + ": " +
-        String(product.pre_restore_backup_path || t("backupUnavailable"));
+        (product.pre_restore_backup_path ? t("backupAvailable") : t("backupUnavailable"));
       details.appendChild(backup);
       container.appendChild(details);
     });
@@ -3003,6 +4643,7 @@
     renderManagementLegacy();
     renderManagementBackups();
     renderManagementRuns();
+    syncIngestionStation();
     setManagementStatus(ingestionManagement.errorKey);
   }
 
@@ -3011,7 +4652,10 @@
       setManagementStatus("managementUnavailable");
       return Promise.resolve();
     }
-    if (ingestionManagement.loading) return Promise.resolve();
+    if (ingestionManagement.loading) {
+      ingestionManagement.refreshPending = true;
+      return Promise.resolve();
+    }
     ingestionManagement.loading = true;
     setManagementStatus("managementLoading");
     return Promise.all([
@@ -3043,8 +4687,16 @@
       var failed = results.slice(2).find(function (result) {
         return !result || result.ok === false;
       });
-      ingestionManagement.errorKey = failed ? managementError(failed) : "";
+      ingestionManagement.errorKey = failed
+        ? managementError(failed)
+        : (ingestionManagement.sourceRootSelectionStale
+          ? "sourceRootSelectionStale"
+          : "");
       renderIngestionManagement();
+      if (ingestionManagement.refreshPending) {
+        ingestionManagement.refreshPending = false;
+        return refreshIngestionManagement();
+      }
     });
   }
 
@@ -3079,7 +4731,11 @@
       if (!payload) {
         var missingPayloadKey = managementError(result);
         rememberManagementRun(runId, { status: "failed" });
-        setManagementStatus(missingPayloadKey);
+        setManagementStatus(
+          ingestionManagement.sourceRootSelectionStale
+            ? "sourceRootSelectionStale"
+            : missingPayloadKey
+        );
         if (typeof onFailure === "function") onFailure(missingPayloadKey);
         renderManagementRuns();
         return;
@@ -3090,13 +4746,22 @@
       if (run.status === "queued" || run.status === "running") {
         setTimeout(function () { pollManagementRun(runId, onComplete, refreshAfter, onFailure); }, 750);
       } else {
-        if (run.status === "completed") {
+        if (
+          run.status === "completed" ||
+          run.status === "review_required"
+        ) {
           if (typeof onComplete === "function") onComplete(run);
         } else {
           var failureKey = run.error
             ? managementError({ error: run.error })
+            : run.error_code
+              ? managementError({ error: { code: run.error_code } })
             : "managementOperationFailed";
-          setManagementStatus(failureKey);
+          setManagementStatus(
+            ingestionManagement.sourceRootSelectionStale
+              ? "sourceRootSelectionStale"
+              : failureKey
+          );
           if (typeof onFailure === "function") onFailure(failureKey);
         }
         if (refreshAfter !== false) refreshIngestionManagement();
@@ -3151,6 +4816,66 @@
   }
 
   function bindIngestionManagementEvents() {
+    document.querySelectorAll("[data-ingestion-station]").forEach(function (button) {
+      button.addEventListener("click", function () {
+        ingestionNavigation.sourceHandoffReview = null;
+        ingestionNavigation.station = String(button.dataset.ingestionStation || "source");
+        renderManagementReviews();
+        syncIngestionStation();
+        window.requestAnimationFrame(function () {
+          window.scrollTo(0, 0);
+          button.focus({ preventScroll: true });
+        });
+      });
+      button.addEventListener("keydown", function (event) {
+        if (["ArrowLeft", "ArrowRight", "Home", "End"].indexOf(event.key) < 0) return;
+        event.preventDefault();
+        var tabs = Array.prototype.slice.call(document.querySelectorAll("[data-ingestion-station]"));
+        var index = tabs.indexOf(button);
+        if (event.key === "Home") index = 0;
+        else if (event.key === "End") index = tabs.length - 1;
+        else if (event.key === "ArrowLeft") index = (index - 1 + tabs.length) % tabs.length;
+        else index = (index + 1) % tabs.length;
+        var next = tabs[index];
+        ingestionNavigation.sourceHandoffReview = null;
+        ingestionNavigation.station = String(next.dataset.ingestionStation || "source");
+        renderManagementReviews();
+        syncIngestionStation();
+        next.focus({ preventScroll: true });
+      });
+    });
+    var ingestionBack = $("btn-ingestion-back");
+    if (ingestionBack) ingestionBack.addEventListener("click", closeIngestionScene);
+    var ingestionProduct = $("btn-ingestion-product-nav");
+    if (ingestionProduct) ingestionProduct.addEventListener("click", function () {
+      productPlanScene.open();
+    });
+    var ingestionTarget = $("btn-ingestion-target-nav");
+    if (ingestionTarget) ingestionTarget.addEventListener("click", function () {
+      var targetEntry = $("btn-open-target");
+      if (targetEntry && !targetEntry.disabled) targetEntry.click();
+    });
+    var ingestionWarehouse = $("btn-ingestion-warehouse-nav");
+    if (ingestionWarehouse) ingestionWarehouse.addEventListener("click", function () {
+      if (ingestionNavigation.returnScene === "warehouse") {
+        capsuleWarehouseScene.resume();
+        return;
+      }
+      var productWarehouse = $("btn-product-open-warehouse");
+      if (productWarehouse) productWarehouse.click();
+      else capsuleWarehouseScene.open(null);
+    });
+    var ingestionCompatibility = $("btn-ingestion-compat-nav");
+    if (ingestionCompatibility) ingestionCompatibility.addEventListener("click", function () {
+      var productBack = $("btn-product-plan-back");
+      if (productBack) productBack.click();
+      else {
+        showScreen("screen-main");
+        syncAppState();
+      }
+    });
+    var ingestionLanguage = $("btn-ingestion-lang");
+    if (ingestionLanguage) ingestionLanguage.addEventListener("click", toggleLocale);
     var developerMode = $("warehouse-developer-mode");
     if (developerMode) developerMode.addEventListener("change", function () {
       ingestionManagement.developerMode = developerMode.checked === true;
@@ -3167,10 +4892,12 @@
           return;
         }
         if (!trackManagementRuns(result, function (run) {
+          selectDiscoveredSourceRoot(run.data);
           ingestionManagement.discovery = run.data || null;
           renderManagementProjects();
         }, false)) {
           ingestionManagement.discovery = payload.discovery || payload;
+          selectDiscoveredSourceRoot(ingestionManagement.discovery);
           renderManagementProjects();
         }
       });
@@ -3212,43 +4939,6 @@
         setManagementStatus("importStarted");
       });
     });
-  }
-
-  function addBoundSource(source) {
-    mergeSourceFromDesktop(source);
-    renderSources();
-  }
-
-  function handleAddSource() {
-    if (!hasDesktopBridge()) return;
-    if (!desktopCapability("canChooseSourceFolder")) {
-      if (els.reweaveResponse) els.reweaveResponse.textContent = t("runtimeReadOnlyMessage");
-      return;
-    }
-    bridgeCall("choose_source_folder").then(function (raw) {
-      var result = parseBridgeJson(raw);
-      if (!result || result.cancelled) return;
-      if (result.ok && result.source) {
-        addBoundSource(result.source);
-      }
-    });
-  }
-
-  function applyLunaReuseFromDraft(draftResult) {
-    if (!draftResult || !draftResult.draft) return;
-    var draft = draftResult.draft;
-    var sourceId = draftResult.source_id || draft.source_id;
-    if (Array.isArray(draft.capsuleSuggestions) && draft.capsuleSuggestions.length && sourceId) {
-      if (!data.lunaReuseBySource) data.lunaReuseBySource = {};
-      data.lunaReuseBySource[sourceId] = {
-        count: draft.capsuleSuggestions.length,
-        suggestions: draft.capsuleSuggestions,
-      };
-      console.log("[Reweave] Luna reuse suggestions:", draft.capsuleSuggestions.length);
-    }
-    if (Array.isArray(draft.warnings) && draft.warnings.length) {
-      console.warn("[Reweave] prepare warnings:", draft.warnings.join(", "));
-    }
   }
 
   function applyVerificationResult(sourceId, result) {
@@ -3628,171 +5318,9 @@
     });
   }
 
-  function handlePrepareSource(sourceId) {
-    if (!hasDesktopBridge() || !sourceId) return;
-    if (!desktopCapability("canDraftCapsules")) return;
-    preparingSourceIds[sourceId] = true;
-    renderSources();
-    bridgeCall("draft_capsules", sourceId).then(function (raw) {
-      var draftResult = parseBridgeJson(raw);
-      if (!draftResult || !draftResult.ok) {
-        delete preparingSourceIds[sourceId];
-        if (draftResult && draftResult.source) {
-          mergeSourceFromDesktop(draftResult.source);
-        } else {
-          var idx = (data.sourceBoxes || []).findIndex(function (s) {
-            return s.id === sourceId;
-          });
-          if (idx >= 0) {
-            data.sourceBoxes[idx].draft_status = "failed";
-            data.sourceBoxes[idx].last_error = (draftResult && draftResult.error) || "draft failed";
-          }
-        }
-        renderSources();
-        return;
-      }
-      if (draftResult.source) mergeSourceFromDesktop(draftResult.source);
-      applyLunaReuseFromDraft(draftResult);
-      if (!desktopCapability("canPromoteDrafts") || isLumoLiteReadOnly()) {
-        delete preparingSourceIds[sourceId];
-        renderSources();
-        return;
-      }
-      bridgeCall("promote_source_drafts", sourceId).then(function (promoteRaw) {
-        delete preparingSourceIds[sourceId];
-        var promoteResult = parseBridgeJson(promoteRaw);
-        if (promoteResult && promoteResult.source) {
-          mergeSourceFromDesktop(promoteResult.source);
-        }
-        if (promoteResult && promoteResult.ok && Array.isArray(promoteResult.capsules)) {
-          applyWarehouseCapsules(promoteResult.capsules);
-        }
-        renderSources();
-      });
-    });
-  }
-
-  function handleStoreSource(sourceId) {
-    if (!hasDesktopBridge() || !sourceId) return;
-    if (!desktopCapability("canPromoteDrafts")) return;
-    preparingSourceIds[sourceId] = true;
-    renderSources();
-    bridgeCall("promote_source_drafts", sourceId).then(function (raw) {
-      delete preparingSourceIds[sourceId];
-      var result = parseBridgeJson(raw);
-      if (result && result.source) {
-        mergeSourceFromDesktop(result.source);
-      }
-      if (result && result.ok && Array.isArray(result.capsules)) {
-        applyWarehouseCapsules(result.capsules);
-      }
-      renderSources();
-    });
-  }
-
-  function runDesktopSourcePipeline(sourceId, onDone) {
-    if (!sourceId) {
-      if (onDone) onDone(false);
-      return;
-    }
-    bridgeCall("scan_source_box", sourceId).then(function (scanRaw) {
-      var scanResult = parseBridgeJson(scanRaw);
-      if (!scanResult || !scanResult.ok) {
-        if (onDone) onDone(false);
-        return;
-      }
-      if (scanResult.source) mergeSourceFromDesktop(scanResult.source);
-      bridgeCall("draft_capsules", sourceId).then(function (draftRaw) {
-        var draftResult = parseBridgeJson(draftRaw);
-        if (!draftResult || !draftResult.ok) {
-          if (onDone) onDone(false);
-          return;
-        }
-        if (draftResult.source) mergeSourceFromDesktop(draftResult.source);
-        applyLunaReuseFromDraft(draftResult);
-        if (!desktopCapability("canPromoteDrafts") || isLumoLiteReadOnly()) {
-          if (onDone) onDone(true);
-          return;
-        }
-        bridgeCall("promote_source_drafts", sourceId).then(function (promoteRaw) {
-          var promoteResult = parseBridgeJson(promoteRaw);
-          if (promoteResult && promoteResult.source) {
-            mergeSourceFromDesktop(promoteResult.source);
-          }
-          if (promoteResult && promoteResult.ok && Array.isArray(promoteResult.capsules)) {
-            applyWarehouseCapsules(promoteResult.capsules);
-          }
-          if (onDone) onDone(!!(promoteResult && promoteResult.ok));
-        });
-      });
-    });
-  }
-
-  function handleDesktopWelcomeIntake() {
-    if (!desktopCapability("canChooseSourceFolder")) {
-      syncWelcomeSourceBoxMode();
-      return;
-    }
-    bridgeCall("choose_source_folder").then(function (raw) {
-      var result = parseBridgeJson(raw);
-      if (!result || result.cancelled || !result.ok || !result.source) return;
-      mergeSourceFromDesktop(result.source);
-      showScreen("screen-cleaning");
-      var stepsEl = $("cleaning-steps");
-      var bar = $("progress-bar");
-      stepsEl.innerHTML = "";
-      ["Binding source folder", "Scanning structure", "Preparing capsule drafts"].forEach(function (text) {
-        var li = document.createElement("li");
-        li.textContent = text;
-        stepsEl.appendChild(li);
-      });
-      bar.style.width = "12%";
-      runDesktopSourcePipeline(result.source.id, function (ok) {
-        bar.style.width = "100%";
-        stepsEl.querySelectorAll("li").forEach(function (li) {
-          li.classList.add("done");
-        });
-        setTimeout(function () {
-          initMain();
-          var needsStore = (data.sourceBoxes || []).some(function (source) {
-            return source.draft_status === "drafted" && source.warehouse_status !== "promoted";
-          });
-          if (ok && needsStore && els.reweaveResponse) {
-            els.reweaveResponse.textContent = t("draftsReadyStore");
-          }
-        }, ok ? 320 : 480);
-      });
-    });
-  }
-
-  function handleScanSource(sourceId) {
-    if (!hasDesktopBridge() || !sourceId) return;
-    if (!desktopCapability("canScanSourceBox")) return;
-    scanningSourceIds[sourceId] = true;
-    renderSources();
-    bridgeCall("scan_source_box", sourceId).then(function (raw) {
-      delete scanningSourceIds[sourceId];
-      var result = parseBridgeJson(raw);
-      if (result && result.source) {
-        addBoundSource(result.source);
-      } else if (result && !result.ok) {
-        var idx = (data.sourceBoxes || []).findIndex(function (s) {
-          return s.id === sourceId;
-        });
-        if (idx >= 0) {
-          data.sourceBoxes[idx].scan_status = "failed";
-          data.sourceBoxes[idx].last_error = result.error || "scan failed";
-        }
-        renderSources();
-      }
-    });
-  }
-
   function sourceScanLabel(src) {
     if (sourceWorkflow.sourceScanLabel) {
       return sourceWorkflow.sourceScanLabel(src, {
-        preparing: !!preparingSourceIds[src.id],
-        scanning: !!scanningSourceIds[src.id],
         verifying: !!verifyingSourceIds[src.id],
         previewing: !!previewingSourceIds[src.id],
         reviewing: !!reviewingSourceIds[src.id],
@@ -3958,7 +5486,7 @@
     if (id === "screen-main" && productPlanScene.consumeWarehouseReturn()) {
       id = "screen-product-plan";
     }
-    ["screen-welcome", "screen-cleaning", "screen-main", "screen-product-plan", "screen-capsule-warehouse", "screen-target"].forEach(function (sid) {
+    ["screen-welcome", "screen-cleaning", "screen-main", "screen-product-plan", "screen-capsule-warehouse", "screen-capsule-ingestion", "screen-target"].forEach(function (sid) {
       $(sid).classList.toggle("hidden", sid !== id);
     });
   }
@@ -4075,9 +5603,9 @@
     var input = $("task-input");
     if (input) input.placeholder = t("taskPlaceholder");
     var langBtn = $("btn-lang");
-    if (langBtn) langBtn.textContent = locale === "zh" ? "中 / EN" : "EN / 中";
+    if (langBtn) langBtn.textContent = locale === "zh" ? "中·EN" : "EN·中";
     var wl = $("btn-welcome-lang");
-    if (wl) wl.textContent = locale === "zh" ? "中 / EN" : "EN / 中";
+    if (wl) wl.textContent = locale === "zh" ? "中·EN" : "EN·中";
     if (els.usedCapsuleDock && usedCapsuleIds.length === 0) {
       els.usedCapsuleDock.innerHTML =
         '<span class="used-placeholder">' + escapeHtml(t("usedPlaceholder")) + "</span>";
@@ -4103,9 +5631,13 @@
       if (selected) showCapsuleReader(selected);
     }
     applyLumoLiteRuntimeView();
+    if (data && !isLumoLiteReadOnly()) {
+      syncGeneratedPackageView();
+    }
     capsuleWarehouseScene.sync();
     productPlanScene.sync();
     targetIntegration.sync();
+    syncFormalNavigation();
   }
 
   function toggleLocale() {
@@ -4123,21 +5655,10 @@
     bindMainEvents();
     applyLocale();
     syncWelcomeSourceBoxMode();
-    $("btn-select-folder").addEventListener("click", function () {
-      if (hasDesktopBridge() && !desktopCapability("canChooseSourceFolder")) {
-        syncWelcomeSourceBoxMode();
-        return;
-      }
-      if (hasDesktopBridge()) {
-        handleDesktopWelcomeIntake();
-      } else {
-        startCleaning();
-      }
-    });
     var vr = $("btn-view-runtime");
     if (vr) {
       vr.addEventListener("click", function () {
-        initMain();
+        initMain({ compatibility: true });
       });
     }
     var wl = $("btn-welcome-lang");
@@ -4169,13 +5690,16 @@
       if (index <= steps.length) {
         setTimeout(tick, 650);
       } else {
-        setTimeout(initMain, 400);
+        setTimeout(function () {
+          initMain({ compatibility: true });
+        }, 400);
       }
     }
     tick();
   }
 
-  function initMain() {
+  function initMain(options) {
+    options = options || {};
     showScreen("screen-main");
     cacheElements();
     usedCapsuleIds = [];
@@ -4196,6 +5720,13 @@
     capsuleWarehouseScene.sync();
     productPlanScene.sync();
     targetIntegration.sync();
+    if (
+      options.compatibility !== true &&
+      desktopShellState &&
+      desktopShellState.canPlanProduct === true
+    ) {
+      productPlanScene.open();
+    }
   }
 
   function cacheElements() {
@@ -4590,6 +6121,7 @@
   }
 
   function syncGeneratedPackageView() {
+    if (!data) return;
     if (data.generatedPackage) {
       renderGeneratedPackage(!!lastPreviewPath);
       return;
@@ -4895,54 +6427,9 @@
       var right = document.createElement("span");
       right.className = "source-status";
 
-      var scan = src.scan_status || "not_scanned";
       if (hasDesktopBridge()) {
-        if (preparingSourceIds[src.id] || scanningSourceIds[src.id] || verifyingSourceIds[src.id] || previewingSourceIds[src.id] || reviewingSourceIds[src.id]) {
+        if (verifyingSourceIds[src.id] || previewingSourceIds[src.id] || reviewingSourceIds[src.id]) {
           right.textContent = sourceScanLabel(src);
-        } else if (scan === "not_scanned" && desktopCapability("canScanSourceBox")) {
-          var scanBtn = document.createElement("button");
-          scanBtn.type = "button";
-          scanBtn.className = "btn-ghost btn-source-scan";
-          scanBtn.textContent = t("scan");
-          scanBtn.addEventListener("click", function (e) {
-            e.preventDefault();
-            e.stopPropagation();
-            handleScanSource(src.id);
-          });
-          right.appendChild(scanBtn);
-        } else if (scan === "scanned" && src.warehouse_status === "promoted" && desktopCapability("canScanSourceBox")) {
-          var refreshBtn = document.createElement("button");
-          refreshBtn.type = "button";
-          refreshBtn.className = "btn-ghost btn-source-scan";
-          refreshBtn.textContent = t("refresh");
-          refreshBtn.addEventListener("click", function (e) {
-            e.preventDefault();
-            e.stopPropagation();
-            handleScanSource(src.id);
-          });
-          right.appendChild(refreshBtn);
-        } else if (src.draft_status === "drafted" && src.warehouse_status !== "promoted" && desktopCapability("canPromoteDrafts")) {
-          var storeBtn = document.createElement("button");
-          storeBtn.type = "button";
-          storeBtn.className = "btn-ghost btn-source-scan";
-          storeBtn.textContent = t("store");
-          storeBtn.addEventListener("click", function (e) {
-            e.preventDefault();
-            e.stopPropagation();
-            handleStoreSource(src.id);
-          });
-          right.appendChild(storeBtn);
-        } else if (scan === "scanned" && src.warehouse_status !== "promoted" && desktopCapability("canDraftCapsules")) {
-          var prepBtn = document.createElement("button");
-          prepBtn.type = "button";
-          prepBtn.className = "btn-ghost btn-source-scan";
-          prepBtn.textContent = t("prepare");
-          prepBtn.addEventListener("click", function (e) {
-            e.preventDefault();
-            e.stopPropagation();
-            handlePrepareSource(src.id);
-          });
-          right.appendChild(prepBtn);
         } else {
           var lunaReuse = data.lunaReuseBySource && data.lunaReuseBySource[src.id];
           var verification = data.verificationBySource && data.verificationBySource[src.id];
@@ -5037,6 +6524,26 @@
     productPlanScene.bind();
     targetIntegration.bind();
 
+    var compatTargetNav = $("btn-compat-target-nav");
+    if (compatTargetNav) {
+      compatTargetNav.addEventListener("click", function () {
+        var targetEntry = $("btn-open-target");
+        if (targetEntry && !targetEntry.disabled) targetEntry.click();
+      });
+    }
+    var compatWarehouseNav = $("btn-compat-warehouse-nav");
+    if (compatWarehouseNav) {
+      compatWarehouseNav.addEventListener("click", function () {
+        capsuleWarehouseScene.open(null);
+      });
+    }
+    var compatIngestionNav = $("btn-compat-ingestion-nav");
+    if (compatIngestionNav) {
+      compatIngestionNav.addEventListener("click", function () {
+        openIngestionScene("product", null);
+      });
+    }
+
     $("btn-generate").addEventListener("click", runGenerate);
     var enrichedCheckbox = $("use-enriched-content");
     if (enrichedCheckbox) {
@@ -5118,15 +6625,7 @@
       closeAllPopovers();
     });
 
-    var addSourceBtn = document.querySelector(".btn-add-source");
-    if (addSourceBtn) {
-      addSourceBtn.addEventListener("click", function (e) {
-        e.preventDefault();
-        e.stopPropagation();
-        handleAddSource();
-      });
-      syncSourceControls();
-    }
+    syncSourceControls();
 
     var btnViewPackage = $("btn-view-package");
     if (btnViewPackage) {
@@ -5163,7 +6662,6 @@
     var historyOpen = !els.historyPopover.classList.contains("hidden");
     var sourcesOpen = !els.sourcesPopover.classList.contains("hidden");
     var artifactsOpen = els.lumoArtifactsPopover && !els.lumoArtifactsPopover.classList.contains("hidden");
-    var warehouseOpen = els.capsuleWarehousePopover && !els.capsuleWarehousePopover.classList.contains("hidden");
     if (els.reader && !els.reader.classList.contains("hidden")) hideCapsuleReader();
     closeAllPopovers();
     if (which === "history" && !historyOpen) {
@@ -5178,11 +6676,6 @@
       openLumoArtifactsPopover();
       els.backdrop.classList.remove("hidden");
       if (els.btnLumoArtifacts) els.btnLumoArtifacts.setAttribute("aria-expanded", "true");
-    } else if (which === "capsule-warehouse" && !warehouseOpen) {
-      els.capsuleWarehousePopover.classList.remove("hidden");
-      els.backdrop.classList.remove("hidden");
-      var ingestionEntry = $("btn-open-capsule-ingestion");
-      if (ingestionEntry) ingestionEntry.setAttribute("aria-expanded", "true");
     }
   }
 
@@ -5190,13 +6683,10 @@
     els.historyPopover.classList.add("hidden");
     els.sourcesPopover.classList.add("hidden");
     if (els.lumoArtifactsPopover) els.lumoArtifactsPopover.classList.add("hidden");
-    if (els.capsuleWarehousePopover) els.capsuleWarehousePopover.classList.add("hidden");
     els.backdrop.classList.add("hidden");
     $("btn-history").setAttribute("aria-expanded", "false");
     $("btn-sources").setAttribute("aria-expanded", "false");
     if (els.btnLumoArtifacts) els.btnLumoArtifacts.setAttribute("aria-expanded", "false");
-    var ingestionEntry = $("btn-open-capsule-ingestion");
-    if (ingestionEntry) ingestionEntry.setAttribute("aria-expanded", "false");
   }
 
   function ensureCapsuleElement(id) {
@@ -5474,8 +6964,18 @@
       bridge: {
         available: hasDesktopBridge(),
         ready: bridgeReady,
-        shell: desktopShellState,
-        previewPath: lastPreviewPath || null,
+        shell: desktopShellState
+          ? {
+              canGenerateProduct: desktopShellState.canGenerateProduct === true,
+              canPlanProduct: desktopShellState.canPlanProduct === true,
+              planningWorkspaceCount:
+                desktopShellState.productPlanning &&
+                Array.isArray(desktopShellState.productPlanning.workspaces)
+                  ? desktopShellState.productPlanning.workspaces.length
+                  : 0,
+            }
+          : null,
+        previewAvailable: !!lastPreviewPath,
       },
       warehouse: capsuleWarehouseScene.getState(),
       productPlan: productPlanScene.getState(),
@@ -5499,11 +6999,12 @@
       applyLocale();
       initDesktopBridge(function () {
         var params = new URLSearchParams(window.location.search);
+        var compatibility = params.get("main") === "1";
         var skipWelcome =
-          params.get("main") === "1" ||
+          compatibility ||
           !!(desktopShellState && desktopShellState.skipWelcome && !isLumoLiteReadOnly());
         if (skipWelcome) {
-          initMain();
+          initMain({ compatibility: compatibility });
         } else {
           syncWelcomeSourceBoxMode();
         }

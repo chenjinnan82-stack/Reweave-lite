@@ -104,6 +104,7 @@ class LumoPrepareReusePackTest(unittest.TestCase):
 class LumoAppServicePrepareTest(unittest.TestCase):
     def setUp(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()
+        self._services: list[ReweaveAppService] = []
         self._state_dir = Path(self._tmpdir.name)
         self._env = patch.dict(
             os.environ,
@@ -112,6 +113,8 @@ class LumoAppServicePrepareTest(unittest.TestCase):
         self._env.start()
 
     def tearDown(self) -> None:
+        for service in reversed(self._services):
+            service.close()
         self._env.stop()
         self._tmpdir.cleanup()
 
@@ -141,6 +144,7 @@ class LumoAppServicePrepareTest(unittest.TestCase):
                 raise AssertionError("reuse_pack must not run when health fails")
 
         service = ReweaveAppService(engine=LumoReweaveEngine(luna_client=DownClient()))
+        self._services.append(service)
         source_id = self._scan_source()
         draft_result = service.draft_source(source_id)
         self.assertIn("candidate_count", draft_result)
@@ -175,6 +179,7 @@ class LumoAppServicePrepareTest(unittest.TestCase):
                 }
 
         service = ReweaveAppService(engine=LumoReweaveEngine(luna_client=HealthyClient()))
+        self._services.append(service)
         source_id = self._scan_source()
         draft_result = service.draft_source(source_id)
         suggestions = draft_result.get("capsuleSuggestions") or []
@@ -213,6 +218,7 @@ class LumoAppServicePrepareTest(unittest.TestCase):
         scanner.scan_source_box(box["id"])
 
         service = ReweaveAppService(engine=LumoReweaveEngine(luna_client=HealthyClient()))
+        self._services.append(service)
         service.draft_source(box["id"])
         service.promote_source(box["id"])
         self.assertEqual(before, set(root.iterdir()))
@@ -221,6 +227,7 @@ class LumoAppServicePrepareTest(unittest.TestCase):
 class LocalPrepareUnchangedTest(unittest.TestCase):
     def setUp(self) -> None:
         self._tmpdir = tempfile.TemporaryDirectory()
+        self._services: list[ReweaveAppService] = []
         self._state_dir = Path(self._tmpdir.name)
         self._env = patch.dict(
             os.environ,
@@ -233,6 +240,8 @@ class LocalPrepareUnchangedTest(unittest.TestCase):
         self._env.start()
 
     def tearDown(self) -> None:
+        for service in reversed(self._services):
+            service.close()
         self._env.stop()
         self._tmpdir.cleanup()
 
@@ -244,6 +253,7 @@ class LocalPrepareUnchangedTest(unittest.TestCase):
         scanner.scan_source_box(box["id"])
 
         service = ReweaveAppService()
+        self._services.append(service)
         draft_result = service.draft_source(box["id"])
         self.assertIn("candidates", draft_result)
         self.assertNotIn("capsuleSuggestions", draft_result)

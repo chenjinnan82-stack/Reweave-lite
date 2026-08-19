@@ -14,6 +14,7 @@
       developerMode: false,
       profileRevision: 0,
       patchRevision: 0,
+      lastError: null,
     };
 
     function $(id) {
@@ -397,6 +398,71 @@
       );
     }
 
+    function deriveTargetStage() {
+      if (targetWorkflow.confirmation) return "confirmed";
+      if (isSafeTargetPatch(targetWorkflow.patch)) return "review";
+      if (isSafeTargetProfile(targetWorkflow.profile)) return "compose";
+      return "select";
+    }
+
+    function setPanelHidden(node, hidden) {
+      if (!node) return;
+      if (hidden) node.setAttribute("hidden", "");
+      else node.removeAttribute("hidden");
+    }
+
+    function applyTargetStagePresentation() {
+      if (!els.screenTarget) return;
+      var stage = deriveTargetStage();
+      els.screenTarget.setAttribute("data-target-stage", stage);
+
+      setPanelHidden(els.targetPanelSelect, stage !== "select");
+      setPanelHidden(els.targetSummarySelect, stage === "select");
+      setPanelHidden(els.targetPanelCompose, stage !== "compose");
+      setPanelHidden(els.targetSummaryCompose, !(stage === "review" || stage === "confirmed"));
+      setPanelHidden(els.targetReview, stage !== "review");
+      setPanelHidden(els.targetPanelConfirmed, stage !== "confirmed");
+
+      if (els.targetSelectSummaryTitle) {
+        els.targetSelectSummaryTitle.textContent = targetWorkflow.displayName
+          ? formatText("targetSelected", { name: targetWorkflow.displayName })
+          : t("noTargetSelected");
+      }
+      if (els.targetSelectSummaryCopy) {
+        var entry = els.targetEntryRelpath ? els.targetEntryRelpath.value.trim() : "";
+        if (isSafeTargetProfile(targetWorkflow.profile) && entry) {
+          els.targetSelectSummaryCopy.textContent = formatText("targetSelectSummary", {
+            entry: entry,
+          });
+        } else if (entry) {
+          els.targetSelectSummaryCopy.textContent = formatText("targetEntryPendingSummary", {
+            entry: entry,
+          });
+        } else {
+          els.targetSelectSummaryCopy.textContent = t("targetEntryRequired");
+        }
+      }
+      if (els.targetComposeSummaryTitle) {
+        els.targetComposeSummaryTitle.textContent = t("composePatch");
+      }
+      if (els.targetComposeSummaryCopy) {
+        var task = els.targetTask ? els.targetTask.value.trim() : "";
+        var capsuleCount = targetWorkflow.capsuleIds.length;
+        if (!task) {
+          els.targetComposeSummaryCopy.textContent = t("targetTask");
+        } else if (capsuleCount === 1) {
+          els.targetComposeSummaryCopy.textContent = formatText("targetComposeSummaryOne", {
+            task: task,
+          });
+        } else {
+          els.targetComposeSummaryCopy.textContent = formatText("targetComposeSummary", {
+            count: String(capsuleCount),
+            task: task,
+          });
+        }
+      }
+    }
+
     function invalidateTargetConfirmation() {
       targetWorkflow.confirmation = null;
       if (els.targetConfirmationReceipt) els.targetConfirmationReceipt.textContent = "";
@@ -406,23 +472,35 @@
       targetWorkflow.patchRevision += 1;
       targetWorkflow.patch = null;
       invalidateTargetConfirmation();
-      if (els.targetPatchStatus) els.targetPatchStatus.textContent = "";
+      if (targetWorkflow.lastError && targetWorkflow.lastError.kind === "patch") {
+        targetWorkflow.lastError = null;
+      }
+      if (els.targetPatchStatus) {
+        els.targetPatchStatus.textContent = "";
+        clearTargetStatusError(els.targetPatchStatus);
+      }
       if (els.targetRejectionEvidence) {
         els.targetRejectionEvidence.textContent = "";
         els.targetRejectionEvidence.classList.add("hidden");
       }
-      if (els.targetReview) els.targetReview.classList.add("hidden");
+      if (els.targetReview) setPanelHidden(els.targetReview, true);
     }
 
     function resetTargetProfile() {
       targetWorkflow.profileRevision += 1;
       targetWorkflow.profile = null;
       resetTargetPatch();
-      if (els.targetAnalysisStatus) els.targetAnalysisStatus.textContent = "";
+      if (targetWorkflow.lastError && targetWorkflow.lastError.kind === "analysis") {
+        targetWorkflow.lastError = null;
+      }
+      if (els.targetAnalysisStatus) {
+        els.targetAnalysisStatus.textContent = "";
+        clearTargetStatusError(els.targetAnalysisStatus);
+      }
+      clearTargetEntryInvalid();
       if (els.targetProfileSummary) els.targetProfileSummary.classList.add("hidden");
       if (els.targetProfileDeveloper) {
         els.targetProfileDeveloper.textContent = "";
-        els.targetProfileDeveloper.classList.add("hidden");
       }
     }
 
@@ -430,18 +508,9 @@
       if (!els.screenTarget) return;
       els.screenTarget.classList.toggle("developer-mode", targetWorkflow.developerMode);
       if (els.targetDeveloperMode) els.targetDeveloperMode.checked = targetWorkflow.developerMode;
-      if (els.targetProfileDeveloper) {
-        els.targetProfileDeveloper.classList.toggle(
-          "hidden",
-          !targetWorkflow.developerMode || !targetWorkflow.profile
-        );
-      }
-      if (els.targetRejectionEvidence) {
-        els.targetRejectionEvidence.classList.toggle(
-          "hidden",
-          !targetWorkflow.developerMode || !els.targetRejectionEvidence.textContent
-        );
-      }
+      document.querySelectorAll("#screen-target details.target-developer-details").forEach(function (node) {
+        if (!targetWorkflow.developerMode) node.removeAttribute("open");
+      });
     }
 
     function renderTargetSelection() {
@@ -681,15 +750,16 @@
     }
 
     function renderTargetPatch() {
-      if (!els.targetReview || !els.targetFileDiffs || !els.targetEvidenceSummary) return;
+      if (!els.targetFileDiffs || !els.targetEvidenceSummary) return;
       var patch = targetWorkflow.patch;
       if (!patch) {
-        els.targetReview.classList.add("hidden");
+        els.targetFileDiffs.textContent = "";
+        els.targetEvidenceSummary.textContent = "";
+        if (els.targetPatchDeveloper) els.targetPatchDeveloper.textContent = "";
         return;
       }
       var evidenceChecks = patch.evidence.checks;
-      els.targetReview.classList.remove("hidden");
-      els.targetReviewBadge.textContent = t("targetWriteZero");
+      if (els.targetReviewBadge) els.targetReviewBadge.textContent = t("targetWriteZero");
       els.targetEvidenceSummary.textContent = "";
       appendTargetMetric(els.targetEvidenceSummary, formatText("targetFileCount", { count: patch.changes.length }));
       appendTargetMetric(
@@ -741,6 +811,68 @@
       }
     }
 
+    function clearTargetStatusError(status) {
+      if (!status) return;
+      var wasError = status.classList.contains("is-error");
+      status.classList.remove("is-error");
+      status.removeAttribute("role");
+      status.setAttribute("aria-live", "polite");
+      if (wasError) status.textContent = "";
+    }
+
+    function clearTargetEntryInvalid() {
+      if (!els.targetEntryRelpath) return;
+      els.targetEntryRelpath.removeAttribute("aria-invalid");
+      els.targetEntryRelpath.classList.remove("is-invalid");
+    }
+
+    function markTargetEntryInvalid(code) {
+      if (!els.targetEntryRelpath) return;
+      if (code === "entry_not_found") {
+        els.targetEntryRelpath.setAttribute("aria-invalid", "true");
+        els.targetEntryRelpath.classList.add("is-invalid");
+        return;
+      }
+      clearTargetEntryInvalid();
+    }
+
+    function targetErrorUserCopy(kind, code) {
+      var prefix = kind === "analysis" ? "targetAnalysis" : "targetPatch";
+      var reasonKey = prefix + "Error_" + code;
+      var recoveryKey = prefix + "Recovery_" + code;
+      var reason = t(reasonKey);
+      if (reason === reasonKey) {
+        reason = formatText(kind === "analysis" ? "targetProfileRejected" : "targetPatchRejected", {
+          code: code,
+        });
+      }
+      var recovery = t(recoveryKey);
+      if (recovery === recoveryKey) {
+        recovery = t(prefix + "RecoveryGeneric");
+      }
+      return { reason: reason, recovery: recovery };
+    }
+
+    function applyTargetStatusError(kind, code) {
+      var status = kind === "analysis" ? els.targetAnalysisStatus : els.targetPatchStatus;
+      if (!status) return;
+      var copy = targetErrorUserCopy(kind, code);
+      status.textContent = "";
+      var reason = document.createElement("span");
+      reason.className = "target-status-reason";
+      reason.textContent = copy.reason;
+      var recovery = document.createElement("span");
+      recovery.className = "target-status-recovery";
+      recovery.textContent = copy.recovery;
+      status.appendChild(reason);
+      status.appendChild(recovery);
+      status.classList.add("is-error");
+      status.setAttribute("role", "alert");
+      status.setAttribute("aria-live", "assertive");
+      if (kind === "analysis") markTargetEntryInvalid(code);
+      else clearTargetEntryInvalid();
+    }
+
     function renderTargetError(kind, result) {
       var error = result && result.error && typeof result.error === "object" ? result.error : {};
       var code =
@@ -754,16 +886,35 @@
         if (typeof value === "string" && /^[a-z][a-z0-9_.-]{0,95}$/.test(value)) evidence[key] = value;
       });
       if (targetLogicalPath(rawEvidence.logical_path)) evidence.logical_path = rawEvidence.logical_path;
-      var status = kind === "analysis" ? els.targetAnalysisStatus : els.targetPatchStatus;
-      if (status) {
-        status.textContent = formatText(kind === "analysis" ? "targetProfileRejected" : "targetPatchRejected", {
-          code: code,
-        });
-      }
+      targetWorkflow.lastError = { kind: kind, code: code, evidence: evidence };
+      applyTargetStatusError(kind, code);
       if (els.targetRejectionEvidence) {
         els.targetRejectionEvidence.textContent = JSON.stringify(evidence, null, 2);
       }
       renderTargetDeveloperMode();
+    }
+
+    function renderTargetLastError() {
+      if (!targetWorkflow.lastError) {
+        clearTargetStatusError(els.targetAnalysisStatus);
+        clearTargetStatusError(els.targetPatchStatus);
+        clearTargetEntryInvalid();
+        return;
+      }
+      if (targetWorkflow.lastError.kind === "analysis") {
+        clearTargetStatusError(els.targetPatchStatus);
+      } else {
+        clearTargetStatusError(els.targetAnalysisStatus);
+        clearTargetEntryInvalid();
+      }
+      applyTargetStatusError(targetWorkflow.lastError.kind, targetWorkflow.lastError.code);
+      if (els.targetRejectionEvidence && targetWorkflow.lastError.evidence) {
+        els.targetRejectionEvidence.textContent = JSON.stringify(
+          targetWorkflow.lastError.evidence,
+          null,
+          2
+        );
+      }
     }
 
     function syncTargetActions() {
@@ -803,6 +954,9 @@
       renderTargetCapsules();
       renderTargetProfile();
       renderTargetPatch();
+      renderTargetDeveloperMode();
+      renderTargetLastError();
+      applyTargetStagePresentation();
       syncTargetActions();
     }
 
@@ -815,125 +969,11 @@
       renderTargetWorkflow();
     }
 
-    function handleChooseStaticWebTarget() {
-      if (!hasTargetBridge()) return;
-      bridgeCall("choose_static_web_target").then(function (raw) {
-        var result = parseBridgeJson(raw);
-        if (result && result.cancelled) return;
-        if (
-          !result ||
-          result.ok !== true ||
-          typeof result.target_path !== "string" ||
-          !result.target_path ||
-          typeof result.display_name !== "string" ||
-          !result.display_name.trim() ||
-          result.display_name.length > 120 ||
-          /[\\/\x00-\x1f\x7f]/.test(result.display_name)
-        ) {
-          resetTargetProfile();
-          renderTargetError("analysis", result);
-          syncTargetActions();
-          return;
-        }
-        targetWorkflow.targetPath = result.target_path;
-        targetWorkflow.displayName = result.display_name.trim();
-        resetTargetProfile();
-        renderTargetWorkflow();
-      });
-    }
-
-    function handleAnalyzeStaticWebTarget() {
-      var entry = els.targetEntryRelpath ? els.targetEntryRelpath.value.trim() : "";
-      if (!hasTargetBridge() || !targetWorkflow.targetPath || !entry) {
-        if (els.targetAnalysisStatus) els.targetAnalysisStatus.textContent = t("targetEntryRequired");
+    function openTargetCompatTools() {
+      if (host.openCompatTools) {
+        host.openCompatTools();
         return;
       }
-      resetTargetProfile();
-      var requestRevision = targetWorkflow.profileRevision;
-      if (els.targetAnalysisStatus) els.targetAnalysisStatus.textContent = t("targetAnalyzing");
-      var payload = {
-        target_path: targetWorkflow.targetPath,
-        entry_relpath: entry,
-      };
-      bridgeCall("analyze_static_web_target", JSON.stringify(payload)).then(function (raw) {
-        if (requestRevision !== targetWorkflow.profileRevision) return;
-        var result = parseBridgeJson(raw);
-        if (!result || result.ok !== true || !isSafeTargetProfile(result.data)) {
-          renderTargetError(
-            "analysis",
-            result && result.ok === true
-              ? { ok: false, error: { code: "frontend_contract_rejected", evidence: { status: "rejected", code: "frontend_contract_rejected" } } }
-              : result
-          );
-          syncTargetActions();
-          return;
-        }
-        targetWorkflow.profile = result.data;
-        renderTargetProfile();
-        syncTargetActions();
-      });
-    }
-
-    function handleGenerateStaticWebPatch() {
-      var entry = els.targetEntryRelpath ? els.targetEntryRelpath.value.trim() : "";
-      var task = els.targetTask ? els.targetTask.value.trim() : "";
-      if (!task) {
-        if (els.targetPatchStatus) els.targetPatchStatus.textContent = t("targetTaskRequired");
-        return;
-      }
-      if (
-        !hasTargetBridge() ||
-        !isSafeTargetProfile(targetWorkflow.profile) ||
-        !targetWorkflow.capsuleIds.length ||
-        formalSelectionError(targetWorkflow.capsuleIds, true)
-      ) {
-        if (els.targetPatchStatus) els.targetPatchStatus.textContent = t("targetCapsuleRequired");
-        return;
-      }
-      resetTargetPatch();
-      var requestRevision = targetWorkflow.patchRevision;
-      if (els.targetPatchStatus) els.targetPatchStatus.textContent = t("targetPatchGenerating");
-      var payload = {
-        target_path: targetWorkflow.targetPath,
-        entry_relpath: entry,
-        task: task,
-        capsule_ids: targetWorkflow.capsuleIds.slice(),
-        selection_mode: "manual",
-        authorization: {
-          mode: "review_patch_only",
-          target_snapshot_sha256: targetWorkflow.profile.snapshot_sha256,
-        },
-      };
-      bridgeCall("generate_static_web_patch", JSON.stringify(payload)).then(function (raw) {
-        if (requestRevision !== targetWorkflow.patchRevision) return;
-        var result = parseBridgeJson(raw);
-        if (!result || result.ok !== true || !isSafeTargetPatch(result.data)) {
-          renderTargetError(
-            "patch",
-            result && result.ok === true
-              ? { ok: false, error: { code: "frontend_contract_rejected", evidence: { status: "rejected", code: "frontend_contract_rejected" } } }
-              : result
-          );
-          syncTargetActions();
-          return;
-        }
-        targetWorkflow.patch = result.data;
-        renderTargetPatch();
-        syncTargetActions();
-      });
-    }
-
-    function handleConfirmTargetPatch() {
-      if (!isSafeTargetPatch(targetWorkflow.patch)) return;
-      targetWorkflow.confirmation = {
-        planId: targetWorkflow.patch.plan_id,
-        snapshotSha256: targetWorkflow.profile.snapshot_sha256,
-      };
-      renderTargetPatch();
-      syncTargetActions();
-    }
-
-    function showStandaloneProduct() {
       showScreen("screen-main");
       syncAppState();
     }
@@ -946,24 +986,36 @@
       if (els.btnAnalyzeTarget) els.btnAnalyzeTarget.addEventListener("click", handleAnalyzeStaticWebTarget);
       if (els.btnGenerateTargetPatch) els.btnGenerateTargetPatch.addEventListener("click", handleGenerateStaticWebPatch);
       if (els.btnConfirmTargetPatch) els.btnConfirmTargetPatch.addEventListener("click", handleConfirmTargetPatch);
+      if (els.btnTargetOpenWarehouse) {
+        els.btnTargetOpenWarehouse.addEventListener("click", function () {
+          if (host.openWarehouse) host.openWarehouse(null);
+        });
+      }
+      if (els.btnTargetOpenIngestion) {
+        els.btnTargetOpenIngestion.addEventListener("click", function () {
+          if (host.openIngestion) host.openIngestion();
+        });
+      }
+      if (els.btnTargetOpenCompat) {
+        els.btnTargetOpenCompat.addEventListener("click", openTargetCompatTools);
+      }
       if (els.targetEntryRelpath) {
         els.targetEntryRelpath.addEventListener("input", function () {
           resetTargetProfile();
-          syncTargetActions();
+          renderTargetWorkflow();
         });
       }
       if (els.targetTask) {
         els.targetTask.addEventListener("input", function () {
           resetTargetPatch();
-          syncTargetActions();
+          renderTargetWorkflow();
         });
       }
       if (els.targetDeveloperMode) {
         els.targetDeveloperMode.addEventListener("change", function () {
           targetWorkflow.developerMode = !!els.targetDeveloperMode.checked;
           invalidateTargetConfirmation();
-          renderTargetDeveloperMode();
-          syncTargetActions();
+          renderTargetWorkflow();
         });
       }
       var targetLang = $("btn-target-lang");
@@ -993,6 +1045,18 @@
       els.targetDeveloperMode = $("target-developer-mode");
       els.btnConfirmTargetPatch = $("btn-confirm-target-patch");
       els.targetConfirmationReceipt = $("target-confirmation-receipt");
+      els.targetPanelSelect = document.querySelector('#screen-target [data-target-panel="select"]');
+      els.targetPanelCompose = document.querySelector('#screen-target [data-target-panel="compose"]');
+      els.targetPanelConfirmed = document.querySelector('#screen-target [data-target-panel="confirmed"]');
+      els.targetSummarySelect = document.querySelector('#screen-target [data-target-summary="select"]');
+      els.targetSummaryCompose = document.querySelector('#screen-target [data-target-summary="compose"]');
+      els.targetSelectSummaryTitle = $("target-select-summary-title");
+      els.targetSelectSummaryCopy = $("target-select-summary-copy");
+      els.targetComposeSummaryTitle = $("target-compose-summary-title");
+      els.targetComposeSummaryCopy = $("target-compose-summary-copy");
+      els.btnTargetOpenWarehouse = $("btn-target-open-warehouse");
+      els.btnTargetOpenIngestion = $("btn-target-open-ingestion");
+      els.btnTargetOpenCompat = $("btn-target-open-compat");
     }
 
     function bind() {
@@ -1006,7 +1070,7 @@
       cacheElements();
       var targetLang = $("btn-target-lang");
       if (targetLang) {
-        targetLang.textContent = host.getLocale() === "zh" ? "中 / EN" : "EN / 中";
+        targetLang.textContent = host.getLocale() === "zh" ? "中·EN" : "EN·中";
       }
       renderTargetWorkflow();
     }
@@ -1018,7 +1082,140 @@
         patchReady: isSafeTargetPatch(targetWorkflow.patch),
         planId: targetWorkflow.patch ? targetWorkflow.patch.plan_id : null,
         confirmed: !!targetWorkflow.confirmation,
+        stage: deriveTargetStage(),
+        developerMode: !!targetWorkflow.developerMode,
       };
+    }
+
+    function handleChooseStaticWebTarget() {
+      if (!hasTargetBridge()) return;
+      bridgeCall("choose_static_web_target").then(function (raw) {
+        var result = parseBridgeJson(raw);
+        if (result && result.cancelled) return;
+        if (
+          !result ||
+          result.ok !== true ||
+          typeof result.target_path !== "string" ||
+          !result.target_path ||
+          typeof result.display_name !== "string" ||
+          !result.display_name.trim() ||
+          result.display_name.length > 120 ||
+          /[\\/\x00-\x1f\x7f]/.test(result.display_name)
+        ) {
+          resetTargetProfile();
+          renderTargetError("analysis", result);
+          renderTargetWorkflow();
+          return;
+        }
+        targetWorkflow.targetPath = result.target_path;
+        targetWorkflow.displayName = result.display_name.trim();
+        resetTargetProfile();
+        renderTargetWorkflow();
+      });
+    }
+
+    function handleAnalyzeStaticWebTarget() {
+      var entry = els.targetEntryRelpath ? els.targetEntryRelpath.value.trim() : "";
+      if (!hasTargetBridge() || !targetWorkflow.targetPath || !entry) {
+        if (els.targetAnalysisStatus) els.targetAnalysisStatus.textContent = t("targetEntryRequired");
+        return;
+      }
+      resetTargetProfile();
+      var requestRevision = targetWorkflow.profileRevision;
+      if (els.targetAnalysisStatus) els.targetAnalysisStatus.textContent = t("targetAnalyzing");
+      clearTargetStatusError(els.targetAnalysisStatus);
+      applyTargetStagePresentation();
+      var payload = {
+        target_path: targetWorkflow.targetPath,
+        entry_relpath: entry,
+      };
+      bridgeCall("analyze_static_web_target", JSON.stringify(payload)).then(function (raw) {
+        if (requestRevision !== targetWorkflow.profileRevision) return;
+        var result = parseBridgeJson(raw);
+        if (!result || result.ok !== true || !isSafeTargetProfile(result.data)) {
+          renderTargetError(
+            "analysis",
+            result && result.ok === true
+              ? { ok: false, error: { code: "frontend_contract_rejected", evidence: { status: "rejected", code: "frontend_contract_rejected" } } }
+              : result
+          );
+          renderTargetWorkflow();
+          return;
+        }
+        targetWorkflow.profile = result.data;
+        targetWorkflow.lastError = null;
+        renderTargetWorkflow();
+      });
+    }
+
+    function handleGenerateStaticWebPatch() {
+      var entry = els.targetEntryRelpath ? els.targetEntryRelpath.value.trim() : "";
+      var task = els.targetTask ? els.targetTask.value.trim() : "";
+      if (!task) {
+        if (els.targetPatchStatus) els.targetPatchStatus.textContent = t("targetTaskRequired");
+        return;
+      }
+      if (
+        !hasTargetBridge() ||
+        !isSafeTargetProfile(targetWorkflow.profile) ||
+        !targetWorkflow.capsuleIds.length ||
+        formalSelectionError(targetWorkflow.capsuleIds, true)
+      ) {
+        if (els.targetPatchStatus) els.targetPatchStatus.textContent = t("targetCapsuleRequired");
+        return;
+      }
+      resetTargetPatch();
+      var requestRevision = targetWorkflow.patchRevision;
+      if (els.targetPatchStatus) els.targetPatchStatus.textContent = t("targetPatchGenerating");
+      clearTargetStatusError(els.targetPatchStatus);
+      applyTargetStagePresentation();
+      syncTargetActions();
+      var payload = {
+        target_path: targetWorkflow.targetPath,
+        entry_relpath: entry,
+        task: task,
+        capsule_ids: targetWorkflow.capsuleIds.slice(),
+        selection_mode: "manual",
+        authorization: {
+          mode: "review_patch_only",
+          target_snapshot_sha256: targetWorkflow.profile.snapshot_sha256,
+        },
+      };
+      bridgeCall("generate_static_web_patch", JSON.stringify(payload)).then(function (raw) {
+        if (requestRevision !== targetWorkflow.patchRevision) return;
+        var result = parseBridgeJson(raw);
+        if (!result || result.ok !== true || !isSafeTargetPatch(result.data)) {
+          renderTargetError(
+            "patch",
+            result && result.ok === true
+              ? { ok: false, error: { code: "frontend_contract_rejected", evidence: { status: "rejected", code: "frontend_contract_rejected" } } }
+              : result
+          );
+          renderTargetWorkflow();
+          return;
+        }
+        targetWorkflow.patch = result.data;
+        targetWorkflow.lastError = null;
+        renderTargetWorkflow();
+      });
+    }
+
+    function handleConfirmTargetPatch() {
+      if (!isSafeTargetPatch(targetWorkflow.patch)) return;
+      targetWorkflow.confirmation = {
+        planId: targetWorkflow.patch.plan_id,
+        snapshotSha256: targetWorkflow.profile.snapshot_sha256,
+      };
+      renderTargetWorkflow();
+    }
+
+    function showStandaloneProduct() {
+      if (host.openProduct) {
+        host.openProduct();
+      } else {
+        showScreen("screen-main");
+        syncAppState();
+      }
     }
 
     return {

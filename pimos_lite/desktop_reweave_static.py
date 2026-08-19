@@ -3,10 +3,15 @@
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 import logging
+import os
+import re
 import sys
-from pathlib import Path
+import tempfile
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -25,6 +30,25 @@ MIN_WIDTH = 1100
 MIN_HEIGHT = 720
 
 logger = logging.getLogger("reweave.desktop")
+
+
+def _copy_to_system_clipboard(value: str) -> None:
+    from PySide6.QtGui import QGuiApplication
+
+    application = QGuiApplication.instance()
+    if application is None:
+        raise RuntimeError("clipboard_application_unavailable")
+    clipboard = application.clipboard()
+    try:
+        clipboard.setText(value)
+        if clipboard.text() != value:
+            raise RuntimeError("clipboard_write_mismatch")
+    except BaseException:
+        try:
+            clipboard.clear()
+        except BaseException:
+            pass
+        raise
 
 
 def reweave_index_path() -> Path:
@@ -134,6 +158,7 @@ class ReweaveBridge:
                 super().__init__(parent)
                 self._engine = engine
                 self._parent_widget = parent
+                self._candidate_preview_windows: list[Any] = []
 
             @staticmethod
             def _phase4_error(code: str, message_key: str) -> str:
@@ -160,11 +185,6 @@ class ReweaveBridge:
 
             def _lumo_lite_block(self, action: str) -> dict[str, Any] | None:
                 if action in {
-                    "choose_source_folder",
-                    "scan_source_box",
-                    "draft_capsules",
-                    "promote_source_drafts",
-                    "notify_generate",
                     "enrich_capsule_content",
                     "get_capsule_content",
                     "get_latest_preview_package",
@@ -264,6 +284,15 @@ class ReweaveBridge:
                 return self._phase4_call("start_refresh_all", payload_json)
 
             @Slot(str, result=str)
+            def authorize_and_start_source_derived_computation(
+                self, payload_json: str = ""
+            ) -> str:
+                return self._phase4_call(
+                    "authorize_and_start_source_derived_computation",
+                    payload_json,
+                )
+
+            @Slot(str, result=str)
             def get_intake_run(self, payload_json: str = "") -> str:
                 return self._phase4_call("get_intake_run", payload_json)
 
@@ -278,6 +307,757 @@ class ReweaveBridge:
             @Slot(str, result=str)
             def select_supervision_model(self, payload_json: str = "") -> str:
                 return self._phase4_call("select_supervision_model", payload_json)
+
+            @Slot(str, result=str)
+            def list_product_planning_models(self, payload_json: str = "") -> str:
+                return self._phase4_call(
+                    "list_product_planning_models", payload_json
+                )
+
+            @Slot(str, result=str)
+            def select_product_planning_model(self, payload_json: str = "") -> str:
+                return self._phase4_call(
+                    "select_product_planning_model", payload_json
+                )
+
+            @Slot(str, result=str)
+            def start_product_plan(self, payload_json: str = "") -> str:
+                return self._phase4_call("start_product_plan", payload_json)
+
+            @Slot(str, result=str)
+            def start_product_capability_replan(
+                self, payload_json: str = ""
+            ) -> str:
+                return self._phase4_call(
+                    "start_product_capability_replan", payload_json
+                )
+
+            @Slot(str, result=str)
+            def submit_product_plan_answers(self, payload_json: str = "") -> str:
+                return self._phase4_call(
+                    "submit_product_plan_answers", payload_json
+                )
+
+            @Slot(str, result=str)
+            def suggest_product_plan_action(self, payload_json: str = "") -> str:
+                return self._phase4_call(
+                    "suggest_product_plan_action", payload_json
+                )
+
+            @Slot(str, result=str)
+            def revise_product_plan(self, payload_json: str = "") -> str:
+                return self._phase4_call("revise_product_plan", payload_json)
+
+            @Slot(str, result=str)
+            def get_product_plan_run(self, payload_json: str = "") -> str:
+                return self._phase4_call("get_product_plan_run", payload_json)
+
+            @Slot(str, result=str)
+            def cancel_product_plan_run(self, payload_json: str = "") -> str:
+                return self._phase4_call("cancel_product_plan_run", payload_json)
+
+            @Slot(str, result=str)
+            def get_product_plan_workspace(self, payload_json: str = "") -> str:
+                return self._phase4_call(
+                    "get_product_plan_workspace", payload_json
+                )
+
+            @Slot(str, result=str)
+            def confirm_product_plan(self, payload_json: str = "") -> str:
+                return self._phase4_call("confirm_product_plan", payload_json)
+
+            @Slot(str, result=str)
+            def record_product_capability_gap_decision(
+                self, payload_json: str = ""
+            ) -> str:
+                return self._phase4_call(
+                    "record_product_capability_gap_decision",
+                    payload_json,
+                )
+
+            @Slot(str, result=str)
+            def prepare_product_capability_source_proposal(
+                self, payload_json: str = ""
+            ) -> str:
+                return self._phase4_call(
+                    "prepare_product_capability_source_proposal",
+                    payload_json,
+                )
+
+            @Slot(str, result=str)
+            def start_product_capability_source_proposal(
+                self, payload_json: str = ""
+            ) -> str:
+                return self._phase4_call(
+                    "start_product_capability_source_proposal",
+                    payload_json,
+                )
+
+            @Slot(str, result=str)
+            def confirm_product_candidate_acceptance(
+                self, payload_json: str = ""
+            ) -> str:
+                return self._phase4_call(
+                    "confirm_product_candidate_acceptance", payload_json
+                )
+
+            @Slot(str, result=str)
+            def copy_local_agent_handoff_binding(
+                self, payload_json: str = ""
+            ) -> str:
+                try:
+                    payload = json.loads(payload_json) if payload_json else {}
+                except json.JSONDecodeError:
+                    return self._phase4_error(
+                        "invalid_payload",
+                        "invalidPayload",
+                    )
+                if (
+                    type(payload) is not dict
+                    or set(payload) != {"plan_token"}
+                    or type(payload["plan_token"]) is not str
+                ):
+                    return self._phase4_error(
+                        "agent_handoff_request_invalid",
+                        "agent_handoff_request_invalid",
+                    )
+                method = getattr(
+                    self._engine,
+                    "create_local_agent_handoff",
+                    None,
+                )
+                revoke = getattr(
+                    self._engine,
+                    "revoke_local_agent_handoff",
+                    None,
+                )
+                if not callable(method) or not callable(revoke):
+                    return self._phase4_error(
+                        "service_unavailable",
+                        "serviceUnavailable",
+                    )
+                result = method(payload)
+                if type(result) is not dict:
+                    return self._phase4_error(
+                        "internal_error",
+                        "internalError",
+                    )
+                data = result.get("data") if type(result) is dict else None
+                token = (
+                    data.get("handoff_token")
+                    if type(data) is dict
+                    else None
+                )
+                if (
+                    result.get("ok") is not True
+                    or type(token) is not str
+                    or re.fullmatch(
+                        r"handoff_token_[0-9a-f]{48}",
+                        token,
+                    )
+                    is None
+                ):
+                    if result.get("ok") is True:
+                        try:
+                            revoke({"plan_token": payload["plan_token"]})
+                        except BaseException:
+                            pass
+                        return self._phase4_error(
+                            "internal_error",
+                            "internalError",
+                        )
+                    return json.dumps(result)
+                request_line = json.dumps(
+                    {
+                        "protocol": "reweave_agent_jsonl.v2",
+                        "id": "bind-user-handoff",
+                        "action": "bind_user_handoff",
+                        "payload": {"handoff_token": token},
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                try:
+                    _copy_to_system_clipboard(request_line)
+                except BaseException:
+                    try:
+                        revoke({"plan_token": payload["plan_token"]})
+                    except BaseException:
+                        pass
+                    return self._phase4_error(
+                        "agent_handoff_clipboard_failed",
+                        "agent_handoff_clipboard_failed",
+                    )
+                return json.dumps(
+                    {
+                        "ok": True,
+                        "data": {
+                            "status": "active",
+                            "created_at": data.get("created_at"),
+                        },
+                    }
+                )
+
+            @Slot(str, result=str)
+            def revoke_local_agent_handoff(
+                self, payload_json: str = ""
+            ) -> str:
+                return self._phase4_call(
+                    "revoke_local_agent_handoff", payload_json
+                )
+
+            @Slot(str, result=str)
+            def copy_local_source_handoff_binding(
+                self, payload_json: str = ""
+            ) -> str:
+                try:
+                    payload = json.loads(payload_json) if payload_json else {}
+                except json.JSONDecodeError:
+                    return self._phase4_error(
+                        "invalid_payload",
+                        "invalidPayload",
+                    )
+                if (
+                    type(payload) is not dict
+                    or set(payload) != {"project_id"}
+                    or type(payload["project_id"]) is not str
+                    or not payload["project_id"].strip()
+                ):
+                    return self._phase4_error(
+                        "source_handoff_request_invalid",
+                        "source_handoff_request_invalid",
+                    )
+                method = getattr(
+                    self._engine,
+                    "create_local_source_handoff",
+                    None,
+                )
+                revoke = getattr(
+                    self._engine,
+                    "revoke_local_source_handoff",
+                    None,
+                )
+                if not callable(method) or not callable(revoke):
+                    return self._phase4_error(
+                        "service_unavailable",
+                        "serviceUnavailable",
+                    )
+
+                def revoke_after_failure() -> bool:
+                    try:
+                        revoked = revoke(
+                            {"project_id": payload["project_id"]}
+                        )
+                    except BaseException:
+                        return False
+                    revoked_data = (
+                        revoked.get("data")
+                        if type(revoked) is dict
+                        else None
+                    )
+                    return (
+                        type(revoked) is dict
+                        and revoked.get("ok") is True
+                        and type(revoked_data) is dict
+                        and revoked_data.get("status")
+                        in {"revoked", "none"}
+                    )
+
+                result = method(payload)
+                if type(result) is not dict:
+                    return self._phase4_error(
+                        "internal_error",
+                        "internalError",
+                    )
+                data = result.get("data") if type(result) is dict else None
+                token = (
+                    data.get("source_handoff_token")
+                    if type(data) is dict
+                    else None
+                )
+                if (
+                    result.get("ok") is not True
+                    or type(token) is not str
+                    or re.fullmatch(
+                        r"source_handoff_token_[0-9a-f]{48}",
+                        token,
+                    )
+                    is None
+                ):
+                    if result.get("ok") is True:
+                        if not revoke_after_failure():
+                            return self._phase4_error(
+                                "source_handoff_clipboard_revoke_failed",
+                                "source_handoff_clipboard_revoke_failed",
+                            )
+                        return self._phase4_error(
+                            "internal_error",
+                            "internalError",
+                        )
+                    return json.dumps(result)
+                request_line = json.dumps(
+                    {
+                        "protocol": "reweave_agent_jsonl.v2",
+                        "id": "bind-user-handoff",
+                        "action": "bind_user_handoff",
+                        "payload": {"handoff_token": token},
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                try:
+                    _copy_to_system_clipboard(request_line)
+                except BaseException:
+                    if not revoke_after_failure():
+                        return self._phase4_error(
+                            "source_handoff_clipboard_revoke_failed",
+                            "source_handoff_clipboard_revoke_failed",
+                        )
+                    return self._phase4_error(
+                        "source_handoff_clipboard_failed",
+                        "source_handoff_clipboard_failed",
+                    )
+                return json.dumps(
+                    {
+                        "ok": True,
+                        "data": {
+                            "schema_version": "source_handoff_status.v1",
+                            "status": "active",
+                            "created_at": data.get("created_at"),
+                        },
+                    }
+                )
+
+            @Slot(str, result=str)
+            def revoke_local_source_handoff(
+                self, payload_json: str = ""
+            ) -> str:
+                return self._phase4_call(
+                    "revoke_local_source_handoff", payload_json
+                )
+
+            @Slot(str, result=str)
+            def copy_local_source_derived_handoff_binding(
+                self, payload_json: str = ""
+            ) -> str:
+                try:
+                    payload = (
+                        json.loads(payload_json) if payload_json else {}
+                    )
+                except json.JSONDecodeError:
+                    return self._phase4_error(
+                        "invalid_payload", "invalidPayload"
+                    )
+                if (
+                    type(payload) is not dict
+                    or set(payload) != {"source_root_id"}
+                    or type(payload["source_root_id"]) is not str
+                    or not payload["source_root_id"].strip()
+                ):
+                    return self._phase4_error(
+                        "source_derived_handoff_request_invalid",
+                        "source_derived_handoff_request_invalid",
+                    )
+                create = getattr(
+                    self._engine,
+                    "create_local_source_derived_handoff",
+                    None,
+                )
+                revoke = getattr(
+                    self._engine,
+                    "revoke_local_source_derived_handoff",
+                    None,
+                )
+                if not callable(create) or not callable(revoke):
+                    return self._phase4_error(
+                        "service_unavailable", "serviceUnavailable"
+                    )
+
+                def revoke_after_failure() -> bool:
+                    try:
+                        result = revoke(payload)
+                    except BaseException:
+                        return False
+                    data = (
+                        result.get("data")
+                        if type(result) is dict
+                        else None
+                    )
+                    return (
+                        type(result) is dict
+                        and result.get("ok") is True
+                        and type(data) is dict
+                        and data.get("status") in {"revoked", "none"}
+                    )
+
+                result = create(payload)
+                data = (
+                    result.get("data")
+                    if type(result) is dict
+                    else None
+                )
+                token = (
+                    data.get("source_derived_handoff_token")
+                    if type(data) is dict
+                    else None
+                )
+                if (
+                    type(result) is not dict
+                    or result.get("ok") is not True
+                    or type(token) is not str
+                    or re.fullmatch(
+                        r"source_derived_handoff_token_[0-9a-f]{48}",
+                        token,
+                    )
+                    is None
+                ):
+                    if (
+                        type(result) is dict
+                        and result.get("ok") is True
+                        and not revoke_after_failure()
+                    ):
+                        return self._phase4_error(
+                            "source_derived_handoff_clipboard_revoke_failed",
+                            "source_derived_handoff_clipboard_revoke_failed",
+                        )
+                    return (
+                        json.dumps(result)
+                        if type(result) is dict
+                        else self._phase4_error(
+                            "internal_error", "internalError"
+                        )
+                    )
+                request_line = json.dumps(
+                    {
+                        "protocol": "reweave_agent_jsonl.v2",
+                        "id": "bind-user-handoff",
+                        "action": "bind_user_handoff",
+                        "payload": {"handoff_token": token},
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                try:
+                    _copy_to_system_clipboard(request_line)
+                except BaseException:
+                    if not revoke_after_failure():
+                        return self._phase4_error(
+                            "source_derived_handoff_clipboard_revoke_failed",
+                            "source_derived_handoff_clipboard_revoke_failed",
+                        )
+                    return self._phase4_error(
+                        "source_derived_handoff_clipboard_failed",
+                        "source_derived_handoff_clipboard_failed",
+                    )
+                return json.dumps(
+                    {
+                        "ok": True,
+                        "data": {
+                            "schema_version": (
+                                "source_derived_handoff_status.v1"
+                            ),
+                            "status": "active",
+                            "created_at": data.get("created_at"),
+                        },
+                    }
+                )
+
+            @Slot(str, result=str)
+            def revoke_local_source_derived_handoff(
+                self, payload_json: str = ""
+            ) -> str:
+                return self._phase4_call(
+                    "revoke_local_source_derived_handoff",
+                    payload_json,
+                )
+
+            @Slot(str, result=str)
+            def decide_local_source_derived_handoff_proposal(
+                self, payload_json: str = ""
+            ) -> str:
+                return self._phase4_call(
+                    "decide_local_source_derived_handoff_proposal",
+                    payload_json,
+                )
+
+            @Slot(str, result=str)
+            def get_confirmed_product_plan(self, payload_json: str = "") -> str:
+                return self._phase4_call(
+                    "get_confirmed_product_plan", payload_json
+                )
+
+            @Slot(str, result=str)
+            def start_confirmed_product_candidate(
+                self, payload_json: str = ""
+            ) -> str:
+                return self._phase4_call(
+                    "start_confirmed_product_candidate", payload_json
+                )
+
+            @Slot(str, result=str)
+            def get_product_candidate_run(self, payload_json: str = "") -> str:
+                return self._phase4_call(
+                    "get_product_candidate_run", payload_json
+                )
+
+            @Slot(str, result=str)
+            def get_product_candidate(self, payload_json: str = "") -> str:
+                return self._phase4_call("get_product_candidate", payload_json)
+
+            @Slot(str, result=str)
+            def read_product_candidate_file(
+                self, payload_json: str = ""
+            ) -> str:
+                return self._phase4_call(
+                    "read_product_candidate_file", payload_json
+                )
+
+            @Slot(str, result=str)
+            def choose_product_candidate_export_folder(
+                self, payload_json: str = ""
+            ) -> str:
+                try:
+                    request = json.loads(payload_json) if payload_json else {}
+                except json.JSONDecodeError:
+                    return self._phase4_error("invalid_payload", "invalidPayload")
+                if (
+                    not isinstance(request, dict)
+                    or set(request) != {"plan_token", "candidate_token"}
+                    or not isinstance(request.get("plan_token"), str)
+                    or not isinstance(request.get("candidate_token"), str)
+                ):
+                    return self._phase4_error(
+                        "product_candidate_export_request_invalid",
+                        "product_candidate_export_request_invalid",
+                    )
+                try:
+                    _, _, _, _, _, QFileDialog = import_qt_webengine()
+                    parent = QFileDialog.getExistingDirectory(
+                        self._parent_widget, "Save product"
+                    )
+                except Exception:
+                    logger.error("Product candidate folder chooser failed")
+                    return self._phase4_error("internal_error", "internalError")
+                if not parent:
+                    return json.dumps({"ok": False, "cancelled": True})
+                return self._phase4_call(
+                    "export_product_candidate",
+                    json.dumps(
+                        {
+                            "plan_token": request["plan_token"],
+                            "candidate_token": request["candidate_token"],
+                            "destination_parent": parent,
+                        }
+                    ),
+                )
+
+            @Slot(str, result=str)
+            def preview_product_candidate(self, payload_json: str = "") -> str:
+                try:
+                    request = json.loads(payload_json) if payload_json else {}
+                except json.JSONDecodeError:
+                    return self._phase4_error("invalid_payload", "invalidPayload")
+                if (
+                    not isinstance(request, dict)
+                    or set(request) != {"candidate_token"}
+                    or not isinstance(request.get("candidate_token"), str)
+                ):
+                    return self._phase4_error(
+                        "product_candidate_token_invalid",
+                        "product_candidate_token_invalid",
+                    )
+                verified = self._engine.get_product_candidate(request)
+                if not isinstance(verified, dict) or verified.get("ok") is not True:
+                    return json.dumps(verified)
+                candidate = verified.get("data")
+                if (
+                    not isinstance(candidate, dict)
+                    or candidate.get("status") != "review_ready"
+                ):
+                    return self._phase4_error(
+                        "product_candidate_preview_not_ready",
+                        "product_candidate_preview_not_ready",
+                    )
+                try:
+                    files = candidate.get("files")
+                    entry_record = candidate.get("entry")
+                    if (
+                        not isinstance(files, list)
+                        or not isinstance(entry_record, dict)
+                        or set(entry_record) != {"path", "kind"}
+                        or not isinstance(entry_record.get("path"), str)
+                    ):
+                        raise ValueError("candidate_projection_invalid")
+                    temporary = tempfile.TemporaryDirectory(
+                        prefix="reweave-candidate-preview-"
+                    )
+                    product_root = Path(temporary.name)
+                    os.chmod(product_root, 0o700)
+                    allowed: set[Path] = set()
+                    for metadata in files:
+                        if not isinstance(metadata, dict):
+                            raise ValueError("candidate_file_invalid")
+                        logical = PurePosixPath(str(metadata.get("path") or ""))
+                        if (
+                            logical.is_absolute()
+                            or not logical.parts
+                            or any(part in {"", ".", ".."} for part in logical.parts)
+                        ):
+                            raise ValueError("candidate_file_invalid")
+                        opened = self._engine.read_product_candidate_file(
+                            {
+                                "candidate_token": request["candidate_token"],
+                                "relative_path": logical.as_posix(),
+                            }
+                        )
+                        data_record = (
+                            opened.get("data")
+                            if isinstance(opened, dict)
+                            and opened.get("ok") is True
+                            else None
+                        )
+                        if (
+                            not isinstance(data_record, dict)
+                            or data_record.get("path") != logical.as_posix()
+                            or data_record.get("sha256") != metadata.get("sha256")
+                        ):
+                            raise ValueError("candidate_file_invalid")
+                        if data_record.get("encoding") == "utf-8":
+                            data = str(data_record.get("content") or "").encode("utf-8")
+                        elif data_record.get("encoding") == "base64":
+                            data = base64.b64decode(
+                                str(data_record.get("content") or ""),
+                                validate=True,
+                            )
+                        else:
+                            raise ValueError("candidate_file_invalid")
+                        if (
+                            len(data) != metadata.get("size_bytes")
+                            or hashlib.sha256(data).hexdigest()
+                            != metadata.get("sha256")
+                        ):
+                            raise ValueError("candidate_file_invalid")
+                        target = product_root.joinpath(*logical.parts)
+                        target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+                        for parent in (target.parent, *target.parent.parents):
+                            if parent == product_root.parent:
+                                break
+                            os.chmod(parent, 0o700)
+                        with target.open("xb") as stream:
+                            stream.write(data)
+                        os.chmod(target, 0o600)
+                        allowed.add(target.resolve(strict=True))
+                    entry = product_root.joinpath(
+                        *PurePosixPath(entry_record["path"]).parts
+                    ).resolve(strict=True)
+                    if entry not in allowed:
+                        raise ValueError("entry_not_allowed")
+
+                    (
+                        _,
+                        QMainWindow,
+                        QWebEngineView,
+                        QWebEngineSettings,
+                        QUrl,
+                        _,
+                    ) = import_qt_webengine()
+                    from PySide6.QtWebEngineCore import (
+                        QWebEnginePage,
+                        QWebEngineProfile,
+                        QWebEngineUrlRequestInterceptor,
+                    )
+
+                    class CandidateInterceptor(QWebEngineUrlRequestInterceptor):
+                        def __init__(self, parent=None):
+                            super().__init__(parent)
+                            self.blocked_count = 0
+
+                        def interceptRequest(self, info):
+                            url = info.requestUrl()
+                            if (
+                                url.scheme().lower() == "about"
+                                and url.toString() == "about:blank"
+                            ):
+                                return
+                            if url.isLocalFile():
+                                try:
+                                    if Path(url.toLocalFile()).resolve(strict=True) in allowed:
+                                        return
+                                except OSError:
+                                    pass
+                            self.blocked_count += 1
+                            info.block(True)
+
+                    class CandidatePage(QWebEnginePage):
+                        def acceptNavigationRequest(
+                            self, url, navigation_type, is_main_frame
+                        ):
+                            del navigation_type, is_main_frame
+                            if (
+                                url.scheme().lower() == "about"
+                                and url.toString() == "about:blank"
+                            ):
+                                return True
+                            if not url.isLocalFile():
+                                return False
+                            try:
+                                return (
+                                    Path(url.toLocalFile()).resolve(strict=True)
+                                    in allowed
+                                )
+                            except OSError:
+                                return False
+
+                    window = QMainWindow(self._parent_widget)
+                    window.setWindowTitle("Reweave · Product preview")
+                    window.resize(960, 720)
+                    view = QWebEngineView(window)
+                    profile = QWebEngineProfile(view)
+                    interceptor = CandidateInterceptor(profile)
+                    profile.setUrlRequestInterceptor(interceptor)
+                    page = CandidatePage(profile, view)
+                    view.setPage(page)
+                    settings = page.settings()
+                    settings.setAttribute(
+                        QWebEngineSettings.LocalContentCanAccessFileUrls, True
+                    )
+                    settings.setAttribute(
+                        QWebEngineSettings.LocalContentCanAccessRemoteUrls, False
+                    )
+                    settings.setAttribute(QWebEngineSettings.DnsPrefetchEnabled, False)
+                    settings.setAttribute(QWebEngineSettings.LocalStorageEnabled, False)
+                    settings.setAttribute(QWebEngineSettings.JavascriptEnabled, True)
+                    settings.setAttribute(
+                        QWebEngineSettings.JavascriptCanOpenWindows, False
+                    )
+                    view._reweave_candidate_profile = profile
+                    view._reweave_candidate_interceptor = interceptor
+                    view._reweave_candidate_temporary = temporary
+                    window.setCentralWidget(view)
+                    window._reweave_candidate_allowed = allowed
+                    self._candidate_preview_windows.append(window)
+                    window.destroyed.connect(
+                        lambda *_args, current=window: (
+                            self._candidate_preview_windows.remove(current)
+                            if current in self._candidate_preview_windows
+                            else None
+                        )
+                    )
+                    view.load(QUrl.fromLocalFile(str(entry)))
+                    window.show()
+                except Exception:
+                    logger.error("Product candidate preview failed")
+                    return self._phase4_error("internal_error", "internalError")
+                return json.dumps(
+                    {
+                        "ok": True,
+                        "data": {
+                            "status": "opened",
+                            "network_access": False,
+                            "outside_file_access": False,
+                        },
+                    }
+                )
 
             @Slot(str, result=str)
             def list_review_items(self, payload_json: str = "") -> str:
@@ -350,111 +1130,6 @@ class ReweaveBridge:
                 return self._phase4_call(
                     "retry_product_usage_registration", payload_json
                 )
-
-            @Slot(result=str)
-            def choose_source_folder(self) -> str:
-                blocked = self._lumo_lite_block("choose_source_folder")
-                if blocked:
-                    return json.dumps(blocked)
-                _, _, _, _, _, QFileDialog = import_qt_webengine()
-                path = QFileDialog.getExistingDirectory(self._parent_widget, "Select source folder")
-                if not path:
-                    return json.dumps({"ok": False, "cancelled": True})
-                source = self._engine.bind_source_folder(path)
-                if isinstance(source, dict) and source.get("ok") is False:
-                    return json.dumps(source)
-                logger.info("Bound source: %s", source.get("path"))
-                return json.dumps({"ok": True, "source": source})
-
-            @Slot(str, result=str)
-            def scan_source_box(self, source_id: str = "") -> str:
-                blocked = self._lumo_lite_block("scan_source_box")
-                if blocked:
-                    return json.dumps(blocked)
-                source_id = (source_id or "").strip()
-                if not source_id:
-                    return json.dumps({"ok": False, "source_id": "", "error": "missing source_id"})
-                try:
-                    summary = self._engine.scan_source(source_id)
-                    if isinstance(summary, dict) and summary.get("ok") is False:
-                        return json.dumps(summary)
-                    source = self._engine.get_source(source_id)
-                    return json.dumps(
-                        {"ok": True, "source_id": source_id, "summary": summary, "source": source}
-                    )
-                except KeyError:
-                    return json.dumps({"ok": False, "source_id": source_id, "error": "source not found"})
-                except Exception as exc:
-                    logger.exception("Scan failed: %s", source_id)
-                    return json.dumps(
-                        {
-                            "ok": False,
-                            "source_id": source_id,
-                            "error": str(exc)[:200],
-                            "source": self._engine.get_source(source_id),
-                        }
-                    )
-
-            @Slot(str, result=str)
-            def draft_capsules(self, source_id: str = "") -> str:
-                blocked = self._lumo_lite_block("draft_capsules")
-                if blocked:
-                    return json.dumps(blocked)
-                source_id = (source_id or "").strip()
-                if not source_id:
-                    return json.dumps({"ok": False, "source_id": "", "error": "missing source_id"})
-                try:
-                    draft = self._engine.draft_source(source_id)
-                    if isinstance(draft, dict) and draft.get("ok") is False:
-                        return json.dumps(draft)
-                    source = self._engine.get_source(source_id)
-                    return json.dumps(
-                        {"ok": True, "source_id": source_id, "draft": draft, "source": source}
-                    )
-                except Exception as exc:
-                    logger.exception("Draft failed: %s", source_id)
-                    return json.dumps(
-                        {
-                            "ok": False,
-                            "source_id": source_id,
-                            "error": str(exc)[:200],
-                            "source": self._engine.get_source(source_id),
-                        }
-                    )
-
-            @Slot(str, result=str)
-            def promote_source_drafts(self, source_id: str = "") -> str:
-                blocked = self._lumo_lite_block("promote_source_drafts")
-                if blocked:
-                    return json.dumps(blocked)
-                source_id = (source_id or "").strip()
-                if not source_id:
-                    return json.dumps({"ok": False, "source_id": "", "error": "missing source_id"})
-                try:
-                    promoted = self._engine.promote_source(source_id)
-                    if isinstance(promoted, dict) and promoted.get("ok") is False:
-                        return json.dumps(promoted)
-                    source = self._engine.get_source(source_id)
-                    state = self._engine.get_initial_state()
-                    return json.dumps(
-                        {
-                            "ok": True,
-                            "source_id": source_id,
-                            "promoted": promoted,
-                            "source": source,
-                            "capsules": state.get("capsules", []),
-                        }
-                    )
-                except Exception as exc:
-                    logger.exception("Promote failed: %s", source_id)
-                    return json.dumps(
-                        {
-                            "ok": False,
-                            "source_id": source_id,
-                            "error": str(exc)[:200],
-                            "source": self._engine.get_source(source_id),
-                        }
-                    )
 
             @Slot(str, result=str)
             def create_review_queue_for_source(self, source_id: str = "") -> str:
@@ -819,12 +1494,6 @@ class ReweaveBridge:
                         {"ok": False, "source_id": source_id, "error": str(exc)[:200]}
                     )
 
-            @Slot(str, result=str)
-            def notify_generate(self, payload_json: str = "") -> str:
-                # Historical QWebChannel alias only. The active frontend calls
-                # generate_product and neither path can reach generate_preview.
-                return self._phase4_call("generate_product", payload_json)
-
             @Slot(result=str)
             def open_generated_product(self) -> str:
                 path = self._engine.get_latest_product_entry_path() if hasattr(self._engine, "get_latest_product_entry_path") else None
@@ -979,6 +1648,7 @@ def create_reweave_window():
     settings.setAttribute(QWebEngineSettings.DnsPrefetchEnabled, False)
     settings.setAttribute(QWebEngineSettings.JavascriptEnabled, True)
     settings.setAttribute(QWebEngineSettings.JavascriptCanOpenWindows, False)
+    settings.setAttribute(QWebEngineSettings.JavascriptCanAccessClipboard, False)
 
     window.setCentralWidget(view)
     _setup_web_channel(view, bridge)

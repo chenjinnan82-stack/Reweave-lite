@@ -1,10 +1,6 @@
 (function () {
   "use strict";
 
-  var SVG_NS = "http://www.w3.org/2000/svg";
-  var WORLD_WIDTH = 1200;
-  var WORLD_HEIGHT = 760;
-
   function create(host) {
     var state = {
       active: false,
@@ -12,9 +8,6 @@
       projectKey: "",
       capsuleId: "",
       query: "",
-      scale: 1,
-      x: 0,
-      y: 0,
       codeScale: 1,
       developerMode: false,
       entryFocusId: "",
@@ -22,13 +15,19 @@
       overviewSnapshot: null,
       projectSnapshot: null,
       searchSnapshot: null,
+      planContext: null,
+      contextStatus: "",
+      contextResolved: false,
+      contextComplete: false,
+      pendingScrollTop: null,
+      singleSourceAutoExpanded: false,
+      singleSourceUserCollapsed: false,
     };
     var details = {};
     var coreCodeCache = {};
     var requestRevision = 0;
     var coreCodeRequestRevision = 0;
     var bound = false;
-    var panning = null;
     var els = {};
 
     function $(id) {
@@ -37,6 +36,12 @@
 
     function text(key) {
       return host.t ? host.t(key) : key;
+    }
+
+    function formatText(key, values) {
+      return Object.keys(values || {}).reduce(function (result, name) {
+        return result.replace(new RegExp("\\{" + name + "\\}", "g"), String(values[name]));
+      }, text(key));
     }
 
     function capsuleId(cap) {
@@ -57,7 +62,7 @@
         var id = String((project && project.project_id) || "");
         if (!id) return;
         var displayName = String(project.display_name || "");
-        result[id] = displayName && !looksAbsolutePath(displayName) ? displayName : id;
+        result[id] = displayName && !looksAbsolutePath(displayName) ? displayName : "";
       });
       return result;
     }
@@ -144,6 +149,9 @@
       });
       var version = {
         version_id: String(selectedVersion.version_id || ""),
+        canonical_hash: /^[0-9a-f]{64}$/.test(String(selectedVersion.canonical_hash || ""))
+          ? String(selectedVersion.canonical_hash)
+          : "",
         version_number: selectedVersion.version_number == null ? null : Number(selectedVersion.version_number),
         extraction_contract_version: String(selectedVersion.extraction_contract_version || ""),
         activation: safeValue(selectedVersion.activation_json || null, 0),
@@ -189,13 +197,14 @@
       });
     }
 
-    function addCapsuleToGroup(map, key, label, evidenceStatus, projectId, cap) {
+    function addCapsuleToGroup(map, key, label, evidenceStatus, projectId, cap, reasonKey) {
       if (!map[key]) {
         map[key] = {
           key: key,
           projectId: evidenceStatus === "formal_exact_version_source" ? String(projectId || "") : "",
           label: label,
           evidenceStatus: evidenceStatus,
+          reasonKey: reasonKey || "",
           capsules: [],
         };
       }
@@ -209,43 +218,52 @@
       var map = {};
       formalCapsules().forEach(function (cap) {
         var sources = exactProjectSources(cap);
-        if (sources.length) {
-          sources.forEach(function (source) {
-            var key = "project:" + source.project_id;
-            addCapsuleToGroup(
-              map,
-              key,
-              labels[source.project_id] || source.project_id,
-              "formal_exact_version_source",
-              source.project_id,
-              cap
-            );
-          });
+        if (sources.length === 1) {
+          var source = sources[0];
+          var key = "project:" + source.project_id;
+          addCapsuleToGroup(
+            map,
+            key,
+            labels[source.project_id] || text("sourceProject"),
+            "formal_exact_version_source",
+            source.project_id,
+            cap,
+            ""
+          );
           return;
         }
         var sourceId = String(cap.source_id || "");
         var label = sourceLabel(cap);
-        if (sourceId) {
-          addCapsuleToGroup(
-            map,
-            "source:" + sourceId,
-            labels[sourceId] || label || sourceId,
-            "missing_exact_version_source_relation",
-            "",
-            cap
-          );
-        } else if (label) {
-          addCapsuleToGroup(map, "label:" + label, label, "missing_formal_source_identity", "", cap);
-        }
+        var reasonKey = sources.length > 1
+          ? "multipleExactSources"
+          : sourceId || label
+            ? "missingExactSource"
+            : "missingFormalSource";
+        addCapsuleToGroup(
+          map,
+          "unresolved:" + capsuleId(cap),
+          labels[sourceId] || label || text("sourceProject"),
+          "source_evidence_insufficient",
+          "",
+          cap,
+          reasonKey
+        );
       });
-      return Object.keys(map).map(function (key) {
+      var groups = Object.keys(map).map(function (key) {
         map[key].capsules.sort(function (left, right) {
           return String(left.name || capsuleId(left)).localeCompare(String(right.name || capsuleId(right)));
         });
         return map[key];
       }).sort(function (left, right) {
-        return left.label.localeCompare(right.label);
+        return left.label.localeCompare(right.label) || left.key.localeCompare(right.key);
       });
+      var counts = {};
+      groups.forEach(function (group) { counts[group.label] = (counts[group.label] || 0) + 1; });
+      groups.forEach(function (group) {
+        group.fingerprint = ("000000" + stableHash(group.key).toString(16)).slice(-6);
+        group.displayLabel = group.label + (counts[group.label] > 1 ? " · " + group.fingerprint : "");
+      });
+      return groups;
     }
 
     function stableHash(value) {
@@ -258,24 +276,6 @@
       return hash >>> 0;
     }
 
-    function overviewPosition(group, index) {
-      var angle = ((stableHash(group.key) % 360) + index * 137.5) * Math.PI / 180;
-      var radius = 190 + (index % 3) * 75;
-      return {
-        x: WORLD_WIDTH / 2 + Math.cos(angle) * radius,
-        y: WORLD_HEIGHT / 2 + Math.sin(angle) * radius * 0.72,
-      };
-    }
-
-    function capsulePosition(group, cap, index) {
-      var angle = ((stableHash(group.key + ":" + capsuleId(cap)) % 90) + index * 137.5) * Math.PI / 180;
-      var radius = 170 + (index % 2) * 68;
-      return {
-        x: WORLD_WIDTH / 2 + Math.cos(angle) * radius,
-        y: WORLD_HEIGHT / 2 + Math.sin(angle) * radius * 0.76,
-      };
-    }
-
     function currentGroup(groups) {
       return groups.find(function (group) { return group.key === state.projectKey; }) || null;
     }
@@ -285,10 +285,8 @@
         view: state.view,
         projectKey: state.projectKey,
         capsuleId: state.capsuleId,
-        scale: state.scale,
-        x: state.x,
-        y: state.y,
         focusKey: activeNodeKey(),
+        scrollTop: els.canvas ? els.canvas.scrollTop : 0,
       };
     }
 
@@ -297,10 +295,8 @@
       state.view = snapshot.view;
       state.projectKey = snapshot.projectKey;
       state.capsuleId = snapshot.capsuleId;
-      state.scale = snapshot.scale;
-      state.x = snapshot.x;
-      state.y = snapshot.y;
       state.pendingFocusKey = snapshot.focusKey || "";
+      state.pendingScrollTop = Number(snapshot.scrollTop || 0);
     }
 
     function activeNodeKey() {
@@ -314,36 +310,6 @@
 
     function clamp(value, minimum, maximum) {
       return Math.min(maximum, Math.max(minimum, value));
-    }
-
-    function applyCanvasTransform() {
-      if (!els.world) return;
-      els.world.style.transform =
-        "translate(" + state.x.toFixed(1) + "px, " + state.y.toFixed(1) + "px) scale(" + state.scale.toFixed(3) + ")";
-      if (els.zoomValue) els.zoomValue.textContent = Math.round(state.scale * 100) + "%";
-    }
-
-    function setCanvasScale(next, clientX, clientY) {
-      var previous = state.scale;
-      next = clamp(next, 0.55, 2);
-      if (next === previous) return;
-      if (els.canvas && Number.isFinite(clientX) && Number.isFinite(clientY)) {
-        var rect = els.canvas.getBoundingClientRect();
-        var px = clientX - (rect.left + rect.width / 2);
-        var py = clientY - (rect.top + rect.height / 2);
-        var ratio = next / previous;
-        state.x = px - (px - state.x) * ratio;
-        state.y = py - (py - state.y) * ratio;
-      }
-      state.scale = next;
-      applyCanvasTransform();
-    }
-
-    function resetCanvas() {
-      state.scale = 1;
-      state.x = 0;
-      state.y = 0;
-      applyCanvasTransform();
     }
 
     function queryText() {
@@ -361,26 +327,23 @@
     function groupMatches(group, query) {
       if (!query) return false;
       return (
-        group.label.toLocaleLowerCase().indexOf(query) >= 0 ||
+        group.displayLabel.toLocaleLowerCase().indexOf(query) >= 0 ||
         group.capsules.some(function (cap) { return capsuleMatches(cap, query); })
       );
     }
 
-    function appendLine(from, to, matched) {
-      var line = document.createElementNS(SVG_NS, "line");
-      line.setAttribute("x1", String(from.x));
-      line.setAttribute("y1", String(from.y));
-      line.setAttribute("x2", String(to.x));
-      line.setAttribute("y2", String(to.y));
-      line.setAttribute("class", "warehouse-source-link" + (matched ? " is-match" : ""));
-      els.links.appendChild(line);
-    }
-
     function hasFormalSourceFact(group, cap) {
       if (!group || group.evidenceStatus !== "formal_exact_version_source") return false;
-      return exactProjectSources(cap).some(function (source) {
-        return group.projectId === source.project_id && group.key === "project:" + source.project_id;
-      });
+      var sources = exactProjectSources(cap);
+      return sources.length === 1 &&
+        group.projectId === sources[0].project_id &&
+        group.key === "project:" + sources[0].project_id;
+    }
+
+    function sourcePathFor(group, cap) {
+      if (!hasFormalSourceFact(group, cap)) return "";
+      var sources = exactProjectSources(cap);
+      return sources.length === 1 ? safeRelativePath(sources[0].source_relpath) : "";
     }
 
     function coreCodeIdentity(group, cap) {
@@ -404,6 +367,22 @@
       return safeJavascriptPath(activation && activation.entry_module);
     }
 
+    function capsuleCanonicalHash(cap) {
+      var cached = details[capsuleId(cap)];
+      var fromDetail = cached && cached.value && cached.value.version
+        ? String(cached.value.version.canonical_hash || "")
+        : "";
+      return fromDetail || String(cap.canonical_hash || "");
+    }
+
+    function capsuleValidationPassed(cap) {
+      var cached = details[capsuleId(cap)];
+      var validation = cached && cached.value && cached.value.exact_version === true
+        ? cached.value.version.validation
+        : null;
+      return !!(validation && validation.status === "passed");
+    }
+
     function validateCoreCodeProjection(raw, group, cap) {
       var identity = coreCodeIdentity(group, cap);
       var digest = /^[0-9a-f]{64}$/;
@@ -420,6 +399,7 @@
         raw.source_identity !== "project:" + identity.projectId ||
         typeof raw.canonical_hash !== "string" ||
         !digest.test(raw.canonical_hash) ||
+        raw.canonical_hash !== capsuleCanonicalHash(cap) ||
         ["presentation", "interaction", "computation"].indexOf(raw.capability_kind) < 0 ||
         raw.capability_kind !== String(cap.type || "")
       ) return null;
@@ -541,56 +521,465 @@
       });
     }
 
-    function createNode(options) {
+    function capabilityName(kind) {
+      return text({
+        presentation: "presentationCapability",
+        interaction: "interactionCapability",
+        computation: "computationCapability",
+      }[kind] || kind);
+    }
+
+    function capabilityCounts(group) {
+      var counts = { presentation: 0, interaction: 0, computation: 0 };
+      group.capsules.forEach(function (cap) {
+        var kind = String(cap.type || "");
+        if (Object.prototype.hasOwnProperty.call(counts, kind)) counts[kind] += 1;
+      });
+      return counts;
+    }
+
+    function capabilityMark(kind) {
+      var mark = document.createElement("i");
+      mark.className = "warehouse-capsule-core is-" + kind;
+      mark.setAttribute("aria-hidden", "true");
+      return mark;
+    }
+
+    function domToken(value) {
+      return String(value || "").replace(/[^a-zA-Z0-9_-]/g, "_");
+    }
+
+    function detailVersion(cap) {
+      var cached = details[capsuleId(cap)];
+      return cached && cached.value && cached.value.exact_version === true
+        ? cached.value.version || {}
+        : null;
+    }
+
+    function shortVersionId(value) {
+      var versionId = String(value || "");
+      return versionId.length > 15 ? versionId.slice(0, 12) + "…" : versionId;
+    }
+
+    function readableVersion(cap) {
+      var version = detailVersion(cap);
+      var versionNumber = version && Number.isFinite(Number(version.version_number))
+        ? "v" + String(Number(version.version_number))
+        : "";
+      var versionId = shortVersionId(cap.version_id);
+      return [versionNumber, versionId].filter(Boolean).join(" · ");
+    }
+
+    function contractFields(contract) {
+      if (!contract || typeof contract !== "object" || Array.isArray(contract)) return [];
+      var properties = contract.properties;
+      if (!properties || typeof properties !== "object" || Array.isArray(properties)) return [];
+      return Object.keys(properties).sort();
+    }
+
+    function contractEventNames(contract) {
+      if (!contract || typeof contract !== "object" || Array.isArray(contract)) return [];
+      var events = contract.events;
+      if (!events || typeof events !== "object" || Array.isArray(events)) return [];
+      return Object.keys(events).sort().map(function (name) {
+        var fields = contractFields(events[name]);
+        return name + "(" + fields.join(", ") + ")";
+      });
+    }
+
+    function contractRows(cap) {
+      var version = detailVersion(cap);
+      if (!version) {
+        return [{
+          label: text("contractStatus"),
+          value: details[capsuleId(cap)] && details[capsuleId(cap)].loading
+            ? text("warehouseLoadingRelations")
+            : text("contractUnavailable"),
+        }];
+      }
+      var activation = version.activation && typeof version.activation === "object"
+        ? version.activation
+        : {};
+      var rows = [{
+        label: text("contractEntrypoint"),
+        value: String(activation.entrypoint || "—"),
+      }];
+      var kind = String(cap.type || "");
+      if (kind === "interaction") {
+        var events = contractEventNames(version.output_contract);
+        rows.push({
+          label: text("contractProduces"),
+          value: events.length ? events.join(" · ") : text("contractNoOutput"),
+        });
+      } else {
+        var inputs = contractFields(version.input_contract);
+        var outputs = contractFields(version.output_contract);
+        rows.push({
+          label: text("contractReceives"),
+          value: inputs.length ? inputs.join(", ") : text("contractNoInput"),
+        });
+        rows.push({
+          label: text("contractProduces"),
+          value: outputs.length ? outputs.join(", ") : text("contractNoOutput"),
+        });
+      }
+      return rows;
+    }
+
+    function createSourceKnot() {
+      var namespace = "http://www.w3.org/2000/svg";
+      var knot = document.createElementNS(namespace, "svg");
+      knot.setAttribute("viewBox", "0 0 28 28");
+      knot.setAttribute("aria-hidden", "true");
+      knot.setAttribute("focusable", "false");
+      knot.setAttribute("class", "warehouse-source-knot");
+      [
+        "M3 7C8 7 11 10 16 10C20 10 22 8 25 8",
+        "M4 13C9 13 11 16 16 16C20 16 22 13 25 13",
+        "M3 20C8 19 12 21 17 21C20 21 22 19 24 18",
+        "M8 3C9 9 13 13 18 17C20 19 21 23 21 25",
+        "M4 24C9 20 11 17 13 13C15 9 18 6 24 4",
+      ].forEach(function (shape) {
+        var path = document.createElementNS(namespace, "path");
+        path.setAttribute("d", shape);
+        knot.appendChild(path);
+      });
+      return knot;
+    }
+
+    function sourceReason(group) {
+      return group && group.reasonKey ? text(group.reasonKey) : text("sourceFactInsufficient");
+    }
+
+    function createSourceToggle(group, options) {
+      var counts = capabilityCounts(group);
       var button = document.createElement("button");
       button.type = "button";
-      button.className = "warehouse-node";
-      if (options.center) button.classList.add("is-center");
+      button.className = "warehouse-node warehouse-source-toggle";
       if (options.matched) button.classList.add("is-match");
       if (options.dimmed) button.classList.add("is-dimmed");
-      button.style.left = options.position.x + "px";
-      button.style.top = options.position.y + "px";
-      button.dataset.nodeKey = options.nodeKey;
-      if (options.projectKey) button.dataset.projectKey = options.projectKey;
-      if (options.capsuleId) button.dataset.capsuleId = options.capsuleId;
-      button.setAttribute("aria-label", options.label);
+      if (options.open) button.classList.add("is-open");
+      button.dataset.nodeKind = "project";
+      button.dataset.nodeKey = "project:" + group.key;
+      button.dataset.projectKey = group.key;
+      button.dataset.sourceFingerprint = group.fingerprint;
+      button.setAttribute("aria-expanded", options.open ? "true" : "false");
+      button.setAttribute("aria-controls", "warehouse-source-body-" + domToken(group.key));
+      button.setAttribute("aria-label", [
+        group.displayLabel,
+        formatText("formalCapsuleCount", { count: group.capsules.length }),
+        capabilityName("presentation") + " " + counts.presentation,
+        capabilityName("interaction") + " " + counts.interaction,
+        capabilityName("computation") + " " + counts.computation,
+      ].join(" · "));
 
-      var glyph = document.createElement("span");
-      glyph.className = "warehouse-node-glyph";
-      glyph.setAttribute("aria-hidden", "true");
-      glyph.textContent = options.kind === "project" ? "◆" : "◫";
-      button.appendChild(glyph);
-
-      var label = document.createElement("span");
+      button.appendChild(createSourceKnot());
+      var identity = document.createElement("span");
+      identity.className = "warehouse-source-identity";
+      var label = document.createElement("strong");
       label.className = "warehouse-node-label";
-      label.textContent = options.label;
-      if (options.note) {
-        var note = document.createElement("span");
-        note.className = "warehouse-node-note";
-        note.textContent = options.note;
-        label.appendChild(note);
-      }
-      button.appendChild(label);
-      button.addEventListener("click", options.activate);
-      button.addEventListener("keydown", function (event) {
-        if (event.key !== "Enter" && event.key !== " ") return;
-        event.preventDefault();
-        event.stopPropagation();
-        options.activate();
+      label.textContent = group.displayLabel;
+      identity.appendChild(label);
+      var proof = document.createElement("span");
+      proof.className = "warehouse-source-proof";
+      proof.textContent = text("sourceVerifiedShort");
+      identity.appendChild(proof);
+      button.appendChild(identity);
+      var total = document.createElement("span");
+      total.className = "warehouse-source-total";
+      total.textContent = formatText("formalCapsuleCount", { count: group.capsules.length });
+      button.appendChild(total);
+      var composition = document.createElement("span");
+      composition.className = "warehouse-source-composition";
+      ["presentation", "interaction", "computation"].forEach(function (kind) {
+        var item = document.createElement("span");
+        item.dataset.capabilityKind = kind;
+        var kindLabel = document.createElement("em");
+        kindLabel.textContent = capabilityName(kind);
+        item.appendChild(kindLabel);
+        var value = document.createElement("b");
+        value.textContent = String(counts[kind]);
+        item.appendChild(value);
+        composition.appendChild(item);
       });
-      els.nodes.appendChild(button);
+      button.appendChild(composition);
+      var disclosure = document.createElement("span");
+      disclosure.className = "warehouse-source-disclosure";
+      disclosure.setAttribute("aria-hidden", "true");
+      button.appendChild(disclosure);
+      button.addEventListener("click", options.activate);
       return button;
     }
 
+    function appendContractRow(list, row) {
+      var term = document.createElement("dt");
+      term.textContent = row.label;
+      var description = document.createElement("dd");
+      description.textContent = row.value || "—";
+      list.appendChild(term);
+      list.appendChild(description);
+    }
+
+    function createCapsuleContract(cap, panelId, open) {
+      var panel = document.createElement("section");
+      panel.id = panelId;
+      panel.className = "warehouse-capsule-contract";
+      panel.hidden = !open;
+      panel.setAttribute("aria-label", text("formalContract"));
+      if (!open) return panel;
+      var list = document.createElement("dl");
+      contractRows(cap).forEach(function (row) { appendContractRow(list, row); });
+      panel.appendChild(list);
+      var version = detailVersion(cap);
+      var identity = document.createElement("p");
+      identity.className = "warehouse-contract-identity";
+      var versionId = document.createElement("code");
+      versionId.textContent = String(cap.version_id || "—");
+      identity.appendChild(versionId);
+      var hash = document.createElement("code");
+      hash.textContent = version && version.canonical_hash
+        ? String(version.canonical_hash)
+        : text("evidenceUnavailable");
+      identity.appendChild(hash);
+      panel.appendChild(identity);
+      return panel;
+    }
+
+    function createCapsuleUnit(group, cap, options) {
+      var kind = String(cap.type || "unknown");
+      var labelText = String(cap.name || capsuleId(cap));
+      var open = state.projectKey === group.key && state.capsuleId === capsuleId(cap);
+      var panelId = "warehouse-contract-" + domToken(group.key + "-" + capsuleId(cap));
+      var unit = document.createElement("article");
+      unit.className = "warehouse-capsule-unit";
+      if (open) unit.classList.add("is-open");
+      if (options.matched) unit.classList.add("is-match");
+      if (options.dimmed) unit.classList.add("is-dimmed");
+      if (options.context) unit.classList.add("is-context");
+      if (options.evidenceKind === "error") unit.classList.add("is-error");
+      unit.dataset.capabilityKind = kind;
+      unit.dataset.evidenceThread = options.evidenceKind;
+
+      var button = document.createElement("button");
+      button.type = "button";
+      button.className = "warehouse-node warehouse-capsule-seal";
+      button.dataset.nodeKind = "capsule";
+      button.dataset.capabilityKind = kind;
+      button.dataset.nodeKey = "capsule:" + capsuleId(cap);
+      button.dataset.capsuleId = capsuleId(cap);
+      button.setAttribute("aria-expanded", open ? "true" : "false");
+      button.setAttribute("aria-controls", panelId);
+      button.setAttribute("aria-label", [
+        capabilityName(kind),
+        labelText,
+        readableVersion(cap),
+        String(cap.status || "active"),
+        capsuleValidationPassed(cap) ? text("validationPassedShort") : text("validationIncompleteShort"),
+      ].filter(Boolean).join(" · "));
+
+      var kindSide = document.createElement("span");
+      kindSide.className = "warehouse-capsule-kind";
+      kindSide.appendChild(capabilityMark(kind));
+      var kindLabel = document.createElement("span");
+      kindLabel.textContent = capabilityName(kind);
+      kindSide.appendChild(kindLabel);
+      button.appendChild(kindSide);
+
+      var identity = document.createElement("span");
+      identity.className = "warehouse-capsule-identity";
+      var name = document.createElement("strong");
+      name.textContent = labelText;
+      identity.appendChild(name);
+      var meta = document.createElement("p");
+      var version = document.createElement("span");
+      version.textContent = readableVersion(cap) || text("exactVersion");
+      version.title = String(cap.version_id || "");
+      var status = document.createElement("span");
+      status.textContent = String(cap.status || "active");
+      var validation = document.createElement("span");
+      validation.className = capsuleValidationPassed(cap) ? "is-valid" : "is-invalid";
+      validation.textContent = capsuleValidationPassed(cap)
+        ? text("validationPassedShort")
+        : text("validationIncompleteShort");
+      meta.appendChild(version);
+      meta.appendChild(status);
+      meta.appendChild(validation);
+      identity.appendChild(meta);
+      button.appendChild(identity);
+      button.addEventListener("click", function () { toggleCapsule(group, cap); });
+      unit.appendChild(button);
+      unit.appendChild(createCapsuleContract(cap, panelId, open));
+
+      var sourceSlot = document.createElement("div");
+      sourceSlot.className = "warehouse-source-slot";
+      sourceSlot.dataset.evidenceThread = options.evidenceKind;
+      var point = document.createElement("span");
+      point.className = "warehouse-weave-point";
+      point.setAttribute("aria-hidden", "true");
+      sourceSlot.appendChild(point);
+      var sourcePath = sourcePathFor(group, cap);
+      if (sourcePath) {
+        var pathButton = document.createElement("button");
+        pathButton.type = "button";
+        pathButton.className = "warehouse-source-path";
+        pathButton.dataset.nodeKey = "path:" + capsuleId(cap);
+        pathButton.textContent = sourcePath;
+        pathButton.title = sourcePath;
+        pathButton.setAttribute("aria-label", formatText("viewVerifiedCodePath", { path: sourcePath }));
+        pathButton.addEventListener("click", function () { openCode(group, cap, pathButton); });
+        sourceSlot.appendChild(pathButton);
+      } else {
+        var reason = document.createElement("span");
+        reason.className = "warehouse-source-reason";
+        reason.textContent = sourceReason(group);
+        sourceSlot.appendChild(reason);
+      }
+      unit.appendChild(sourceSlot);
+      return unit;
+    }
+
+    function createCapsuleRack(group, query, matchCount) {
+      var rack = document.createElement("div");
+      rack.id = "warehouse-source-body-" + domToken(group.key);
+      rack.className = "warehouse-capsule-rack-grid";
+      ["presentation", "interaction", "computation"].forEach(function (kind) {
+        var lane = document.createElement("section");
+        lane.className = "warehouse-capability-lane";
+        lane.dataset.capabilityKind = kind;
+        var heading = document.createElement("h3");
+        heading.appendChild(capabilityMark(kind));
+        var headingText = document.createElement("span");
+        headingText.textContent = capabilityName(kind);
+        heading.appendChild(headingText);
+        lane.appendChild(heading);
+        var laneCapsules = group.capsules.filter(function (cap) {
+          return String(cap.type || "") === kind;
+        });
+        if (!laneCapsules.length) {
+          var empty = document.createElement("p");
+          empty.className = "warehouse-lane-empty";
+          empty.textContent = formatText("emptyCapabilityLane", { kind: capabilityName(kind) });
+          lane.appendChild(empty);
+        }
+        laneCapsules.forEach(function (cap) {
+          var matched = capsuleMatches(cap, query);
+          var evidenceKind = !hasFormalSourceFact(group, cap) || !capsuleValidationPassed(cap)
+            ? "error"
+            : contextMatchesCap(group, cap)
+              ? "formal"
+              : "verified";
+          lane.appendChild(createCapsuleUnit(group, cap, {
+            matched: matched,
+            dimmed: !!query && matchCount > 0 && !matched &&
+              group.displayLabel.toLocaleLowerCase().indexOf(query) < 0,
+            context: contextMatchesCap(group, cap),
+            evidenceKind: evidenceKind,
+          }));
+        });
+        rack.appendChild(lane);
+      });
+      return rack;
+    }
+
+    function renderSourceAccordion(group, query, matchCount) {
+      var open = state.view === "project" && state.projectKey === group.key;
+      var shell = document.createElement("section");
+      shell.className = "warehouse-source-accordion";
+      if (open) shell.classList.add("is-open");
+      if (groupMatches(group, query)) shell.classList.add("is-match");
+      if (!!query && matchCount > 0 && !groupMatches(group, query)) shell.classList.add("is-dimmed");
+      shell.dataset.sourceFingerprint = group.fingerprint;
+      shell.appendChild(createSourceToggle(group, {
+        matched: groupMatches(group, query),
+        dimmed: !!query && matchCount > 0 && !groupMatches(group, query),
+        open: open,
+        activate: function () {
+          if (open) closeProject(group.key);
+          else enterProject(group.key);
+        },
+      }));
+      var rack = createCapsuleRack(group, query, matchCount);
+      rack.hidden = !open;
+      shell.appendChild(rack);
+      els.nodes.appendChild(shell);
+    }
+
+    function renderUnresolvedGroup(group, query, matchCount) {
+      var shell = document.createElement("section");
+      shell.className = "warehouse-unresolved-entry";
+      shell.dataset.projectKey = group.key;
+      var reason = document.createElement("p");
+      reason.className = "warehouse-unresolved-reason";
+      reason.textContent = sourceReason(group);
+      shell.appendChild(reason);
+      var cap = group.capsules[0];
+      if (cap) {
+        shell.appendChild(createCapsuleUnit(group, cap, {
+          matched: capsuleMatches(cap, query),
+          dimmed: !!query && matchCount > 0 && !capsuleMatches(cap, query),
+          context: false,
+          evidenceKind: "error",
+        }));
+      }
+      els.unresolvedNodes.appendChild(shell);
+    }
+
+    function showFact(title, meta, evidenceKind) {
+      if (!els.factStrip) return;
+      els.factTitle.textContent = String(title || "");
+      els.factMeta.textContent = String(meta || "");
+      els.factStrip.classList.toggle("hidden", !title);
+      els.factStrip.dataset.evidenceThread = evidenceKind || "";
+    }
+
+    function searchMatchCount(groups, query) {
+      if (!query) return 0;
+      var count = 0;
+      groups.forEach(function (group) {
+        if (group.displayLabel.toLocaleLowerCase().indexOf(query) >= 0) count += 1;
+        group.capsules.forEach(function (cap) {
+          if (capsuleMatches(cap, query)) count += 1;
+        });
+      });
+      return count;
+    }
+
+    function contextMatchesCap(group, cap) {
+      var context = state.planContext;
+      return !!(
+        state.contextResolved &&
+        context &&
+        group &&
+        group.projectId &&
+        capsuleId(cap) === context.capsule_id &&
+        String(cap.version_id || "") === context.version_id
+      );
+    }
+
     function focusPendingNode() {
-      if (!state.pendingFocusKey) return;
+      if (!state.pendingFocusKey && state.pendingScrollTop == null) return;
       var key = state.pendingFocusKey;
       state.pendingFocusKey = "";
       window.setTimeout(function () {
-        var nodes = els.nodes ? els.nodes.querySelectorAll("[data-node-key]") : [];
+        if (state.pendingScrollTop != null && els.canvas) {
+          els.canvas.scrollTop = state.pendingScrollTop;
+          state.pendingScrollTop = null;
+        }
+        if (!key) return;
+        var nodes = els.world ? els.world.querySelectorAll("[data-node-key]") : [];
+        if (key === "__first__" && nodes.length) {
+          nodes[0].focus({ preventScroll: true });
+          nodes[0].scrollIntoView({ block: "nearest", inline: "nearest" });
+          return;
+        }
+        if (key === "__first__") {
+          state.pendingFocusKey = key;
+          return;
+        }
         for (var i = 0; i < nodes.length; i += 1) {
           if (String(nodes[i].dataset.nodeKey || "") === key) {
-            nodes[i].focus();
+            nodes[i].focus({ preventScroll: true });
+            nodes[i].scrollIntoView({ block: "nearest", inline: "nearest" });
             return;
           }
         }
@@ -607,8 +996,44 @@
         state.capsuleId = "";
       }
       els.nodes.replaceChildren();
-      els.links.replaceChildren();
+      els.unresolvedNodes.replaceChildren();
+      els.browserView.classList.toggle("is-project-view", state.view === "project");
+      els.unresolvedShelf.classList.add("hidden");
       var query = queryText();
+      var matchCount = searchMatchCount(groups, query);
+      var exactGroups = groups.filter(function (item) {
+        return item.evidenceStatus === "formal_exact_version_source";
+      });
+      if (
+        state.view === "overview" &&
+        !state.planContext &&
+        !state.query &&
+        !state.singleSourceAutoExpanded &&
+        !state.singleSourceUserCollapsed &&
+        !detailsLoading() &&
+        groups.length === 1 &&
+        exactGroups.length === 1
+      ) {
+        state.view = "project";
+        state.projectKey = exactGroups[0].key;
+        state.singleSourceAutoExpanded = true;
+        group = exactGroups[0];
+        els.browserView.classList.add("is-project-view");
+      }
+      if (els.sourceCount) {
+        els.sourceCount.textContent = formatText("formalSourceCount", { count: exactGroups.length });
+      }
+      if (els.searchStatus) {
+        els.searchStatus.textContent = query
+          ? (matchCount ? formatText("searchResultCount", { count: matchCount }) : text("searchNoResults"))
+          : "";
+      }
+      if (els.contextStatus) {
+        els.contextStatus.textContent = state.contextStatus ? text(state.contextStatus) : "";
+        els.contextStatus.classList.toggle("hidden", !state.contextStatus);
+        els.contextStatus.classList.toggle("is-error", state.contextStatus === "planContextMissing");
+      }
+      showFact("", "");
 
       var emptyKey = "";
       if (!formalCapsules().length) emptyKey = "noFormalCapsules";
@@ -616,64 +1041,19 @@
       else if (!groups.length) emptyKey = "noFormalSourceIdentity";
       els.empty.classList.toggle("hidden", !emptyKey);
       els.empty.textContent = emptyKey ? text(emptyKey) : "";
-
-      if (state.view === "overview") {
-        els.breadcrumb.textContent = text("sourceProjectOverview") + " · " + groups.length;
-        groups.forEach(function (item, index) {
-          var matched = groupMatches(item, query);
-          createNode({
-            kind: "project",
-            nodeKey: "project:" + item.key,
-            projectKey: item.key,
-            label: item.label,
-            note: item.evidenceStatus === "formal_exact_version_source"
-              ? ""
-              : text("insufficientSourceEvidence"),
-            position: overviewPosition(item, index),
-            matched: matched,
-            dimmed: !!query && !matched,
-            activate: function () { enterProject(item.key); },
-          });
-        });
-      } else if (group) {
-        els.breadcrumb.textContent = text("sourceProjectOverview") + " / " + group.label;
-        var groupMatched = group.label.toLocaleLowerCase().indexOf(query) >= 0;
-        createNode({
-          kind: "project",
-          nodeKey: "project:" + group.key,
-          projectKey: group.key,
-          label: group.label,
-          note: group.evidenceStatus === "formal_exact_version_source"
-            ? ""
-            : text("insufficientSourceEvidence"),
-          position: { x: WORLD_WIDTH / 2, y: WORLD_HEIGHT / 2 },
-          center: true,
-          matched: !!query && groupMatched,
-          dimmed: false,
-          activate: function () {},
-        });
-        group.capsules.forEach(function (cap, index) {
-          var position = capsulePosition(group, cap, index);
-          var matched = capsuleMatches(cap, query);
-          if (hasFormalSourceFact(group, cap)) appendLine(
-            { x: WORLD_WIDTH / 2, y: WORLD_HEIGHT / 2 },
-            position,
-            !!query && (groupMatched || matched)
-          );
-          createNode({
-            kind: "capsule",
-            nodeKey: "capsule:" + capsuleId(cap),
-            projectKey: group.key,
-            capsuleId: capsuleId(cap),
-            label: String(cap.name || capsuleId(cap)),
-            position: position,
-            matched: matched,
-            dimmed: !!query && !matched && !groupMatched,
-            activate: function () { openCapsule(group, cap); },
-          });
-        });
-      }
-      applyCanvasTransform();
+      els.breadcrumb.textContent = group && group.evidenceStatus === "formal_exact_version_source"
+        ? text("sourceProject") + " / " + group.displayLabel
+        : "";
+      exactGroups.forEach(function (item) {
+        renderSourceAccordion(item, query, matchCount);
+      });
+      var unresolvedGroups = groups.filter(function (item) {
+        return item.evidenceStatus !== "formal_exact_version_source";
+      });
+      unresolvedGroups.forEach(function (item) {
+        renderUnresolvedGroup(item, query, matchCount);
+      });
+      els.unresolvedShelf.classList.toggle("hidden", unresolvedGroups.length === 0);
       focusPendingNode();
     }
 
@@ -689,9 +1069,7 @@
       var coreProjection = currentCoreCodeProjection(group, cap);
       var sourceStatus = formalSource
         ? "formal_exact_version_source"
-        : group.evidenceStatus === "missing_formal_source_identity"
-          ? "missing_formal_source_identity"
-          : "missing_exact_version_source_relation";
+        : group.reasonKey || "source_evidence_insufficient";
       return {
         capsule: {
           capsule_id: capsuleId(cap),
@@ -728,6 +1106,92 @@
       applyCodeScale();
     }
 
+    function evidenceRow(label, value, kind) {
+      var row = document.createElement("div");
+      row.className = "warehouse-evidence-row";
+      row.dataset.evidenceKind = kind;
+      var heading = document.createElement("h3");
+      heading.textContent = label;
+      var content = document.createElement("p");
+      content.textContent = value || "—";
+      row.appendChild(heading);
+      row.appendChild(content);
+      return row;
+    }
+
+    function renderEvidenceSummary(group, cap, projection) {
+      els.evidenceSummary.replaceChildren(
+        evidenceRow(
+          text("evidenceIdentity"),
+          [
+            capabilityName(String(cap.type || "")),
+            capsuleId(cap),
+            String(cap.version_id || ""),
+            String(cap.status || ""),
+          ].filter(Boolean).join(" · "),
+          "identity"
+        ),
+        evidenceRow(
+          text("evidenceSource"),
+          hasFormalSourceFact(group, cap)
+            ? [group.displayLabel, sourcePathFor(group, cap)].filter(Boolean).join(" · ")
+            : sourceReason(group),
+          "source"
+        ),
+        evidenceRow(
+          text("evidenceContracts"),
+          contractRows(cap).map(function (row) {
+            return row.label + ": " + row.value;
+          }).join(" · "),
+          "contracts"
+        ),
+        evidenceRow(
+          text("evidenceValidation"),
+          projection
+            ? projection.validation.status + " · " + projection.validation.acceptance_scope
+            : text("evidenceUnavailable"),
+          "validation"
+        ),
+        evidenceRow(
+          text("evidenceEntry"),
+          projection ? projection.core_code.logical_path + " · " + projection.core_code.sha256.slice(0, 12) : "—",
+          "entry"
+        )
+      );
+    }
+
+    function renderProofThread() {
+      var groups = sourceGroups();
+      var group = currentGroup(groups);
+      var cap = selectedCapsule(group);
+      var projection = group && cap ? currentCoreCodeProjection(group, cap) : null;
+      var validationPassed = !!(cap && capsuleValidationPassed(cap));
+      var identity = group && cap ? coreCodeIdentity(group, cap) : null;
+      var cachedCode = identity ? coreCodeCache[identity.key] : null;
+      els.evidenceSource.textContent = group ? group.displayLabel : String(groups.length);
+      els.evidenceCapsule.textContent = cap
+        ? capabilityName(String(cap.type || "")) + " · " + String(cap.name || capsuleId(cap))
+        : "";
+      var versionId = cap ? String(cap.version_id || "") : "";
+      els.evidenceVersion.textContent = cap ? readableVersion(cap) : "";
+      els.evidenceVersion.title = versionId;
+      els.evidenceValidation.textContent = cap
+        ? (projection || (state.view !== "code" && validationPassed)
+          ? text("evidenceAvailable")
+          : cachedCode && cachedCode.status === "loading"
+            ? text("warehouseLoadingRelations")
+            : text("evidenceUnavailable"))
+        : "";
+      els.codeProof.classList.toggle("is-formal-context", state.contextResolved);
+      els.codeProof.classList.toggle(
+        "is-error",
+        state.contextStatus === "planContextMissing" ||
+          (state.view === "code" && cap && (
+            !identity || (cachedCode && cachedCode.status === "failed")
+          ))
+      );
+    }
+
     function renderCode() {
       var groups = sourceGroups();
       var group = currentGroup(groups);
@@ -738,37 +1202,57 @@
         render();
         return;
       }
-      els.codePath.textContent = group.label + " / " + String(cap.name || capsuleId(cap));
+      var sourcePath = sourcePathFor(group, cap);
+      els.codePath.textContent = [group.displayLabel, sourcePath].filter(Boolean).join(" / ");
       els.codeTitle.textContent = String(cap.name || capsuleId(cap));
       var codeElement = els.coreCode.querySelector("code");
       var coreProjection = currentCoreCodeProjection(group, cap);
       codeElement.textContent = coreProjection ? coreProjection.core_code.content : "";
       els.coreCode.classList.toggle("hidden", !coreProjection);
       els.coreCodeEmpty.classList.toggle("hidden", !!coreProjection);
+      var identity = coreCodeIdentity(group, cap);
+      var cachedCode = identity ? coreCodeCache[identity.key] : null;
+      els.coreCodeEmpty.textContent = !identity
+        ? text("insufficientSourceEvidence")
+        : cachedCode && cachedCode.status === "loading"
+          ? text("warehouseLoadingRelations")
+          : text("noVerifiedCoreCode");
+      els.codeKind.textContent = capabilityName(String(cap.type || ""));
+      els.codeVersion.textContent = readableVersion(cap);
+      els.codeVersion.title = String(cap.version_id || "");
+      els.codeStatus.textContent = String(cap.status || "");
+      els.codeValidation.textContent = coreProjection ? text("evidenceAvailable") : text("evidenceUnavailable");
+      els.codeProof.classList.toggle("is-verified", !!coreProjection);
       els.codeDeveloperMode.checked = state.developerMode;
       els.developerDetails.classList.toggle("hidden", !state.developerMode);
+      renderEvidenceSummary(group, cap, coreProjection);
       els.developerEvidence.textContent = state.developerMode
         ? JSON.stringify(developerProjection(group, cap), null, 2)
         : "";
+      if (!state.developerMode) els.rawEvidence.removeAttribute("open");
       applyCodeScale();
       if (!coreProjection) ensureCoreCodeProjection(group, cap);
     }
 
     function updateIngestionEntry() {
-      var emptyBrowser = state.view !== "code" && sourceGroups().length === 0;
-      var codeDeveloper = state.view === "code" && state.developerMode;
-      els.ingestionEntry.classList.toggle("hidden", !emptyBrowser && !codeDeveloper);
+      els.ingestionEntry.classList.remove("hidden");
     }
 
     function render() {
       if (!bound || !state.active) return;
+      resolvePlanContext();
+      var targetAvailable = host.targetAvailable ? host.targetAvailable() : false;
+      els.targetNav.classList.toggle("hidden", !targetAvailable);
+      els.targetNav.disabled = !targetAvailable;
+      els.language.textContent = host.getLocale && host.getLocale() === "en" ? "EN / 中" : "中 / EN";
       var codeView = state.view === "code";
       els.browserView.classList.toggle("hidden", codeView);
       els.codeView.classList.toggle("hidden", !codeView);
+      els.codeView.classList.toggle("is-evidence-mode", codeView && state.developerMode);
       els.searchWrap.classList.toggle("hidden", codeView);
-      els.canvasZoom.classList.toggle("hidden", codeView);
       if (codeView) renderCode();
       else renderBrowser();
+      renderProofThread();
       updateIngestionEntry();
     }
 
@@ -815,7 +1299,43 @@
       });
     }
 
-    function enterScene() {
+    function resolvePlanContext() {
+      var context = state.planContext;
+      var ready = formalCapsules().every(function (cap) {
+        var cached = details[capsuleId(cap)];
+        return cached && cached.loading !== true && cached.versionId === String(cap.version_id || "");
+      });
+      if (!context || state.contextComplete || !ready) return;
+      state.contextComplete = true;
+      var cap = formalCapsules().find(function (item) {
+        return (
+          capsuleId(item) === context.capsule_id &&
+          String(item.version_id || "") === context.version_id &&
+          capsuleCanonicalHash(item) === context.canonical_hash
+        );
+      });
+      var sources = cap ? exactProjectSources(cap) : [];
+      if (!cap || sources.length !== 1) {
+        state.contextResolved = false;
+        state.contextStatus = "planContextMissing";
+        return;
+      }
+      var groupKey = "project:" + sources[0].project_id;
+      var group = sourceGroups().find(function (item) { return item.key === groupKey; });
+      if (!group || !hasFormalSourceFact(group, cap)) {
+        state.contextResolved = false;
+        state.contextStatus = "planContextMissing";
+        return;
+      }
+      state.contextResolved = true;
+      state.contextStatus = "planContextResolved";
+      state.view = "project";
+      state.projectKey = groupKey;
+      state.capsuleId = capsuleId(cap);
+      state.pendingFocusKey = "capsule:" + capsuleId(cap);
+    }
+
+    function enterScene(context) {
       var active = document.activeElement;
       state.entryFocusId = active && active.id ? active.id : "btn-capsule-warehouse";
       state.active = true;
@@ -823,17 +1343,48 @@
       state.projectKey = "";
       state.capsuleId = "";
       state.query = "";
+      state.overviewSnapshot = null;
+      state.projectSnapshot = null;
       state.searchSnapshot = null;
       state.pendingFocusKey = "";
-      resetCanvas();
+      state.planContext = context && typeof context === "object" ? {
+        capsule_id: String(context.capsule_id || ""),
+        version_id: String(context.version_id || ""),
+        canonical_hash: String(context.canonical_hash || ""),
+      } : null;
+      state.contextStatus = "";
+      state.contextResolved = false;
+      state.contextComplete = false;
+      state.pendingScrollTop = null;
+      state.singleSourceAutoExpanded = false;
+      state.singleSourceUserCollapsed = false;
       if (els.query) els.query.value = "";
       host.showScreen("screen-capsule-warehouse");
+      if (els.screen) els.screen.scrollTop = 0;
+      window.scrollTo(0, 0);
+      if (host.transition) host.transition("warehouse");
       render();
       ensureDetails();
       window.setTimeout(function () {
-        var first = els.nodes.querySelector("[data-node-key]");
+        if (state.planContext) return;
+        var first = els.world.querySelector("[data-node-key]");
         if (first) first.focus();
+        else if (detailsLoading()) state.pendingFocusKey = "__first__";
         else els.canvas.focus();
+      }, 0);
+    }
+
+    function resumeScene() {
+      state.active = true;
+      host.showScreen("screen-capsule-warehouse");
+      render();
+      window.setTimeout(function () {
+        var key = activeNodeKey();
+        if (key) return;
+        var preferred = state.view === "code"
+          ? els.codeTitle
+          : els.world.querySelector("[data-node-key]") || els.canvas;
+        if (preferred) preferred.focus();
       }, 0);
     }
 
@@ -850,17 +1401,33 @@
 
     function enterProject(key) {
       if (state.view === "overview") state.overviewSnapshot = viewSnapshot();
+      var group = sourceGroups().find(function (item) { return item.key === key; });
       state.view = "project";
       state.projectKey = key;
       state.capsuleId = "";
-      state.scale = 1;
-      state.x = 0;
-      state.y = 0;
+      state.pendingFocusKey = group ? "project:" + group.key : "";
+      render();
+    }
+
+    function closeProject(key) {
+      state.view = "overview";
+      state.projectKey = "";
+      state.capsuleId = "";
+      state.singleSourceUserCollapsed = true;
       state.pendingFocusKey = "project:" + key;
       render();
     }
 
-    function openCapsule(group, cap) {
+    function toggleCapsule(group, cap) {
+      state.view = "project";
+      state.projectKey = group.key;
+      state.capsuleId = state.capsuleId === capsuleId(cap) ? "" : capsuleId(cap);
+      state.pendingFocusKey = "capsule:" + capsuleId(cap);
+      render();
+    }
+
+    function openCode(group, cap) {
+      if (!sourcePathFor(group, cap) || !coreCodeIdentity(group, cap)) return;
       invalidatePendingCoreCodeRequests();
       state.projectSnapshot = viewSnapshot();
       state.view = "code";
@@ -873,14 +1440,16 @@
     function goBack() {
       if (state.view === "code") {
         invalidatePendingCoreCodeRequests();
-        var capsuleFocus = "capsule:" + state.capsuleId;
         restoreSnapshot(state.projectSnapshot);
         state.view = "project";
-        state.pendingFocusKey = capsuleFocus;
         render();
         return;
       }
       if (state.view === "project") {
+        if (state.planContext) {
+          leaveScene();
+          return;
+        }
         if (state.query && state.searchSnapshot) {
           clearSearch();
           return;
@@ -888,6 +1457,7 @@
         var projectFocus = "project:" + state.projectKey;
         restoreSnapshot(state.overviewSnapshot);
         state.view = "overview";
+        state.singleSourceUserCollapsed = true;
         state.pendingFocusKey = projectFocus;
         render();
         return;
@@ -914,27 +1484,17 @@
       render();
     }
 
-    function centerPosition(position, scale) {
-      state.scale = scale;
-      state.x = -(position.x - WORLD_WIDTH / 2) * scale;
-      state.y = -(position.y - WORLD_HEIGHT / 2) * scale;
-    }
-
     function activateSearch() {
       var query = queryText();
       if (!query) return;
       var groups = sourceGroups();
-      var projectIndex = groups.findIndex(function (group) {
-        return group.label.toLocaleLowerCase().indexOf(query) >= 0;
+      var project = groups.find(function (group) {
+        return group.displayLabel.toLocaleLowerCase().indexOf(query) >= 0;
       });
-      if (projectIndex >= 0) {
-        var project = groups[projectIndex];
-        if (state.view === "overview") centerPosition(overviewPosition(project, projectIndex), 1.35);
-        else if (state.projectKey !== project.key) {
-          state.view = "project";
-          state.projectKey = project.key;
-          centerPosition({ x: WORLD_WIDTH / 2, y: WORLD_HEIGHT / 2 }, 1.15);
-        }
+      if (project) {
+        state.view = "project";
+        state.projectKey = project.key;
+        state.capsuleId = "";
         state.pendingFocusKey = "project:" + project.key;
         render();
         return;
@@ -944,7 +1504,7 @@
         if (capIndex < 0) continue;
         state.view = "project";
         state.projectKey = groups[i].key;
-        centerPosition(capsulePosition(groups[i], groups[i].capsules[capIndex], capIndex), 1.35);
+        state.capsuleId = capsuleId(groups[i].capsules[capIndex]);
         state.pendingFocusKey = "capsule:" + capsuleId(groups[i].capsules[capIndex]);
         render();
         return;
@@ -957,21 +1517,32 @@
       els.back = $("btn-warehouse-scene-back");
       els.searchWrap = document.querySelector(".warehouse-scene-search");
       els.query = $("warehouse-scene-query");
-      els.canvasZoom = document.querySelector(".warehouse-scene-zoom");
-      els.zoomOut = $("btn-warehouse-zoom-out");
-      els.zoomIn = $("btn-warehouse-zoom-in");
-      els.zoomReset = $("btn-warehouse-zoom-reset");
-      els.zoomValue = $("warehouse-zoom-value");
+      els.searchStatus = $("warehouse-search-status");
+      els.sourceCount = $("warehouse-source-count");
       els.browserView = $("warehouse-browser-view");
       els.breadcrumb = $("warehouse-scene-breadcrumb");
+      els.contextStatus = $("warehouse-context-status");
       els.canvas = $("warehouse-scene-canvas");
       els.world = $("warehouse-scene-world");
-      els.links = $("warehouse-scene-links");
       els.nodes = $("warehouse-scene-nodes");
+      els.unresolvedShelf = $("warehouse-unresolved-shelf");
+      els.unresolvedNodes = $("warehouse-unresolved-nodes");
       els.empty = $("warehouse-scene-empty");
+      els.factStrip = $("warehouse-fact-strip");
+      els.factTitle = $("warehouse-fact-title");
+      els.factMeta = $("warehouse-fact-meta");
+      els.codeProof = $("warehouse-code-proof");
+      els.evidenceSource = $("warehouse-evidence-source");
+      els.evidenceCapsule = $("warehouse-evidence-capsule");
+      els.evidenceVersion = $("warehouse-evidence-version");
+      els.evidenceValidation = $("warehouse-evidence-validation");
       els.codeView = $("warehouse-code-view");
       els.codePath = $("warehouse-code-path");
       els.codeTitle = $("warehouse-code-title");
+      els.codeKind = $("warehouse-code-kind");
+      els.codeVersion = $("warehouse-code-version");
+      els.codeStatus = $("warehouse-code-status");
+      els.codeValidation = $("warehouse-code-validation");
       els.codeDeveloperMode = $("warehouse-code-developer-mode");
       els.codeZoomOut = $("btn-warehouse-code-zoom-out");
       els.codeZoomIn = $("btn-warehouse-code-zoom-in");
@@ -980,27 +1551,19 @@
       els.coreCode = $("warehouse-core-code");
       els.coreCodeEmpty = $("warehouse-core-code-empty");
       els.developerDetails = $("warehouse-developer-details");
+      els.evidenceSummary = $("warehouse-evidence-summary");
+      els.rawEvidence = $("warehouse-raw-evidence");
       els.developerEvidence = $("warehouse-developer-evidence");
       els.ingestionEntry = $("btn-open-capsule-ingestion");
-    }
-
-    function handleCanvasKeydown(event) {
-      var step = event.shiftKey ? 80 : 34;
-      if (["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown", "+", "=", "-", "0"].indexOf(event.key) < 0) return;
-      event.preventDefault();
-      if (event.key === "ArrowLeft") state.x += step;
-      else if (event.key === "ArrowRight") state.x -= step;
-      else if (event.key === "ArrowUp") state.y += step;
-      else if (event.key === "ArrowDown") state.y -= step;
-      else if (event.key === "+" || event.key === "=") setCanvasScale(state.scale + 0.15);
-      else if (event.key === "-") setCanvasScale(state.scale - 0.15);
-      else resetCanvas();
-      applyCanvasTransform();
+      els.productNav = $("btn-warehouse-product-nav");
+      els.targetNav = $("btn-warehouse-target-nav");
+      els.compatNav = $("btn-warehouse-compat-nav");
+      els.language = $("btn-warehouse-lang");
     }
 
     function handleDocumentKeydown(event) {
       if (!state.active) return;
-      var management = $("capsule-warehouse-popover");
+      var management = $("screen-capsule-ingestion");
       if (management && !management.classList.contains("hidden")) return;
       if (state.view === "code" && (event.metaKey || event.ctrlKey)) {
         if (event.key === "+" || event.key === "=") {
@@ -1027,7 +1590,7 @@
       bound = true;
       els.entry.addEventListener("click", function (event) {
         event.preventDefault();
-        enterScene();
+        enterScene(null);
       });
       els.back.addEventListener("click", goBack);
       els.query.addEventListener("input", function () { updateSearch(els.query.value); });
@@ -1036,32 +1599,6 @@
         event.preventDefault();
         activateSearch();
       });
-      els.zoomOut.addEventListener("click", function () { setCanvasScale(state.scale - 0.15); });
-      els.zoomIn.addEventListener("click", function () { setCanvasScale(state.scale + 0.15); });
-      els.zoomReset.addEventListener("click", resetCanvas);
-      els.canvas.addEventListener("wheel", function (event) {
-        event.preventDefault();
-        setCanvasScale(state.scale + (event.deltaY < 0 ? 0.1 : -0.1), event.clientX, event.clientY);
-      }, { passive: false });
-      els.canvas.addEventListener("keydown", handleCanvasKeydown);
-      els.canvas.addEventListener("pointerdown", function (event) {
-        if (event.button !== 0 || (event.target.closest && event.target.closest(".warehouse-node"))) return;
-        panning = { clientX: event.clientX, clientY: event.clientY, x: state.x, y: state.y };
-        els.canvas.classList.add("is-panning");
-        els.canvas.setPointerCapture(event.pointerId);
-      });
-      els.canvas.addEventListener("pointermove", function (event) {
-        if (!panning) return;
-        state.x = panning.x + event.clientX - panning.clientX;
-        state.y = panning.y + event.clientY - panning.clientY;
-        applyCanvasTransform();
-      });
-      function endPan() {
-        panning = null;
-        els.canvas.classList.remove("is-panning");
-      }
-      els.canvas.addEventListener("pointerup", endPan);
-      els.canvas.addEventListener("pointercancel", endPan);
       els.codeDeveloperMode.addEventListener("change", function () {
         state.developerMode = els.codeDeveloperMode.checked === true;
         render();
@@ -1071,9 +1608,32 @@
       els.codeZoomReset.addEventListener("click", function () { setCodeScale(1); });
       els.ingestionEntry.addEventListener("click", function (event) {
         event.stopPropagation();
-        if (host.openManagement) host.openManagement();
+        if (host.openManagement) host.openManagement(currentSpecimenContext());
+      });
+      els.productNav.addEventListener("click", function () {
+        invalidatePendingCoreCodeRequests();
+        state.active = false;
+        if (host.openProduct) host.openProduct();
+      });
+      els.targetNav.addEventListener("click", function () {
+        invalidatePendingCoreCodeRequests();
+        state.active = false;
+        if (host.openTarget) host.openTarget();
+      });
+      els.compatNav.addEventListener("click", function () {
+        invalidatePendingCoreCodeRequests();
+        state.active = false;
+        if (host.openCompatibility) host.openCompatibility();
+      });
+      els.language.addEventListener("click", function () {
+        if (host.toggleLocale) host.toggleLocale();
       });
       document.addEventListener("keydown", handleDocumentKeydown);
+    }
+
+    function suspendScene() {
+      invalidatePendingCoreCodeRequests();
+      state.active = false;
     }
 
     function sync() {
@@ -1106,14 +1666,36 @@
         project_key: group ? group.key : null,
         capsule_id: cap ? capsuleId(cap) : null,
         query: state.query,
-        canvas: { scale: state.scale, x: state.x, y: state.y },
         code_scale: state.codeScale,
         developer_mode: state.developerMode,
         formal_capsule_count: formalCapsules().length,
         source_group_count: groups.length,
         source_relations_loading: detailsLoading(),
         verified_core_code: !!(group && cap && currentCoreCodeProjection(group, cap)),
+        search_match_count: searchMatchCount(groups, queryText()),
+        plan_context_status: state.contextStatus || null,
         focused_node: activeNodeKey() || null,
+      };
+    }
+
+    function currentSpecimenContext() {
+      var groups = sourceGroups();
+      var group = currentGroup(groups);
+      if (!group || state.view === "overview") return null;
+      var cap = selectedCapsule(group);
+      var counts = capabilityCounts(group);
+      return {
+        project_id: group.projectId || null,
+        project_key: group.key,
+        display_name: group.displayLabel,
+        exact_source: group.evidenceStatus === "formal_exact_version_source",
+        formal_capsule_count: group.capsules.length,
+        capsule_counts: counts,
+        capsule_id: cap ? capsuleId(cap) : null,
+        capsule_name: cap ? String(cap.name || capsuleId(cap)) : null,
+        capability_kind: cap ? String(cap.type || "") : null,
+        version_id: cap ? String(cap.version_id || "") : null,
+        canonical_hash: cap ? capsuleCanonicalHash(cap) : null,
       };
     }
 
@@ -1121,6 +1703,9 @@
       bind: bind,
       sync: sync,
       getState: getState,
+      open: enterScene,
+      resume: resumeScene,
+      suspend: suspendScene,
     };
   }
 

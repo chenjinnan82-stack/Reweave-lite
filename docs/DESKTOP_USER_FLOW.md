@@ -7,7 +7,9 @@ evidence chain.
 
 The published baseline remains `v0.3.0`. Current `main` additionally contains
 the completed Static Web review-only target backend and desktop flow from Plans
-3 and 4; those capabilities are not part of the existing Tag.
+3 and 4. The current worktree also contains the formal local-model planning
+implementation candidate; none of these post-tag changes are part of the
+existing Tag.
 
 ## Shared Warehouse Flow
 
@@ -23,20 +25,31 @@ Bind Source Box
 Source Boxes remain read-only. Local model selection is explicit; the model
 cannot bypass deterministic safety or publication gates.
 
-## Entry 1: Standalone Product
+## Entry 1: Product Goal and Formal Plan
 
 ```text
-Open standalone product generation
--> describe the task
--> select eligible active-current formal capsules
--> generate through ReweaveAppService and module_native
--> inspect the runnable three-file product
--> inspect manifest, provenance, quality/runtime evidence, and exact usage
+Describe one product goal in the main input
+-> if needed, explicitly select and Schema-probe an installed local <=15B planning model, proven by Ollama actual parameter metadata
+-> answer 1–3 blocking planning questions without a preselected recommendation
+-> review frontend, backend, data, and infrastructure sections
+-> inspect model suggestions bound by the backend to eligible exact capsule versions
+-> inspect explicit capability gaps
+-> ask for an explanation or review a structured plan Diff
+-> confirm the canonical plan
+-> restore planning or confirmed state from History after restart
 ```
 
-Generated files live in a new Reweave application-state product directory.
-The source project is unchanged. The service-backed public CLI uses this same
-formal generation path and requires explicit capsule IDs.
+The plan workspace lives in Reweave application state under
+`product_workspaces`; its internal workspace identity and paths never appear in
+the UI or developer evidence. Confirmation stores only an immutable plan
+version and receipt. It does not call `module_native`, generate files or a
+product, write the products directory, or record `product_capsule_usage`.
+
+The pre-existing formal standalone-generation backend, public CLI, generated
+products, and product history remain available. A separate backend action can
+compile a confirmed plan into `plan_execution.v1` and invoke the same composer
+once to create an isolated `product_candidate.v1`. This action is not yet wired
+into the formal desktop and cannot promote, apply, commit, or write usage.
 
 ## Entry 2: Static Web Target Review
 
@@ -72,11 +85,30 @@ write, apply, commit, or rollback.
   confirmation. Changing the task or capsule selection invalidates the Patch
   and confirmation. Changing display mode invalidates confirmation.
 - The public CLI has no target-integration entry.
+- Product-planning model traffic is loopback-only, proxy-free, redirect-free,
+  bounded, and bound to an exact selected name/digest with proven parameter
+  count. The model receives no capsule source, formal capsule/version identity,
+  canonical hash, SQLite row, product file, workspace path, raw prior prompt,
+  or raw prior response.
+- The product-plan frontend renders model/backend strings as text. Its state and
+  developer evidence exclude internal workspace identity, paths, prompts, and
+  raw responses.
 
 ## Current Acceptance
 
 The standalone product path is accepted through the existing formal service,
 composer, manifest/usage, and real QWebEngine product evidence.
+
+Formal product planning has a separate `PARTIAL` acceptance record. The
+deterministic backend, bounded human-editable Diff workflow, confirmation, and
+restart recovery pass; local 7B free-text revision remains unproven. A separate
+candidate record proves deterministic confirmed-plan compilation and real
+isolated candidate generation from a strict confirmed-plan protocol fixture.
+A real strong-model goal-to-confirmed-plan baseline remains outstanding. The
+planning evidence is recorded in
+[REWEAVE_PRODUCT_PLANNING_V1_ACCEPTANCE.json](reports/REWEAVE_PRODUCT_PLANNING_V1_ACCEPTANCE.json).
+Candidate evidence is recorded in
+[REWEAVE_PLAN_TO_EXECUTION_V1_ACCEPTANCE.json](reports/REWEAVE_PLAN_TO_EXECUTION_V1_ACCEPTANCE.json).
 
 The Static Web target path is accepted in two explicit layers:
 
@@ -87,8 +119,10 @@ The Static Web target path is accepted in two explicit layers:
    QWebEngine against a strict stub of that frozen backend contract, including
    zero bridge calls during final confirmation.
 
-These two records do not yet constitute one combined real
-`ReweaveAppService -> bridge -> QWebEngine UI` end-to-end run.
+A later independent record proves the combined real
+`ReweaveAppService -> bridge -> QWebEngine UI` review-only run against the fixed
+third-party target, while preserving the same chooser/analyze/generate bridge
+sequence, zero-call final confirmation, and zero-write evidence.
 
 ## Historical UI Terminology
 
@@ -108,6 +142,11 @@ product paths expose no Source Box write action.
 ## Not Available
 
 The desktop currently has no action for:
+
+- opening isolated candidates in the formal desktop or a full IDE;
+- promoting a candidate into products, usage, or a user worktree;
+- composing a large multi-capability product; current `module_native` still
+  accepts only 1–3 capsules in one capability group;
 
 - applying and validating a Patch in an isolated target copy, including build,
   test, and behavior checks;
