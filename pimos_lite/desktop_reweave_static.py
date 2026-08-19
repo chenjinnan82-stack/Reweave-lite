@@ -637,6 +637,150 @@ class ReweaveBridge:
                 )
 
             @Slot(str, result=str)
+            def copy_local_source_derived_handoff_binding(
+                self, payload_json: str = ""
+            ) -> str:
+                try:
+                    payload = (
+                        json.loads(payload_json) if payload_json else {}
+                    )
+                except json.JSONDecodeError:
+                    return self._phase4_error(
+                        "invalid_payload", "invalidPayload"
+                    )
+                if (
+                    type(payload) is not dict
+                    or set(payload) != {"source_root_id"}
+                    or type(payload["source_root_id"]) is not str
+                    or not payload["source_root_id"].strip()
+                ):
+                    return self._phase4_error(
+                        "source_derived_handoff_request_invalid",
+                        "source_derived_handoff_request_invalid",
+                    )
+                create = getattr(
+                    self._engine,
+                    "create_local_source_derived_handoff",
+                    None,
+                )
+                revoke = getattr(
+                    self._engine,
+                    "revoke_local_source_derived_handoff",
+                    None,
+                )
+                if not callable(create) or not callable(revoke):
+                    return self._phase4_error(
+                        "service_unavailable", "serviceUnavailable"
+                    )
+
+                def revoke_after_failure() -> bool:
+                    try:
+                        result = revoke(payload)
+                    except BaseException:
+                        return False
+                    data = (
+                        result.get("data")
+                        if type(result) is dict
+                        else None
+                    )
+                    return (
+                        type(result) is dict
+                        and result.get("ok") is True
+                        and type(data) is dict
+                        and data.get("status") in {"revoked", "none"}
+                    )
+
+                result = create(payload)
+                data = (
+                    result.get("data")
+                    if type(result) is dict
+                    else None
+                )
+                token = (
+                    data.get("source_derived_handoff_token")
+                    if type(data) is dict
+                    else None
+                )
+                if (
+                    type(result) is not dict
+                    or result.get("ok") is not True
+                    or type(token) is not str
+                    or re.fullmatch(
+                        r"source_derived_handoff_token_[0-9a-f]{48}",
+                        token,
+                    )
+                    is None
+                ):
+                    if (
+                        type(result) is dict
+                        and result.get("ok") is True
+                        and not revoke_after_failure()
+                    ):
+                        return self._phase4_error(
+                            "source_derived_handoff_clipboard_revoke_failed",
+                            "source_derived_handoff_clipboard_revoke_failed",
+                        )
+                    return (
+                        json.dumps(result)
+                        if type(result) is dict
+                        else self._phase4_error(
+                            "internal_error", "internalError"
+                        )
+                    )
+                request_line = json.dumps(
+                    {
+                        "protocol": "reweave_agent_jsonl.v2",
+                        "id": "bind-user-handoff",
+                        "action": "bind_user_handoff",
+                        "payload": {"handoff_token": token},
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+                try:
+                    _copy_to_system_clipboard(request_line)
+                except BaseException:
+                    if not revoke_after_failure():
+                        return self._phase4_error(
+                            "source_derived_handoff_clipboard_revoke_failed",
+                            "source_derived_handoff_clipboard_revoke_failed",
+                        )
+                    return self._phase4_error(
+                        "source_derived_handoff_clipboard_failed",
+                        "source_derived_handoff_clipboard_failed",
+                    )
+                return json.dumps(
+                    {
+                        "ok": True,
+                        "data": {
+                            "schema_version": (
+                                "source_derived_handoff_status.v1"
+                            ),
+                            "status": "active",
+                            "created_at": data.get("created_at"),
+                        },
+                    }
+                )
+
+            @Slot(str, result=str)
+            def revoke_local_source_derived_handoff(
+                self, payload_json: str = ""
+            ) -> str:
+                return self._phase4_call(
+                    "revoke_local_source_derived_handoff",
+                    payload_json,
+                )
+
+            @Slot(str, result=str)
+            def decide_local_source_derived_handoff_proposal(
+                self, payload_json: str = ""
+            ) -> str:
+                return self._phase4_call(
+                    "decide_local_source_derived_handoff_proposal",
+                    payload_json,
+                )
+
+            @Slot(str, result=str)
             def get_confirmed_product_plan(self, payload_json: str = "") -> str:
                 return self._phase4_call(
                     "get_confirmed_product_plan", payload_json

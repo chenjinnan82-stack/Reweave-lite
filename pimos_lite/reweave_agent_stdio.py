@@ -23,10 +23,17 @@ AGENT_ACTIONS = frozenset(
         "start_source_intake",
         "get_source_intake_run",
         "get_source_review_summaries",
+        "prepare_source_derived_computation",
+        "get_source_derived_authorization",
+        "start_source_derived_computation",
+        "get_source_derived_run",
+        "cancel_source_derived_run",
+        "get_source_derived_review_summary",
     }
 )
 _CANDIDATE_ACTION_PROFILE = "product_candidate_agent.v1"
 _SOURCE_ACTION_PROFILE = "source_intake_agent.v1"
+_SOURCE_DERIVED_ACTION_PROFILE = "source_derived_agent.v1"
 _PROFILE_ACTIONS = {
     _CANDIDATE_ACTION_PROFILE: frozenset(
         {
@@ -45,10 +52,23 @@ _PROFILE_ACTIONS = {
             "get_source_review_summaries",
         }
     ),
+    _SOURCE_DERIVED_ACTION_PROFILE: frozenset(
+        {
+            "prepare_source_derived_computation",
+            "get_source_derived_authorization",
+            "start_source_derived_computation",
+            "get_source_derived_run",
+            "cancel_source_derived_run",
+            "get_source_derived_review_summary",
+        }
+    ),
 }
 _CANDIDATE_HANDOFF_TOKEN = re.compile(r"handoff_token_[0-9a-f]{48}\Z")
 _SOURCE_HANDOFF_TOKEN = re.compile(
     r"source_handoff_token_[0-9a-f]{48}\Z"
+)
+_SOURCE_DERIVED_HANDOFF_TOKEN = re.compile(
+    r"source_derived_handoff_token_[0-9a-f]{48}\Z"
 )
 _REQUEST_ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
 _MAX_REQUEST_BYTES = 1024 * 1024
@@ -346,6 +366,22 @@ def _resolve_handoff(
         ):
             raise ValueError("source_handoff_action_profile_invalid")
         return _SOURCE_ACTION_PROFILE, binding
+    if (
+        _SOURCE_DERIVED_HANDOFF_TOKEN.fullmatch(handoff_token)
+        is not None
+    ):
+        binding = service._resolve_local_source_derived_handoff(
+            handoff_token
+        )
+        if (
+            type(binding) is not dict
+            or binding.get("action_profile")
+            != _SOURCE_DERIVED_ACTION_PROFILE
+        ):
+            raise ValueError(
+                "source_derived_handoff_action_profile_invalid"
+            )
+        return _SOURCE_DERIVED_ACTION_PROFILE, binding
     raise ValueError("agent_handoff_token_invalid")
 
 
@@ -442,13 +478,37 @@ def dispatch_agent_request(
         "start_source_intake": set(),
         "get_source_intake_run": set(),
         "get_source_review_summaries": set(),
+        "prepare_source_derived_computation": {
+            "source_relpath",
+            "behavior_intent",
+            "input_field",
+            "input_min_length",
+            "input_max_length",
+            "result_field",
+            "result_enum",
+            "acceptance_cases",
+        },
+        "get_source_derived_authorization": set(),
+        "start_source_derived_computation": set(),
+        "get_source_derived_run": set(),
+        "cancel_source_derived_run": set(),
+        "get_source_derived_review_summary": set(),
     }[action]
-    if set(payload) != expected_fields or any(
-        type(payload[field]) is not str for field in expected_fields
+    if set(payload) != expected_fields or (
+        action != "prepare_source_derived_computation"
+        and any(
+            type(payload[field]) is not str for field in expected_fields
+        )
     ):
         return _error(request_id, "agent_action_payload_invalid")
     if action in _PROFILE_ACTIONS[_SOURCE_ACTION_PROFILE]:
         method_payload = binding
+    elif action in _PROFILE_ACTIONS[_SOURCE_DERIVED_ACTION_PROFILE]:
+        method_payload = (
+            (binding, payload)
+            if action == "prepare_source_derived_computation"
+            else binding
+        )
     elif action == "list_reusable_product_capabilities":
         method_payload = {}
     elif action == "get_confirmed_product_plan":
@@ -488,15 +548,54 @@ def dispatch_agent_request(
         "get_source_review_summaries": (
             "_get_authorized_source_review_summaries"
         ),
+        "prepare_source_derived_computation": (
+            "_prepare_authorized_source_derived_computation"
+        ),
+        "get_source_derived_authorization": (
+            "_get_authorized_source_derived_authorization"
+        ),
+        "start_source_derived_computation": (
+            "_start_authorized_source_derived_computation"
+        ),
+        "get_source_derived_run": (
+            "_get_authorized_source_derived_run"
+        ),
+        "cancel_source_derived_run": (
+            "_cancel_authorized_source_derived_run"
+        ),
+        "get_source_derived_review_summary": (
+            "_get_authorized_source_derived_review_summary"
+        ),
     }
     method = getattr(
         service,
         source_method_names.get(action, action),
     )
     try:
-        response = method(method_payload)
-    except Exception:
-        return _error(request_id, "agent_internal_error")
+        response = (
+            method(*method_payload)
+            if type(method_payload) is tuple
+            else method(method_payload)
+        )
+    except Exception as exc:
+        code = getattr(exc, "code", None)
+        return _error(
+            request_id,
+            code
+            if action
+            in _PROFILE_ACTIONS[_SOURCE_DERIVED_ACTION_PROFILE]
+            and type(code) is str
+            and re.fullmatch(r"[a-z][a-z0-9_]{1,95}", code)
+            else "agent_internal_error",
+        )
+    if (
+        action in _PROFILE_ACTIONS[_SOURCE_DERIVED_ACTION_PROFILE]
+        and (
+            type(response) is not dict
+            or type(response.get("ok")) is not bool
+        )
+    ):
+        response = {"ok": True, "data": response}
     if type(response) is not dict or type(response.get("ok")) is not bool:
         return _error(request_id, "agent_internal_error")
     if response["ok"] is not True:
@@ -558,6 +657,25 @@ def dispatch_agent_request(
         if type(data) is not dict or type(data.get("items")) is not list:
             return _error(request_id, "agent_internal_error")
         data = _source_review_projection(data)
+    elif action in {
+        "prepare_source_derived_computation",
+        "get_source_derived_authorization",
+        "get_source_derived_run",
+        "get_source_derived_review_summary",
+    }:
+        if type(data) is not dict:
+            return _error(request_id, "agent_internal_error")
+    elif action == "start_source_derived_computation":
+        run_id = response.get("run_id")
+        if type(run_id) is not str:
+            return _error(request_id, "agent_internal_error")
+        data = {
+            "run_id": run_id,
+            "status": response.get("status"),
+        }
+    elif action == "cancel_source_derived_run":
+        if type(data) is not dict:
+            return _error(request_id, "agent_internal_error")
     return {
         "protocol": AGENT_PROTOCOL_VERSION,
         "id": request_id,

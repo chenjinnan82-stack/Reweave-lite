@@ -24,6 +24,10 @@ from pimos_lite.reweave_javascript_source import (
     _descriptor_relative_snapshot_supported,
     javascript_source_snapshot_supported,
 )
+from pimos_lite.reweave_agent_stdio import (
+    AGENT_PROTOCOL_VERSION,
+    dispatch_agent_request,
+)
 from pimos_lite.reweave_source_derivation import (
     get_source_derived_run,
 )
@@ -480,6 +484,569 @@ class Phase4ManagementTest(unittest.TestCase):
         validation_database.write_bytes(database_bytes)
         if os.name == "posix":
             validation_database.chmod(0o600)
+
+    def test_source_derived_agent_handoff_requires_desktop_approval(
+        self,
+    ) -> None:
+        source = self.root / "source-derived-agent"
+        evidence_file = source / "src" / "rules.ts"
+        evidence_file.parent.mkdir(parents=True)
+        evidence_file.write_text(
+            'export function classify(value: string) { return value; }\n',
+            encoding="utf-8",
+        )
+        self.store.initialize()
+        self.store.migrate_v1_to_v2()
+        root = self.service._capsule_intake.bind_source_root(
+            source,
+            root_kind="project_collection",
+        )
+        root_id = str(root["root_id"])
+        self._select_test_supervision_model()
+        source_model = {
+            "name": "source-derived-test:1b",
+            "digest": "a" * 64,
+            "parameter_count": 1_000_000_000,
+            "parameter_size": "1B",
+        }
+        payload = {
+            "source_relpath": "src/rules.ts",
+            "behavior_intent": "Classify bounded text.",
+            "input_field": "message",
+            "input_min_length": 1,
+            "input_max_length": 1000,
+            "result_field": "classification",
+            "result_enum": ["normal", "urgent"],
+            "acceptance_cases": [
+                {
+                    "input_text": "routine task",
+                    "expected_result": "normal",
+                },
+                {
+                    "input_text": "urgent task",
+                    "expected_result": "urgent",
+                },
+            ],
+        }
+        if not self._source_derived_platform_supported(
+            {"source_root_id": root_id, **payload}
+        ):
+            return
+        proposal = {
+            "schema": "capability_source_proposal.v2",
+            "entry": {
+                "module_relpath": "capability.js",
+                "export_name": "compute",
+            },
+            "files": [
+                {
+                    "path": "capability.js",
+                    "content": (
+                        "export function compute(arg0) {\n"
+                        '  return arg0.includes("urgent") '
+                        '? "urgent" : "normal";\n'
+                        "}\n"
+                    ),
+                }
+            ],
+            "witnesses": [
+                {
+                    "input": {"message": "routine"},
+                    "expected_scalar_result": "normal",
+                },
+                {
+                    "input": {"message": "urgent"},
+                    "expected_scalar_result": "urgent",
+                },
+            ],
+        }
+        source_calls: list[str] = []
+        supervisor_calls: list[str] = []
+
+        def generate(*_args, **_kwargs):
+            source_calls.append("source")
+            return {
+                "response": proposal,
+                "evidence": {"response_digest": "c" * 64},
+            }
+
+        def approve(_self, _summary, capability_kind):
+            supervisor_calls.append(capability_kind)
+            return (
+                {
+                    "schema_version": "capsule_supervision.v1",
+                    "verdict": "approve",
+                    "capability_kind": capability_kind,
+                    "semantic_summary": "Bounded local computation.",
+                    "keep_reason_codes": [
+                        "DECLARED_LOCAL_CAPABILITY"
+                    ],
+                    "remove_reason_codes": [],
+                    "brand_signals": [],
+                    "sensitive_data_status": "clear",
+                    "hidden_dependency_codes": [],
+                    "duplicate_suggestions": [],
+                    "review_required": False,
+                },
+                "d" * 64,
+                {
+                    "name": "source-handoff-test-model",
+                    "digest": "b" * 64,
+                },
+            )
+
+        def request(
+            session: dict[str, object],
+            action: str,
+            action_payload: dict[str, object],
+        ) -> dict[str, object]:
+            return dispatch_agent_request(
+                self.service,
+                {
+                    "protocol": AGENT_PROTOCOL_VERSION,
+                    "id": action,
+                    "action": action,
+                    "payload": action_payload,
+                },
+                session,
+            )
+
+        with self.store.read_connection() as connection:
+            formal_before = {
+                table: int(
+                    connection.execute(
+                        f"SELECT COUNT(*) FROM {table}"
+                    ).fetchone()[0]
+                )
+                for table in ("review_items", "capsules", "capsule_versions")
+            }
+        revision_before = self.store.current_revision()
+        with patch.object(
+            self.service._product_planner,
+            "_selected_model",
+            return_value=source_model,
+        ), patch.object(
+            self.service._product_planner,
+            "run_source_derived_capability_source_proposal",
+            side_effect=generate,
+        ), patch(
+            "pimos_lite.reweave_capsule_stage3.OllamaSupervisor.supervise",
+            new=approve,
+        ):
+            created = self.service.create_local_source_derived_handoff(
+                {"source_root_id": root_id}
+            )
+            self.assertTrue(created["ok"], created)
+            token = created["data"]["source_derived_handoff_token"]
+            self.assertEqual(source_calls, [])
+            session: dict[str, object] = {}
+            self.assertTrue(
+                request(
+                    session,
+                    "bind_user_handoff",
+                    {"handoff_token": token},
+                )["ok"]
+            )
+            prepared = request(
+                session,
+                "prepare_source_derived_computation",
+                payload,
+            )
+            self.assertTrue(prepared["ok"], prepared)
+            self.assertEqual(
+                prepared["data"]["proposal_status"], "pending"
+            )
+            prepared_json = json.dumps(
+                prepared, ensure_ascii=False, sort_keys=True
+            )
+            for private in (
+                root_id,
+                "input_field",
+                "result_field",
+                "catalog_digest",
+                "adapter",
+                "proof",
+                "source_proposal_model",
+                "supervision_model",
+            ):
+                self.assertNotIn(private, prepared_json)
+            self.assertEqual(source_calls, [])
+            self.assertFalse(
+                (
+                    self.state / "source_derived_computations"
+                ).exists()
+            )
+            blocked = request(
+                session,
+                "start_source_derived_computation",
+                {},
+            )
+            self.assertFalse(blocked["ok"])
+            self.assertEqual(
+                blocked["error"]["code"],
+                "source_derived_handoff_approval_required",
+            )
+            approved = (
+                self.service
+                .decide_local_source_derived_handoff_proposal(
+                    {
+                        "source_root_id": root_id,
+                        "decision": "approve",
+                    }
+                )
+            )
+            self.assertTrue(approved["ok"], approved)
+            self.assertEqual(
+                approved["data"]["proposal_status"], "approved"
+            )
+            self.assertEqual(source_calls, [])
+            started = request(
+                session,
+                "start_source_derived_computation",
+                {},
+            )
+            self.assertTrue(started["ok"], started)
+            run_id = str(started["data"]["run_id"])
+            for _ in range(3_000):
+                current = request(
+                    session, "get_source_derived_run", {}
+                )
+                self.assertTrue(current["ok"], current)
+                if current["data"]["status"] in {
+                    "review_required",
+                    "failed",
+                    "cancelled",
+                }:
+                    break
+                time.sleep(0.01)
+            else:
+                self.fail("source-derived Agent run did not finish")
+            self.assertEqual(
+                current["data"]["status"], "review_required", current
+            )
+            self.assertEqual(
+                current["data"]["review_scope"], "isolated"
+            )
+            summary = request(
+                session,
+                "get_source_derived_review_summary",
+                {},
+            )
+            self.assertTrue(summary["ok"], summary)
+            self.assertEqual(
+                summary["data"]["acceptance_passed_count"], 2
+            )
+            self.assertNotIn(
+                token,
+                json.dumps(
+                    {
+                        "prepared": prepared,
+                        "approved": approved,
+                        "started": started,
+                        "current": current,
+                        "summary": summary,
+                    }
+                ),
+            )
+            repeated = request(
+                session,
+                "start_source_derived_computation",
+                {},
+            )
+            self.assertTrue(repeated["ok"], repeated)
+            self.assertEqual(repeated["data"]["run_id"], run_id)
+            self.assertEqual(source_calls, ["source"])
+            self.assertEqual(supervisor_calls, ["computation"])
+            revoked = (
+                self.service.revoke_local_source_derived_handoff(
+                    {"source_root_id": root_id}
+                )
+            )
+            self.assertTrue(revoked["ok"], revoked)
+            after_revoke = request(
+                session, "get_source_derived_run", {}
+            )
+            self.assertFalse(after_revoke["ok"])
+            self.assertEqual(
+                after_revoke["error"]["code"],
+                "source_derived_handoff_revoked",
+            )
+            rejected_create = (
+                self.service.create_local_source_derived_handoff(
+                    {"source_root_id": root_id}
+                )
+            )
+            self.assertTrue(rejected_create["ok"], rejected_create)
+            rejected_token = rejected_create["data"][
+                "source_derived_handoff_token"
+            ]
+            rejected_session: dict[str, object] = {}
+            self.assertTrue(
+                request(
+                    rejected_session,
+                    "bind_user_handoff",
+                    {"handoff_token": rejected_token},
+                )["ok"]
+            )
+            self.assertTrue(
+                request(
+                    rejected_session,
+                    "prepare_source_derived_computation",
+                    payload,
+                )["ok"]
+            )
+            rejected = (
+                self.service
+                .decide_local_source_derived_handoff_proposal(
+                    {
+                        "source_root_id": root_id,
+                        "decision": "reject",
+                    }
+                )
+            )
+            self.assertTrue(rejected["ok"], rejected)
+            self.assertEqual(
+                rejected["data"]["proposal_status"], "rejected"
+            )
+            rejected_start = request(
+                rejected_session,
+                "start_source_derived_computation",
+                {},
+            )
+            self.assertFalse(rejected_start["ok"])
+            self.assertEqual(
+                rejected_start["error"]["code"],
+                "source_derived_handoff_approval_required",
+            )
+            self.assertEqual(source_calls, ["source"])
+            self.assertEqual(supervisor_calls, ["computation"])
+
+        self.assertEqual(self.store.current_revision(), revision_before)
+        with self.store.read_connection() as connection:
+            self.assertEqual(
+                {
+                    table: int(
+                        connection.execute(
+                            f"SELECT COUNT(*) FROM {table}"
+                        ).fetchone()[0]
+                    )
+                    for table in (
+                        "review_items",
+                        "capsules",
+                        "capsule_versions",
+                    )
+                },
+                formal_before,
+            )
+
+    def test_source_derived_handoff_recovers_and_rejects_drift(
+        self,
+    ) -> None:
+        source = self.root / "source-derived-handoff-recovery"
+        source.mkdir()
+        evidence_file = source / "rules.ts"
+        evidence_file.write_text(
+            'export const rules = ["urgent"];\n',
+            encoding="utf-8",
+        )
+        self.store.initialize()
+        self.store.migrate_v1_to_v2()
+        root = self.service._capsule_intake.bind_source_root(
+            source,
+            root_kind="project_collection",
+        )
+        root_id = str(root["root_id"])
+        self._select_test_supervision_model()
+        model = {
+            "name": "source-derived-test:1b",
+            "digest": "a" * 64,
+            "parameter_count": 1_000_000_000,
+            "parameter_size": "1B",
+        }
+        target = {
+            "source_relpath": "rules.ts",
+            "behavior_intent": "Classify bounded text.",
+            "input_field": "message",
+            "input_min_length": 1,
+            "input_max_length": 1000,
+            "result_field": "classification",
+            "result_enum": ["normal", "urgent"],
+            "acceptance_cases": [
+                {
+                    "input_text": "urgent",
+                    "expected_result": "urgent",
+                }
+            ],
+        }
+        with patch.object(
+            self.service._product_planner,
+            "_selected_model",
+            return_value=model,
+        ):
+            created = self.service.create_local_source_derived_handoff(
+                {"source_root_id": root_id}
+            )
+            self.assertTrue(created["ok"], created)
+            token = created["data"]["source_derived_handoff_token"]
+            binding = (
+                self.service._resolve_local_source_derived_handoff(token)
+            )
+            prepared = (
+                self.service
+                ._prepare_authorized_source_derived_computation(
+                    binding, target
+                )
+            )
+            self.assertEqual(prepared["proposal_status"], "pending")
+        token_digest = hashlib.sha256(token.encode()).hexdigest()
+        sidecar = (
+            self.state
+            / "source_derived_handoffs"
+            / f"source_derived_handoff_v1_{token_digest}.json"
+        )
+        original_sidecar = sidecar.read_bytes()
+        self.assertNotIn(token.encode(), original_sidecar)
+        self.assertNotIn(str(source).encode(), original_sidecar)
+
+        self.service.close()
+        self.store = CapsuleWarehouseStore(
+            self.state / "capsule_warehouse.sqlite3"
+        )
+        self.service = ReweaveAppService(
+            engine=LocalReweaveEngine(),
+            capsule_store=self.store,
+        )
+        with patch.object(
+            self.service._product_planner,
+            "_selected_model",
+            return_value=model,
+        ):
+            recovered = (
+                self.service._resolve_local_source_derived_handoff(token)
+            )
+            self.assertEqual(recovered, binding)
+            self.assertEqual(
+                self.service
+                ._get_authorized_source_derived_authorization(
+                    recovered
+                )["proposal_status"],
+                "pending",
+            )
+            evidence_before = evidence_file.read_bytes()
+            evidence_file.write_bytes(evidence_before + b"// drift\n")
+            with self.assertRaisesRegex(
+                Exception, "source_derived_handoff_stale"
+            ):
+                self.service._resolve_local_source_derived_handoff(token)
+            evidence_file.write_bytes(evidence_before)
+
+            tampered = json.loads(original_sidecar)
+            tampered["proposal"]["request"][
+                "behavior_intent"
+            ] = "tampered"
+            sidecar.write_bytes(
+                json.dumps(
+                    tampered,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            )
+            if os.name == "posix":
+                sidecar.chmod(0o600)
+            with self.assertRaisesRegex(
+                Exception, "source_derived_handoff_conflict"
+            ):
+                self.service._resolve_local_source_derived_handoff(token)
+            sidecar.write_bytes(original_sidecar)
+            if os.name == "posix":
+                sidecar.chmod(0o600)
+            surrogate = json.loads(original_sidecar)
+            surrogate["source_proposal_model"]["name"] = "\ud800"
+            sidecar.write_bytes(
+                json.dumps(
+                    surrogate,
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            )
+            if os.name == "posix":
+                sidecar.chmod(0o600)
+            with self.assertRaisesRegex(
+                Exception, "source_derived_handoff_conflict"
+            ):
+                self.service._resolve_local_source_derived_handoff(token)
+            sidecar.write_bytes(original_sidecar)
+            if os.name == "posix":
+                sidecar.chmod(0o600)
+            surrogate = json.loads(original_sidecar)
+            surrogate["proposal"]["request"][
+                "behavior_intent"
+            ] = "\ud800"
+            sidecar.write_bytes(
+                json.dumps(
+                    surrogate,
+                    ensure_ascii=True,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            )
+            if os.name == "posix":
+                sidecar.chmod(0o600)
+            with self.assertRaisesRegex(
+                Exception, "source_derived_handoff_conflict"
+            ):
+                self.service._resolve_local_source_derived_handoff(token)
+            sidecar.write_bytes(original_sidecar)
+            if os.name == "posix":
+                sidecar.chmod(0o600)
+            with patch.object(
+                self.service._product_planner,
+                "_selected_model",
+                return_value={**model, "digest": "8" * 64},
+            ):
+                with self.assertRaisesRegex(
+                    Exception, "source_derived_handoff_stale"
+                ):
+                    self.service._resolve_local_source_derived_handoff(
+                        token
+                    )
+
+            other_digest = "9" * 64
+            duplicate = json.loads(original_sidecar)
+            duplicate["token_digest"] = other_digest
+            body = {
+                key: value
+                for key, value in duplicate.items()
+                if key != "canonical_digest"
+            }
+            duplicate["canonical_digest"] = canonical_json_digest(body)
+            duplicate_path = (
+                sidecar.parent
+                / f"source_derived_handoff_v1_{other_digest}.json"
+            )
+            duplicate_path.write_bytes(
+                json.dumps(
+                    duplicate,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode()
+            )
+            if os.name == "posix":
+                duplicate_path.chmod(0o600)
+            with self.assertRaisesRegex(
+                Exception, "source_derived_handoff_conflict"
+            ):
+                self.service._resolve_local_source_derived_handoff(token)
+            duplicate_path.unlink()
+            with self.store.transaction() as connection:
+                self.store.bump_revision(connection)
+            with self.assertRaisesRegex(
+                Exception, "source_derived_handoff_stale"
+            ):
+                self.service._resolve_local_source_derived_handoff(token)
 
     def test_source_derived_run_fails_closed_on_restart_and_tamper(
         self,

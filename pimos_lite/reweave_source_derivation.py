@@ -55,6 +55,9 @@ SOURCE_DERIVED_RUN_EVENT_VERSION = (
 SOURCE_DERIVED_RUN_STATUS_VERSION = (
     "source_derived_computation_run_status.v1"
 )
+SOURCE_DERIVED_AGENT_PROPOSAL_VERSION = (
+    "source_derived_authorization_proposal.v1"
+)
 SOURCE_DERIVED_STATE_DIRECTORY = "source_derived_computations"
 SOURCE_DERIVED_RUN_STATUSES = frozenset(
     {"pending", "running", "review_required", "failed", "cancelled"}
@@ -875,6 +878,185 @@ def validate_source_derived_authorization(
         raise SourceDerivationError(
             "source_derivation_authorization_invalid"
         ) from exc
+    return copy.deepcopy(row)
+
+
+def build_source_derived_agent_proposal(
+    *,
+    handoff_binding_digest: str,
+    authorization: dict[str, Any],
+    evidence: list[dict[str, Any]],
+    prepared_at: str,
+) -> dict[str, Any]:
+    """Project a validated target without granting model execution."""
+
+    row = validate_source_derived_authorization(authorization)
+    evidence_rows = _evidence_rows(evidence, include_content=True)
+    evidence_identity = [
+        {key: item[key] for key in ("logical_path", "sha256", "size_bytes")}
+        for item in evidence_rows
+    ]
+    input_field = row["input_field"]
+    result_field = row["result_field"]
+    if (
+        _DIGEST.fullmatch(str(handoff_binding_digest)) is None
+        or evidence_identity != row["evidence"]
+        or type(prepared_at) is not str
+        or not prepared_at
+        or not 1 <= len(row["acceptance_cases"]) <= 3
+    ):
+        raise SourceDerivationError("source_derivation_proposal_invalid")
+    input_contract = row["input_contract"]["properties"][input_field]
+    request = {
+        "source_relpath": row["evidence"][0]["logical_path"],
+        "behavior_intent": row["behavior_intent"],
+        "input_field": input_field,
+        "input_min_length": input_contract["min_length"],
+        "input_max_length": input_contract["max_length"],
+        "result_field": result_field,
+        "result_enum": copy.deepcopy(row["result_enum"]),
+        "acceptance_cases": [
+            {
+                "input_text": case["input"][input_field],
+                "expected_result": case["expected_output"][result_field],
+            }
+            for case in row["acceptance_cases"]
+        ],
+    }
+    body = {
+        "schema_version": SOURCE_DERIVED_AGENT_PROPOSAL_VERSION,
+        "handoff_binding_digest": handoff_binding_digest,
+        "request": request,
+        "source_snapshot_sha256": row["source_snapshot_sha256"],
+        "project_graph_digest": row["project_graph_digest"],
+        "evidence": evidence_identity,
+        "source_proposal_model": copy.deepcopy(
+            row["source_proposal_model"]
+        ),
+        "warehouse_revision": row["warehouse_revision"],
+        "catalog_digest": row["catalog_digest"],
+        "prepared_at": prepared_at,
+    }
+    return {**body, "canonical_digest": canonical_json_digest(body)}
+
+
+def validate_source_derived_agent_proposal(
+    value: Any,
+) -> dict[str, Any]:
+    row = _exact(
+        value,
+        {
+            "schema_version",
+            "handoff_binding_digest",
+            "request",
+            "source_snapshot_sha256",
+            "project_graph_digest",
+            "evidence",
+            "source_proposal_model",
+            "warehouse_revision",
+            "catalog_digest",
+            "prepared_at",
+            "canonical_digest",
+        },
+        "source_derivation_proposal_invalid",
+    )
+    body = {
+        key: copy.deepcopy(item)
+        for key, item in row.items()
+        if key != "canonical_digest"
+    }
+    request = _exact(
+        row["request"],
+        {
+            "source_relpath",
+            "behavior_intent",
+            "input_field",
+            "input_min_length",
+            "input_max_length",
+            "result_field",
+            "result_enum",
+            "acceptance_cases",
+        },
+        "source_derivation_proposal_invalid",
+    )
+    field = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
+    result_enum = request["result_enum"]
+    acceptance = request["acceptance_cases"]
+
+    def utf8_length(text: str) -> int:
+        try:
+            return len(text.encode("utf-8"))
+        except UnicodeEncodeError as exc:
+            raise SourceDerivationError(
+                "source_derivation_proposal_invalid"
+            ) from exc
+
+    def utf16_length(text: str) -> int:
+        try:
+            return len(text.encode("utf-16-le")) // 2
+        except UnicodeEncodeError as exc:
+            raise SourceDerivationError(
+                "source_derivation_proposal_invalid"
+            ) from exc
+
+    if (
+        row["schema_version"] != SOURCE_DERIVED_AGENT_PROPOSAL_VERSION
+        or _DIGEST.fullmatch(str(row["handoff_binding_digest"])) is None
+        or _safe_relative(request["source_relpath"])
+        != request["source_relpath"]
+        or type(request["behavior_intent"]) is not str
+        or not request["behavior_intent"].strip()
+        or utf8_length(request["behavior_intent"]) > 2_000
+        or field.fullmatch(str(request["input_field"])) is None
+        or field.fullmatch(str(request["result_field"])) is None
+        or request["input_field"] == request["result_field"]
+        or type(request["input_min_length"]) is not int
+        or type(request["input_max_length"]) is not int
+        or not 0
+        <= request["input_min_length"]
+        <= request["input_max_length"]
+        <= 10_000
+        or type(result_enum) is not list
+        or not 2 <= len(result_enum) <= 32
+        or any(
+            type(item) is not str
+            or not item
+            or utf16_length(item) > 10_000
+            for item in result_enum
+        )
+        or len(set(result_enum)) != len(result_enum)
+        or result_enum
+        != sorted(result_enum, key=lambda item: item.encode("utf-8"))
+        or type(acceptance) is not list
+        or not 1 <= len(acceptance) <= 3
+        or any(
+            type(item) is not dict
+            or set(item) != {"input_text", "expected_result"}
+            or type(item["input_text"]) is not str
+            or not request["input_min_length"]
+            <= utf16_length(item["input_text"])
+            <= request["input_max_length"]
+            or item["expected_result"] not in result_enum
+            for item in acceptance
+        )
+        or _evidence_rows(row["evidence"], include_content=False)
+        != row["evidence"]
+        or len(row["evidence"]) != 1
+        or row["evidence"][0]["logical_path"]
+        != request["source_relpath"]
+        or row["source_snapshot_sha256"]
+        != row["evidence"][0]["sha256"]
+        or _DIGEST.fullmatch(str(row["project_graph_digest"])) is None
+        or _validate_supervision_model(row["source_proposal_model"])
+        != row["source_proposal_model"]
+        or type(row["warehouse_revision"]) is not int
+        or row["warehouse_revision"] < 0
+        or _DIGEST.fullmatch(str(row["catalog_digest"])) is None
+        or type(row["prepared_at"]) is not str
+        or not row["prepared_at"]
+        or row["canonical_digest"] != canonical_json_digest(body)
+    ):
+        raise SourceDerivationError("source_derivation_proposal_invalid")
     return copy.deepcopy(row)
 
 

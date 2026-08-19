@@ -1249,6 +1249,24 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert (
         '"authorize_and_start_source_derived_computation"' in app
     )
+    assert (
+        '"copy_local_source_derived_handoff_binding"' in app
+    )
+    assert (
+        '"decide_local_source_derived_handoff_proposal"' in app
+    )
+    assert '"revoke_local_source_derived_handoff"' in app
+    assert 'authorizeAgent.disabled = true;' in app
+    assert 'authorizeAgent.textContent = t("sourceDerivedAgentCopiedClose");' in app
+    assert (
+        'if (!window.confirm(t("sourceDerivedAgentRevokeConfirm"))) return;'
+        in app
+    )
+    source_derived_authorize_handler = app[
+        app.index('authorizeAgent.dataset.action = "authorize-source-derived-agent"') :
+        app.index('row.appendChild(authorizeAgent);')
+    ]
+    assert "refreshIngestionManagement()" not in source_derived_authorize_handler
     assert 'dataset.action = "authorize-source-derived"' in app
     assert "sourceDerivedNotice" in app
     assert "input_text:" in app
@@ -1261,7 +1279,9 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert 'String(project.source_type || "") === "static_web"' in app
     assert '"completed_with_pending",' in app
     assert "source_handoff_token_" not in app
+    assert "source_derived_handoff_token_" not in app
     assert '"source_handoff_status.v1"' in app
+    assert '"source_derived_handoff_status.v1"' in app
     assert (
         'String(item.project_id || "") ===\n'
         "            sourceHandoffContext.project_id" in app

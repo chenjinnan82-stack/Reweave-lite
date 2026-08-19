@@ -367,6 +367,23 @@
       source_handoff_request_invalid: "来源 Agent 授权请求无效。",
       source_handoff_clipboard_failed: "剪贴板写入失败，来源 Agent 授权已撤销。",
       source_handoff_clipboard_revoke_failed: "剪贴板写入失败，且授权撤销未能确认。请关闭梭子并刷新状态。",
+      sourceDerivedAgentTitle: "交给 Agent 准备单文件计算提案",
+      sourceDerivedAgentAuthorize: "授权 Agent 准备计算提案",
+      sourceDerivedAgentActive: "授权已复制。请关闭 Reweave Desktop 后再启动梭子。",
+      sourceDerivedAgentCopiedClose: "绑定已复制，请关闭 Reweave Desktop。",
+      sourceDerivedAgentWaiting: "等待 Agent 准备提案。",
+      sourceDerivedAgentApprove: "批准提案",
+      sourceDerivedAgentReject: "拒绝提案",
+      sourceDerivedAgentApproved: "提案已批准；请关闭 Desktop 后由 Agent 启动隔离运行。",
+      sourceDerivedAgentRejected: "提案已拒绝，未调用模型。",
+      sourceDerivedAgentRevoke: "撤销 Agent 授权",
+      sourceDerivedAgentRevokeConfirm: "确认撤销本次 Agent 计算提案授权？",
+      sourceDerivedAgentRevoked: "Agent 授权已撤销。",
+      sourceDerivedAgentStale: "来源、模型或正式仓库已漂移；只能撤销。",
+      sourceDerivedAgentConflict: "Agent 授权状态冲突；只能安全撤销。",
+      sourceDerivedAgentModelNotice: "批准后仍不会调用模型；Agent 启动时才会各调用一次源码模型和监督模型。",
+      source_derived_handoff_clipboard_failed: "剪贴板写入失败，授权已撤销。",
+      source_derived_handoff_clipboard_revoke_failed: "剪贴板写入失败且撤销未确认。请保持梭子关闭并刷新。",
       sourceDerivedTitle: "从单一证据文件生成隔离计算提案",
       sourceDerivedNotice: "将分别调用一次冻结源码提案模型和监督模型；失败后不会自动重试。本次只生成隔离 Review，不写正式能力仓库。",
       sourceDerivedRelpath: "JS/TS 证据文件相对路径",
@@ -890,6 +907,23 @@
       source_handoff_request_invalid: "The source Agent authorization request is invalid.",
       source_handoff_clipboard_failed: "Clipboard write failed and the source Agent authorization was revoked.",
       source_handoff_clipboard_revoke_failed: "Clipboard write failed and revocation could not be confirmed. Keep the Shuttle closed and refresh state.",
+      sourceDerivedAgentTitle: "Let an Agent prepare a one-file computation proposal",
+      sourceDerivedAgentAuthorize: "Authorize Agent to prepare proposal",
+      sourceDerivedAgentActive: "Authorization copied. Close Reweave Desktop before starting the Shuttle.",
+      sourceDerivedAgentCopiedClose: "Binding copied. Close Reweave Desktop.",
+      sourceDerivedAgentWaiting: "Waiting for the Agent to prepare a proposal.",
+      sourceDerivedAgentApprove: "Approve proposal",
+      sourceDerivedAgentReject: "Reject proposal",
+      sourceDerivedAgentApproved: "Proposal approved. Close Desktop before the Agent starts the isolated run.",
+      sourceDerivedAgentRejected: "Proposal rejected; no model was called.",
+      sourceDerivedAgentRevoke: "Revoke Agent authorization",
+      sourceDerivedAgentRevokeConfirm: "Revoke this Agent computation-proposal authorization?",
+      sourceDerivedAgentRevoked: "Agent authorization revoked.",
+      sourceDerivedAgentStale: "The source, model, or formal warehouse drifted; only revocation is allowed.",
+      sourceDerivedAgentConflict: "Agent authorization state conflicts; only safe revocation is allowed.",
+      sourceDerivedAgentModelNotice: "Approval still does not call a model. The Agent run later calls the source model and supervisor once each.",
+      source_derived_handoff_clipboard_failed: "Clipboard write failed and the authorization was revoked.",
+      source_derived_handoff_clipboard_revoke_failed: "Clipboard write failed and revocation was not confirmed. Keep the Shuttle closed and refresh.",
       sourceDerivedTitle: "Generate an isolated computation from one evidence file",
       sourceDerivedNotice: "This calls the frozen source-proposal model once and the supervisor once. Failures are not retried. It creates only an isolated Review and does not write the formal capability warehouse.",
       sourceDerivedRelpath: "Relative JS/TS evidence path",
@@ -3006,6 +3040,35 @@
     }[String(status || "")] || "";
   }
 
+  function sourceDerivedHandoffProjection(value) {
+    var raw = value && typeof value === "object" && !Array.isArray(value)
+      ? value
+      : null;
+    var statuses = ["none", "active", "revoked", "stale", "conflict"];
+    var proposalStatuses = ["none", "pending", "approved", "rejected"];
+    if (
+      !raw ||
+      raw.schema_version !== "source_derived_handoff_status.v1" ||
+      statuses.indexOf(String(raw.status || "")) < 0 ||
+      proposalStatuses.indexOf(String(raw.proposal_status || "")) < 0
+    ) {
+      return {
+        schema_version: "source_derived_handoff_status.v1",
+        status: raw ? "conflict" : "none",
+        proposal_status: "none",
+        proposal: null,
+      };
+    }
+    return {
+      schema_version: "source_derived_handoff_status.v1",
+      status: String(raw.status),
+      proposal_status: String(raw.proposal_status),
+      proposal: raw.proposal && typeof raw.proposal === "object"
+        ? raw.proposal
+        : null,
+    };
+  }
+
   function renderManagementProjects() {
     var container = $("warehouse-projects");
     if (!container) return;
@@ -3123,6 +3186,171 @@
       registration.appendChild(register);
       sourceRootActions.push(register);
       container.appendChild(registration);
+
+      var sourceDerivedAgent = document.createElement("fieldset");
+      sourceDerivedAgent.className = "warehouse-project-config";
+      var sourceDerivedAgentLegend = document.createElement("legend");
+      sourceDerivedAgentLegend.textContent = t("sourceDerivedAgentTitle");
+      sourceDerivedAgent.appendChild(sourceDerivedAgentLegend);
+      boundSourceRoots.forEach(function (root) {
+        var rootId = String(root.root_id || "");
+        var projection = sourceDerivedHandoffProjection(
+          root.source_derived_handoff
+        );
+        var row = document.createElement("div");
+        row.className = "warehouse-project-config";
+        var name = document.createElement("strong");
+        name.textContent = sourceRootDisplayLabel(root);
+        row.appendChild(name);
+        var status = document.createElement("p");
+        status.className = "warehouse-meta";
+        var statusKey = {
+          active: "sourceDerivedAgentActive",
+          revoked: "sourceDerivedAgentRevoked",
+          stale: "sourceDerivedAgentStale",
+          conflict: "sourceDerivedAgentConflict",
+        }[projection.status] || "";
+        if (
+          projection.status === "active" &&
+          projection.proposal_status === "none"
+        ) {
+          statusKey = "sourceDerivedAgentWaiting";
+        } else if (projection.proposal_status === "approved") {
+          statusKey = "sourceDerivedAgentApproved";
+        } else if (projection.proposal_status === "rejected") {
+          statusKey = "sourceDerivedAgentRejected";
+        }
+        status.textContent = statusKey ? t(statusKey) : "";
+        row.appendChild(status);
+
+        if (
+          projection.status === "active" &&
+          projection.proposal_status === "pending" &&
+          projection.proposal
+        ) {
+          var proposal = projection.proposal;
+          var summary = document.createElement("dl");
+          [
+            [t("sourceDerivedRelpath"), proposal.source_relpath],
+            [t("sourceDerivedBehavior"), proposal.behavior_intent],
+            [
+              t("sourceDerivedInputMin") + "–" + t("sourceDerivedInputMax"),
+              proposal.input
+                ? String(proposal.input.min_length) + "–" +
+                  String(proposal.input.max_length)
+                : "",
+            ],
+            [
+              t("sourceDerivedEnum"),
+              Array.isArray(proposal.result_enum)
+                ? proposal.result_enum.join("、")
+                : "",
+            ],
+            [
+              t("sourceDerivedCases"),
+              Array.isArray(proposal.acceptance_cases)
+                ? proposal.acceptance_cases.map(function (item) {
+                    return String(item.input_text || "") + " → " +
+                      String(item.expected_result || "");
+                  }).join("；")
+                : "",
+            ],
+          ].forEach(function (item) {
+            var term = document.createElement("dt");
+            term.textContent = String(item[0] || "");
+            var description = document.createElement("dd");
+            description.textContent = String(item[1] || "");
+            summary.appendChild(term);
+            summary.appendChild(description);
+          });
+          row.appendChild(summary);
+          var notice = document.createElement("p");
+          notice.className = "warehouse-meta";
+          notice.textContent = t("sourceDerivedAgentModelNotice");
+          row.appendChild(notice);
+          ["approve", "reject"].forEach(function (decision) {
+            var decide = document.createElement("button");
+            decide.type = "button";
+            decide.className = decision === "approve"
+              ? "btn-primary"
+              : "btn-ghost";
+            decide.dataset.action = "decide-source-derived-agent-" + decision;
+            decide.textContent = t(
+              decision === "approve"
+                ? "sourceDerivedAgentApprove"
+                : "sourceDerivedAgentReject"
+            );
+            decide.addEventListener("click", function () {
+              bridgeCall(
+                "decide_local_source_derived_handoff_proposal",
+                JSON.stringify({
+                  source_root_id: rootId,
+                  decision: decision,
+                })
+              ).then(function (raw) {
+                var result = parseBridgeJson(raw);
+                if (!managementPayload(result)) {
+                  setManagementStatus(managementError(result));
+                  return;
+                }
+                refreshIngestionManagement();
+              });
+            });
+            row.appendChild(decide);
+          });
+        }
+
+        if (projection.status === "none" || projection.status === "revoked") {
+          var authorizeAgent = document.createElement("button");
+          authorizeAgent.type = "button";
+          authorizeAgent.className = "btn-ghost";
+          authorizeAgent.dataset.action = "authorize-source-derived-agent";
+          authorizeAgent.textContent = t("sourceDerivedAgentAuthorize");
+          authorizeAgent.addEventListener("click", function () {
+            authorizeAgent.disabled = true;
+            bridgeCall(
+              "copy_local_source_derived_handoff_binding",
+              JSON.stringify({ source_root_id: rootId })
+            ).then(function (raw) {
+              var result = parseBridgeJson(raw);
+              if (!managementPayload(result)) {
+                authorizeAgent.disabled = false;
+                authorizeAgent.textContent = t("sourceDerivedAgentAuthorize");
+                setManagementStatus(managementError(result));
+                return;
+              }
+              authorizeAgent.textContent = t("sourceDerivedAgentCopiedClose");
+              setManagementStatus("sourceDerivedAgentActive");
+            });
+          });
+          row.appendChild(authorizeAgent);
+        } else {
+          var revokeAgent = document.createElement("button");
+          revokeAgent.type = "button";
+          revokeAgent.className = "btn-ghost";
+          revokeAgent.dataset.action = "revoke-source-derived-agent";
+          revokeAgent.textContent = t("sourceDerivedAgentRevoke");
+          revokeAgent.addEventListener("click", function () {
+            if (!window.confirm(t("sourceDerivedAgentRevokeConfirm"))) return;
+            revokeAgent.disabled = true;
+            bridgeCall(
+              "revoke_local_source_derived_handoff",
+              JSON.stringify({ source_root_id: rootId })
+            ).then(function (raw) {
+              var result = parseBridgeJson(raw);
+              if (!managementPayload(result)) {
+                revokeAgent.disabled = false;
+                setManagementStatus(managementError(result));
+                return;
+              }
+              refreshIngestionManagement();
+            });
+          });
+          row.appendChild(revokeAgent);
+        }
+        sourceDerivedAgent.appendChild(row);
+      });
+      container.appendChild(sourceDerivedAgent);
 
       var sourceDerived = document.createElement("fieldset");
       sourceDerived.className = "warehouse-project-config warehouse-developer-only";

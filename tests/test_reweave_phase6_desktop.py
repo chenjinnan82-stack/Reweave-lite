@@ -5959,6 +5959,28 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
                     break
                 pump(0.08)
             assert selected and selected["digest"] == model_digest
+            planner = service._product_planner
+            planner._ensure_directory(planner.root)
+            planner._atomic_write(
+                planner.root / "model_selection.json",
+                {
+                    "schema_version": (
+                        "product_planning_model_selection.v1"
+                    ),
+                    "base_url": planner.base_url,
+                    "name": model_name,
+                    "digest": model_digest,
+                    "parameter_count": 1_000_000_000,
+                    "parameter_size": "1B",
+                    "selected_at": "2026-08-19T00:00:00Z",
+                    "probe": {
+                        "schema_version": (
+                            "product_plan_probe_receipt.v1"
+                        ),
+                        "status": "passed",
+                    },
+                },
+            )
 
             js("document.getElementById('btn-warehouse-discover').click(); true")
             wait_js(
@@ -6051,6 +6073,113 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
                     })()"""
                 )
                 is True
+            )
+            assert (
+                js(
+                    """(() => {
+                      const button = document.querySelector(
+                        '#warehouse-projects [data-action="authorize-source-derived-agent"]'
+                      );
+                      if (!button) return false;
+                      button.focus();
+                      if (document.activeElement !== button) return false;
+                      button.click();
+                      return true;
+                    })()"""
+                )
+                is True
+            )
+            wait_js(
+                "(() => {"
+                "const button = document.querySelector("
+                "'#warehouse-projects [data-action=\"authorize-source-derived-agent\"]');"
+                "return !!button && button.disabled && "
+                "button.textContent.includes('请关闭 Reweave Desktop') && "
+                "!document.querySelector("
+                "'#warehouse-projects [data-action=\"revoke-source-derived-agent\"]');"
+                "})()",
+                30,
+                "locked source-derived Agent authorization action",
+            )
+            derived_binding_line = app.clipboard().text()
+            derived_bind_request = json.loads(derived_binding_line)
+            derived_handoff_token = derived_bind_request[
+                "payload"
+            ]["handoff_token"]
+            assert re.fullmatch(
+                r"source_derived_handoff_token_[0-9a-f]{48}",
+                derived_handoff_token,
+            )
+            derived_dom = str(
+                js(
+                    "document.getElementById('warehouse-projects').outerHTML"
+                )
+            )
+            assert derived_handoff_token not in derived_dom
+            assert discovered_root_id not in derived_dom
+            assert str(source) not in derived_dom
+            assert (
+                js(
+                    """(() => {
+                      const refresh = document.getElementById(
+                        'btn-supervision-model-refresh'
+                      );
+                      if (!refresh) return false;
+                      refresh.click();
+                      return true;
+                    })()"""
+                )
+                is True
+            )
+            wait_js(
+                "!!document.querySelector("
+                "'#warehouse-projects [data-action=\"revoke-source-derived-agent\"]')",
+                30,
+                "refreshed source-derived Agent authorization",
+            )
+            assert (
+                js(
+                    """(() => {
+                      const button = document.querySelector(
+                        '#warehouse-projects [data-action="revoke-source-derived-agent"]'
+                      );
+                      if (!button) return false;
+                      let confirmed = 0;
+                      window.confirm = () => {
+                        confirmed += 1;
+                        return false;
+                      };
+                      button.click();
+                      return confirmed === 1
+                        && !button.disabled
+                        && document.body.contains(button);
+                    })()"""
+                )
+                is True
+            )
+            assert (
+                js(
+                    """(() => {
+                      const button = document.querySelector(
+                        '#warehouse-projects [data-action="revoke-source-derived-agent"]'
+                      );
+                      if (!button) return false;
+                      let confirmed = 0;
+                      window.confirm = () => {
+                        confirmed += 1;
+                        return true;
+                      };
+                      button.click();
+                      return confirmed === 1;
+                    })()"""
+                )
+                is True
+            )
+            wait_js(
+                "!!document.querySelector("
+                "'#warehouse-projects [data-action=\"authorize-source-derived-agent\"]')",
+                30,
+                "revoked source-derived Agent authorization",
             )
             wait_js(
                 "Array.from(document.querySelectorAll("

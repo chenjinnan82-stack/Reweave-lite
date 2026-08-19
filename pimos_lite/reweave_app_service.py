@@ -130,6 +130,7 @@ from pimos_lite.reweave_source_derivation import (
     SourceDerivationError,
     append_source_derived_run_event,
     build_source_derived_authorization,
+    build_source_derived_agent_proposal,
     build_source_derived_request,
     get_source_derived_run,
     prepare_source_derived_run,
@@ -137,6 +138,7 @@ from pimos_lite.reweave_source_derivation import (
     source_derived_project_graph_digest,
     source_derived_run_projection,
     validate_source_derived_response,
+    validate_source_derived_agent_proposal,
     write_source_derived_proposal,
     validate_source_derived_authorization,
 )
@@ -163,10 +165,16 @@ _CANDIDATE_TOKEN = re.compile(r"candidate_token_[0-9a-f]{48}\Z")
 _SOURCE_HANDOFF_TOKEN = re.compile(
     r"source_handoff_token_[0-9a-f]{48}\Z"
 )
+_SOURCE_DERIVED_HANDOFF_TOKEN = re.compile(
+    r"source_derived_handoff_token_[0-9a-f]{48}\Z"
+)
 _SOURCE_HANDOFF_FILENAME = re.compile(
     r"source_handoff_v1_([0-9a-f]{64})\.json\Z"
 )
 _SOURCE_HANDOFF_RUN_ID = re.compile(r"run_[0-9a-f]{32}\Z")
+_SOURCE_DERIVED_HANDOFF_FILENAME = re.compile(
+    r"source_derived_handoff_v1_([0-9a-f]{64})\.json\Z"
+)
 _CANDIDATE_STAGING = re.compile(
     r"\.candidate_[0-9a-f]{32}-[a-z0-9_]{8}\Z"
 )
@@ -237,6 +245,9 @@ CAPSULE_MANAGEMENT_ACTIONS = frozenset(
         "start_refresh_project",
         "start_refresh_all",
         "authorize_and_start_source_derived_computation",
+        "create_local_source_derived_handoff",
+        "revoke_local_source_derived_handoff",
+        "decide_local_source_derived_handoff_proposal",
         "create_local_source_handoff",
         "revoke_local_source_handoff",
         "get_intake_run",
@@ -269,6 +280,12 @@ _SOURCE_HANDOFF_ACTION_PROFILE = "source_intake_agent.v1"
 _SOURCE_HANDOFF_MAX_BYTES = 64 * 1024
 _SOURCE_HANDOFF_SAFE_ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
 _SOURCE_HANDOFF_REASON = re.compile(r"[a-z][a-z0-9_]{1,95}\Z")
+_SOURCE_DERIVED_HANDOFF_DIRECTORY = "source_derived_handoffs"
+_SOURCE_DERIVED_HANDOFF_VERSION = "source_derived_handoff.v1"
+_SOURCE_DERIVED_HANDOFF_STATUS_VERSION = (
+    "source_derived_handoff_status.v1"
+)
+_SOURCE_DERIVED_HANDOFF_ACTION_PROFILE = "source_derived_agent.v1"
 
 
 def _sha256_file(path: Path) -> str:
@@ -365,8 +382,11 @@ def _source_handoff_bytes(value: dict[str, Any]) -> bytes:
     return raw
 
 
-def _source_handoff_directory(state_root: Path) -> Path:
-    directory = state_root / _SOURCE_HANDOFF_DIRECTORY
+def _source_handoff_directory(
+    state_root: Path,
+    directory_name: str = _SOURCE_HANDOFF_DIRECTORY,
+) -> Path:
+    directory = state_root / directory_name
     try:
         directory.mkdir(mode=0o700, parents=True, exist_ok=True)
         details = directory.lstat()
@@ -429,9 +449,13 @@ def _write_source_handoff(
     value: dict[str, Any],
     *,
     replace: bool,
+    directory_name: str = _SOURCE_HANDOFF_DIRECTORY,
 ) -> None:
     payload = _source_handoff_bytes(value)
-    directory = _source_handoff_directory(path.parent.parent)
+    directory = _source_handoff_directory(
+        path.parent.parent,
+        directory_name,
+    )
     if directory != path.parent:
         raise SourceHandoffError("source_handoff_conflict")
     temporary = directory / f".{path.name}.{uuid.uuid4().hex}.tmp"
@@ -2875,6 +2899,27 @@ class ReweaveAppService:
             state.setdefault("capabilityGroupCount", 0)
             state.setdefault("selectedSupervisionModel", None)
             state["backups"] = self._capsule_store.list_backups()
+        for source_root in state.get("sourceRoots", []):
+            if type(source_root) is not dict:
+                continue
+            try:
+                source_root["source_derived_handoff"] = (
+                    self._source_derived_handoff_status_for_root(
+                        str(source_root.get("root_id") or "")
+                    )
+                )
+            except (SourceDerivationError, SourceHandoffError):
+                source_root["source_derived_handoff"] = {
+                    "schema_version": (
+                        _SOURCE_DERIVED_HANDOFF_STATUS_VERSION
+                    ),
+                    "status": "conflict",
+                    "proposal_status": "none",
+                    "proposal": None,
+                    "run": None,
+                    "created_at": None,
+                    "revoked_at": None,
+                }
         for project in state.get("projects", []):
             if type(project) is not dict:
                 continue
@@ -3655,6 +3700,1185 @@ class ReweaveAppService:
                     check_snapshot=True,
                 )
             return self._source_handoff_binding(record)
+
+    def _source_derived_handoff_path(self, token_digest: str) -> Path:
+        return (
+            self._state_root
+            / _SOURCE_DERIVED_HANDOFF_DIRECTORY
+            / f"source_derived_handoff_v1_{token_digest}.json"
+        )
+
+    @staticmethod
+    def _source_derived_handoff_model(value: Any) -> dict[str, str]:
+        try:
+            name_size = (
+                len(value["name"].encode("utf-8"))
+                if type(value) is dict
+                and type(value.get("name")) is str
+                else 0
+            )
+        except UnicodeEncodeError as exc:
+            raise SourceHandoffError(
+                "source_derived_handoff_conflict"
+            ) from exc
+        if (
+            type(value) is not dict
+            or set(value) != {"name", "digest"}
+            or type(value["name"]) is not str
+            or not value["name"]
+            or name_size > 512
+            or type(value["digest"]) is not str
+            or re.fullmatch(r"[0-9a-f]{64}", value["digest"]) is None
+        ):
+            raise SourceHandoffError("source_derived_handoff_conflict")
+        return copy.deepcopy(value)
+
+    @staticmethod
+    def _source_derived_authorization_core(
+        value: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            key: copy.deepcopy(item)
+            for key, item in value.items()
+            if key not in {"authorized_at", "authorization_digest"}
+        }
+
+    @staticmethod
+    def _source_derived_authorization_matches_proposal(
+        authorization: dict[str, Any],
+        proposal: dict[str, Any],
+    ) -> bool:
+        request = proposal["request"]
+        input_field = request["input_field"]
+        result_field = request["result_field"]
+        return (
+            authorization["source_snapshot_sha256"]
+            == proposal["source_snapshot_sha256"]
+            and authorization["project_graph_digest"]
+            == proposal["project_graph_digest"]
+            and authorization["evidence"] == proposal["evidence"]
+            and authorization["behavior_intent"]
+            == request["behavior_intent"]
+            and authorization["input_field"] == input_field
+            and authorization["result_field"] == result_field
+            and authorization["result_enum"] == request["result_enum"]
+            and authorization["input_contract"]["properties"][input_field]
+            == {
+                "type": "string",
+                "min_length": request["input_min_length"],
+                "max_length": request["input_max_length"],
+            }
+            and [
+                {
+                    "input_text": item["input"][input_field],
+                    "expected_result": item["expected_output"][result_field],
+                }
+                for item in authorization["acceptance_cases"]
+            ]
+            == request["acceptance_cases"]
+            and authorization["source_proposal_model"]
+            == proposal["source_proposal_model"]
+            and authorization["warehouse_revision"]
+            == proposal["warehouse_revision"]
+            and authorization["catalog_digest"]
+            == proposal["catalog_digest"]
+        )
+
+    @classmethod
+    def _validate_source_derived_handoff_record(
+        cls,
+        value: Any,
+        token_digest: str,
+    ) -> dict[str, Any]:
+        fields = {
+            "schema_version",
+            "action_profile",
+            "token_digest",
+            "source_root_id",
+            "root_kind",
+            "root_path_digest",
+            "root_snapshot_digest",
+            "source_proposal_model",
+            "supervision_model",
+            "warehouse_revision",
+            "catalog_digest",
+            "handoff_binding_digest",
+            "proposal",
+            "proposal_digest",
+            "proposal_status",
+            "authorization",
+            "run_id",
+            "status",
+            "created_at",
+            "approved_at",
+            "rejected_at",
+            "revoked_at",
+            "canonical_digest",
+        }
+        if type(value) is not dict or set(value) != fields:
+            raise SourceHandoffError("source_derived_handoff_conflict")
+        row = copy.deepcopy(value)
+        body = {
+            key: item
+            for key, item in row.items()
+            if key != "canonical_digest"
+        }
+        proposal = row["proposal"]
+        authorization = row["authorization"]
+        try:
+            validated_proposal = (
+                validate_source_derived_agent_proposal(proposal)
+                if proposal is not None
+                else None
+            )
+            validated_authorization = (
+                validate_source_derived_authorization(authorization)
+                if authorization is not None
+                else None
+            )
+        except SourceDerivationError as exc:
+            raise SourceHandoffError(
+                "source_derived_handoff_conflict"
+            ) from exc
+        timestamp_keys = (
+            "created_at",
+            "approved_at",
+            "rejected_at",
+            "revoked_at",
+        )
+        if (
+            row["schema_version"] != _SOURCE_DERIVED_HANDOFF_VERSION
+            or row["action_profile"]
+            != _SOURCE_DERIVED_HANDOFF_ACTION_PROFILE
+            or row["token_digest"] != token_digest
+            or re.fullmatch(r"[0-9a-f]{64}", token_digest) is None
+            or type(row["source_root_id"]) is not str
+            or _SOURCE_HANDOFF_SAFE_ID.fullmatch(row["source_root_id"])
+            is None
+            or type(row["root_kind"]) is not str
+            or _SOURCE_HANDOFF_SAFE_ID.fullmatch(row["root_kind"]) is None
+            or any(
+                type(row[key]) is not str
+                or re.fullmatch(r"[0-9a-f]{64}", row[key]) is None
+                for key in (
+                    "root_path_digest",
+                    "root_snapshot_digest",
+                    "catalog_digest",
+                    "handoff_binding_digest",
+                    "canonical_digest",
+                )
+            )
+            or cls._source_derived_handoff_model(
+                row["source_proposal_model"]
+            )
+            != row["source_proposal_model"]
+            or cls._source_derived_handoff_model(
+                row["supervision_model"]
+            )
+            != row["supervision_model"]
+            or type(row["warehouse_revision"]) is not int
+            or row["warehouse_revision"] < 0
+            or row["proposal_status"]
+            not in {"none", "pending", "approved", "rejected"}
+            or row["status"] not in {"active", "revoked"}
+            or type(row["created_at"]) is not str
+            or not row["created_at"]
+            or any(
+                row[key] is not None
+                and (type(row[key]) is not str or not row[key])
+                for key in timestamp_keys[1:]
+            )
+            or (
+                row["run_id"] is not None
+                and (
+                    type(row["run_id"]) is not str
+                    or _SOURCE_HANDOFF_RUN_ID.fullmatch(row["run_id"])
+                    is None
+                )
+            )
+            or (
+                row["proposal_digest"] is not None
+                and (
+                    type(row["proposal_digest"]) is not str
+                    or re.fullmatch(
+                        r"[0-9a-f]{64}", row["proposal_digest"]
+                    )
+                    is None
+                )
+            )
+            or (
+                validated_proposal is not None
+                and (
+                    validated_proposal["canonical_digest"]
+                    != row["proposal_digest"]
+                    or validated_proposal["handoff_binding_digest"]
+                    != row["handoff_binding_digest"]
+                )
+            )
+            or (
+                validated_authorization is not None
+                and (
+                    validated_proposal is None
+                    or not cls._source_derived_authorization_matches_proposal(
+                        validated_authorization,
+                        validated_proposal,
+                    )
+                )
+            )
+            or row["canonical_digest"] != canonical_json_digest(body)
+        ):
+            raise SourceHandoffError("source_derived_handoff_conflict")
+        state_shape = {
+            "none": (
+                proposal is None
+                and row["proposal_digest"] is None
+                and authorization is None
+                and row["run_id"] is None
+                and row["approved_at"] is None
+                and row["rejected_at"] is None
+            ),
+            "pending": (
+                proposal is not None
+                and row["proposal_digest"] is not None
+                and authorization is None
+                and row["run_id"] is None
+                and row["approved_at"] is None
+                and row["rejected_at"] is None
+            ),
+            "approved": (
+                proposal is not None
+                and row["proposal_digest"] is not None
+                and authorization is not None
+                and row["approved_at"] is not None
+                and row["rejected_at"] is None
+            ),
+            "rejected": (
+                proposal is not None
+                and row["proposal_digest"] is not None
+                and authorization is None
+                and row["run_id"] is None
+                and row["approved_at"] is None
+                and row["rejected_at"] is not None
+            ),
+        }
+        if (
+            not state_shape[row["proposal_status"]]
+            or (row["status"] == "active" and row["revoked_at"] is not None)
+            or (row["status"] == "revoked" and row["revoked_at"] is None)
+        ):
+            raise SourceHandoffError("source_derived_handoff_conflict")
+        return row
+
+    def _source_derived_handoff_records(
+        self,
+    ) -> list[tuple[dict[str, Any], Path]]:
+        directory = (
+            self._state_root / _SOURCE_DERIVED_HANDOFF_DIRECTORY
+        )
+        if not directory.exists() and not directory.is_symlink():
+            return []
+        try:
+            details = directory.lstat()
+            if (
+                stat.S_ISLNK(details.st_mode)
+                or not stat.S_ISDIR(details.st_mode)
+                or (
+                    os.name == "posix"
+                    and stat.S_IMODE(details.st_mode) != 0o700
+                )
+            ):
+                raise SourceHandoffError(
+                    "source_derived_handoff_conflict"
+                )
+            paths = sorted(directory.iterdir(), key=lambda item: item.name)
+        except SourceHandoffError:
+            raise
+        except OSError as exc:
+            raise SourceHandoffError(
+                "source_derived_handoff_conflict"
+            ) from exc
+        result: list[tuple[dict[str, Any], Path]] = []
+        for path in paths:
+            match = _SOURCE_DERIVED_HANDOFF_FILENAME.fullmatch(path.name)
+            if match is None:
+                raise SourceHandoffError(
+                    "source_derived_handoff_conflict"
+                )
+            result.append(
+                (
+                    self._validate_source_derived_handoff_record(
+                        _read_source_handoff(path),
+                        match.group(1),
+                    ),
+                    path,
+                )
+            )
+        return result
+
+    def _source_derived_root_identity(
+        self,
+        source_root_id: str,
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        root = self._capsule_intake.get_source_root(source_root_id)
+        if root.get("status") != "bound":
+            raise SourceHandoffError("source_derived_handoff_source_stale")
+        try:
+            resolved = Path(str(root["current_path"])).resolve(
+                strict=True
+            )
+        except (OSError, RuntimeError) as exc:
+            raise SourceHandoffError(
+                "source_derived_handoff_source_stale"
+            ) from exc
+        identity = {
+            "source_root_id": str(root["root_id"]),
+            "root_kind": str(root["root_kind"]),
+            "root_path_digest": hashlib.sha256(
+                str(resolved).encode("utf-8")
+            ).hexdigest(),
+            "brand_profile_id": root.get("brand_profile_id"),
+            "brand_profile_digest": root.get("brand_profile_digest"),
+            "brand_profile_version": int(
+                root.get("brand_profile_version") or 0
+            ),
+        }
+        return root, identity
+
+    def _source_derived_handoff_facts(
+        self,
+        source_root_id: str,
+    ) -> dict[str, Any]:
+        # ponytail: bind root authority here; prepare later freezes the one
+        # permitted evidence file instead of inventing a second root scanner.
+        _root, root_identity = self._source_derived_root_identity(
+            source_root_id
+        )
+        source_model = self._product_planner._model_identity(
+            self._product_planner._selected_model(check_current=False)
+        )
+        selected_supervisor = self._capsule_supervisor.selected_model()
+        catalog = self._product_planning_catalog()
+        return {
+            "root_identity": root_identity,
+            "root_snapshot_digest": canonical_json_digest(root_identity),
+            "source_proposal_model": {
+                "name": source_model["name"],
+                "digest": source_model["digest"],
+            },
+            "supervision_model": {
+                "name": selected_supervisor["name"],
+                "digest": selected_supervisor["digest"],
+            },
+            "warehouse_revision": catalog["warehouse_revision"],
+            "catalog_digest": canonical_json_digest(catalog),
+        }
+
+    def _validate_source_derived_handoff_live_facts(
+        self,
+        record: dict[str, Any],
+    ) -> None:
+        facts = self._source_derived_handoff_facts(
+            record["source_root_id"]
+        )
+        root = facts["root_identity"]
+        if (
+            root["root_kind"] != record["root_kind"]
+            or root["root_path_digest"] != record["root_path_digest"]
+            or facts["root_snapshot_digest"]
+            != record["root_snapshot_digest"]
+            or facts["source_proposal_model"]
+            != record["source_proposal_model"]
+            or facts["supervision_model"]
+            != record["supervision_model"]
+            or facts["warehouse_revision"] != record["warehouse_revision"]
+            or facts["catalog_digest"] != record["catalog_digest"]
+        ):
+            raise SourceHandoffError(
+                "source_derived_handoff_stale"
+            )
+        if record["proposal"] is not None:
+            root = self._capsule_intake.get_source_root(
+                record["source_root_id"]
+            )
+            evidence = read_source_derived_evidence(
+                str(root["current_path"]),
+                record["proposal"]["request"]["source_relpath"],
+            )
+            identity = [
+                {
+                    key: evidence[0][key]
+                    for key in ("logical_path", "sha256", "size_bytes")
+                }
+            ]
+            if (
+                evidence[0]["sha256"]
+                != record["proposal"]["source_snapshot_sha256"]
+                or source_derived_project_graph_digest(evidence)
+                != record["proposal"]["project_graph_digest"]
+                or identity != record["proposal"]["evidence"]
+            ):
+                raise SourceHandoffError(
+                    "source_derived_handoff_stale"
+                )
+
+    @staticmethod
+    def _source_derived_proposal_summary(
+        proposal: dict[str, Any] | None,
+    ) -> dict[str, Any] | None:
+        if proposal is None:
+            return None
+        request = proposal["request"]
+        return {
+            "source_relpath": request["source_relpath"],
+            "behavior_intent": request["behavior_intent"],
+            "input": {
+                "min_length": request["input_min_length"],
+                "max_length": request["input_max_length"],
+            },
+            "result_enum": copy.deepcopy(request["result_enum"]),
+            "acceptance_cases": copy.deepcopy(
+                request["acceptance_cases"]
+            ),
+        }
+
+    def _source_derived_handoff_status_for_root(
+        self,
+        source_root_id: str,
+    ) -> dict[str, Any]:
+        base = {
+            "schema_version": _SOURCE_DERIVED_HANDOFF_STATUS_VERSION,
+            "status": "none",
+            "proposal_status": "none",
+            "proposal": None,
+            "run": None,
+            "created_at": None,
+            "approved_at": None,
+            "rejected_at": None,
+            "revoked_at": None,
+        }
+        if not source_root_id:
+            return base
+        records = self._source_derived_handoff_records()
+        active = [
+            record
+            for record, _path in records
+            if record["status"] == "active"
+        ]
+        if len(active) > 1:
+            return {**base, "status": "conflict"}
+        record = active[0] if active else None
+        if record is None:
+            historical = [
+                current
+                for current, _path in records
+                if current["source_root_id"] == source_root_id
+            ]
+            if not historical:
+                return base
+            record = max(
+                historical,
+                key=lambda current: (
+                    current["created_at"],
+                    current["token_digest"],
+                ),
+            )
+        if record["source_root_id"] != source_root_id:
+            return base
+        status = record["status"]
+        if status == "active":
+            try:
+                self._validate_source_derived_handoff_live_facts(record)
+            except (SourceDerivationError, SourceHandoffError):
+                status = "stale"
+        run = None
+        if record["run_id"] is not None:
+            try:
+                current = source_derived_run_projection(
+                    get_source_derived_run(
+                        self._state_root, record["run_id"]
+                    )
+                )
+                run = {
+                    "run_id": current["run_id"],
+                    "status": current["status"],
+                    "stage": current["stage"],
+                    "review_scope": current.get("review_scope"),
+                }
+            except SourceDerivationError:
+                status = "conflict"
+        return {
+            **base,
+            "status": status,
+            "proposal_status": record["proposal_status"],
+            "proposal": self._source_derived_proposal_summary(
+                record["proposal"]
+            ),
+            "run": run,
+            "created_at": record["created_at"],
+            "approved_at": record["approved_at"],
+            "rejected_at": record["rejected_at"],
+            "revoked_at": record["revoked_at"],
+        }
+
+    @staticmethod
+    def _source_derived_handoff_binding(
+        record: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "action_profile": _SOURCE_DERIVED_HANDOFF_ACTION_PROFILE,
+            "token_digest": record["token_digest"],
+            "handoff_binding_digest": record["handoff_binding_digest"],
+            "source_root_id": record["source_root_id"],
+        }
+
+    def _validated_source_derived_handoff_binding(
+        self,
+        binding: Any,
+    ) -> tuple[dict[str, Any], Path]:
+        if (
+            type(binding) is not dict
+            or set(binding)
+            != {
+                "action_profile",
+                "token_digest",
+                "handoff_binding_digest",
+                "source_root_id",
+            }
+            or binding.get("action_profile")
+            != _SOURCE_DERIVED_HANDOFF_ACTION_PROFILE
+            or type(binding.get("token_digest")) is not str
+            or re.fullmatch(
+                r"[0-9a-f]{64}", binding["token_digest"]
+            )
+            is None
+        ):
+            raise SourceHandoffError("source_derived_handoff_invalid")
+        path = self._source_derived_handoff_path(
+            binding["token_digest"]
+        )
+        record = self._validate_source_derived_handoff_record(
+            _read_source_handoff(path),
+            binding["token_digest"],
+        )
+        if record["status"] != "active":
+            raise SourceHandoffError("source_derived_handoff_revoked")
+        if any(
+            record[key] != binding[key]
+            for key in (
+                "token_digest",
+                "handoff_binding_digest",
+                "source_root_id",
+            )
+        ):
+            raise SourceHandoffError("source_derived_handoff_conflict")
+        active = [
+            item
+            for item, _item_path in self._source_derived_handoff_records()
+            if item["status"] == "active"
+        ]
+        if (
+            len(active) != 1
+            or active[0]["token_digest"] != record["token_digest"]
+        ):
+            raise SourceHandoffError("source_derived_handoff_conflict")
+        self._validate_source_derived_handoff_live_facts(record)
+        return record, path
+
+    def _write_updated_source_derived_handoff(
+        self,
+        record: dict[str, Any],
+        path: Path,
+    ) -> dict[str, Any]:
+        body = {
+            key: copy.deepcopy(value)
+            for key, value in record.items()
+            if key != "canonical_digest"
+        }
+        updated = {
+            **body,
+            "canonical_digest": canonical_json_digest(body),
+        }
+        validated = self._validate_source_derived_handoff_record(
+            updated,
+            updated["token_digest"],
+        )
+        _write_source_handoff(
+            path,
+            validated,
+            replace=True,
+            directory_name=_SOURCE_DERIVED_HANDOFF_DIRECTORY,
+        )
+        return validated
+
+    @_serialized_management
+    def create_local_source_derived_handoff(
+        self,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if (
+                set(request) != {"source_root_id"}
+                or type(request["source_root_id"]) is not str
+                or not request["source_root_id"].strip()
+            ):
+                return self._error(
+                    "source_derived_handoff_request_invalid"
+                )
+            self._ensure_capsule_management()
+            source_root_id = request["source_root_id"].strip()
+            if not javascript_source_snapshot_supported():
+                raise SourceDerivationError(
+                    "source_platform_unsupported_v1"
+                )
+            facts = self._source_derived_handoff_facts(source_root_id)
+            records = self._source_derived_handoff_records()
+            active = [
+                record
+                for record, _path in records
+                if record["status"] == "active"
+            ]
+            if len(active) > 1:
+                return self._error("source_derived_handoff_conflict")
+            if active:
+                return self._error(
+                    "source_derived_handoff_already_active"
+                )
+            token = (
+                "source_derived_handoff_token_"
+                + uuid.uuid4().hex
+                + uuid.uuid4().hex[:16]
+            )
+            token_digest = hashlib.sha256(
+                token.encode("utf-8")
+            ).hexdigest()
+            created_at = _now()
+            binding_body = {
+                "source_root_id": source_root_id,
+                "root_snapshot_digest": facts[
+                    "root_snapshot_digest"
+                ],
+                "source_proposal_model": facts[
+                    "source_proposal_model"
+                ],
+                "supervision_model": facts["supervision_model"],
+                "warehouse_revision": facts["warehouse_revision"],
+                "catalog_digest": facts["catalog_digest"],
+                "created_at": created_at,
+            }
+            record: dict[str, Any] = {
+                "schema_version": _SOURCE_DERIVED_HANDOFF_VERSION,
+                "action_profile": (
+                    _SOURCE_DERIVED_HANDOFF_ACTION_PROFILE
+                ),
+                "token_digest": token_digest,
+                "source_root_id": source_root_id,
+                "root_kind": facts["root_identity"]["root_kind"],
+                "root_path_digest": facts["root_identity"][
+                    "root_path_digest"
+                ],
+                "root_snapshot_digest": facts[
+                    "root_snapshot_digest"
+                ],
+                "source_proposal_model": facts[
+                    "source_proposal_model"
+                ],
+                "supervision_model": facts["supervision_model"],
+                "warehouse_revision": facts["warehouse_revision"],
+                "catalog_digest": facts["catalog_digest"],
+                "handoff_binding_digest": canonical_json_digest(
+                    binding_body
+                ),
+                "proposal": None,
+                "proposal_digest": None,
+                "proposal_status": "none",
+                "authorization": None,
+                "run_id": None,
+                "status": "active",
+                "created_at": created_at,
+                "approved_at": None,
+                "rejected_at": None,
+                "revoked_at": None,
+            }
+            record["canonical_digest"] = canonical_json_digest(record)
+            validated = self._validate_source_derived_handoff_record(
+                record,
+                token_digest,
+            )
+            _write_source_handoff(
+                self._source_derived_handoff_path(token_digest),
+                validated,
+                replace=False,
+                directory_name=_SOURCE_DERIVED_HANDOFF_DIRECTORY,
+            )
+            return self._ok(
+                {
+                    "source_derived_handoff_token": token,
+                    "status": "active",
+                    "created_at": created_at,
+                }
+            )
+        except (
+            CapsuleStoreError,
+            IntakeError,
+            OSError,
+            ProductPlanningError,
+            SourceDerivationError,
+            SourceHandoffError,
+            Stage3Error,
+            ValueError,
+        ) as exc:
+            return self._exception_error(
+                exc, "source_derived_handoff_create_failed"
+            )
+
+    @_serialized_management
+    def revoke_local_source_derived_handoff(
+        self,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if (
+                set(request) != {"source_root_id"}
+                or type(request["source_root_id"]) is not str
+                or not request["source_root_id"].strip()
+            ):
+                return self._error(
+                    "source_derived_handoff_request_invalid"
+                )
+            source_root_id = request["source_root_id"].strip()
+            records = self._source_derived_handoff_records()
+            active = [
+                (record, path)
+                for record, path in records
+                if record["status"] == "active"
+            ]
+            if len(active) > 1:
+                return self._error("source_derived_handoff_conflict")
+            if active:
+                record, path = active[0]
+                if record["source_root_id"] != source_root_id:
+                    return self._error(
+                        "source_derived_handoff_not_found"
+                    )
+                self._write_updated_source_derived_handoff(
+                    {
+                        **record,
+                        "status": "revoked",
+                        "revoked_at": _now(),
+                    },
+                    path,
+                )
+            return self._ok(
+                self._source_derived_handoff_status_for_root(
+                    source_root_id
+                )
+            )
+        except (OSError, SourceHandoffError, ValueError) as exc:
+            return self._exception_error(
+                exc, "source_derived_handoff_revoke_failed"
+            )
+
+    def _resolve_local_source_derived_handoff(
+        self,
+        handoff_token: str,
+    ) -> dict[str, Any]:
+        if (
+            type(handoff_token) is not str
+            or _SOURCE_DERIVED_HANDOFF_TOKEN.fullmatch(handoff_token)
+            is None
+        ):
+            raise SourceHandoffError(
+                "source_derived_handoff_invalid"
+            )
+        with self._capsule_operation_lock:
+            self._ensure_capsule_management()
+            token_digest = hashlib.sha256(
+                handoff_token.encode("utf-8")
+            ).hexdigest()
+            path = self._source_derived_handoff_path(token_digest)
+            try:
+                record = self._validate_source_derived_handoff_record(
+                    _read_source_handoff(path), token_digest
+                )
+            except SourceHandoffError as exc:
+                if exc.code == "source_handoff_conflict" and not (
+                    path.exists() or path.is_symlink()
+                ):
+                    raise SourceHandoffError(
+                        "source_derived_handoff_invalid"
+                    ) from exc
+                raise
+            binding = self._source_derived_handoff_binding(record)
+            self._validated_source_derived_handoff_binding(binding)
+            return binding
+
+    @_serialized_management
+    def decide_local_source_derived_handoff_proposal(
+        self,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        try:
+            request = self._payload(payload)
+            if (
+                set(request) != {"source_root_id", "decision"}
+                or type(request["source_root_id"]) is not str
+                or request["decision"] not in {"approve", "reject"}
+            ):
+                return self._error(
+                    "source_derived_handoff_decision_invalid"
+                )
+            source_root_id = request["source_root_id"].strip()
+            active = [
+                (record, path)
+                for record, path in self._source_derived_handoff_records()
+                if record["status"] == "active"
+            ]
+            if len(active) != 1:
+                return self._error(
+                    "source_derived_handoff_not_found"
+                    if not active
+                    else "source_derived_handoff_conflict"
+                )
+            record, path = active[0]
+            if record["source_root_id"] != source_root_id:
+                return self._error(
+                    "source_derived_handoff_not_found"
+                )
+            self._validate_source_derived_handoff_live_facts(record)
+            current = record["proposal_status"]
+            target = (
+                "approved"
+                if request["decision"] == "approve"
+                else "rejected"
+            )
+            if current == target:
+                return self._ok(
+                    self._source_derived_handoff_status_for_root(
+                        source_root_id
+                    )
+                )
+            if current != "pending":
+                return self._error(
+                    "source_derived_handoff_decision_conflict"
+                )
+            if target == "rejected":
+                self._write_updated_source_derived_handoff(
+                    {
+                        **record,
+                        "proposal_status": "rejected",
+                        "rejected_at": _now(),
+                    },
+                    path,
+                )
+            else:
+                proposal = record["proposal"]
+                (
+                    authorization,
+                    evidence,
+                    _source_model,
+                    _supervisor,
+                ) = self._source_derived_authorization_values(
+                    {
+                        "source_root_id": source_root_id,
+                        **proposal["request"],
+                    }
+                )
+                expected = build_source_derived_agent_proposal(
+                    handoff_binding_digest=record[
+                        "handoff_binding_digest"
+                    ],
+                    authorization=authorization,
+                    evidence=evidence,
+                    prepared_at=proposal["prepared_at"],
+                )
+                if expected != proposal:
+                    raise SourceHandoffError(
+                        "source_derived_handoff_stale"
+                    )
+                self._write_updated_source_derived_handoff(
+                    {
+                        **record,
+                        "proposal_status": "approved",
+                        "authorization": authorization,
+                        "approved_at": _now(),
+                    },
+                    path,
+                )
+            return self._ok(
+                self._source_derived_handoff_status_for_root(
+                    source_root_id
+                )
+            )
+        except (
+            CapsuleStoreError,
+            IntakeError,
+            OSError,
+            ProductPlanningError,
+            SourceDerivationError,
+            SourceHandoffError,
+            Stage3Error,
+            ValueError,
+        ) as exc:
+            return self._exception_error(
+                exc, "source_derived_handoff_decision_failed"
+            )
+
+    def _prepare_authorized_source_derived_computation(
+        self,
+        binding: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        with self._capsule_operation_lock:
+            record, path = (
+                self._validated_source_derived_handoff_binding(binding)
+            )
+            expected = {
+                "source_relpath",
+                "behavior_intent",
+                "input_field",
+                "input_min_length",
+                "input_max_length",
+                "result_field",
+                "result_enum",
+                "acceptance_cases",
+            }
+            if type(payload) is not dict or set(payload) != expected:
+                raise SourceHandoffError(
+                    "source_derived_proposal_request_invalid"
+                )
+            (
+                authorization,
+                evidence,
+                _source_model,
+                _supervisor,
+            ) = self._source_derived_authorization_values(
+                {
+                    "source_root_id": record["source_root_id"],
+                    **copy.deepcopy(payload),
+                }
+            )
+            prepared_at = (
+                record["proposal"]["prepared_at"]
+                if record["proposal"] is not None
+                else _now()
+            )
+            proposal = build_source_derived_agent_proposal(
+                handoff_binding_digest=record[
+                    "handoff_binding_digest"
+                ],
+                authorization=authorization,
+                evidence=evidence,
+                prepared_at=prepared_at,
+            )
+            if record["proposal"] is not None:
+                if record["proposal"] != proposal:
+                    raise SourceHandoffError(
+                        "source_derived_proposal_conflict"
+                    )
+                return self._source_derived_handoff_status_for_root(
+                    record["source_root_id"]
+                )
+            self._write_updated_source_derived_handoff(
+                {
+                    **record,
+                    "proposal": proposal,
+                    "proposal_digest": proposal["canonical_digest"],
+                    "proposal_status": "pending",
+                },
+                path,
+            )
+            return self._source_derived_handoff_status_for_root(
+                record["source_root_id"]
+            )
+
+    def _get_authorized_source_derived_authorization(
+        self,
+        binding: dict[str, Any],
+    ) -> dict[str, Any]:
+        with self._capsule_operation_lock:
+            record, _path = (
+                self._validated_source_derived_handoff_binding(binding)
+            )
+            return self._source_derived_handoff_status_for_root(
+                record["source_root_id"]
+            )
+
+    def _start_authorized_source_derived_computation(
+        self,
+        binding: dict[str, Any],
+    ) -> dict[str, Any]:
+        with self._capsule_operation_lock:
+            record, path = (
+                self._validated_source_derived_handoff_binding(binding)
+            )
+            if record["proposal_status"] != "approved":
+                raise SourceHandoffError(
+                    "source_derived_handoff_approval_required"
+                )
+            proposal = record["proposal"]
+            (
+                current_authorization,
+                evidence,
+                source_model,
+                supervisor,
+            ) = self._source_derived_authorization_values(
+                {
+                    "source_root_id": record["source_root_id"],
+                    **proposal["request"],
+                }
+            )
+            expected = build_source_derived_agent_proposal(
+                handoff_binding_digest=record[
+                    "handoff_binding_digest"
+                ],
+                authorization=current_authorization,
+                evidence=evidence,
+                prepared_at=proposal["prepared_at"],
+            )
+            if (
+                expected != proposal
+                or self._source_derived_authorization_core(
+                    current_authorization
+                )
+                != self._source_derived_authorization_core(
+                    record["authorization"]
+                )
+            ):
+                raise SourceHandoffError(
+                    "source_derived_handoff_stale"
+                )
+            result = self._start_source_derived_authorization(
+                record["authorization"],
+                evidence,
+                source_model,
+                supervisor,
+                source_root_id=record["source_root_id"],
+                source_relpath=proposal["request"]["source_relpath"],
+            )
+            result_data = (
+                result.get("data")
+                if type(result.get("data")) is dict
+                else {}
+            )
+            run_id = result.get("run_id") or result_data.get("run_id")
+            status = result.get("status") or result_data.get("status")
+            if (
+                result.get("ok") is True
+                and type(run_id) is str
+                and record["run_id"] is None
+            ):
+                self._write_updated_source_derived_handoff(
+                    {**record, "run_id": run_id},
+                    path,
+                )
+            elif (
+                result.get("ok") is True
+                and run_id != record["run_id"]
+            ):
+                raise SourceHandoffError(
+                    "source_derived_handoff_conflict"
+                )
+            return (
+                {
+                    "ok": True,
+                    "run_id": run_id,
+                    "status": status,
+                }
+                if result.get("ok") is True
+                else result
+            )
+
+    def _get_authorized_source_derived_run(
+        self,
+        binding: dict[str, Any],
+    ) -> dict[str, Any]:
+        with self._capsule_operation_lock:
+            record, _path = (
+                self._validated_source_derived_handoff_binding(binding)
+            )
+            if record["run_id"] is None:
+                raise SourceHandoffError(
+                    "source_derived_run_not_started"
+                )
+            result = self.get_intake_run({"run_id": record["run_id"]})
+            if result.get("ok") is not True:
+                raise SourceHandoffError(
+                    str((result.get("error") or {}).get("code")
+                        or "source_derived_run_failed")
+                )
+            value = result["data"]
+            return {
+                key: value.get(key)
+                for key in (
+                    "run_id",
+                    "status",
+                    "stage",
+                    "created_at",
+                    "updated_at",
+                    "review_scope",
+                    "error_code",
+                )
+                if value.get(key) is not None
+            }
+
+    def _cancel_authorized_source_derived_run(
+        self,
+        binding: dict[str, Any],
+    ) -> dict[str, Any]:
+        with self._capsule_operation_lock:
+            record, _path = (
+                self._validated_source_derived_handoff_binding(binding)
+            )
+            if record["run_id"] is None:
+                raise SourceHandoffError(
+                    "source_derived_run_not_started"
+                )
+            return self.cancel_intake_run({"run_id": record["run_id"]})
+
+    def _get_authorized_source_derived_review_summary(
+        self,
+        binding: dict[str, Any],
+    ) -> dict[str, Any]:
+        with self._capsule_operation_lock:
+            record, _path = (
+                self._validated_source_derived_handoff_binding(binding)
+            )
+            if record["run_id"] is None:
+                raise SourceHandoffError(
+                    "source_derived_run_not_started"
+                )
+            current = source_derived_run_projection(
+                get_source_derived_run(
+                    self._state_root, record["run_id"]
+                )
+            )
+            proposal = record["proposal"]["request"]
+            return {
+                "schema_version": "source_derived_review_summary.v1",
+                "run": {
+                    "status": current["status"],
+                    "stage": current["stage"],
+                },
+                "capability_kind": "computation",
+                "behavior_intent": proposal["behavior_intent"],
+                "input": {
+                    "kind": "bounded_string",
+                    "min_length": proposal["input_min_length"],
+                    "max_length": proposal["input_max_length"],
+                },
+                "output": {
+                    "kind": "finite_string_enum",
+                    "enum": copy.deepcopy(proposal["result_enum"]),
+                },
+                "acceptance_passed_count": (
+                    len(proposal["acceptance_cases"])
+                    if current["status"] == "review_required"
+                    else 0
+                ),
+                "reason_code": current.get("error_code"),
+            }
 
     @staticmethod
     def _allowed_review_decisions(item: dict[str, Any]) -> list[str]:
@@ -6665,6 +7889,69 @@ class ReweaveAppService:
             except SourceDerivationError:
                 raise exc
 
+    def _start_source_derived_authorization(
+        self,
+        authorization: dict[str, Any],
+        evidence: list[dict[str, Any]],
+        source_model: dict[str, Any],
+        supervisor: dict[str, str],
+        *,
+        source_root_id: str,
+        source_relpath: str,
+    ) -> dict[str, Any]:
+        model_request = build_source_derived_request(
+            authorization,
+            evidence,
+        )
+        prepared = prepare_source_derived_run(
+            self._state_root,
+            authorization,
+            model_request,
+            source_root_id=source_root_id,
+            source_relpath=source_relpath,
+            source_proposal_model=source_model,
+            supervision_model=supervisor,
+            created_at=_now(),
+        )
+        run_id = prepared["run_id"]
+        if not prepared["created"]:
+            with self._management_lock:
+                live = self._management_tasks.get(run_id)
+            if live is not None:
+                return self._ok(prepared)
+            if prepared["status"] in {"pending", "running"}:
+                prepared = append_source_derived_run_event(
+                    self._state_root,
+                    run_id,
+                    status="failed",
+                    stage=prepared["stage"],
+                    error_code="manual_recovery_required",
+                    created_at=_now(),
+                )
+            return self._ok(prepared)
+        submitted = self._submit_management_task(
+            "source_derived_computation",
+            lambda cancel: self._run_source_derived_computation(
+                run_id,
+                cancel,
+            ),
+            run_id=run_id,
+            cancellable=True,
+        )
+        if submitted.get("ok") is not True:
+            append_source_derived_run_event(
+                self._state_root,
+                run_id,
+                status="failed",
+                stage=prepared["stage"],
+                error_code=str(
+                    (submitted.get("error") or {}).get("code")
+                    or "source_derivation_start_failed"
+                ),
+                created_at=_now(),
+            )
+        return submitted
+
     def authorize_and_start_source_derived_computation(
         self,
         payload: dict[str, Any] | None = None,
@@ -6679,58 +7966,14 @@ class ReweaveAppService:
                     source_model,
                     supervisor,
                 ) = self._source_derived_authorization_values(request)
-                model_request = build_source_derived_request(
+                return self._start_source_derived_authorization(
                     authorization,
                     evidence,
-                )
-                prepared = prepare_source_derived_run(
-                    self._state_root,
-                    authorization,
-                    model_request,
+                    source_model,
+                    supervisor,
                     source_root_id=request["source_root_id"],
                     source_relpath=request["source_relpath"],
-                    source_proposal_model=source_model,
-                    supervision_model=supervisor,
-                    created_at=_now(),
                 )
-                run_id = prepared["run_id"]
-                if not prepared["created"]:
-                    with self._management_lock:
-                        live = self._management_tasks.get(run_id)
-                    if live is not None:
-                        return self._ok(prepared)
-                    if prepared["status"] in {"pending", "running"}:
-                        prepared = append_source_derived_run_event(
-                            self._state_root,
-                            run_id,
-                            status="failed",
-                            stage=prepared["stage"],
-                            error_code="manual_recovery_required",
-                            created_at=_now(),
-                        )
-                    return self._ok(prepared)
-                submitted = self._submit_management_task(
-                    "source_derived_computation",
-                    lambda cancel: self._run_source_derived_computation(
-                        run_id,
-                        cancel,
-                    ),
-                    run_id=run_id,
-                    cancellable=True,
-                )
-                if submitted.get("ok") is not True:
-                    append_source_derived_run_event(
-                        self._state_root,
-                        run_id,
-                        status="failed",
-                        stage=prepared["stage"],
-                        error_code=str(
-                            (submitted.get("error") or {}).get("code")
-                            or "source_derivation_start_failed"
-                        ),
-                        created_at=_now(),
-                    )
-                return submitted
         except (
             CapsuleStoreError,
             IntakeError,

@@ -3581,9 +3581,16 @@ process.stdout.write(JSON.stringify({result, rendered: totalNode.textContent}));
                 "start_source_intake",
                 "get_source_intake_run",
                 "get_source_review_summaries",
+                "prepare_source_derived_computation",
+                "get_source_derived_authorization",
+                "start_source_derived_computation",
+                "get_source_derived_run",
+                "cancel_source_derived_run",
+                "get_source_derived_review_summary",
             },
         )
         source_token = "source_handoff_token_" + "2" * 48
+        derived_token = "source_derived_handoff_token_" + "5" * 48
         candidate_token = "handoff_token_" + "3" * 48
         source_binding = {
             "action_profile": "source_intake_agent.v1",
@@ -3591,6 +3598,12 @@ process.stdout.write(JSON.stringify({result, rendered: totalNode.textContent}));
             "project_id": "project_private",
             "source_root_id": "root_private",
             "source_snapshot_sha256": "a" * 64,
+        }
+        derived_binding = {
+            "action_profile": "source_derived_agent.v1",
+            "token_digest": "e" * 64,
+            "handoff_binding_digest": "f" * 64,
+            "source_root_id": "root_private",
         }
 
         class Service:
@@ -3611,6 +3624,12 @@ process.stdout.write(JSON.stringify({result, rendered: totalNode.textContent}));
                     "plan_digest": "b" * 64,
                     "acceptance_confirmation_digest": "c" * 64,
                 }
+
+            @staticmethod
+            def _resolve_local_source_derived_handoff(token):
+                if token != derived_token:
+                    raise ValueError("invalid_derived_token")
+                return copy.deepcopy(derived_binding)
 
             @staticmethod
             def _start_authorized_source_intake(binding):
@@ -3662,6 +3681,90 @@ process.stdout.write(JSON.stringify({result, rendered: totalNode.textContent}));
                     },
                 }
 
+            @staticmethod
+            def _prepare_authorized_source_derived_computation(
+                binding, payload
+            ):
+                if binding != derived_binding:
+                    raise AssertionError("derived_binding_changed")
+                return {
+                    "schema_version": "source_derived_handoff_status.v1",
+                    "status": "active",
+                    "proposal_status": "pending",
+                    "proposal": {
+                        "source_relpath": payload["source_relpath"],
+                        "behavior_intent": payload["behavior_intent"],
+                        "input": {"min_length": 1, "max_length": 20},
+                        "result_enum": ["normal", "urgent"],
+                        "acceptance_cases": payload["acceptance_cases"],
+                    },
+                }
+
+            @staticmethod
+            def _get_authorized_source_derived_authorization(binding):
+                if binding != derived_binding:
+                    raise AssertionError("derived_binding_changed")
+                return {
+                    "schema_version": "source_derived_handoff_status.v1",
+                    "status": "active",
+                    "proposal_status": "approved",
+                    "proposal": None,
+                }
+
+            @staticmethod
+            def _start_authorized_source_derived_computation(binding):
+                if binding != derived_binding:
+                    raise AssertionError("derived_binding_changed")
+                return {
+                    "ok": True,
+                    "run_id": "run_" + "6" * 32,
+                    "status": "queued",
+                }
+
+            @staticmethod
+            def _get_authorized_source_derived_run(binding):
+                if binding != derived_binding:
+                    raise AssertionError("derived_binding_changed")
+                return {
+                    "run_id": "run_" + "6" * 32,
+                    "status": "review_required",
+                    "stage": "supervision",
+                    "review_scope": "isolated",
+                }
+
+            @staticmethod
+            def _cancel_authorized_source_derived_run(binding):
+                if binding != derived_binding:
+                    raise AssertionError("derived_binding_changed")
+                return {
+                    "ok": True,
+                    "data": {"cancel_requested": True},
+                }
+
+            @staticmethod
+            def _get_authorized_source_derived_review_summary(binding):
+                if binding != derived_binding:
+                    raise AssertionError("derived_binding_changed")
+                return {
+                    "schema_version": "source_derived_review_summary.v1",
+                    "run": {
+                        "status": "review_required",
+                        "stage": "supervision",
+                    },
+                    "capability_kind": "computation",
+                    "input": {
+                        "kind": "bounded_string",
+                        "min_length": 1,
+                        "max_length": 20,
+                    },
+                    "output": {
+                        "kind": "finite_string_enum",
+                        "enum": ["normal", "urgent"],
+                    },
+                    "acceptance_passed_count": 1,
+                    "reason_code": None,
+                }
+
         service = Service()
 
         def dispatch(
@@ -3702,6 +3805,88 @@ process.stdout.write(JSON.stringify({result, rendered: totalNode.textContent}));
                 "get_confirmed_product_plan",
                 {},
                 "source-cross-profile",
+            )["error"]["code"],
+            "agent_action_not_allowed",
+        )
+
+        derived_session: dict = {}
+        self.assertTrue(
+            dispatch(
+                derived_session,
+                "bind_user_handoff",
+                {"handoff_token": derived_token},
+                "derived-bind",
+            )["ok"]
+        )
+        derived_payload = {
+            "source_relpath": "src/rules.ts",
+            "behavior_intent": "Classify a bounded message.",
+            "input_field": "message",
+            "input_min_length": 1,
+            "input_max_length": 20,
+            "result_field": "classification",
+            "result_enum": ["normal", "urgent"],
+            "acceptance_cases": [
+                {
+                    "input_text": "urgent",
+                    "expected_result": "urgent",
+                }
+            ],
+        }
+        prepared = dispatch(
+            derived_session,
+            "prepare_source_derived_computation",
+            derived_payload,
+            "derived-prepare",
+        )
+        self.assertTrue(prepared["ok"], prepared)
+        self.assertEqual(
+            prepared["data"]["proposal_status"], "pending"
+        )
+        started_derived = dispatch(
+            derived_session,
+            "start_source_derived_computation",
+            {},
+            "derived-start",
+        )
+        self.assertEqual(
+            started_derived["data"],
+            {"run_id": "run_" + "6" * 32, "status": "queued"},
+        )
+        derived_review = dispatch(
+            derived_session,
+            "get_source_derived_review_summary",
+            {},
+            "derived-review",
+        )
+        self.assertEqual(
+            derived_review["data"]["acceptance_passed_count"], 1
+        )
+        self.assertNotIn(
+            "root_private",
+            json.dumps(
+                {
+                    "prepared": prepared,
+                    "started": started_derived,
+                    "review": derived_review,
+                }
+            ),
+        )
+        self.assertEqual(
+            dispatch(
+                derived_session,
+                "start_source_intake",
+                {},
+                "derived-cross-profile",
+            )["error"]["code"],
+            "agent_action_not_allowed",
+        )
+        self.assertEqual(
+            dispatch(
+                source_session,
+                "prepare_source_derived_computation",
+                derived_payload,
+                "source-derived-cross-profile",
             )["error"]["code"],
             "agent_action_not_allowed",
         )
@@ -3793,6 +3978,15 @@ process.stdout.write(JSON.stringify({result, rendered: totalNode.textContent}));
                 "start_source_intake",
                 {},
                 "candidate-cross-profile",
+            )["error"]["code"],
+            "agent_action_not_allowed",
+        )
+        self.assertEqual(
+            dispatch(
+                candidate_session,
+                "get_source_derived_authorization",
+                {},
+                "candidate-derived-cross-profile",
             )["error"]["code"],
             "agent_action_not_allowed",
         )

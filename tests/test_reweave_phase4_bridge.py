@@ -63,6 +63,8 @@ def test_phase4_bridge_forwards_json_payloads_to_app_service() -> None:
         "get_product_plan_workspace",
         "confirm_product_plan",
         "revoke_local_source_handoff",
+        "revoke_local_source_derived_handoff",
+        "decide_local_source_derived_handoff_proposal",
         "list_review_items",
         "decide_review_item",
         "list_capability_groups",
@@ -159,6 +161,17 @@ def test_generation_slots_only_call_generate_product_with_strict_json() -> None:
         assert "generate_product(QString)" in signatures
         assert "copy_local_source_handoff_binding(QString)" in signatures
         assert "revoke_local_source_handoff(QString)" in signatures
+        assert (
+            "copy_local_source_derived_handoff_binding(QString)"
+            in signatures
+        )
+        assert (
+            "revoke_local_source_derived_handoff(QString)" in signatures
+        )
+        assert (
+            "decide_local_source_derived_handoff_proposal(QString)"
+            in signatures
+        )
         assert "notify_generate(QString)" not in signatures
         assert "generate_preview(QString)" not in signatures
         for retired in (
@@ -394,5 +407,77 @@ def test_source_handoff_bridge_copies_one_strict_binding_and_revokes_on_failure(
             revoke_failed["error"]["code"]
             == "source_handoff_clipboard_revoke_failed"
         )
+    finally:
+        desktop.ReweaveBridge._qobject_cls = None
+
+
+def test_source_derived_handoff_clipboard_never_returns_token() -> None:
+    token = "source_derived_handoff_token_" + "c" * 48
+
+    class Service:
+        def __init__(self) -> None:
+            self.revoked: list[dict] = []
+
+        @staticmethod
+        def create_local_source_derived_handoff(_payload: dict):
+            return {
+                "ok": True,
+                "data": {
+                    "source_derived_handoff_token": token,
+                    "created_at": "2026-08-19T00:00:00Z",
+                },
+            }
+
+        def revoke_local_source_derived_handoff(self, payload: dict):
+            self.revoked.append(payload)
+            return {
+                "ok": True,
+                "data": {
+                    "schema_version": (
+                        "source_derived_handoff_status.v1"
+                    ),
+                    "status": "revoked",
+                },
+            }
+
+    service = Service()
+    bridge = _bridge(service)
+    copied: list[str] = []
+    payload = {"source_root_id": "root_source"}
+    try:
+        with patch.object(
+            desktop,
+            "_copy_to_system_clipboard",
+            side_effect=copied.append,
+        ):
+            raw = bridge.copy_local_source_derived_handoff_binding(
+                json.dumps(payload)
+            )
+        result = json.loads(raw)
+        assert result["data"] == {
+            "schema_version": "source_derived_handoff_status.v1",
+            "status": "active",
+            "created_at": "2026-08-19T00:00:00Z",
+        }
+        assert token not in raw
+        assert json.loads(copied[0])["payload"] == {
+            "handoff_token": token
+        }
+
+        with patch.object(
+            desktop,
+            "_copy_to_system_clipboard",
+            side_effect=RuntimeError("clipboard denied"),
+        ):
+            failed = json.loads(
+                bridge.copy_local_source_derived_handoff_binding(
+                    json.dumps(payload)
+                )
+            )
+        assert (
+            failed["error"]["code"]
+            == "source_derived_handoff_clipboard_failed"
+        )
+        assert service.revoked == [payload]
     finally:
         desktop.ReweaveBridge._qobject_cls = None
