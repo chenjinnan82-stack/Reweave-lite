@@ -1249,6 +1249,13 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert (
         '"authorize_and_start_source_derived_computation"' in app
     )
+    assert '"admit_source_derived_review"' in app
+    assert 'dataset.action = "admit-source-derived-review"' in app
+    assert (
+        'if (!window.confirm(t("sourceDerivedAdmissionConfirm"))) return;'
+        in app
+    )
+    assert "sourceDerivedRuns" in app
     assert (
         '"copy_local_source_derived_handoff_binding"' in app
     )
@@ -1263,10 +1270,13 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
         in app
     )
     source_derived_authorize_handler = app[
-        app.index('authorizeAgent.dataset.action = "authorize-source-derived-agent"') :
-        app.index('row.appendChild(authorizeAgent);')
+        app.index("function appendSourceDerivedAuthorization") :
+        app.index('appendSourceDerivedAuthorization(\n            "sourceDerivedAgentAuthorize"')
     ]
     assert "refreshIngestionManagement()" not in source_derived_authorize_handler
+    assert '"source_derived_ui_agent.v1"' in app
+    assert '"authorize-source-derived-ui-agent"' in app
+    assert "sourceDerivedUiAgentModelNotice" in app
     assert 'dataset.action = "authorize-source-derived"' in app
     assert "sourceDerivedNotice" in app
     assert "input_text:" in app

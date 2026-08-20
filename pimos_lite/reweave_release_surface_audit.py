@@ -331,6 +331,7 @@ def _release_checks(
     loaded_scripts: list[str] | None = None,
 ) -> dict[str, bool]:
     app_service = _read(base / "pimos_lite/reweave_app_service.py")
+    agent_stdio = _read(base / "pimos_lite/reweave_agent_stdio.py")
     composer_package = _read(base / "pimos_lite/composer/__init__.py")
     composer = _read(base / "pimos_lite/composer/module_native.py")
     desktop = _read(base / "pimos_lite/desktop_reweave_static.py")
@@ -360,6 +361,14 @@ def _release_checks(
     public_product_actions = _python_string_collection(
         app_service,
         "PUBLIC_PRODUCT_ACTIONS",
+    )
+    capsule_management_actions = _python_string_collection(
+        app_service,
+        "CAPSULE_MANAGEMENT_ACTIONS",
+    )
+    agent_actions = _python_string_collection(
+        agent_stdio,
+        "AGENT_ACTIONS",
     )
     loaded_scripts = (
         _frontend_loaded_scripts(base) if loaded_scripts is None else loaded_scripts
@@ -494,6 +503,14 @@ def _release_checks(
                 "start_confirmed_product_candidate",
             }
             <= public_product_actions
+        ),
+        "source_derived_admission_is_desktop_management_only": (
+            "admit_source_derived_review" in capsule_management_actions
+            and "admit_source_derived_review" not in public_product_actions
+            and "admit_source_derived_review" not in agent_actions
+            and "admit_source_derived_review" in bridge_slots
+            and "admit_source_derived_review"
+            in frontend_actions.get("bridge_actions", [])
         ),
         "formal_entrypoints_exclude_stage4_composer": (
             not any(

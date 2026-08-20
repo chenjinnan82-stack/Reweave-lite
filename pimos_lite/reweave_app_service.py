@@ -127,18 +127,28 @@ from pimos_lite.reweave_page_capability_contract import (
 )
 from pimos_lite.reweave_source_derivation import (
     SOURCE_DERIVATION_AUTHORIZATION_VERSION,
+    SOURCE_DERIVED_REVIEW_ADMISSION_VERSION,
+    SOURCE_DERIVED_STANDARD_UI_PROPOSAL_VERSION,
+    SOURCE_DERIVED_STANDARD_UI_RUN_VERSION,
     SourceDerivationError,
+    assemble_source_derived_standard_ui,
     append_source_derived_run_event,
     build_source_derived_authorization,
     build_source_derived_agent_proposal,
+    build_source_derived_review_admission_authorization,
+    build_source_derived_standard_ui_proposal,
     build_source_derived_request,
     get_source_derived_run,
     prepare_source_derived_run,
     read_source_derived_evidence,
+    read_source_derived_ui_evidence,
     source_derived_project_graph_digest,
+    source_derived_run_records,
     source_derived_run_projection,
     validate_source_derived_response,
     validate_source_derived_agent_proposal,
+    validate_source_derived_review_admission_authorization,
+    validate_source_derived_standard_ui_proposal,
     write_source_derived_proposal,
     validate_source_derived_authorization,
 )
@@ -168,12 +178,15 @@ _SOURCE_HANDOFF_TOKEN = re.compile(
 _SOURCE_DERIVED_HANDOFF_TOKEN = re.compile(
     r"source_derived_handoff_token_[0-9a-f]{48}\Z"
 )
+_SOURCE_DERIVED_UI_HANDOFF_TOKEN = re.compile(
+    r"source_derived_ui_handoff_token_[0-9a-f]{48}\Z"
+)
 _SOURCE_HANDOFF_FILENAME = re.compile(
     r"source_handoff_v1_([0-9a-f]{64})\.json\Z"
 )
 _SOURCE_HANDOFF_RUN_ID = re.compile(r"run_[0-9a-f]{32}\Z")
 _SOURCE_DERIVED_HANDOFF_FILENAME = re.compile(
-    r"source_derived_handoff_v1_([0-9a-f]{64})\.json\Z"
+    r"source_derived_handoff_v([12])_([0-9a-f]{64})\.json\Z"
 )
 _CANDIDATE_STAGING = re.compile(
     r"\.candidate_[0-9a-f]{32}-[a-z0-9_]{8}\Z"
@@ -245,6 +258,7 @@ CAPSULE_MANAGEMENT_ACTIONS = frozenset(
         "start_refresh_project",
         "start_refresh_all",
         "authorize_and_start_source_derived_computation",
+        "admit_source_derived_review",
         "create_local_source_derived_handoff",
         "revoke_local_source_derived_handoff",
         "decide_local_source_derived_handoff_proposal",
@@ -282,10 +296,14 @@ _SOURCE_HANDOFF_SAFE_ID = re.compile(r"[A-Za-z0-9_.:-]{1,128}\Z")
 _SOURCE_HANDOFF_REASON = re.compile(r"[a-z][a-z0-9_]{1,95}\Z")
 _SOURCE_DERIVED_HANDOFF_DIRECTORY = "source_derived_handoffs"
 _SOURCE_DERIVED_HANDOFF_VERSION = "source_derived_handoff.v1"
+_SOURCE_DERIVED_UI_HANDOFF_VERSION = "source_derived_handoff.v2"
 _SOURCE_DERIVED_HANDOFF_STATUS_VERSION = (
     "source_derived_handoff_status.v1"
 )
 _SOURCE_DERIVED_HANDOFF_ACTION_PROFILE = "source_derived_agent.v1"
+_SOURCE_DERIVED_UI_HANDOFF_ACTION_PROFILE = "source_derived_ui_agent.v1"
+_SOURCE_DERIVED_UI_RUN_DIRECTORY = "source_derived_ui_runs"
+_SOURCE_DERIVED_UI_WORK_DIRECTORY = "source_derived_ui_workspaces"
 
 
 def _sha256_file(path: Path) -> str:
@@ -2761,6 +2779,7 @@ class ReweaveAppService:
             "generationActive": True,
             "singleWarehouse": True,
             "singleComposer": True,
+            "sourceDerivedRuns": [],
             "legacy": legacy,
             "capabilities": {
                 "sourceManagement": True,
@@ -2940,6 +2959,34 @@ class ReweaveAppService:
                     "run_id": None,
                     "run_status": None,
                 }
+        try:
+            state["sourceDerivedRuns"] = [
+                self._source_derived_run_management_projection(record)
+                for record in source_derived_run_records(self._state_root)
+            ]
+        except (
+            CapsuleStoreError,
+            SourceDerivationError,
+            Stage3Error,
+            OSError,
+            ValueError,
+            sqlite3.Error,
+        ):
+            state["sourceDerivedRuns"] = [
+                {
+                    "schema_version": (
+                        "source_derived_run_management.v1"
+                    ),
+                    "run_id": None,
+                    "behavior_intent": "",
+                    "status": "conflict",
+                    "stage": "supervision",
+                    "review_scope": "isolated",
+                    "created_at": None,
+                    "updated_at": None,
+                    "formal_admission_status": "conflict",
+                }
+            ]
         return state
 
     @staticmethod
@@ -3701,11 +3748,16 @@ class ReweaveAppService:
                 )
             return self._source_handoff_binding(record)
 
-    def _source_derived_handoff_path(self, token_digest: str) -> Path:
+    def _source_derived_handoff_path(
+        self,
+        token_digest: str,
+        *,
+        version: int = 1,
+    ) -> Path:
         return (
             self._state_root
             / _SOURCE_DERIVED_HANDOFF_DIRECTORY
-            / f"source_derived_handoff_v1_{token_digest}.json"
+            / f"source_derived_handoff_v{version}_{token_digest}.json"
         )
 
     @staticmethod
@@ -3969,6 +4021,198 @@ class ReweaveAppService:
             raise SourceHandoffError("source_derived_handoff_conflict")
         return row
 
+    @classmethod
+    def _validate_source_derived_ui_handoff_record(
+        cls,
+        value: Any,
+        token_digest: str,
+    ) -> dict[str, Any]:
+        fields = {
+            "schema_version",
+            "action_profile",
+            "token_digest",
+            "source_root_id",
+            "root_kind",
+            "root_path_digest",
+            "root_snapshot_digest",
+            "supervision_model",
+            "warehouse_revision",
+            "catalog_digest",
+            "handoff_binding_digest",
+            "proposal",
+            "proposal_digest",
+            "proposal_status",
+            "approval_digest",
+            "run_id",
+            "status",
+            "created_at",
+            "approved_at",
+            "rejected_at",
+            "revoked_at",
+            "canonical_digest",
+        }
+        if type(value) is not dict or set(value) != fields:
+            raise SourceHandoffError("source_derived_handoff_conflict")
+        row = copy.deepcopy(value)
+        body = {
+            key: item
+            for key, item in row.items()
+            if key != "canonical_digest"
+        }
+        try:
+            proposal = (
+                validate_source_derived_standard_ui_proposal(
+                    row["proposal"]
+                )
+                if row["proposal"] is not None
+                else None
+            )
+        except SourceDerivationError as exc:
+            raise SourceHandoffError(
+                "source_derived_handoff_conflict"
+            ) from exc
+        timestamps = ("created_at", "approved_at", "rejected_at", "revoked_at")
+        if (
+            row["schema_version"] != _SOURCE_DERIVED_UI_HANDOFF_VERSION
+            or row["action_profile"]
+            != _SOURCE_DERIVED_UI_HANDOFF_ACTION_PROFILE
+            or row["token_digest"] != token_digest
+            or re.fullmatch(r"[0-9a-f]{64}", token_digest) is None
+            or _SOURCE_HANDOFF_SAFE_ID.fullmatch(
+                str(row["source_root_id"])
+            )
+            is None
+            or _SOURCE_HANDOFF_SAFE_ID.fullmatch(str(row["root_kind"]))
+            is None
+            or any(
+                re.fullmatch(r"[0-9a-f]{64}", str(row[key])) is None
+                for key in (
+                    "root_path_digest",
+                    "root_snapshot_digest",
+                    "catalog_digest",
+                    "handoff_binding_digest",
+                    "canonical_digest",
+                )
+            )
+            or cls._source_derived_handoff_model(
+                row["supervision_model"]
+            )
+            != row["supervision_model"]
+            or type(row["warehouse_revision"]) is not int
+            or row["warehouse_revision"] < 0
+            or row["proposal_status"]
+            not in {"none", "pending", "approved", "rejected"}
+            or row["status"] not in {"active", "revoked"}
+            or type(row["created_at"]) is not str
+            or not row["created_at"]
+            or any(
+                row[key] is not None
+                and (type(row[key]) is not str or not row[key])
+                for key in timestamps[1:]
+            )
+            or (
+                row["proposal_digest"] is not None
+                and re.fullmatch(
+                    r"[0-9a-f]{64}", str(row["proposal_digest"])
+                )
+                is None
+            )
+            or (
+                row["approval_digest"] is not None
+                and re.fullmatch(
+                    r"[0-9a-f]{64}", str(row["approval_digest"])
+                )
+                is None
+            )
+            or (
+                row["run_id"] is not None
+                and _SOURCE_HANDOFF_RUN_ID.fullmatch(str(row["run_id"]))
+                is None
+            )
+            or (
+                proposal is not None
+                and (
+                    proposal["canonical_digest"]
+                    != row["proposal_digest"]
+                    or proposal["handoff_binding_digest"]
+                    != row["handoff_binding_digest"]
+                    or proposal["supervision_model"]
+                    != row["supervision_model"]
+                    or proposal["warehouse_revision"]
+                    != row["warehouse_revision"]
+                    or proposal["catalog_digest"] != row["catalog_digest"]
+                )
+            )
+            or row["canonical_digest"] != canonical_json_digest(body)
+        ):
+            raise SourceHandoffError("source_derived_handoff_conflict")
+        expected_approval = (
+            canonical_json_digest(
+                {
+                    "action": "approve_source_derived_standard_ui",
+                    "proposal_digest": row["proposal_digest"],
+                    "approved_at": row["approved_at"],
+                }
+            )
+            if row["proposal_status"] == "approved"
+            else None
+        )
+        shapes = {
+            "none": (
+                proposal is None
+                and row["proposal_digest"] is None
+                and row["approval_digest"] is None
+                and row["run_id"] is None
+                and row["approved_at"] is None
+                and row["rejected_at"] is None
+            ),
+            "pending": (
+                proposal is not None
+                and row["approval_digest"] is None
+                and row["run_id"] is None
+                and row["approved_at"] is None
+                and row["rejected_at"] is None
+            ),
+            "approved": (
+                proposal is not None
+                and row["approval_digest"] == expected_approval
+                and row["approved_at"] is not None
+                and row["rejected_at"] is None
+            ),
+            "rejected": (
+                proposal is not None
+                and row["approval_digest"] is None
+                and row["run_id"] is None
+                and row["approved_at"] is None
+                and row["rejected_at"] is not None
+            ),
+        }
+        if (
+            not shapes[row["proposal_status"]]
+            or (row["status"] == "active" and row["revoked_at"] is not None)
+            or (row["status"] == "revoked" and row["revoked_at"] is None)
+        ):
+            raise SourceHandoffError("source_derived_handoff_conflict")
+        return row
+
+    @classmethod
+    def _validate_source_derived_handoff_any(
+        cls,
+        value: Any,
+        token_digest: str,
+    ) -> dict[str, Any]:
+        if type(value) is not dict:
+            raise SourceHandoffError("source_derived_handoff_conflict")
+        if value.get("schema_version") == _SOURCE_DERIVED_HANDOFF_VERSION:
+            return cls._validate_source_derived_handoff_record(
+                value, token_digest
+            )
+        if value.get("schema_version") == _SOURCE_DERIVED_UI_HANDOFF_VERSION:
+            return cls._validate_source_derived_ui_handoff_record(
+                value, token_digest
+            )
+        raise SourceHandoffError("source_derived_handoff_conflict")
+
     def _source_derived_handoff_records(
         self,
     ) -> list[tuple[dict[str, Any], Path]]:
@@ -4006,9 +4250,9 @@ class ReweaveAppService:
                 )
             result.append(
                 (
-                    self._validate_source_derived_handoff_record(
+                    self._validate_source_derived_handoff_any(
                         _read_source_handoff(path),
-                        match.group(1),
+                        match.group(2),
                     ),
                     path,
                 )
@@ -4047,24 +4291,19 @@ class ReweaveAppService:
     def _source_derived_handoff_facts(
         self,
         source_root_id: str,
+        *,
+        include_source_model: bool = True,
     ) -> dict[str, Any]:
         # ponytail: bind root authority here; prepare later freezes the one
         # permitted evidence file instead of inventing a second root scanner.
         _root, root_identity = self._source_derived_root_identity(
             source_root_id
         )
-        source_model = self._product_planner._model_identity(
-            self._product_planner._selected_model(check_current=False)
-        )
         selected_supervisor = self._capsule_supervisor.selected_model()
         catalog = self._product_planning_catalog()
-        return {
+        result = {
             "root_identity": root_identity,
             "root_snapshot_digest": canonical_json_digest(root_identity),
-            "source_proposal_model": {
-                "name": source_model["name"],
-                "digest": source_model["digest"],
-            },
             "supervision_model": {
                 "name": selected_supervisor["name"],
                 "digest": selected_supervisor["digest"],
@@ -4072,13 +4311,28 @@ class ReweaveAppService:
             "warehouse_revision": catalog["warehouse_revision"],
             "catalog_digest": canonical_json_digest(catalog),
         }
+        if include_source_model:
+            source_model = self._product_planner._model_identity(
+                self._product_planner._selected_model(
+                    check_current=False
+                )
+            )
+            result["source_proposal_model"] = {
+                "name": source_model["name"],
+                "digest": source_model["digest"],
+            }
+        return result
 
     def _validate_source_derived_handoff_live_facts(
         self,
         record: dict[str, Any],
     ) -> None:
         facts = self._source_derived_handoff_facts(
-            record["source_root_id"]
+            record["source_root_id"],
+            include_source_model=(
+                record["schema_version"]
+                == _SOURCE_DERIVED_HANDOFF_VERSION
+            ),
         )
         root = facts["root_identity"]
         if (
@@ -4086,12 +4340,16 @@ class ReweaveAppService:
             or root["root_path_digest"] != record["root_path_digest"]
             or facts["root_snapshot_digest"]
             != record["root_snapshot_digest"]
-            or facts["source_proposal_model"]
-            != record["source_proposal_model"]
             or facts["supervision_model"]
             != record["supervision_model"]
             or facts["warehouse_revision"] != record["warehouse_revision"]
             or facts["catalog_digest"] != record["catalog_digest"]
+            or (
+                record["schema_version"]
+                == _SOURCE_DERIVED_HANDOFF_VERSION
+                and facts["source_proposal_model"]
+                != record["source_proposal_model"]
+            )
         ):
             raise SourceHandoffError(
                 "source_derived_handoff_stale"
@@ -4100,23 +4358,39 @@ class ReweaveAppService:
             root = self._capsule_intake.get_source_root(
                 record["source_root_id"]
             )
-            evidence = read_source_derived_evidence(
-                str(root["current_path"]),
-                record["proposal"]["request"]["source_relpath"],
+            evidence = (
+                read_source_derived_ui_evidence(
+                    str(root["current_path"]),
+                    record["proposal"]["request"]["evidence_relpaths"],
+                )
+                if record["schema_version"]
+                == _SOURCE_DERIVED_UI_HANDOFF_VERSION
+                else read_source_derived_evidence(
+                    str(root["current_path"]),
+                    record["proposal"]["request"]["source_relpath"],
+                )
             )
             identity = [
                 {
-                    key: evidence[0][key]
+                    key: item[key]
                     for key in ("logical_path", "sha256", "size_bytes")
                 }
+                for item in evidence
             ]
-            if (
-                evidence[0]["sha256"]
-                != record["proposal"]["source_snapshot_sha256"]
-                or source_derived_project_graph_digest(evidence)
-                != record["proposal"]["project_graph_digest"]
-                or identity != record["proposal"]["evidence"]
-            ):
+            stale = identity != record["proposal"]["evidence"]
+            if record["schema_version"] == _SOURCE_DERIVED_HANDOFF_VERSION:
+                stale = stale or (
+                    evidence[0]["sha256"]
+                    != record["proposal"]["source_snapshot_sha256"]
+                    or source_derived_project_graph_digest(evidence)
+                    != record["proposal"]["project_graph_digest"]
+                )
+            else:
+                stale = stale or (
+                    canonical_json_digest(identity)
+                    != record["proposal"]["evidence_digest"]
+                )
+            if stale:
                 raise SourceHandoffError(
                     "source_derived_handoff_stale"
                 )
@@ -4128,7 +4402,28 @@ class ReweaveAppService:
         if proposal is None:
             return None
         request = proposal["request"]
+        if (
+            proposal.get("schema_version")
+            == SOURCE_DERIVED_STANDARD_UI_PROPOSAL_VERSION
+        ):
+            return {
+                "proposal_kind": "standard_ui_pair",
+                "evidence_relpaths": copy.deepcopy(
+                    request["evidence_relpaths"]
+                ),
+                "behavior_intent": request["behavior_intent"],
+                "input": {
+                    "min_length": request["input_min_length"],
+                    "max_length": request["input_max_length"],
+                },
+                "result_enum": copy.deepcopy(request["result_enum"]),
+                "visible_text": copy.deepcopy(request["visible_text"]),
+                "acceptance_cases": copy.deepcopy(
+                    request["acceptance_cases"]
+                ),
+            }
         return {
+            "proposal_kind": "computation",
             "source_relpath": request["source_relpath"],
             "behavior_intent": request["behavior_intent"],
             "input": {
@@ -4147,6 +4442,7 @@ class ReweaveAppService:
     ) -> dict[str, Any]:
         base = {
             "schema_version": _SOURCE_DERIVED_HANDOFF_STATUS_VERSION,
+            "action_profile": None,
             "status": "none",
             "proposal_status": "none",
             "proposal": None,
@@ -4193,9 +4489,18 @@ class ReweaveAppService:
         run = None
         if record["run_id"] is not None:
             try:
-                current = source_derived_run_projection(
-                    get_source_derived_run(
-                        self._state_root, record["run_id"]
+                current = (
+                    self._source_derived_ui_run_projection(
+                        self._read_source_derived_ui_run(
+                            record["run_id"]
+                        )
+                    )
+                    if record["schema_version"]
+                    == _SOURCE_DERIVED_UI_HANDOFF_VERSION
+                    else source_derived_run_projection(
+                        get_source_derived_run(
+                            self._state_root, record["run_id"]
+                        )
                     )
                 )
                 run = {
@@ -4208,6 +4513,7 @@ class ReweaveAppService:
                 status = "conflict"
         return {
             **base,
+            "action_profile": record["action_profile"],
             "status": status,
             "proposal_status": record["proposal_status"],
             "proposal": self._source_derived_proposal_summary(
@@ -4225,7 +4531,7 @@ class ReweaveAppService:
         record: dict[str, Any],
     ) -> dict[str, Any]:
         return {
-            "action_profile": _SOURCE_DERIVED_HANDOFF_ACTION_PROFILE,
+            "action_profile": record["action_profile"],
             "token_digest": record["token_digest"],
             "handoff_binding_digest": record["handoff_binding_digest"],
             "source_root_id": record["source_root_id"],
@@ -4245,7 +4551,10 @@ class ReweaveAppService:
                 "source_root_id",
             }
             or binding.get("action_profile")
-            != _SOURCE_DERIVED_HANDOFF_ACTION_PROFILE
+            not in {
+                _SOURCE_DERIVED_HANDOFF_ACTION_PROFILE,
+                _SOURCE_DERIVED_UI_HANDOFF_ACTION_PROFILE,
+            }
             or type(binding.get("token_digest")) is not str
             or re.fullmatch(
                 r"[0-9a-f]{64}", binding["token_digest"]
@@ -4253,10 +4562,17 @@ class ReweaveAppService:
             is None
         ):
             raise SourceHandoffError("source_derived_handoff_invalid")
-        path = self._source_derived_handoff_path(
-            binding["token_digest"]
+        version = (
+            2
+            if binding["action_profile"]
+            == _SOURCE_DERIVED_UI_HANDOFF_ACTION_PROFILE
+            else 1
         )
-        record = self._validate_source_derived_handoff_record(
+        path = self._source_derived_handoff_path(
+            binding["token_digest"],
+            version=version,
+        )
+        record = self._validate_source_derived_handoff_any(
             _read_source_handoff(path),
             binding["token_digest"],
         )
@@ -4265,6 +4581,7 @@ class ReweaveAppService:
         if any(
             record[key] != binding[key]
             for key in (
+                "action_profile",
                 "token_digest",
                 "handoff_binding_digest",
                 "source_root_id",
@@ -4298,7 +4615,7 @@ class ReweaveAppService:
             **body,
             "canonical_digest": canonical_json_digest(body),
         }
-        validated = self._validate_source_derived_handoff_record(
+        validated = self._validate_source_derived_handoff_any(
             updated,
             updated["token_digest"],
         )
@@ -4318,20 +4635,31 @@ class ReweaveAppService:
         try:
             request = self._payload(payload)
             if (
-                set(request) != {"source_root_id"}
+                set(request)
+                not in (
+                    {"source_root_id"},
+                    {"source_root_id", "action_profile"},
+                )
                 or type(request["source_root_id"]) is not str
                 or not request["source_root_id"].strip()
+                or request.get(
+                    "action_profile",
+                    _SOURCE_DERIVED_HANDOFF_ACTION_PROFILE,
+                )
+                not in {
+                    _SOURCE_DERIVED_HANDOFF_ACTION_PROFILE,
+                    _SOURCE_DERIVED_UI_HANDOFF_ACTION_PROFILE,
+                }
             ):
                 return self._error(
                     "source_derived_handoff_request_invalid"
                 )
             self._ensure_capsule_management()
             source_root_id = request["source_root_id"].strip()
-            if not javascript_source_snapshot_supported():
-                raise SourceDerivationError(
-                    "source_platform_unsupported_v1"
-                )
-            facts = self._source_derived_handoff_facts(source_root_id)
+            action_profile = request.get(
+                "action_profile",
+                _SOURCE_DERIVED_HANDOFF_ACTION_PROFILE,
+            )
             records = self._source_derived_handoff_records()
             active = [
                 record
@@ -4344,8 +4672,24 @@ class ReweaveAppService:
                 return self._error(
                     "source_derived_handoff_already_active"
                 )
+            if not javascript_source_snapshot_supported():
+                raise SourceDerivationError(
+                    "source_platform_unsupported_v1"
+                )
+            is_ui = (
+                action_profile
+                == _SOURCE_DERIVED_UI_HANDOFF_ACTION_PROFILE
+            )
+            facts = self._source_derived_handoff_facts(
+                source_root_id,
+                include_source_model=not is_ui,
+            )
             token = (
-                "source_derived_handoff_token_"
+                (
+                    "source_derived_ui_handoff_token_"
+                    if is_ui
+                    else "source_derived_handoff_token_"
+                )
                 + uuid.uuid4().hex
                 + uuid.uuid4().hex[:16]
             )
@@ -4353,24 +4697,27 @@ class ReweaveAppService:
                 token.encode("utf-8")
             ).hexdigest()
             created_at = _now()
-            binding_body = {
+            binding_body: dict[str, Any] = {
                 "source_root_id": source_root_id,
                 "root_snapshot_digest": facts[
                     "root_snapshot_digest"
-                ],
-                "source_proposal_model": facts[
-                    "source_proposal_model"
                 ],
                 "supervision_model": facts["supervision_model"],
                 "warehouse_revision": facts["warehouse_revision"],
                 "catalog_digest": facts["catalog_digest"],
                 "created_at": created_at,
             }
-            record: dict[str, Any] = {
-                "schema_version": _SOURCE_DERIVED_HANDOFF_VERSION,
-                "action_profile": (
-                    _SOURCE_DERIVED_HANDOFF_ACTION_PROFILE
+            if not is_ui:
+                binding_body["source_proposal_model"] = facts[
+                    "source_proposal_model"
+                ]
+            common: dict[str, Any] = {
+                "schema_version": (
+                    _SOURCE_DERIVED_UI_HANDOFF_VERSION
+                    if is_ui
+                    else _SOURCE_DERIVED_HANDOFF_VERSION
                 ),
+                "action_profile": action_profile,
                 "token_digest": token_digest,
                 "source_root_id": source_root_id,
                 "root_kind": facts["root_identity"]["root_kind"],
@@ -4379,9 +4726,6 @@ class ReweaveAppService:
                 ],
                 "root_snapshot_digest": facts[
                     "root_snapshot_digest"
-                ],
-                "source_proposal_model": facts[
-                    "source_proposal_model"
                 ],
                 "supervision_model": facts["supervision_model"],
                 "warehouse_revision": facts["warehouse_revision"],
@@ -4392,7 +4736,6 @@ class ReweaveAppService:
                 "proposal": None,
                 "proposal_digest": None,
                 "proposal_status": "none",
-                "authorization": None,
                 "run_id": None,
                 "status": "active",
                 "created_at": created_at,
@@ -4400,20 +4743,42 @@ class ReweaveAppService:
                 "rejected_at": None,
                 "revoked_at": None,
             }
+            record = (
+                {
+                    **common,
+                    "approval_digest": None,
+                }
+                if is_ui
+                else {
+                    **common,
+                    "source_proposal_model": facts[
+                        "source_proposal_model"
+                    ],
+                    "authorization": None,
+                }
+            )
             record["canonical_digest"] = canonical_json_digest(record)
-            validated = self._validate_source_derived_handoff_record(
+            validated = self._validate_source_derived_handoff_any(
                 record,
                 token_digest,
             )
             _write_source_handoff(
-                self._source_derived_handoff_path(token_digest),
+                self._source_derived_handoff_path(
+                    token_digest,
+                    version=2 if is_ui else 1,
+                ),
                 validated,
                 replace=False,
                 directory_name=_SOURCE_DERIVED_HANDOFF_DIRECTORY,
             )
             return self._ok(
                 {
-                    "source_derived_handoff_token": token,
+                    (
+                        "source_derived_ui_handoff_token"
+                        if is_ui
+                        else "source_derived_handoff_token"
+                    ): token,
+                    "action_profile": action_profile,
                     "status": "active",
                     "created_at": created_at,
                 }
@@ -4486,8 +4851,14 @@ class ReweaveAppService:
     ) -> dict[str, Any]:
         if (
             type(handoff_token) is not str
-            or _SOURCE_DERIVED_HANDOFF_TOKEN.fullmatch(handoff_token)
-            is None
+            or (
+                _SOURCE_DERIVED_HANDOFF_TOKEN.fullmatch(handoff_token)
+                is None
+                and _SOURCE_DERIVED_UI_HANDOFF_TOKEN.fullmatch(
+                    handoff_token
+                )
+                is None
+            )
         ):
             raise SourceHandoffError(
                 "source_derived_handoff_invalid"
@@ -4497,9 +4868,20 @@ class ReweaveAppService:
             token_digest = hashlib.sha256(
                 handoff_token.encode("utf-8")
             ).hexdigest()
-            path = self._source_derived_handoff_path(token_digest)
+            version = (
+                2
+                if _SOURCE_DERIVED_UI_HANDOFF_TOKEN.fullmatch(
+                    handoff_token
+                )
+                is not None
+                else 1
+            )
+            path = self._source_derived_handoff_path(
+                token_digest,
+                version=version,
+            )
             try:
-                record = self._validate_source_derived_handoff_record(
+                record = self._validate_source_derived_handoff_any(
                     _read_source_handoff(path), token_digest
                 )
             except SourceHandoffError as exc:
@@ -4574,6 +4956,34 @@ class ReweaveAppService:
                 )
             else:
                 proposal = record["proposal"]
+                if (
+                    record["schema_version"]
+                    == _SOURCE_DERIVED_UI_HANDOFF_VERSION
+                ):
+                    approved_at = _now()
+                    approval_digest = canonical_json_digest(
+                        {
+                            "action": (
+                                "approve_source_derived_standard_ui"
+                            ),
+                            "proposal_digest": record["proposal_digest"],
+                            "approved_at": approved_at,
+                        }
+                    )
+                    self._write_updated_source_derived_handoff(
+                        {
+                            **record,
+                            "proposal_status": "approved",
+                            "approval_digest": approval_digest,
+                            "approved_at": approved_at,
+                        },
+                        path,
+                    )
+                    return self._ok(
+                        self._source_derived_handoff_status_for_root(
+                            source_root_id
+                        )
+                    )
                 (
                     authorization,
                     evidence,
@@ -4880,6 +5290,959 @@ class ReweaveAppService:
                 "reason_code": current.get("error_code"),
             }
 
+    def _prepare_authorized_source_derived_standard_ui(
+        self,
+        binding: dict[str, Any],
+        payload: dict[str, Any],
+    ) -> dict[str, Any]:
+        with self._capsule_operation_lock:
+            record, path = self._validated_source_derived_handoff_binding(
+                binding
+            )
+            if (
+                record["action_profile"]
+                != _SOURCE_DERIVED_UI_HANDOFF_ACTION_PROFILE
+            ):
+                raise SourceHandoffError("agent_action_not_allowed")
+            expected = {
+                "evidence_relpaths",
+                "behavior_intent",
+                "input_field",
+                "event_name",
+                "input_min_length",
+                "input_max_length",
+                "result_field",
+                "result_enum",
+                "visible_text",
+                "acceptance_cases",
+            }
+            if type(payload) is not dict or set(payload) != expected:
+                raise SourceHandoffError(
+                    "source_derived_ui_proposal_request_invalid"
+                )
+            root = self._capsule_intake.get_source_root(
+                record["source_root_id"]
+            )
+            evidence = read_source_derived_ui_evidence(
+                str(root["current_path"]),
+                payload["evidence_relpaths"],
+            )
+            request = {
+                **copy.deepcopy(payload),
+                "evidence_relpaths": sorted(
+                    payload["evidence_relpaths"],
+                    key=lambda item: item.encode("utf-8"),
+                ),
+            }
+            prepared_at = (
+                record["proposal"]["prepared_at"]
+                if record["proposal"] is not None
+                else _now()
+            )
+            proposal = build_source_derived_standard_ui_proposal(
+                handoff_binding_digest=record[
+                    "handoff_binding_digest"
+                ],
+                request=request,
+                evidence=evidence,
+                supervision_model=record["supervision_model"],
+                warehouse_revision=record["warehouse_revision"],
+                catalog_digest=record["catalog_digest"],
+                prepared_at=prepared_at,
+            )
+            if record["proposal"] is not None:
+                if record["proposal"] != proposal:
+                    raise SourceHandoffError(
+                        "source_derived_ui_proposal_conflict"
+                    )
+            else:
+                self._write_updated_source_derived_handoff(
+                    {
+                        **record,
+                        "proposal": proposal,
+                        "proposal_digest": proposal[
+                            "canonical_digest"
+                        ],
+                        "proposal_status": "pending",
+                    },
+                    path,
+                )
+            return self._source_derived_handoff_status_for_root(
+                record["source_root_id"]
+            )
+
+    def _source_derived_ui_run_path(self, run_id: str) -> Path:
+        if _SOURCE_HANDOFF_RUN_ID.fullmatch(str(run_id)) is None:
+            raise SourceHandoffError("source_derived_ui_run_not_found")
+        return (
+            self._state_root
+            / _SOURCE_DERIVED_UI_RUN_DIRECTORY
+            / f"source_derived_standard_ui_run_v1_{run_id}.json"
+        )
+
+    def _source_derived_ui_workspace(self, run_id: str) -> Path:
+        if _SOURCE_HANDOFF_RUN_ID.fullmatch(str(run_id)) is None:
+            raise SourceHandoffError("source_derived_ui_run_not_found")
+        return (
+            self._state_root
+            / _SOURCE_DERIVED_UI_WORK_DIRECTORY
+            / run_id
+        )
+
+    @staticmethod
+    def _validate_source_derived_ui_run(value: Any) -> dict[str, Any]:
+        fields = {
+            "schema_version",
+            "run_id",
+            "handoff_binding_digest",
+            "proposal_digest",
+            "approval_digest",
+            "source_root_id",
+            "supervision_model",
+            "warehouse_revision",
+            "catalog_digest",
+            "status",
+            "stage",
+            "events",
+            "package_files",
+            "validation_database_sha256",
+            "reviews",
+            "created_at",
+            "updated_at",
+            "canonical_digest",
+        }
+        if type(value) is not dict or set(value) != fields:
+            raise SourceHandoffError("source_derived_ui_run_conflict")
+        row = copy.deepcopy(value)
+        body = {
+            key: item
+            for key, item in row.items()
+            if key != "canonical_digest"
+        }
+        events = row["events"]
+        previous = None
+        valid_events = True
+        statuses = {
+            "pending",
+            "running",
+            "review_required",
+            "failed",
+            "cancelled",
+        }
+        stages = {
+            "assembly": 0,
+            "intake": 1,
+            "security": 2,
+            "runtime": 3,
+            "supervision": 4,
+        }
+        previous_status = None
+        previous_stage = -1
+        if type(events) is not list or not events:
+            valid_events = False
+        else:
+            for index, event in enumerate(events, 1):
+                if (
+                    type(event) is not dict
+                    or set(event)
+                    != {
+                        "sequence",
+                        "previous_event_digest",
+                        "status",
+                        "stage",
+                        "evidence_digest",
+                        "error_code",
+                        "created_at",
+                        "canonical_digest",
+                    }
+                ):
+                    valid_events = False
+                    break
+                event_body = {
+                    key: item
+                    for key, item in event.items()
+                    if key != "canonical_digest"
+                }
+                if (
+                    event["sequence"] != index
+                    or event["previous_event_digest"] != previous
+                    or event["status"] not in statuses
+                    or event["stage"] not in stages
+                    or (
+                        event["error_code"] is not None
+                        and _SOURCE_HANDOFF_SAFE_ID.fullmatch(
+                            str(event["error_code"])
+                        )
+                        is None
+                    )
+                    or (
+                        event["status"] in {"pending", "running", "review_required"}
+                        and event["error_code"] is not None
+                    )
+                    or (
+                        event["status"] in {"failed", "cancelled"}
+                        and event["error_code"] is None
+                    )
+                    or (
+                        index == 1
+                        and (
+                            event["status"] != "pending"
+                            or event["stage"] != "assembly"
+                        )
+                    )
+                    or (
+                        previous_status in {
+                            "review_required",
+                            "failed",
+                            "cancelled",
+                        }
+                    )
+                    or (
+                        previous_status == "pending"
+                        and event["status"]
+                        not in {"running", "failed", "cancelled"}
+                    )
+                    or (
+                        previous_status == "running"
+                        and event["status"]
+                        not in {
+                            "running",
+                            "review_required",
+                            "failed",
+                            "cancelled",
+                        }
+                    )
+                    or stages[event["stage"]] < previous_stage
+                    or re.fullmatch(
+                        r"[0-9a-f]{64}",
+                        str(event["evidence_digest"]),
+                    )
+                    is None
+                    or event["canonical_digest"]
+                    != canonical_json_digest(event_body)
+                ):
+                    valid_events = False
+                    break
+                previous = event["canonical_digest"]
+                previous_status = event["status"]
+                previous_stage = stages[event["stage"]]
+        exact_package = {
+            "index.html",
+            "interaction.js",
+            "presentation.js",
+            "styles.css",
+        }
+        terminal_review = (
+            row["status"] == "review_required"
+            and row["stage"] == "supervision"
+            and type(row["package_files"]) is dict
+            and set(row["package_files"]) == exact_package
+            and row["validation_database_sha256"] is not None
+            and type(row["reviews"]) is list
+            and len(row["reviews"]) == 2
+            and {
+                (item.get("capability_kind"), item.get("status"))
+                for item in row["reviews"]
+                if type(item) is dict
+            }
+            == {
+                ("interaction", "review_required"),
+                ("presentation", "review_required"),
+            }
+        )
+        if (
+            row["schema_version"] != SOURCE_DERIVED_STANDARD_UI_RUN_VERSION
+            or _SOURCE_HANDOFF_RUN_ID.fullmatch(str(row["run_id"])) is None
+            or any(
+                re.fullmatch(r"[0-9a-f]{64}", str(row[key])) is None
+                for key in (
+                    "handoff_binding_digest",
+                    "proposal_digest",
+                    "approval_digest",
+                    "catalog_digest",
+                    "canonical_digest",
+                )
+            )
+            or _SOURCE_HANDOFF_SAFE_ID.fullmatch(
+                str(row["source_root_id"])
+            )
+            is None
+            or ReweaveAppService._source_derived_handoff_model(
+                row["supervision_model"]
+            )
+            != row["supervision_model"]
+            or type(row["warehouse_revision"]) is not int
+            or row["warehouse_revision"] < 0
+            or row["status"] not in statuses
+            or row["stage"] not in stages
+            or not valid_events
+            or events[-1]["status"] != row["status"]
+            or events[-1]["stage"] != row["stage"]
+            or type(row["package_files"]) is not dict
+            or any(
+                name not in exact_package
+                or re.fullmatch(r"[0-9a-f]{64}", str(digest)) is None
+                for name, digest in row["package_files"].items()
+            )
+            or (
+                row["validation_database_sha256"] is not None
+                and re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    str(row["validation_database_sha256"]),
+                )
+                is None
+            )
+            or type(row["reviews"]) is not list
+            or any(
+                type(item) is not dict
+                or set(item) != {"capability_kind", "review_id", "status"}
+                or item["capability_kind"]
+                not in {"interaction", "presentation"}
+                or type(item["review_id"]) is not str
+                or not item["review_id"]
+                or type(item["status"]) is not str
+                for item in row["reviews"]
+            )
+            or (
+                row["stage"] == "assembly"
+                and (
+                    row["package_files"]
+                    or row["validation_database_sha256"] is not None
+                    or row["reviews"]
+                )
+            )
+            or (
+                row["stage"] != "assembly"
+                and set(row["package_files"]) != exact_package
+            )
+            or (
+                row["status"] == "review_required"
+                and not terminal_review
+            )
+            or (
+                row["status"] != "review_required"
+                and (
+                    row["validation_database_sha256"] is not None
+                    or row["reviews"]
+                )
+            )
+            or type(row["created_at"]) is not str
+            or not row["created_at"]
+            or type(row["updated_at"]) is not str
+            or not row["updated_at"]
+            or row["canonical_digest"] != canonical_json_digest(body)
+        ):
+            raise SourceHandoffError("source_derived_ui_run_conflict")
+        return row
+
+    def _read_source_derived_ui_run(
+        self,
+        run_id: str,
+    ) -> dict[str, Any]:
+        row = self._validate_source_derived_ui_run(
+            _read_source_handoff(
+                self._source_derived_ui_run_path(run_id)
+            )
+        )
+        workspace = self._source_derived_ui_workspace(run_id)
+        try:
+            for name, digest in row["package_files"].items():
+                path = workspace / "source" / name
+                _read_export_file(
+                    workspace / "source",
+                    {
+                        "path": name,
+                        "size_bytes": path.lstat().st_size,
+                        "sha256": digest,
+                    },
+                )
+            if row["validation_database_sha256"] is not None:
+                database = workspace / "capsule_warehouse.sqlite3"
+                _read_export_file(
+                    workspace,
+                    {
+                        "path": database.name,
+                        "size_bytes": database.lstat().st_size,
+                        "sha256": row["validation_database_sha256"],
+                    },
+                )
+        except (OSError, ProductGenerationError) as exc:
+            raise SourceHandoffError(
+                "source_derived_ui_run_conflict"
+            ) from exc
+        return row
+
+    def _write_source_derived_ui_run(
+        self,
+        value: dict[str, Any],
+        *,
+        replace: bool,
+    ) -> dict[str, Any]:
+        body = {
+            key: copy.deepcopy(item)
+            for key, item in value.items()
+            if key != "canonical_digest"
+        }
+        row = self._validate_source_derived_ui_run(
+            {**body, "canonical_digest": canonical_json_digest(body)}
+        )
+        _write_source_handoff(
+            self._source_derived_ui_run_path(row["run_id"]),
+            row,
+            replace=replace,
+            directory_name=_SOURCE_DERIVED_UI_RUN_DIRECTORY,
+        )
+        return row
+
+    def _append_source_derived_ui_run_event(
+        self,
+        run_id: str,
+        *,
+        status: str,
+        stage: str,
+        evidence: Any = None,
+        error_code: str | None = None,
+        package_files: dict[str, str] | None = None,
+        validation_database_sha256: str | None = None,
+        reviews: list[dict[str, str]] | None = None,
+    ) -> dict[str, Any]:
+        row = self._read_source_derived_ui_run(run_id)
+        previous = row["events"][-1]
+        created_at = _now()
+        event_body = {
+            "sequence": previous["sequence"] + 1,
+            "previous_event_digest": previous["canonical_digest"],
+            "status": status,
+            "stage": stage,
+            "evidence_digest": canonical_json_digest(evidence or {}),
+            "error_code": error_code,
+            "created_at": created_at,
+        }
+        event = {
+            **event_body,
+            "canonical_digest": canonical_json_digest(event_body),
+        }
+        return self._write_source_derived_ui_run(
+            {
+                **row,
+                "status": status,
+                "stage": stage,
+                "events": [*row["events"], event],
+                "package_files": (
+                    copy.deepcopy(package_files)
+                    if package_files is not None
+                    else row["package_files"]
+                ),
+                "validation_database_sha256": (
+                    validation_database_sha256
+                    if validation_database_sha256 is not None
+                    else row["validation_database_sha256"]
+                ),
+                "reviews": (
+                    copy.deepcopy(reviews)
+                    if reviews is not None
+                    else row["reviews"]
+                ),
+                "updated_at": created_at,
+            },
+            replace=True,
+        )
+
+    @staticmethod
+    def _source_derived_ui_run_projection(
+        row: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "schema_version": "source_derived_standard_ui_run_status.v1",
+            "run_id": row["run_id"],
+            "status": row["status"],
+            "stage": row["stage"],
+            "review_scope": "isolated",
+            "created_at": row["created_at"],
+            "updated_at": row["updated_at"],
+            "error_code": row["events"][-1]["error_code"],
+            "review_count": len(row["reviews"]),
+        }
+
+    def _start_authorized_source_derived_standard_ui(
+        self,
+        binding: dict[str, Any],
+    ) -> dict[str, Any]:
+        with self._capsule_operation_lock:
+            record, path = self._validated_source_derived_handoff_binding(
+                binding
+            )
+            if (
+                record["action_profile"]
+                != _SOURCE_DERIVED_UI_HANDOFF_ACTION_PROFILE
+            ):
+                raise SourceHandoffError("agent_action_not_allowed")
+            if record["proposal_status"] != "approved":
+                raise SourceHandoffError(
+                    "source_derived_handoff_approval_required"
+                )
+            proposal = validate_source_derived_standard_ui_proposal(
+                record["proposal"]
+            )
+            root = self._capsule_intake.get_source_root(
+                record["source_root_id"]
+            )
+            evidence = read_source_derived_ui_evidence(
+                str(root["current_path"]),
+                proposal["request"]["evidence_relpaths"],
+            )
+            expected = build_source_derived_standard_ui_proposal(
+                handoff_binding_digest=record[
+                    "handoff_binding_digest"
+                ],
+                request=proposal["request"],
+                evidence=evidence,
+                supervision_model=record["supervision_model"],
+                warehouse_revision=record["warehouse_revision"],
+                catalog_digest=record["catalog_digest"],
+                prepared_at=proposal["prepared_at"],
+            )
+            if expected != proposal:
+                raise SourceHandoffError(
+                    "source_derived_handoff_stale"
+                )
+            if record["run_id"] is not None:
+                current = self._read_source_derived_ui_run(
+                    record["run_id"]
+                )
+                with self._management_lock:
+                    live = self._management_tasks.get(record["run_id"])
+                if (
+                    current["status"] in {"pending", "running"}
+                    and live is None
+                ):
+                    current = self._append_source_derived_ui_run_event(
+                        record["run_id"],
+                        status="failed",
+                        stage=current["stage"],
+                        error_code="manual_recovery_required",
+                    )
+                return {
+                    "ok": True,
+                    "run_id": current["run_id"],
+                    "status": current["status"],
+                }
+            run_id = f"run_{uuid.uuid4().hex}"
+            created_at = _now()
+            event_body = {
+                "sequence": 1,
+                "previous_event_digest": None,
+                "status": "pending",
+                "stage": "assembly",
+                "evidence_digest": canonical_json_digest({}),
+                "error_code": None,
+                "created_at": created_at,
+            }
+            event = {
+                **event_body,
+                "canonical_digest": canonical_json_digest(event_body),
+            }
+            self._write_source_derived_ui_run(
+                {
+                    "schema_version": SOURCE_DERIVED_STANDARD_UI_RUN_VERSION,
+                    "run_id": run_id,
+                    "handoff_binding_digest": record[
+                        "handoff_binding_digest"
+                    ],
+                    "proposal_digest": record["proposal_digest"],
+                    "approval_digest": record["approval_digest"],
+                    "source_root_id": record["source_root_id"],
+                    "supervision_model": record["supervision_model"],
+                    "warehouse_revision": record["warehouse_revision"],
+                    "catalog_digest": record["catalog_digest"],
+                    "status": "pending",
+                    "stage": "assembly",
+                    "events": [event],
+                    "package_files": {},
+                    "validation_database_sha256": None,
+                    "reviews": [],
+                    "created_at": created_at,
+                    "updated_at": created_at,
+                },
+                replace=False,
+            )
+            self._write_updated_source_derived_handoff(
+                {**record, "run_id": run_id},
+                path,
+            )
+            return self._submit_management_task(
+                "source_derived_standard_ui",
+                lambda cancel: self._run_source_derived_standard_ui(
+                    binding, run_id, cancel
+                ),
+                run_id=run_id,
+                cancellable=True,
+            )
+
+    def _get_authorized_source_derived_standard_ui_run(
+        self,
+        binding: dict[str, Any],
+    ) -> dict[str, Any]:
+        with self._capsule_operation_lock:
+            record, _path = self._validated_source_derived_handoff_binding(
+                binding
+            )
+            if record["run_id"] is None:
+                raise SourceHandoffError(
+                    "source_derived_ui_run_not_started"
+                )
+            row = self._read_source_derived_ui_run(record["run_id"])
+            with self._management_lock:
+                live = self._management_tasks.get(record["run_id"])
+            if row["status"] in {"pending", "running"} and live is None:
+                row = self._append_source_derived_ui_run_event(
+                    record["run_id"],
+                    status="failed",
+                    stage=row["stage"],
+                    error_code="manual_recovery_required",
+                )
+            return self._source_derived_ui_run_projection(row)
+
+    def _cancel_authorized_source_derived_standard_ui_run(
+        self,
+        binding: dict[str, Any],
+    ) -> dict[str, Any]:
+        with self._capsule_operation_lock:
+            record, _path = self._validated_source_derived_handoff_binding(
+                binding
+            )
+            if record["run_id"] is None:
+                raise SourceHandoffError(
+                    "source_derived_ui_run_not_started"
+                )
+            row = self._read_source_derived_ui_run(record["run_id"])
+            if row["status"] in {
+                "review_required",
+                "failed",
+                "cancelled",
+            }:
+                raise SourceHandoffError("intake_run_already_terminal")
+            with self._management_lock:
+                task = self._management_tasks.get(record["run_id"])
+                if (
+                    task is None
+                    or task["kind"] != "source_derived_standard_ui"
+                ):
+                    self._append_source_derived_ui_run_event(
+                        record["run_id"],
+                        status="failed",
+                        stage=row["stage"],
+                        error_code="manual_recovery_required",
+                    )
+                    raise SourceHandoffError(
+                        "intake_run_not_cancellable"
+                    )
+                task["cancel_event"].set()
+            return {
+                "run_id": record["run_id"],
+                "cancel_requested": True,
+            }
+
+    def _get_authorized_source_derived_standard_ui_review_summary(
+        self,
+        binding: dict[str, Any],
+    ) -> dict[str, Any]:
+        with self._capsule_operation_lock:
+            record, _path = self._validated_source_derived_handoff_binding(
+                binding
+            )
+            if record["run_id"] is None:
+                raise SourceHandoffError(
+                    "source_derived_ui_run_not_started"
+                )
+            row = self._read_source_derived_ui_run(record["run_id"])
+            proposal = record["proposal"]["request"]
+            return {
+                "schema_version": "source_derived_ui_review_summary.v1",
+                "run": {
+                    "status": row["status"],
+                    "stage": row["stage"],
+                },
+                "capability_kinds": [
+                    item["capability_kind"] for item in row["reviews"]
+                ],
+                "behavior_intent": proposal["behavior_intent"],
+                "input": {
+                    "min_length": proposal["input_min_length"],
+                    "max_length": proposal["input_max_length"],
+                },
+                "result_enum": copy.deepcopy(
+                    proposal["result_enum"]
+                ),
+                "acceptance_passed_count": (
+                    len(proposal["acceptance_cases"])
+                    if row["status"] == "review_required"
+                    else 0
+                ),
+                "reason_code": row["events"][-1]["error_code"],
+            }
+
+    def _run_source_derived_standard_ui(
+        self,
+        binding: dict[str, Any],
+        run_id: str,
+        cancel: threading.Event,
+    ) -> dict[str, Any]:
+        stage = "assembly"
+
+        def cancelled() -> None:
+            if cancel.is_set():
+                raise SourceDerivationError("cancelled_by_user")
+
+        def running(next_stage: str, evidence: Any = None) -> None:
+            nonlocal stage
+            stage = next_stage
+            self._append_source_derived_ui_run_event(
+                run_id,
+                status="running",
+                stage=stage,
+                evidence=evidence,
+            )
+
+        try:
+            record, _path = self._validated_source_derived_handoff_binding(
+                binding
+            )
+            if record["run_id"] != run_id:
+                raise SourceHandoffError(
+                    "source_derived_ui_run_conflict"
+                )
+            proposal = validate_source_derived_standard_ui_proposal(
+                record["proposal"]
+            )
+            files = assemble_source_derived_standard_ui(proposal)
+            if files != assemble_source_derived_standard_ui(
+                copy.deepcopy(proposal)
+            ):
+                raise SourceDerivationError(
+                    "source_derived_ui_assembly_invalid"
+                )
+            workspace = self._source_derived_ui_workspace(run_id)
+            if workspace.exists() or workspace.is_symlink():
+                raise SourceHandoffError(
+                    "source_derived_ui_run_conflict"
+                )
+            workspace.mkdir(mode=0o700, parents=True)
+            source_directory = workspace / "source"
+            source_directory.mkdir(mode=0o700)
+            for name, content in files.items():
+                _write_product_file(source_directory, name, content)
+            _fsync_product_tree(source_directory)
+            file_digests = {
+                name: _sha256_file(source_directory / name)
+                for name in sorted(files)
+            }
+            stage = "intake"
+            self._append_source_derived_ui_run_event(
+                run_id,
+                status="running",
+                stage="intake",
+                evidence={"package_files": file_digests},
+                package_files=file_digests,
+            )
+            cancelled()
+            database = workspace / "capsule_warehouse.sqlite3"
+            self._capsule_store.create_consistent_snapshot(
+                database,
+                expected_revision=record["warehouse_revision"],
+            )
+            isolated_store = CapsuleWarehouseStore(database)
+            isolated_store.initialize()
+            intake = ReweaveCapsuleIntake(isolated_store)
+            supervisor = OllamaSupervisor(isolated_store)
+            selected = supervisor.selected_model()
+            if {
+                "name": selected["name"],
+                "digest": selected["digest"],
+            } != record["supervision_model"]:
+                raise SourceDerivationError(
+                    "source_derivation_supervision_model_changed"
+                )
+            stage3 = ReweaveCapsuleStage3(
+                isolated_store,
+                intake=intake,
+                supervisor=supervisor,
+            )
+            source_root = intake.bind_source_root(
+                source_directory,
+                root_kind="single_project",
+            )
+            discovered = intake.discover_projects(
+                source_root["root_id"]
+            )
+            if len(discovered) != 1:
+                raise SourceDerivationError(
+                    "source_derived_ui_intake_invalid"
+                )
+            confirmed = intake.confirm_project(
+                discovered[0]["project_id"]
+            )
+            intake_result = intake.run_intake(
+                confirmed["project_id"],
+                cancel_check=cancel.is_set,
+            )
+            with isolated_store.read_connection() as connection:
+                rows = connection.execute(
+                    "SELECT review_id,candidate_status,"
+                    "sanitized_candidate_json FROM review_items "
+                    "WHERE run_id=? ORDER BY created_at,review_id",
+                    (intake_result["run_id"],),
+                ).fetchall()
+            candidates = []
+            for raw in rows:
+                candidate = json.loads(raw["sanitized_candidate_json"])
+                candidates.append(
+                    {
+                        "review_id": str(raw["review_id"]),
+                        "status": str(raw["candidate_status"]),
+                        "candidate": candidate,
+                    }
+                )
+            if (
+                len(candidates) != 2
+                or any(item["status"] != "extracted" for item in candidates)
+                or {
+                    item["candidate"].get("capability_kind")
+                    for item in candidates
+                }
+                != {"interaction", "presentation"}
+            ):
+                raise SourceDerivationError(
+                    "source_derived_ui_candidate_set_invalid"
+                )
+            request = proposal["request"]
+            input_contract = {
+                "schema": "data_contract.v1",
+                "type": "object",
+                "properties": {
+                    request["input_field"]: {
+                        "type": "string",
+                        "min_length": request["input_min_length"],
+                        "max_length": request["input_max_length"],
+                    }
+                },
+                "required": [request["input_field"]],
+                "additional_properties": False,
+            }
+            lengths = [
+                self._utf16_length(item)
+                for item in request["result_enum"]
+            ]
+            output_contract = {
+                "schema": "data_contract.v1",
+                "type": "object",
+                "properties": {
+                    request["result_field"]: {
+                        "type": "string",
+                        "min_length": min(lengths),
+                        "max_length": max(lengths),
+                        "enum": copy.deepcopy(request["result_enum"]),
+                    }
+                },
+                "required": [request["result_field"]],
+                "additional_properties": False,
+            }
+            by_kind = {
+                item["candidate"]["capability_kind"]: item
+                for item in candidates
+            }
+            if (
+                by_kind["interaction"]["candidate"]["output_contract"]
+                != {
+                    "schema": "event_outputs.v1",
+                    "events": {
+                        request["event_name"]: input_contract
+                    },
+                }
+                or by_kind["presentation"]["candidate"]["input_contract"]
+                != output_contract
+            ):
+                raise SourceDerivationError(
+                    "source_derived_ui_contract_invalid"
+                )
+            running("security", {"candidate_count": 2})
+            prepared = {
+                kind: stage3._prepare(
+                    stage3._review(by_kind[kind]["review_id"])
+                )
+                for kind in ("interaction", "presentation")
+            }
+            running("runtime")
+            for kind in ("interaction", "presentation"):
+                if stage3._runtime_validation(
+                    prepared[kind]
+                ).get("status") != "passed":
+                    raise SourceDerivationError(
+                        "source_derived_ui_runtime_invalid"
+                    )
+            cancelled()
+            running("supervision")
+            reviews = []
+            for kind in ("interaction", "presentation"):
+                result = stage3.process_review(
+                    by_kind[kind]["review_id"]
+                )
+                cancelled()
+                if result.get("status") != "review_required":
+                    raise SourceDerivationError(
+                        "source_derived_ui_review_not_ready"
+                    )
+                reviews.append(
+                    {
+                        "capability_kind": kind,
+                        "review_id": by_kind[kind]["review_id"],
+                        "status": "review_required",
+                    }
+                )
+            database_digest = _sha256_file(database)
+            return self._source_derived_ui_run_projection(
+                self._append_source_derived_ui_run_event(
+                    run_id,
+                    status="review_required",
+                    stage="supervision",
+                    evidence={
+                        "review_count": 2,
+                        "validation_database_sha256": database_digest,
+                    },
+                    validation_database_sha256=database_digest,
+                    reviews=reviews,
+                )
+            )
+        except BaseException as exc:
+            code = self._source_derivation_error_code(exc)
+            status = (
+                "cancelled"
+                if cancel.is_set() or code == "cancelled_by_user"
+                else "failed"
+            )
+            try:
+                row = self._read_source_derived_ui_run(run_id)
+                if row["status"] not in {
+                    "review_required",
+                    "failed",
+                    "cancelled",
+                }:
+                    return self._source_derived_ui_run_projection(
+                        self._append_source_derived_ui_run_event(
+                            run_id,
+                            status=status,
+                            stage=stage,
+                            error_code=(
+                                "cancelled_by_user"
+                                if status == "cancelled"
+                                else code
+                            ),
+                        )
+                    )
+            except BaseException:
+                pass
+            raise
+
     @staticmethod
     def _allowed_review_decisions(item: dict[str, Any]) -> list[str]:
         candidate = item.get("candidate") or {}
@@ -4970,8 +6333,15 @@ class ReweaveAppService:
             and candidate["frozen_ui_review_admission"].get("schema")
             == FROZEN_UI_REVIEW_ADMISSION_VERSION
         )
+        source_derived_review = (
+            type(candidate.get("source_derived_review_admission")) is dict
+            and candidate["source_derived_review_admission"].get("schema")
+            == SOURCE_DERIVED_REVIEW_ADMISSION_VERSION
+        )
         if current_status == "review_required" and (
-            frozen_product_review or frozen_ui_review
+            frozen_product_review
+            or frozen_ui_review
+            or source_derived_review
         ):
             allowed.extend(["publish_general", "reject"])
         elif (
@@ -7653,6 +9023,216 @@ class ReweaveAppService:
             **record,
             "evidence": evidence,
             "request": request,
+        }
+
+    def _source_derived_review_admission_context(
+        self,
+        run_id: str,
+    ) -> dict[str, Any]:
+        record = get_source_derived_run(self._state_root, run_id)
+        identity = record["identity"]
+        terminal = record["events"][-1]
+        if (
+            terminal["status"] != "review_required"
+            or terminal["stage"] != "supervision"
+        ):
+            raise SourceDerivationError(
+                "source_derivation_review_admission_not_ready"
+            )
+        root = self._capsule_intake.get_source_root(
+            identity["source_root_id"]
+        )
+        if root.get("status") != "bound":
+            raise SourceDerivationError(
+                "source_derivation_review_admission_stale"
+            )
+        evidence = read_source_derived_evidence(
+            str(root["current_path"]),
+            identity["source_relpath"],
+        )
+        request = build_source_derived_request(
+            record["authorization"],
+            evidence,
+        )
+        catalog = self._product_planning_catalog()
+        source_model = self._product_planner._model_identity(
+            self._product_planner._selected_model(check_current=False)
+        )
+        selected_supervisor = self._capsule_supervisor.selected_model()
+        supervisor = {
+            "name": selected_supervisor["name"],
+            "digest": selected_supervisor["digest"],
+        }
+        target_catalog_digest = canonical_json_digest(
+            {"capsules": catalog["capsules"]}
+        )
+        admission = (
+            build_source_derived_review_admission_authorization(
+                record,
+                target_catalog_digest=target_catalog_digest,
+            )
+        )
+        admission = validate_source_derived_review_admission_authorization(
+            admission
+        )
+        revision = catalog["warehouse_revision"]
+        if (
+            evidence[0]["sha256"]
+            != identity["source_snapshot_sha256"]
+            or source_derived_project_graph_digest(evidence)
+            != identity["project_graph_digest"]
+            or request["request_digest"] != identity["request_digest"]
+            or source_model != identity["source_proposal_model"]
+            or supervisor != identity["supervision_model"]
+            or revision
+            not in {
+                identity["warehouse_revision"],
+                identity["warehouse_revision"] + 1,
+            }
+            or (
+                revision == identity["warehouse_revision"]
+                and canonical_json_digest(catalog)
+                != identity["catalog_digest"]
+            )
+        ):
+            raise SourceDerivationError(
+                "source_derivation_review_admission_stale"
+            )
+        with self._capsule_store.read_connection() as connection:
+            formal = connection.execute(
+                "SELECT sanitized_candidate_json FROM review_items "
+                "WHERE review_id = ?",
+                (admission["isolated_review_id"],),
+            ).fetchone()
+        receipt = None
+        if formal is not None:
+            try:
+                summary = json.loads(formal["sanitized_candidate_json"])
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise SourceDerivationError(
+                    "source_derivation_review_admission_conflict"
+                ) from exc
+            if type(summary) is not dict:
+                raise SourceDerivationError(
+                    "source_derivation_review_admission_conflict"
+                )
+            receipt = summary.get("source_derived_review_admission")
+            if (
+                type(receipt) is not dict
+                or receipt.get("schema")
+                != SOURCE_DERIVED_REVIEW_ADMISSION_VERSION
+                or receipt.get("authorization_digest")
+                != admission["authorization_digest"]
+                or receipt.get("run_canonical_digest")
+                != admission["run_canonical_digest"]
+                or receipt.get("terminal_event_digest")
+                != admission["terminal_event_digest"]
+            ):
+                raise SourceDerivationError(
+                    "source_derivation_review_admission_conflict"
+                )
+        if (
+            revision == identity["warehouse_revision"] and receipt is not None
+        ) or (
+            revision == identity["warehouse_revision"] + 1
+            and receipt is None
+        ):
+            raise SourceDerivationError(
+                "source_derivation_review_admission_conflict"
+            )
+        return {
+            "record": record,
+            "authorization": admission,
+            "source_directory": record["paths"]["source_dir"],
+            "validation_database": record["paths"][
+                "validation_database"
+            ],
+            "warehouse_revision": revision,
+            "formal_admission_status": (
+                "admitted" if receipt is not None else "not_admitted"
+            ),
+        }
+
+    def _source_derived_run_management_projection(
+        self,
+        record: dict[str, Any],
+    ) -> dict[str, Any]:
+        authorization = record["authorization"]
+        current = source_derived_run_projection(record)
+        status = "not_admitted"
+        if current["status"] == "review_required":
+            try:
+                terminal = record["events"][-1]
+                with self._capsule_store.read_connection() as connection:
+                    formal = connection.execute(
+                        "SELECT sanitized_candidate_json FROM review_items "
+                        "WHERE review_id = ?",
+                        (terminal["evidence"]["review_id"],),
+                    ).fetchone()
+                if formal is not None:
+                    summary = json.loads(
+                        formal["sanitized_candidate_json"]
+                    )
+                    if type(summary) is not dict:
+                        raise SourceDerivationError(
+                            "source_derivation_review_admission_conflict"
+                        )
+                    receipt = summary.get(
+                        "source_derived_review_admission"
+                    )
+                    expected = (
+                        build_source_derived_review_admission_authorization(
+                            record,
+                            target_catalog_digest=str(
+                                (
+                                    receipt
+                                    if type(receipt) is dict
+                                    else {}
+                                ).get(
+                                    "target_catalog_digest_before"
+                                )
+                                or ""
+                            ),
+                        )
+                        if type(receipt) is dict
+                        else None
+                    )
+                    status = (
+                        "admitted"
+                        if (
+                            type(receipt) is dict
+                            and receipt.get("schema")
+                            == SOURCE_DERIVED_REVIEW_ADMISSION_VERSION
+                            and receipt.get("run_canonical_digest")
+                            == record["identity"]["canonical_digest"]
+                            and receipt.get("terminal_event_digest")
+                            == terminal["canonical_digest"]
+                            and receipt.get("authorization_digest")
+                            == expected["authorization_digest"]
+                        )
+                        else "conflict"
+                    )
+            except (
+                CapsuleStoreError,
+                SourceDerivationError,
+                Stage3Error,
+                TypeError,
+                json.JSONDecodeError,
+                OSError,
+                ValueError,
+                sqlite3.Error,
+            ):
+                status = "conflict"
+        return {
+            "schema_version": "source_derived_run_management.v1",
+            "run_id": current["run_id"],
+            "behavior_intent": authorization["behavior_intent"],
+            "status": current["status"],
+            "stage": current["stage"],
+            "review_scope": current["review_scope"],
+            "created_at": current["created_at"],
+            "updated_at": current["updated_at"],
+            "formal_admission_status": status,
         }
 
     @staticmethod
@@ -10743,6 +12323,55 @@ class ReweaveAppService:
             return self._ok({"items": items})
         except (CapsuleStoreError, OSError, ValueError, sqlite3.Error) as exc:
             return self._exception_error(exc, "list_review_items_failed")
+
+    @_serialized_management
+    def admit_source_derived_review(
+        self,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Admit one exact isolated source-derived Review after user consent."""
+
+        try:
+            self._ensure_capsule_management()
+            request = self._payload(payload)
+            if (
+                set(request) != {"run_id"}
+                or type(request.get("run_id")) is not str
+                or re.fullmatch(r"run_[0-9a-f]{32}", request["run_id"])
+                is None
+            ):
+                return self._error(
+                    "source_derivation_review_admission_invalid"
+                )
+            context = self._source_derived_review_admission_context(
+                request["run_id"]
+            )
+            authorization = context["authorization"]
+            result = self._capsule_stage3.admit_source_derived_review(
+                context["validation_database"],
+                context["source_directory"],
+                expected_source_sha256=authorization[
+                    "validation_database_sha256"
+                ],
+                expected_warehouse_revision=context[
+                    "warehouse_revision"
+                ],
+                authorization_binding=authorization,
+            )
+            return self._ok(result)
+        except (
+            CapsuleStoreError,
+            ProductPlanningError,
+            SourceDerivationError,
+            Stage3Error,
+            OSError,
+            ValueError,
+            sqlite3.Error,
+        ) as exc:
+            return self._exception_error(
+                exc,
+                "source_derivation_review_admission_failed",
+            )
 
     @_serialized_management
     def admit_frozen_review(

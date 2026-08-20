@@ -11,6 +11,7 @@ import re
 import signal
 import shutil
 import sqlite3
+import stat
 import subprocess
 import sys
 import tempfile
@@ -74,6 +75,9 @@ SECURITY_RULES_VERSION = "security_rules.v1"
 SUPERVISION_RULES_VERSION = "supervision_rules.v1"
 VALIDATION_CONTRACT_VERSION = "validation_contract.v1"
 FROZEN_REVIEW_ADMISSION_VERSION = "frozen_stage3_review_admission.v2"
+SOURCE_DERIVED_REVIEW_ADMISSION_VERSION = (
+    "source_derived_review_admission.v1"
+)
 FROZEN_UI_REVIEW_ADMISSION_AUTHORIZATION_VERSION = (
     "frozen_stage3_ui_review_admission_authorization.v1"
 )
@@ -4680,6 +4684,414 @@ class ReweaveCapsuleStage3:
             self._capture_decision_tokens.pop(review_id, None)
         return result
 
+    @staticmethod
+    def _frozen_review_file_sha256(path: Path) -> str:
+        flags = os.O_RDONLY | getattr(os, "O_BINARY", 0)
+        nofollow = getattr(os, "O_NOFOLLOW", 0)
+        try:
+            before = path.lstat()
+            if stat.S_ISLNK(before.st_mode) or not stat.S_ISREG(
+                before.st_mode
+            ):
+                raise Stage3Error("frozen_review_source_changed")
+            descriptor = os.open(path, flags | nofollow)
+            try:
+                opened = os.fstat(descriptor)
+                if (
+                    not stat.S_ISREG(opened.st_mode)
+                    or (
+                        before.st_dev,
+                        before.st_ino,
+                        before.st_size,
+                    )
+                    != (
+                        opened.st_dev,
+                        opened.st_ino,
+                        opened.st_size,
+                    )
+                ):
+                    raise Stage3Error("frozen_review_source_changed")
+                digest = hashlib.sha256()
+                while True:
+                    chunk = os.read(descriptor, 1024 * 1024)
+                    if not chunk:
+                        break
+                    digest.update(chunk)
+                after = os.fstat(descriptor)
+                if (
+                    opened.st_dev,
+                    opened.st_ino,
+                    opened.st_size,
+                ) != (
+                    after.st_dev,
+                    after.st_ino,
+                    after.st_size,
+                ):
+                    raise Stage3Error("frozen_review_source_changed")
+                return digest.hexdigest()
+            finally:
+                os.close(descriptor)
+        except Stage3Error:
+            raise
+        except OSError as exc:
+            raise Stage3Error("frozen_review_source_changed") from exc
+
+    def _validated_frozen_review_context(
+        self,
+        source_database_path: Path,
+        source_directory_path: Path,
+        review_id: str,
+        *,
+        expected_source_sha256: str,
+    ) -> dict[str, Any]:
+        """Rebuild one isolated Review through the existing Stage 3 kernel."""
+
+        source_path = Path(source_database_path)
+        source_directory = Path(source_directory_path)
+        if (
+            not source_path.is_absolute()
+            or not source_directory.is_absolute()
+            or source_directory.is_symlink()
+            or not source_directory.is_dir()
+            or not re.fullmatch(r"[0-9a-f]{64}", expected_source_sha256)
+            or not review_id
+        ):
+            raise Stage3Error("frozen_review_admission_invalid")
+        if (
+            self._frozen_review_file_sha256(source_path)
+            != expected_source_sha256
+        ):
+            raise Stage3Error("frozen_review_source_changed")
+        source_store = CapsuleWarehouseStore(source_path)
+        source_stage3 = ReweaveCapsuleStage3(source_store)
+        review = source_stage3._review(review_id)
+        if (
+            review["candidate_status"] != "review_required"
+            or review["decision"] is not None
+            or review["project_id"] is None
+        ):
+            raise Stage3Error("frozen_review_not_admissible")
+        prepared = source_stage3._prepare(review)
+        if (
+            prepared.artifact.version_canonical_hash
+            != review["candidate_canonical_hash"]
+        ):
+            raise Stage3Error("candidate_changed_since_validation")
+        try:
+            source_summary = json.loads(review["sanitized_candidate_json"])
+        except (TypeError, json.JSONDecodeError) as exc:
+            raise Stage3Error("sanitized_candidate_invalid") from exc
+        if type(source_summary) is not dict:
+            raise Stage3Error("sanitized_candidate_invalid")
+        evidence = source_stage3._evidence(review)
+        capability_kind = prepared.artifact.canonical_payload[
+            "capability_kind"
+        ]
+        if not source_stage3._evidence_current(evidence, capability_kind):
+            raise Stage3Error("stage3_evidence_expired")
+        supervision = json.loads(
+            review["supervision_result_json"] or "null"
+        )
+        if type(supervision) is not dict:
+            raise Stage3Error("stage3_evidence_missing")
+        _validate_supervision(supervision, capability_kind)
+        response_hash = review["supervision_response_hash"]
+        if (
+            type(response_hash) is not str
+            or not re.fullmatch(r"[0-9a-f]{64}", response_hash)
+        ):
+            raise Stage3Error("stage3_evidence_invalid")
+        validation = source_stage3._runtime_validation(prepared)
+        if _canonical_json_bytes(validation) != _canonical_json_bytes(
+            evidence["validation"]
+        ):
+            raise Stage3Error("stage3_validation_changed")
+        if (
+            self._frozen_review_file_sha256(source_path)
+            != expected_source_sha256
+        ):
+            raise Stage3Error("frozen_review_source_changed")
+
+        with tempfile.TemporaryDirectory(
+            prefix="reweave-frozen-review-admission."
+        ) as temp:
+            verification_path = Path(temp) / "capsule_warehouse.sqlite3"
+            shutil.copy2(source_path, verification_path)
+            verification_store = CapsuleWarehouseStore(verification_path)
+            with verification_store.transaction() as connection:
+                changed = connection.execute(
+                    "UPDATE source_roots SET current_path = ? WHERE root_id = "
+                    "(SELECT source_root_id FROM projects WHERE project_id = ?)",
+                    (str(source_directory), review["project_id"]),
+                ).rowcount
+                if changed != 1:
+                    raise Stage3Error("frozen_review_lineage_incomplete")
+            try:
+                durable_snapshot = JavascriptSourceService(
+                    verification_store
+                ).scan(str(review["project_id"]))
+            except JavascriptSourceError as exc:
+                raise Stage3Error("frozen_review_source_changed") from exc
+            if (
+                prepared.capture_snapshot is None
+                or not _same_capture_snapshot(
+                    prepared.capture_snapshot, durable_snapshot
+                )
+            ):
+                raise Stage3Error("frozen_review_source_changed")
+
+        with source_store.read_connection() as connection:
+            run = connection.execute(
+                "SELECT * FROM intake_runs WHERE run_id = ?",
+                (review["run_id"],),
+            ).fetchone()
+            project = connection.execute(
+                "SELECT * FROM projects WHERE project_id = ?",
+                (review["project_id"],),
+            ).fetchone()
+            root = (
+                connection.execute(
+                    "SELECT * FROM source_roots WHERE root_id = ?",
+                    (project["source_root_id"],),
+                ).fetchone()
+                if project is not None
+                else None
+            )
+            file_index = (
+                connection.execute(
+                    "SELECT * FROM project_file_index WHERE project_id = ? "
+                    "ORDER BY logical_path",
+                    (review["project_id"],),
+                ).fetchall()
+                if project is not None
+                else []
+            )
+        if run is None or project is None or root is None:
+            raise Stage3Error("frozen_review_lineage_incomplete")
+        root = dict(root)
+        root["current_path"] = str(source_directory)
+        source_rows = [
+            dict(row)
+            for row in file_index
+            if row["logical_path"] == review["source_relpath"]
+        ]
+        if len(source_rows) != 1:
+            raise Stage3Error("frozen_review_lineage_incomplete")
+        source_relative = PurePosixPath(str(review["source_relpath"]))
+        if (
+            source_relative.is_absolute()
+            or not source_relative.parts
+            or any(
+                part in {"", ".", ".."} for part in source_relative.parts
+            )
+        ):
+            raise Stage3Error("frozen_review_lineage_incomplete")
+        source_file = source_directory.joinpath(*source_relative.parts)
+        if (
+            self._frozen_review_file_sha256(source_file)
+            != source_rows[0]["content_sha256"]
+        ):
+            raise Stage3Error("frozen_review_source_changed")
+        comparison = self._equivalence_comparison(
+            prepared,
+            self._hash_matches(
+                prepared.artifact.version_canonical_hash
+            ),
+        )
+        return {
+            "source_path": source_path,
+            "source_directory": source_directory,
+            "source_store": source_store,
+            "review": dict(review),
+            "prepared": prepared,
+            "source_summary": source_summary,
+            "evidence": evidence,
+            "validation": validation,
+            "comparison": comparison,
+            "source_file_sha256": source_rows[0]["content_sha256"],
+            "lineage_rows": (
+                ("source_roots", root, "root_id"),
+                ("projects", dict(project), "project_id"),
+                *(
+                    ("project_file_index", dict(row), "logical_path")
+                    for row in file_index
+                ),
+                ("intake_runs", dict(run), "run_id"),
+            ),
+        }
+
+    def _admit_validated_frozen_review(
+        self,
+        context: dict[str, Any],
+        *,
+        expected_warehouse_revision: int,
+        authorization_warehouse_revision: int,
+        receipt_key: str,
+        receipt_factory: Any,
+        conflict_code: str,
+        stale_code: str,
+        model_code: str,
+    ) -> dict[str, Any]:
+        """Copy one verified Review and its lineage in one revision bump."""
+
+        review = context["review"]
+        prepared = context["prepared"]
+        comparison = context["comparison"]
+        review_id = str(review["review_id"])
+        lineage_rows = context["lineage_rows"]
+        with self.store.transaction() as connection:
+            revision = int(
+                connection.execute(
+                    "SELECT warehouse_revision FROM warehouse_state "
+                    "WHERE singleton_id = 1"
+                ).fetchone()[0]
+            )
+            if revision != expected_warehouse_revision:
+                raise Stage3Error(stale_code)
+            selected_row = connection.execute(
+                "SELECT value_json FROM app_settings WHERE setting_key = "
+                "'capsule_supervision_model'"
+            ).fetchone()
+            try:
+                selected_model = (
+                    json.loads(selected_row[0])
+                    if selected_row is not None
+                    else None
+                )
+            except (TypeError, json.JSONDecodeError) as exc:
+                raise Stage3Error(model_code) from exc
+            evidence = context["evidence"]
+            if (
+                type(selected_model) is not dict
+                or selected_model.get("name") != evidence["model_name"]
+                or selected_model.get("digest") != evidence["model_digest"]
+            ):
+                raise Stage3Error(model_code)
+            existing = connection.execute(
+                "SELECT * FROM review_items WHERE review_id = ?",
+                (review_id,),
+            ).fetchone()
+            if existing is not None:
+                try:
+                    existing_summary = json.loads(
+                        existing["sanitized_candidate_json"]
+                    )
+                except (TypeError, json.JSONDecodeError) as exc:
+                    raise Stage3Error(conflict_code) from exc
+                existing_receipt = existing_summary.get(receipt_key)
+                if (
+                    type(existing_receipt) is not dict
+                    or type(
+                        existing_receipt.get(
+                            "target_warehouse_revision_before"
+                        )
+                    )
+                    is not int
+                    or type(
+                        existing_receipt.get(
+                            "target_warehouse_revision_after"
+                        )
+                    )
+                    is not int
+                ):
+                    raise Stage3Error(conflict_code)
+                receipt = receipt_factory(
+                    existing_receipt["target_warehouse_revision_before"],
+                    existing_receipt["target_warehouse_revision_after"],
+                )
+                admitted_review = dict(review)
+                summary = json.loads(
+                    admitted_review["sanitized_candidate_json"]
+                )
+                summary[receipt_key] = receipt
+                admitted_review["sanitized_candidate_json"] = _json(summary)
+                admitted_review["equivalence_comparison_json"] = _json(
+                    comparison
+                )
+                if (
+                    existing_receipt != receipt
+                    or receipt["target_warehouse_revision_before"]
+                    != authorization_warehouse_revision
+                    or receipt["target_warehouse_revision_after"]
+                    != receipt["target_warehouse_revision_before"] + 1
+                    or revision
+                    != receipt["target_warehouse_revision_after"]
+                    or dict(existing) != admitted_review
+                ):
+                    raise Stage3Error(conflict_code)
+                for table, row, identity_column in lineage_rows:
+                    if table == "project_file_index":
+                        current = connection.execute(
+                            "SELECT * FROM project_file_index "
+                            "WHERE project_id = ? AND logical_path = ?",
+                            (row["project_id"], row["logical_path"]),
+                        ).fetchone()
+                    else:
+                        current = connection.execute(
+                            f"SELECT * FROM {table} "
+                            f"WHERE {identity_column} = ?",
+                            (row[identity_column],),
+                        ).fetchone()
+                    if current is None or dict(current) != row:
+                        raise Stage3Error(conflict_code)
+                return {
+                    "review_id": review_id,
+                    "status": "already_admitted",
+                    "canonical_hash": (
+                        prepared.artifact.version_canonical_hash
+                    ),
+                    "admission_digest": receipt["digest"],
+                    "warehouse_revision": revision,
+                }
+            if revision != authorization_warehouse_revision:
+                raise Stage3Error(stale_code)
+            receipt = receipt_factory(revision, revision + 1)
+            admitted_review = dict(review)
+            summary = json.loads(admitted_review["sanitized_candidate_json"])
+            summary[receipt_key] = receipt
+            admitted_review["sanitized_candidate_json"] = _json(summary)
+            admitted_review["equivalence_comparison_json"] = _json(
+                comparison
+            )
+            rows = (
+                *lineage_rows,
+                ("review_items", admitted_review, "review_id"),
+            )
+            for table, row, identity_column in rows:
+                if table == "project_file_index":
+                    current = connection.execute(
+                        "SELECT * FROM project_file_index "
+                        "WHERE project_id = ? AND logical_path = ?",
+                        (row["project_id"], row["logical_path"]),
+                    ).fetchone()
+                else:
+                    current = connection.execute(
+                        f"SELECT * FROM {table} "
+                        f"WHERE {identity_column} = ?",
+                        (row[identity_column],),
+                    ).fetchone()
+                if current is not None:
+                    if dict(current) != row:
+                        raise Stage3Error(conflict_code)
+                    continue
+                columns = tuple(row)
+                placeholders = ",".join("?" for _ in columns)
+                connection.execute(
+                    f"INSERT INTO {table} ({','.join(columns)}) "
+                    f"VALUES ({placeholders})",
+                    tuple(row[column] for column in columns),
+                )
+            new_revision = self.store.bump_revision(connection)
+            if new_revision != receipt["target_warehouse_revision_after"]:
+                raise Stage3Error(stale_code)
+        return {
+            "review_id": review_id,
+            "status": "review_required",
+            "canonical_hash": prepared.artifact.version_canonical_hash,
+            "admission_digest": receipt["digest"],
+            "warehouse_revision": new_revision,
+        }
+
     def admit_frozen_review(
         self,
         source_database_path: Path,
@@ -4772,31 +5184,15 @@ class ReweaveCapsuleStage3:
         ):
             raise Stage3Error("frozen_review_admission_invalid")
 
-        def file_sha256(path: Path) -> str:
-            digest = hashlib.sha256()
-            with path.open("rb") as handle:
-                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                    digest.update(chunk)
-            return digest.hexdigest()
-
-        if file_sha256(source_path) != expected_source_sha256:
-            raise Stage3Error("frozen_review_source_changed")
-        source_store = CapsuleWarehouseStore(source_path)
-        source_stage3 = ReweaveCapsuleStage3(source_store)
-        review = source_stage3._review(review_id)
-        if (
-            review["candidate_status"] != "review_required"
-            or review["decision"] is not None
-            or review["project_id"] is None
-        ):
-            raise Stage3Error("frozen_review_not_admissible")
-        prepared = source_stage3._prepare(review)
-        if prepared.artifact.version_canonical_hash != review["candidate_canonical_hash"]:
-            raise Stage3Error("candidate_changed_since_validation")
-        try:
-            source_summary = json.loads(review["sanitized_candidate_json"])
-        except (TypeError, json.JSONDecodeError) as exc:
-            raise Stage3Error("sanitized_candidate_invalid") from exc
+        context = self._validated_frozen_review_context(
+            source_path,
+            source_directory,
+            review_id,
+            expected_source_sha256=expected_source_sha256,
+        )
+        review = context["review"]
+        prepared = context["prepared"]
+        source_summary = context["source_summary"]
         candidate = prepared.artifact.canonical_payload
         if (
             candidate.get("capability_kind") != "computation"
@@ -4810,105 +5206,8 @@ class ReweaveCapsuleStage3:
             != authorized_contracts
         ):
             raise Stage3Error("frozen_review_authorization_mismatch")
-        evidence = source_stage3._evidence(review)
-        capability_kind = prepared.artifact.canonical_payload["capability_kind"]
-        if not source_stage3._evidence_current(evidence, capability_kind):
-            raise Stage3Error("stage3_evidence_expired")
-        supervision = json.loads(review["supervision_result_json"] or "null")
-        if type(supervision) is not dict:
-            raise Stage3Error("stage3_evidence_missing")
-        _validate_supervision(supervision, capability_kind)
-        response_hash = review["supervision_response_hash"]
-        if type(response_hash) is not str or not re.fullmatch(r"[0-9a-f]{64}", response_hash):
-            raise Stage3Error("stage3_evidence_invalid")
-        validation = source_stage3._runtime_validation(prepared)
-        if _canonical_json_bytes(validation) != _canonical_json_bytes(
-            evidence["validation"]
-        ):
-            raise Stage3Error("stage3_validation_changed")
-        if file_sha256(source_path) != expected_source_sha256:
-            raise Stage3Error("frozen_review_source_changed")
-
-        with tempfile.TemporaryDirectory(prefix="reweave-frozen-review-admission.") as temp:
-            verification_path = Path(temp) / "capsule_warehouse.sqlite3"
-            shutil.copy2(source_path, verification_path)
-            verification_store = CapsuleWarehouseStore(verification_path)
-            with verification_store.transaction() as connection:
-                changed = connection.execute(
-                    "UPDATE source_roots SET current_path = ? WHERE root_id = "
-                    "(SELECT source_root_id FROM projects WHERE project_id = ?)",
-                    (str(source_directory), review["project_id"]),
-                ).rowcount
-                if changed != 1:
-                    raise Stage3Error("frozen_review_lineage_incomplete")
-            try:
-                durable_snapshot = JavascriptSourceService(verification_store).scan(
-                    str(review["project_id"])
-                )
-            except JavascriptSourceError as exc:
-                raise Stage3Error("frozen_review_source_changed") from exc
-            if (
-                prepared.capture_snapshot is None
-                or not _same_capture_snapshot(
-                    prepared.capture_snapshot, durable_snapshot
-                )
-            ):
-                raise Stage3Error("frozen_review_source_changed")
-
-        with source_store.read_connection() as connection:
-            run = connection.execute(
-                "SELECT * FROM intake_runs WHERE run_id = ?", (review["run_id"],)
-            ).fetchone()
-            project = connection.execute(
-                "SELECT * FROM projects WHERE project_id = ?", (review["project_id"],)
-            ).fetchone()
-            root = (
-                connection.execute(
-                    "SELECT * FROM source_roots WHERE root_id = ?",
-                    (project["source_root_id"],),
-                ).fetchone()
-                if project is not None
-                else None
-            )
-            file_index = (
-                connection.execute(
-                    "SELECT * FROM project_file_index WHERE project_id = ? "
-                    "ORDER BY logical_path",
-                    (review["project_id"],),
-                ).fetchall()
-                if project is not None
-                else []
-            )
-        if run is None or project is None or root is None:
-            raise Stage3Error("frozen_review_lineage_incomplete")
-        root = dict(root)
-        root["current_path"] = str(source_directory)
-        source_rows = [
-            dict(row)
-            for row in file_index
-            if row["logical_path"] == review["source_relpath"]
-        ]
-        if len(source_rows) != 1:
-            raise Stage3Error("frozen_review_lineage_incomplete")
-        source_relative = PurePosixPath(str(review["source_relpath"]))
-        if (
-            source_relative.is_absolute()
-            or not source_relative.parts
-            or any(part in {"", ".", ".."} for part in source_relative.parts)
-        ):
-            raise Stage3Error("frozen_review_lineage_incomplete")
-        source_file = source_directory.joinpath(*source_relative.parts)
-        if (
-            source_file.is_symlink()
-            or not source_file.is_file()
-            or file_sha256(source_file) != source_rows[0]["content_sha256"]
-        ):
-            raise Stage3Error("frozen_review_source_changed")
-        source_file_sha256 = source_rows[0]["content_sha256"]
-
-        comparison = self._equivalence_comparison(
-            prepared, self._hash_matches(prepared.artifact.version_canonical_hash)
-        )
+        evidence = context["evidence"]
+        validation = context["validation"]
         validation_sha256 = hashlib.sha256(
             _canonical_json_bytes(validation)
         ).hexdigest()
@@ -4918,7 +5217,7 @@ class ReweaveCapsuleStage3:
             "source_review_id": review_id,
             "candidate_canonical_hash": prepared.artifact.version_canonical_hash,
             "source_identity_sha256": prepared.snapshot_digest,
-            "source_file_sha256": source_file_sha256,
+            "source_file_sha256": context["source_file_sha256"],
             "validation_sha256": validation_sha256,
             "plan_digest": authorization_binding["plan_digest"],
             "gap_id": authorization_binding["gap_id"],
@@ -4976,174 +5275,340 @@ class ReweaveCapsuleStage3:
                 ).hexdigest(),
             }
 
-        lineage_rows = (
-            ("source_roots", root, "root_id"),
-            ("projects", dict(project), "project_id"),
-            *(
-                ("project_file_index", dict(row), "logical_path")
-                for row in file_index
-            ),
-            ("intake_runs", dict(run), "run_id"),
+        return self._admit_validated_frozen_review(
+            context,
+            expected_warehouse_revision=expected_warehouse_revision,
+            authorization_warehouse_revision=authorization_binding[
+                "authorization_warehouse_revision"
+            ],
+            receipt_key="frozen_review_admission",
+            receipt_factory=admission_receipt,
+            conflict_code="frozen_review_identity_conflict",
+            stale_code="frozen_review_target_stale",
+            model_code="frozen_review_supervision_model_changed",
         )
-        with self.store.transaction() as connection:
-            revision = int(
-                connection.execute(
-                    "SELECT warehouse_revision FROM warehouse_state WHERE singleton_id = 1"
-                ).fetchone()[0]
-            )
-            if revision != expected_warehouse_revision:
-                raise Stage3Error("frozen_review_target_stale")
-            selected_row = connection.execute(
-                "SELECT value_json FROM app_settings WHERE setting_key = "
-                "'capsule_supervision_model'"
-            ).fetchone()
-            try:
-                selected_model = (
-                    json.loads(selected_row[0])
-                    if selected_row is not None
-                    else None
-                )
-            except (TypeError, json.JSONDecodeError) as exc:
-                raise Stage3Error(
-                    "frozen_review_supervision_model_changed"
-                ) from exc
-            if (
-                type(selected_model) is not dict
-                or selected_model.get("name") != evidence["model_name"]
-                or selected_model.get("digest") != evidence["model_digest"]
-            ):
-                raise Stage3Error("frozen_review_supervision_model_changed")
-            existing = connection.execute(
-                "SELECT * FROM review_items WHERE review_id = ?",
-                (review_id,),
-            ).fetchone()
-            if existing is not None:
-                try:
-                    existing_summary = json.loads(
-                        existing["sanitized_candidate_json"]
-                    )
-                except (TypeError, json.JSONDecodeError) as exc:
-                    raise Stage3Error(
-                        "frozen_review_identity_conflict"
-                    ) from exc
-                existing_receipt = existing_summary.get(
-                    "frozen_review_admission"
-                )
-                if (
-                    type(existing_receipt) is not dict
-                    or existing_receipt.get("schema")
-                    != FROZEN_REVIEW_ADMISSION_VERSION
-                    or type(
-                        existing_receipt.get(
-                            "target_warehouse_revision_before"
-                        )
-                    )
-                    is not int
-                    or type(
-                        existing_receipt.get(
-                            "target_warehouse_revision_after"
-                        )
-                    )
-                    is not int
-                ):
-                    raise Stage3Error("frozen_review_identity_conflict")
-                receipt = admission_receipt(
-                    existing_receipt["target_warehouse_revision_before"],
-                    existing_receipt["target_warehouse_revision_after"],
-                )
-                admitted_review = dict(review)
-                summary = json.loads(
-                    admitted_review["sanitized_candidate_json"]
-                )
-                summary["frozen_review_admission"] = receipt
-                admitted_review["sanitized_candidate_json"] = _json(summary)
-                admitted_review["equivalence_comparison_json"] = _json(
-                    comparison
-                )
-                if (
-                    existing_receipt != receipt
-                    or receipt["target_warehouse_revision_before"]
-                    != authorization_binding[
-                        "authorization_warehouse_revision"
-                    ]
-                    or receipt["target_warehouse_revision_after"]
-                    != receipt["target_warehouse_revision_before"] + 1
-                    or revision
-                    != receipt["target_warehouse_revision_after"]
-                    or dict(existing) != admitted_review
-                ):
-                    raise Stage3Error("frozen_review_identity_conflict")
-                for table, row, identity_column in lineage_rows:
-                    if table == "project_file_index":
-                        current = connection.execute(
-                            "SELECT * FROM project_file_index "
-                            "WHERE project_id = ? AND logical_path = ?",
-                            (row["project_id"], row["logical_path"]),
-                        ).fetchone()
-                    else:
-                        current = connection.execute(
-                            f"SELECT * FROM {table} "
-                            f"WHERE {identity_column} = ?",
-                            (row[identity_column],),
-                        ).fetchone()
-                    if current is None or dict(current) != row:
-                        raise Stage3Error(
-                            "frozen_review_identity_conflict"
-                        )
-                return {
-                    "review_id": review_id,
-                    "status": "already_admitted",
-                    "canonical_hash": prepared.artifact.version_canonical_hash,
-                    "admission_digest": receipt["digest"],
-                    "warehouse_revision": revision,
-                }
-            if (
-                revision
-                != authorization_binding["authorization_warehouse_revision"]
-            ):
-                raise Stage3Error("frozen_review_target_stale")
-            receipt = admission_receipt(revision, revision + 1)
-            admitted_review = dict(review)
-            summary = json.loads(admitted_review["sanitized_candidate_json"])
-            summary["frozen_review_admission"] = receipt
-            admitted_review["sanitized_candidate_json"] = _json(summary)
-            admitted_review["equivalence_comparison_json"] = _json(comparison)
-            rows = (
-                *lineage_rows,
-                ("review_items", admitted_review, "review_id"),
-            )
-            for table, row, identity_column in rows:
-                if table == "project_file_index":
-                    current = connection.execute(
-                        "SELECT * FROM project_file_index "
-                        "WHERE project_id = ? AND logical_path = ?",
-                        (row["project_id"], row["logical_path"]),
-                    ).fetchone()
-                else:
-                    current = connection.execute(
-                        f"SELECT * FROM {table} WHERE {identity_column} = ?",
-                        (row[identity_column],),
-                    ).fetchone()
-                if current is not None:
-                    if dict(current) != row:
-                        raise Stage3Error("frozen_review_identity_conflict")
-                    continue
-                columns = tuple(row)
-                placeholders = ",".join("?" for _ in columns)
-                connection.execute(
-                    f"INSERT INTO {table} ({','.join(columns)}) VALUES ({placeholders})",
-                    tuple(row[column] for column in columns),
-                )
-            new_revision = self.store.bump_revision(connection)
-            if new_revision != receipt["target_warehouse_revision_after"]:
-                raise Stage3Error("frozen_review_target_stale")
-        return {
-            "review_id": review_id,
-            "status": "review_required",
-            "canonical_hash": prepared.artifact.version_canonical_hash,
-            "admission_digest": receipt["digest"],
-            "warehouse_revision": new_revision,
+
+    def admit_source_derived_review(
+        self,
+        source_database_path: Path,
+        source_directory_path: Path,
+        *,
+        expected_source_sha256: str,
+        expected_warehouse_revision: int,
+        authorization_binding: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Admit one user-authorized isolated source-derived Review."""
+
+        keys = {
+            "schema_version",
+            "run_id",
+            "run_canonical_digest",
+            "terminal_event_digest",
+            "request_digest",
+            "source_snapshot_sha256",
+            "project_graph_digest",
+            "source_file_sha256",
+            "validation_database_sha256",
+            "isolated_review_id",
+            "isolated_canonical_hash",
+            "adapter_contract_version",
+            "input_contract",
+            "output_contract",
+            "error_contract",
+            "source_proposal_model",
+            "supervision_model",
+            "authorization_warehouse_revision",
+            "authorization_catalog_digest",
+            "target_catalog_digest",
+            "admission_action_canonical_digest",
+            "authorization_digest",
         }
+        digest_fields = {
+            "run_canonical_digest",
+            "terminal_event_digest",
+            "request_digest",
+            "source_snapshot_sha256",
+            "project_graph_digest",
+            "source_file_sha256",
+            "validation_database_sha256",
+            "isolated_canonical_hash",
+            "authorization_catalog_digest",
+            "target_catalog_digest",
+            "admission_action_canonical_digest",
+            "authorization_digest",
+        }
+        authorization_body = (
+            {
+                key: value
+                for key, value in authorization_binding.items()
+                if key != "authorization_digest"
+            }
+            if type(authorization_binding) is dict
+            else {}
+        )
+        if (
+            type(authorization_binding) is not dict
+            or set(authorization_binding) != keys
+            or authorization_binding.get("schema_version")
+            != "source_derived_review_admission_authorization.v1"
+            or authorization_binding.get("adapter_contract_version")
+            != COMPUTATION_ADAPTER_V5
+            or re.fullmatch(
+                r"run_[0-9a-f]{32}",
+                str(authorization_binding.get("run_id") or ""),
+            )
+            is None
+            or type(
+                authorization_binding.get("isolated_review_id")
+            )
+            is not str
+            or not authorization_binding["isolated_review_id"]
+            or any(
+                re.fullmatch(
+                    r"[0-9a-f]{64}",
+                    str(authorization_binding.get(field) or ""),
+                )
+                is None
+                for field in digest_fields
+            )
+            or type(expected_warehouse_revision) is not int
+            or expected_warehouse_revision < 0
+            or type(
+                authorization_binding.get(
+                    "authorization_warehouse_revision"
+                )
+            )
+            is not int
+            or authorization_binding["authorization_warehouse_revision"] < 0
+            or type(
+                authorization_binding.get("source_proposal_model")
+            )
+            is not dict
+            or set(authorization_binding["source_proposal_model"])
+            != {
+                "name",
+                "digest",
+                "parameter_count",
+                "parameter_size",
+            }
+            or re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9._:/+-]{0,199}",
+                str(
+                    authorization_binding["source_proposal_model"].get(
+                        "name"
+                    )
+                    or ""
+                ),
+            )
+            is None
+            or re.fullmatch(
+                r"[0-9a-f]{64}",
+                str(
+                    authorization_binding["source_proposal_model"].get(
+                        "digest"
+                    )
+                    or ""
+                ),
+            )
+            is None
+            or type(
+                authorization_binding["source_proposal_model"].get(
+                    "parameter_count"
+                )
+            )
+            is not int
+            or authorization_binding["source_proposal_model"][
+                "parameter_count"
+            ]
+            <= 0
+            or type(
+                authorization_binding["source_proposal_model"].get(
+                    "parameter_size"
+                )
+            )
+            is not str
+            or not authorization_binding["source_proposal_model"][
+                "parameter_size"
+            ]
+            or type(authorization_binding.get("supervision_model"))
+            is not dict
+            or set(authorization_binding["supervision_model"])
+            != {"name", "digest"}
+            or re.fullmatch(
+                r"[A-Za-z0-9][A-Za-z0-9._:/+-]{0,199}",
+                str(
+                    authorization_binding["supervision_model"].get("name")
+                    or ""
+                ),
+            )
+            is None
+            or re.fullmatch(
+                r"[0-9a-f]{64}",
+                str(
+                    authorization_binding["supervision_model"].get(
+                        "digest"
+                    )
+                    or ""
+                ),
+            )
+            is None
+            or authorization_binding[
+                "admission_action_canonical_digest"
+            ]
+            != hashlib.sha256(
+                _canonical_json_bytes(
+                    {
+                        "action": "admit_source_derived_review",
+                        "run_id": authorization_binding["run_id"],
+                    }
+                )
+            ).hexdigest()
+            or authorization_binding["authorization_digest"]
+            != hashlib.sha256(
+                _canonical_json_bytes(authorization_body)
+            ).hexdigest()
+        ):
+            raise Stage3Error(
+                "source_derived_review_admission_invalid"
+            )
+        try:
+            contracts = normalize_capsule_contracts(
+                "computation",
+                authorization_binding["input_contract"],
+                authorization_binding["output_contract"],
+                authorization_binding["error_contract"],
+            )
+        except (DataContractError, TypeError) as exc:
+            raise Stage3Error(
+                "source_derived_review_admission_invalid"
+            ) from exc
+        context = self._validated_frozen_review_context(
+            source_database_path,
+            source_directory_path,
+            str(authorization_binding["isolated_review_id"]),
+            expected_source_sha256=expected_source_sha256,
+        )
+        prepared = context["prepared"]
+        candidate = prepared.artifact.canonical_payload
+        source_summary = context["source_summary"]
+        evidence = context["evidence"]
+        if (
+            expected_source_sha256
+            != authorization_binding["validation_database_sha256"]
+            or prepared.artifact.version_canonical_hash
+            != authorization_binding["isolated_canonical_hash"]
+            or context["source_file_sha256"]
+            != authorization_binding["source_file_sha256"]
+            or candidate.get("capability_kind") != "computation"
+            or source_summary.get("adapter_contract_version")
+            != COMPUTATION_ADAPTER_V5
+            or (
+                candidate.get("input_contract"),
+                candidate.get("output_contract"),
+                candidate.get("error_contract"),
+            )
+            != contracts
+            or {
+                "name": evidence.get("model_name"),
+                "digest": evidence.get("model_digest"),
+            }
+            != authorization_binding["supervision_model"]
+        ):
+            raise Stage3Error(
+                "source_derived_review_admission_mismatch"
+            )
+        receipt_base = {
+            "schema": SOURCE_DERIVED_REVIEW_ADMISSION_VERSION,
+            "authorization_digest": authorization_binding[
+                "authorization_digest"
+            ],
+            "run_id": authorization_binding["run_id"],
+            "run_canonical_digest": authorization_binding[
+                "run_canonical_digest"
+            ],
+            "terminal_event_digest": authorization_binding[
+                "terminal_event_digest"
+            ],
+            "request_digest": authorization_binding["request_digest"],
+            "source_snapshot_sha256": authorization_binding[
+                "source_snapshot_sha256"
+            ],
+            "project_graph_digest": authorization_binding[
+                "project_graph_digest"
+            ],
+            "source_database_sha256": expected_source_sha256,
+            "source_file_sha256": authorization_binding[
+                "source_file_sha256"
+            ],
+            "source_review_id": authorization_binding[
+                "isolated_review_id"
+            ],
+            "candidate_canonical_hash": authorization_binding[
+                "isolated_canonical_hash"
+            ],
+            "authorized_adapter_contract_version": (
+                authorization_binding["adapter_contract_version"]
+            ),
+            "authorized_input_contract": authorization_binding[
+                "input_contract"
+            ],
+            "authorized_output_contract": authorization_binding[
+                "output_contract"
+            ],
+            "authorized_error_contract": authorization_binding[
+                "error_contract"
+            ],
+            "source_proposal_model": authorization_binding[
+                "source_proposal_model"
+            ],
+            "supervision_model": authorization_binding[
+                "supervision_model"
+            ],
+            "authorization_warehouse_revision": authorization_binding[
+                "authorization_warehouse_revision"
+            ],
+            "authorization_catalog_digest": authorization_binding[
+                "authorization_catalog_digest"
+            ],
+            "admission_action_canonical_digest": authorization_binding[
+                "admission_action_canonical_digest"
+            ],
+        }
+
+        def admission_receipt(
+            target_revision_before: int,
+            target_revision_after: int,
+        ) -> dict[str, Any]:
+            value = {
+                **receipt_base,
+                "target_warehouse_revision_before": target_revision_before,
+                "target_catalog_digest_before": authorization_binding[
+                    "target_catalog_digest"
+                ],
+                "target_warehouse_revision_after": target_revision_after,
+                "target_catalog_digest_after": authorization_binding[
+                    "target_catalog_digest"
+                ],
+            }
+            return {
+                **value,
+                "digest": hashlib.sha256(
+                    _canonical_json_bytes(value)
+                ).hexdigest(),
+            }
+
+        return self._admit_validated_frozen_review(
+            context,
+            expected_warehouse_revision=expected_warehouse_revision,
+            authorization_warehouse_revision=authorization_binding[
+                "authorization_warehouse_revision"
+            ],
+            receipt_key="source_derived_review_admission",
+            receipt_factory=admission_receipt,
+            conflict_code="source_derived_review_admission_conflict",
+            stale_code="source_derived_review_admission_target_stale",
+            model_code="source_derived_review_admission_model_changed",
+        )
 
     def admit_frozen_ui_review_batch(
         self,

@@ -29,6 +29,7 @@
     captureReviewContext: {},
     developerMode: false,
     sourceRoots: [],
+    sourceDerivedRuns: [],
     selectedSourceRootId: "",
     sourceRootSelectionStale: false,
     runs: {},
@@ -382,6 +383,10 @@
       sourceDerivedAgentStale: "来源、模型或正式仓库已漂移；只能撤销。",
       sourceDerivedAgentConflict: "Agent 授权状态冲突；只能安全撤销。",
       sourceDerivedAgentModelNotice: "批准后仍不会调用模型；Agent 启动时才会各调用一次源码模型和监督模型。",
+      sourceDerivedUiAgentAuthorize: "授权 Agent 准备标准输入和展示",
+      sourceDerivedUiAgentModelNotice: "批准不会调用模型或创建运行；Agent 启动后由 Reweave 确定性生成界面，并按输入、展示顺序监督两次。",
+      sourceDerivedUiEvidence: "证据文件",
+      sourceDerivedUiVisibleText: "可见文案",
       source_derived_handoff_clipboard_failed: "剪贴板写入失败，授权已撤销。",
       source_derived_handoff_clipboard_revoke_failed: "剪贴板写入失败且撤销未确认。请保持梭子关闭并刷新。",
       sourceDerivedTitle: "从单一证据文件生成隔离计算提案",
@@ -400,6 +405,11 @@
       sourceDerivedRemoveCase: "移除此验收例",
       sourceDerivedStart: "授权并生成隔离能力提案",
       sourceDerivedReviewReady: "隔离验证已通过并到达 review_required；尚未正式接纳或发布。",
+      sourceDerivedAdmissionTitle: "隔离提案",
+      sourceDerivedAdmissionAction: "接纳到正式 Review",
+      sourceDerivedAdmissionConfirm: "确认将这个隔离提案接纳到正式 Review？此操作不会发布能力。",
+      sourceDerivedAdmissionAdmitted: "已进入正式 Review",
+      sourceDerivedAdmissionConflict: "接纳状态冲突，已失败关闭。",
       source_derivation_request_invalid: "单文件来源授权信息无效。",
       source_derivation_evidence_invalid: "证据文件不安全、不可读取、超限或包含疑似秘密。",
       source_derivation_run_stale: "来源、模型或正式 catalog 已变化；运行已失败关闭。",
@@ -922,6 +932,10 @@
       sourceDerivedAgentStale: "The source, model, or formal warehouse drifted; only revocation is allowed.",
       sourceDerivedAgentConflict: "Agent authorization state conflicts; only safe revocation is allowed.",
       sourceDerivedAgentModelNotice: "Approval still does not call a model. The Agent run later calls the source model and supervisor once each.",
+      sourceDerivedUiAgentAuthorize: "Authorize Agent to prepare standard input and display",
+      sourceDerivedUiAgentModelNotice: "Approval calls no model and creates no run. The Agent then asks Reweave to assemble deterministically and supervise input, then display.",
+      sourceDerivedUiEvidence: "Evidence files",
+      sourceDerivedUiVisibleText: "Visible text",
       source_derived_handoff_clipboard_failed: "Clipboard write failed and the authorization was revoked.",
       source_derived_handoff_clipboard_revoke_failed: "Clipboard write failed and revocation was not confirmed. Keep the Shuttle closed and refresh.",
       sourceDerivedTitle: "Generate an isolated computation from one evidence file",
@@ -940,6 +954,11 @@
       sourceDerivedRemoveCase: "Remove this acceptance case",
       sourceDerivedStart: "Authorize and generate isolated capability proposal",
       sourceDerivedReviewReady: "Isolated validation reached review_required; no formal admission or publication occurred.",
+      sourceDerivedAdmissionTitle: "Isolated proposals",
+      sourceDerivedAdmissionAction: "Admit to formal Review",
+      sourceDerivedAdmissionConfirm: "Admit this isolated proposal to formal Review? This does not publish a capability.",
+      sourceDerivedAdmissionAdmitted: "Admitted to formal Review",
+      sourceDerivedAdmissionConflict: "Admission state conflicts and failed closed.",
       source_derivation_request_invalid: "The one-file source authorization is invalid.",
       source_derivation_evidence_invalid: "The evidence file is unsafe, unreadable, oversized, or contains a possible secret.",
       source_derivation_run_stale: "The source, model, or formal catalog changed; the run failed closed.",
@@ -1877,6 +1896,10 @@
         ingestionManagement.sourceRootSelectionStale = true;
         ingestionManagement.errorKey = "sourceRootSelectionStale";
       }
+    }
+    if (Array.isArray(payload.sourceDerivedRuns)) {
+      ingestionManagement.sourceDerivedRuns =
+        payload.sourceDerivedRuns.slice();
     }
     if (Array.isArray(payload.projects)) ingestionManagement.projects = payload.projects.slice();
     if (Array.isArray(payload.review_items)) ingestionManagement.reviewItems = payload.review_items.slice();
@@ -3054,6 +3077,7 @@
     ) {
       return {
         schema_version: "source_derived_handoff_status.v1",
+        action_profile: null,
         status: raw ? "conflict" : "none",
         proposal_status: "none",
         proposal: null,
@@ -3061,6 +3085,12 @@
     }
     return {
       schema_version: "source_derived_handoff_status.v1",
+      action_profile: [
+        "source_derived_agent.v1",
+        "source_derived_ui_agent.v1",
+      ].indexOf(String(raw.action_profile || "")) >= 0
+        ? String(raw.action_profile)
+        : null,
       status: String(raw.status),
       proposal_status: String(raw.proposal_status),
       proposal: raw.proposal && typeof raw.proposal === "object"
@@ -3230,7 +3260,49 @@
         ) {
           var proposal = projection.proposal;
           var summary = document.createElement("dl");
-          [
+          var proposalRows = proposal.proposal_kind === "standard_ui_pair"
+            ? [
+              [
+                t("sourceDerivedUiEvidence"),
+                Array.isArray(proposal.evidence_relpaths)
+                  ? proposal.evidence_relpaths.join("、")
+                  : "",
+              ],
+              [t("sourceDerivedBehavior"), proposal.behavior_intent],
+              [
+                t("sourceDerivedInputMin") + "–" + t("sourceDerivedInputMax"),
+                proposal.input
+                  ? String(proposal.input.min_length) + "–" +
+                    String(proposal.input.max_length)
+                  : "",
+              ],
+              [
+                t("sourceDerivedEnum"),
+                Array.isArray(proposal.result_enum)
+                  ? proposal.result_enum.join("、")
+                  : "",
+              ],
+              [
+                t("sourceDerivedUiVisibleText"),
+                proposal.visible_text
+                  ? [
+                    proposal.visible_text.input_label,
+                    proposal.visible_text.submit_label,
+                    proposal.visible_text.result_label,
+                  ].join("、")
+                  : "",
+              ],
+              [
+                t("sourceDerivedCases"),
+                Array.isArray(proposal.acceptance_cases)
+                  ? proposal.acceptance_cases.map(function (item) {
+                    return String(item.input_text || "") + " → " +
+                      String(item.expected_result || "");
+                  }).join("；")
+                  : "",
+              ],
+            ]
+            : [
             [t("sourceDerivedRelpath"), proposal.source_relpath],
             [t("sourceDerivedBehavior"), proposal.behavior_intent],
             [
@@ -3255,7 +3327,8 @@
                   }).join("；")
                 : "",
             ],
-          ].forEach(function (item) {
+          ];
+          proposalRows.forEach(function (item) {
             var term = document.createElement("dt");
             term.textContent = String(item[0] || "");
             var description = document.createElement("dd");
@@ -3266,7 +3339,11 @@
           row.appendChild(summary);
           var notice = document.createElement("p");
           notice.className = "warehouse-meta";
-          notice.textContent = t("sourceDerivedAgentModelNotice");
+          notice.textContent = t(
+            proposal.proposal_kind === "standard_ui_pair"
+              ? "sourceDerivedUiAgentModelNotice"
+              : "sourceDerivedAgentModelNotice"
+          );
           row.appendChild(notice);
           ["approve", "reject"].forEach(function (decision) {
             var decide = document.createElement("button");
@@ -3301,29 +3378,44 @@
         }
 
         if (projection.status === "none" || projection.status === "revoked") {
-          var authorizeAgent = document.createElement("button");
-          authorizeAgent.type = "button";
-          authorizeAgent.className = "btn-ghost";
-          authorizeAgent.dataset.action = "authorize-source-derived-agent";
-          authorizeAgent.textContent = t("sourceDerivedAgentAuthorize");
-          authorizeAgent.addEventListener("click", function () {
-            authorizeAgent.disabled = true;
-            bridgeCall(
-              "copy_local_source_derived_handoff_binding",
-              JSON.stringify({ source_root_id: rootId })
-            ).then(function (raw) {
-              var result = parseBridgeJson(raw);
-              if (!managementPayload(result)) {
-                authorizeAgent.disabled = false;
-                authorizeAgent.textContent = t("sourceDerivedAgentAuthorize");
-                setManagementStatus(managementError(result));
-                return;
-              }
-              authorizeAgent.textContent = t("sourceDerivedAgentCopiedClose");
-              setManagementStatus("sourceDerivedAgentActive");
+          function appendSourceDerivedAuthorization(labelKey, profile, action) {
+            var authorizeAgent = document.createElement("button");
+            authorizeAgent.type = "button";
+            authorizeAgent.className = "btn-ghost";
+            authorizeAgent.dataset.action = action;
+            authorizeAgent.textContent = t(labelKey);
+            authorizeAgent.addEventListener("click", function () {
+              authorizeAgent.disabled = true;
+              bridgeCall(
+                "copy_local_source_derived_handoff_binding",
+                JSON.stringify({
+                  source_root_id: rootId,
+                  action_profile: profile,
+                })
+              ).then(function (raw) {
+                var result = parseBridgeJson(raw);
+                if (!managementPayload(result)) {
+                  authorizeAgent.disabled = false;
+                  authorizeAgent.textContent = t(labelKey);
+                  setManagementStatus(managementError(result));
+                  return;
+                }
+                authorizeAgent.textContent = t("sourceDerivedAgentCopiedClose");
+                setManagementStatus("sourceDerivedAgentActive");
+              });
             });
-          });
-          row.appendChild(authorizeAgent);
+            row.appendChild(authorizeAgent);
+          }
+          appendSourceDerivedAuthorization(
+            "sourceDerivedAgentAuthorize",
+            "source_derived_agent.v1",
+            "authorize-source-derived-agent"
+          );
+          appendSourceDerivedAuthorization(
+            "sourceDerivedUiAgentAuthorize",
+            "source_derived_ui_agent.v1",
+            "authorize-source-derived-ui-agent"
+          );
         } else {
           var revokeAgent = document.createElement("button");
           revokeAgent.type = "button";
@@ -3351,6 +3443,73 @@
         sourceDerivedAgent.appendChild(row);
       });
       container.appendChild(sourceDerivedAgent);
+
+      var isolatedRuns = ingestionManagement.sourceDerivedRuns.filter(function (run) {
+        return run && run.review_scope === "isolated";
+      });
+      if (isolatedRuns.length) {
+        var admissions = document.createElement("fieldset");
+        admissions.className = "warehouse-project-config warehouse-developer-only";
+        var admissionsLegend = document.createElement("legend");
+        admissionsLegend.textContent = t("sourceDerivedAdmissionTitle");
+        admissions.appendChild(admissionsLegend);
+        isolatedRuns.forEach(function (run) {
+          var row = document.createElement("div");
+          row.className = "warehouse-project-config";
+          var summary = document.createElement("strong");
+          summary.textContent = String(run.behavior_intent || "");
+          row.appendChild(summary);
+          var status = document.createElement("p");
+          status.className = "warehouse-meta";
+          if (run.formal_admission_status === "admitted") {
+            status.textContent = t("sourceDerivedAdmissionAdmitted");
+          } else if (run.formal_admission_status === "conflict") {
+            status.textContent = t("sourceDerivedAdmissionConflict");
+          } else {
+            status.textContent =
+              String(run.status || "") + " · " +
+              String(run.updated_at || "");
+          }
+          status.setAttribute("aria-live", "polite");
+          row.appendChild(status);
+          if (
+            run.status === "review_required" &&
+            run.formal_admission_status === "not_admitted" &&
+            typeof run.run_id === "string"
+          ) {
+            var admit = document.createElement("button");
+            admit.type = "button";
+            admit.className = "btn-primary";
+            admit.dataset.action = "admit-source-derived-review";
+            admit.textContent = t("sourceDerivedAdmissionAction");
+            admit.addEventListener("click", function () {
+              if (!window.confirm(t("sourceDerivedAdmissionConfirm"))) return;
+              admit.disabled = true;
+              bridgeCall(
+                "admit_source_derived_review",
+                JSON.stringify({ run_id: run.run_id })
+              ).then(function (raw) {
+                var result = parseBridgeJson(raw);
+                if (!managementPayload(result)) {
+                  admit.disabled = false;
+                  setManagementStatus(managementError(result));
+                  return;
+                }
+                return refreshIngestionManagement().then(function () {
+                  ingestionNavigation.productReview = null;
+                  ingestionNavigation.sourceHandoffReview = null;
+                  ingestionNavigation.station = "review";
+                  renderManagementReviews();
+                  syncIngestionStation();
+                });
+              });
+            });
+            row.appendChild(admit);
+          }
+          admissions.appendChild(row);
+        });
+        container.appendChild(admissions);
+      }
 
       var sourceDerived = document.createElement("fieldset");
       sourceDerived.className = "warehouse-project-config warehouse-developer-only";

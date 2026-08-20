@@ -201,6 +201,7 @@ def test_stage5_contract_checks_are_explicit() -> None:
         "legacy_json_mutators_absent_from_desktop_bridge": True,
         "public_product_actions_use_formal_generation_only": True,
         "agent_candidate_actions_have_public_product_boundary": True,
+        "source_derived_admission_is_desktop_management_only": True,
         "formal_entrypoints_exclude_stage4_composer": True,
         "product_planning_is_local_review_only": True,
         "desktop_bridge_exposes_product_planning": True,

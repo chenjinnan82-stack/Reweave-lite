@@ -3587,6 +3587,12 @@ process.stdout.write(JSON.stringify({result, rendered: totalNode.textContent}));
                 "get_source_derived_run",
                 "cancel_source_derived_run",
                 "get_source_derived_review_summary",
+                "prepare_source_derived_standard_ui",
+                "get_source_derived_standard_ui_authorization",
+                "start_source_derived_standard_ui",
+                "get_source_derived_standard_ui_run",
+                "cancel_source_derived_standard_ui_run",
+                "get_source_derived_standard_ui_review_summary",
             },
         )
         source_token = "source_handoff_token_" + "2" * 48
@@ -3878,6 +3884,15 @@ process.stdout.write(JSON.stringify({result, rendered: totalNode.textContent}));
                 "start_source_intake",
                 {},
                 "derived-cross-profile",
+            )["error"]["code"],
+            "agent_action_not_allowed",
+        )
+        self.assertEqual(
+            dispatch(
+                derived_session,
+                "admit_source_derived_review",
+                {"run_id": "run_" + "6" * 32},
+                "derived-admission-denied",
             )["error"]["code"],
             "agent_action_not_allowed",
         )
