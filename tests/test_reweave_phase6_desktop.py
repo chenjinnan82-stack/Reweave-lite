@@ -6,6 +6,7 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -5765,6 +5766,7 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
     source_before = source_snapshot()
     model_name = "phase6-test-model"
     model_digest = "d" * 64
+    supervisor_calls: list[str] = []
 
     class OllamaHandler(BaseHTTPRequestHandler):
         def do_GET(self):  # noqa: N802
@@ -5778,6 +5780,7 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
                 str(body.get("prompt") or ""),
             )
             kind = match.group(1) if match else "invalid"
+            supervisor_calls.append(kind)
             self._send(
                 {
                     "response": json.dumps(
@@ -5823,7 +5826,12 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
     service = ReweaveAppService(
         ollama_base_url=f"http://127.0.0.1:{server.server_port}"
     )
-    admission_state = {"admitted": False, "calls": 0}
+    admission_state = {
+        "admitted": False,
+        "calls": 0,
+        "pair_admitted": False,
+        "pair_calls": 0,
+    }
     original_management_state = service._capsule_management_state
 
     def management_state_with_isolated_review():
@@ -5845,6 +5853,23 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
                 ),
             }
         ]
+        value["sourceDerivedUiRuns"] = [
+            {
+                "schema_version": "source_derived_ui_run_management.v1",
+                "run_id": "run_" + "8" * 32,
+                "behavior_intent": "Submit a message and show urgency.",
+                "status": "review_required",
+                "stage": "supervision",
+                "review_scope": "isolated",
+                "created_at": "2026-08-19T00:00:00Z",
+                "updated_at": "2026-08-19T00:00:01Z",
+                "formal_admission_status": (
+                    "admitted"
+                    if admission_state["pair_admitted"]
+                    else "not_admitted"
+                ),
+            }
+        ]
         return value
 
     def admit_isolated_review(payload):
@@ -5859,8 +5884,22 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
             },
         }
 
+    def admit_isolated_ui_pair(payload):
+        assert payload == {"run_id": "run_" + "8" * 32}
+        admission_state["pair_calls"] += 1
+        admission_state["pair_admitted"] = True
+        return {
+            "ok": True,
+            "data": {
+                "status": "review_required",
+                "review_count": 2,
+                "warehouse_revision": 2,
+            },
+        }
+
     service._capsule_management_state = management_state_with_isolated_review
     service.admit_source_derived_review = admit_isolated_review
+    service.admit_source_derived_standard_ui_reviews = admit_isolated_ui_pair
     qt_parts = desktop.import_qt_webengine()
     QApplication = qt_parts[0]
 
@@ -5876,6 +5915,9 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
     product_view = None
     product_page = None
     product_profile = None
+    standard_ui_view = None
+    standard_ui_page = None
+    standard_ui_profile = None
 
     def pump(seconds: float = 0.01) -> None:
         deadline = time.monotonic() + seconds
@@ -6184,6 +6226,83 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
                 )
                 is True
             )
+            wait_js(
+                "!!document.querySelector("
+                "'#warehouse-projects "
+                "[data-action=\"admit-source-derived-standard-ui-reviews\"]')",
+                30,
+                "isolated standard UI pair admission action",
+            )
+            assert (
+                js(
+                    """(() => {
+                      const button = document.querySelector(
+                        '#warehouse-projects '
+                        + '[data-action="admit-source-derived-standard-ui-reviews"]'
+                      );
+                      if (!button) return false;
+                      button.focus();
+                      let confirmed = 0;
+                      window.confirm = () => {
+                        confirmed += 1;
+                        return false;
+                      };
+                      button.click();
+                      return confirmed === 1
+                        && document.activeElement === button
+                        && !button.disabled;
+                    })()"""
+                )
+                is True
+            )
+            assert admission_state["pair_calls"] == 0
+            assert (
+                js(
+                    """(() => {
+                      const button = document.querySelector(
+                        '#warehouse-projects '
+                        + '[data-action="admit-source-derived-standard-ui-reviews"]'
+                      );
+                      if (!button) return false;
+                      window.confirm = () => true;
+                      button.click();
+                      return true;
+                    })()"""
+                )
+                is True
+            )
+            wait_js(
+                    "document.querySelector("
+                    "'[data-ingestion-panel=\"review\"]')"
+                    "?.classList.contains('is-active') && "
+                    "document.getElementById('warehouse-projects')"
+                    ".textContent.includes("
+                    "'输入和展示两个 UI Review 已进入正式 Review') && "
+                    "!document.querySelector("
+                "'#warehouse-projects "
+                "[data-action=\"admit-source-derived-standard-ui-reviews\"]')",
+                30,
+                "isolated standard UI pair admitted navigation",
+            )
+            assert admission_state["pair_calls"] == 1
+            assert "run_" + "8" * 32 not in str(
+                js(
+                    "document.getElementById('warehouse-projects').outerHTML"
+                )
+            )
+            assert (
+                js(
+                    """(() => {
+                      const button = document.querySelector(
+                        '[data-ingestion-station="source"]'
+                      );
+                      if (!button) return false;
+                      button.click();
+                      return true;
+                    })()"""
+                )
+                is True
+            )
             assert (
                 js(
                     """(() => {
@@ -6321,6 +6440,40 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
                 r"source_derived_ui_handoff_token_[0-9a-f]{48}",
                 ui_handoff_token,
             )
+            ui_binding = (
+                service._resolve_local_source_derived_handoff(
+                    ui_handoff_token
+                )
+            )
+            prepared_ui = (
+                service._prepare_authorized_source_derived_standard_ui(
+                    ui_binding,
+                    {
+                        "evidence_relpaths": ["controls.js", "view.js"],
+                        "behavior_intent": (
+                            "提交报修消息并展示紧急程度"
+                        ),
+                        "input_field": "message",
+                        "event_name": "classification_requested",
+                        "input_min_length": 1,
+                        "input_max_length": 1000,
+                        "result_field": "urgency",
+                        "result_enum": ["普通", "紧急"],
+                        "visible_text": {
+                            "input_label": "输入报修消息",
+                            "submit_label": "整理成工单",
+                            "result_label": "紧急程度",
+                        },
+                        "acceptance_cases": [
+                            {
+                                "input_text": "升降平台漏油",
+                                "expected_result": "紧急",
+                            }
+                        ],
+                    },
+                )
+            )
+            assert prepared_ui["proposal_status"] == "pending"
             ui_dom = str(
                 js(
                     "document.getElementById('warehouse-projects').outerHTML"
@@ -6343,10 +6496,360 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
             )
             wait_js(
                 "!!document.querySelector("
+                "'#warehouse-projects "
+                "[data-action=\"decide-source-derived-agent-approve\"]'"
+                ")",
+                30,
+                "pending standard UI proposal",
+            )
+            focus_receipt = json.loads(
+                str(
+                    js(
+                        """JSON.stringify((() => {
+                          const button = document.querySelector(
+                            '#warehouse-projects '
+                            + '[data-action="decide-source-derived-agent-approve"]'
+                          );
+                          return {
+                            autoFocused: button?.dataset.autoFocused || '',
+                            activeAction:
+                              document.activeElement?.dataset?.action || '',
+                            visible: button
+                              ? button.getBoundingClientRect().bottom > 0
+                                && button.getBoundingClientRect().top
+                                  < window.innerHeight
+                              : false
+                          };
+                        })())"""
+                    )
+                )
+            )
+            assert focus_receipt == {
+                "autoFocused": "true",
+                "activeAction": (
+                    "decide-source-derived-agent-approve"
+                ),
+                "visible": True,
+            }, focus_receipt
+            assert (
+                js(
+                    """(() => {
+                      const button = document.querySelector(
+                        '#warehouse-projects '
+                        + '[data-action="decide-source-derived-agent-approve"]'
+                      );
+                      if (!button) return false;
+                      const rect = button.getBoundingClientRect();
+                      const panel = button.closest('.warehouse-project-config');
+                      return rect.bottom > 0
+                        && rect.top < window.innerHeight
+                        && panel
+                        && panel.textContent.includes(
+                          '来源绑定的标准输入与双结果展示脚手架提案已准备'
+                        )
+                        && panel.textContent.includes('controls.js')
+                        && panel.textContent.includes('view.js')
+                        && panel.textContent.includes('声明示例（未执行）')
+                        && panel.textContent.includes('仅绑定与漂移检测')
+                        && panel.textContent.includes('不从 React/Vite 源码推导')
+                        && !panel.textContent.includes('review_id')
+                        && !panel.textContent.includes('digest');
+                    })()"""
+                )
+                is True
+            )
+            assert str(source) not in str(
+                js(
+                    "document.getElementById('warehouse-projects').outerHTML"
+                )
+            )
+            assert (
+                js(
+                    """(() => {
+                      const button = document.querySelector(
+                        '#warehouse-projects '
+                        + '[data-action="decide-source-derived-agent-approve"]'
+                      );
+                      if (!button) return false;
+                      button.click();
+                      return true;
+                    })()"""
+                )
+                is True
+            )
+            wait_js(
+                "document.getElementById('warehouse-projects')"
+                ".textContent.includes('提案已批准') && "
+                "!document.querySelector("
+                "'#warehouse-projects "
+                "[data-action=\"decide-source-derived-agent-approve\"]')",
+                30,
+                "standard UI proposal approved",
+            )
+            wait_js(
+                "!!document.querySelector("
                 "'#warehouse-projects [data-action=\"revoke-source-derived-agent\"]')",
                 30,
                 "refreshed standard UI Agent authorization",
             )
+            ui_supervision_offset = len(supervisor_calls)
+            started_ui = (
+                service._start_authorized_source_derived_standard_ui(
+                    ui_binding
+                )
+            )
+            assert started_ui["ok"] is True, started_ui
+            ui_run_id = str(started_ui["run_id"])
+            deadline = time.monotonic() + 180
+            while time.monotonic() < deadline:
+                ui_run = (
+                    service._get_authorized_source_derived_standard_ui_run(
+                        ui_binding
+                    )
+                )
+                if ui_run["status"] in {
+                    "review_required",
+                    "failed",
+                    "cancelled",
+                }:
+                    break
+                pump(0.08)
+            else:
+                raise TimeoutError("real standard UI run")
+            assert ui_run["status"] == "review_required", ui_run
+            assert ui_run["review_count"] == 2, ui_run
+            assert supervisor_calls[ui_supervision_offset:] == [
+                "interaction",
+                "presentation",
+            ]
+            ui_summary = (
+                service
+                ._get_authorized_source_derived_standard_ui_review_summary(
+                    ui_binding
+                )
+            )
+            assert ui_summary["acceptance_passed_count"] == 0
+            assert ui_summary["capability_kinds"] == [
+                "interaction",
+                "presentation",
+            ]
+
+            ui_workspace = service._source_derived_ui_workspace(ui_run_id)
+            ui_package = ui_workspace / "source"
+            assert {
+                item.name for item in ui_package.iterdir() if item.is_file()
+            } == {
+                "index.html",
+                "interaction.js",
+                "presentation.js",
+                "styles.css",
+            }
+            stored_ui_run = service._read_source_derived_ui_run(ui_run_id)
+            isolated_review_ids = [
+                item["review_id"] for item in stored_ui_run["reviews"]
+            ]
+            validation_database = (
+                ui_workspace / "capsule_warehouse.sqlite3"
+            )
+            with sqlite3.connect(
+                f"file:{validation_database}?mode=ro", uri=True
+            ) as validation_connection:
+                validation_rows = validation_connection.execute(
+                    "SELECT candidate_status,sanitized_candidate_json "
+                    "FROM review_items WHERE review_id IN (?,?) "
+                    "ORDER BY review_id",
+                    tuple(isolated_review_ids),
+                ).fetchall()
+            assert len(validation_rows) == 2
+            assert {
+                row[0] for row in validation_rows
+            } == {"review_required"}
+            assert {
+                json.loads(row[1])["stage3_evidence"]["validation"][
+                    "acceptance_scope"
+                ]
+                for row in validation_rows
+            } == {
+                "real_qwebengine_interaction",
+                "real_qwebengine_render",
+            }
+
+            standard_ui_view = QWebEngineView()
+            standard_ui_profile = QWebEngineProfile(standard_ui_view)
+            assert standard_ui_profile.isOffTheRecord()
+            standard_ui_page = QWebEnginePage(
+                standard_ui_profile, standard_ui_view
+            )
+            standard_ui_view.setPage(standard_ui_page)
+            standard_ui_settings = standard_ui_page.settings()
+            standard_ui_settings.setAttribute(
+                QWebEngineSettings.LocalContentCanAccessFileUrls, True
+            )
+            standard_ui_settings.setAttribute(
+                QWebEngineSettings.LocalContentCanAccessRemoteUrls, False
+            )
+            standard_ui_settings.setAttribute(
+                QWebEngineSettings.DnsPrefetchEnabled, False
+            )
+            standard_ui_view.resize(900, 700)
+            standard_ui_view.show()
+            standard_ui_page.load(
+                QUrl.fromLocalFile(str(ui_package / "index.html"))
+            )
+            wait_js(
+                "document.readyState === 'complete' && "
+                "!!document.querySelector('[data-capsule-root]')",
+                30,
+                "generated standard UI package",
+                target=standard_ui_page,
+            )
+            assert (
+                js(
+                    """(() => {
+                      globalThis.__standard_ui_probe = {done: false};
+                      Promise.all([
+                        import(
+                          new URL("./interaction.js", document.baseURI).href
+                        ),
+                        import(
+                          new URL("./presentation.js", document.baseURI).href
+                        )
+                      ]).then(([interaction, presentation]) => {
+                        const root = document.querySelector(
+                          "[data-capsule-root]"
+                        );
+                        const input = root.querySelector(
+                          "[data-ref='standard-input']"
+                        );
+                        const button = root.querySelector(
+                          "[data-action='standard-submit']"
+                        );
+                        const emissions = [];
+                        const dispose = interaction.mount(root, {
+                          emit(name, value) {
+                            emissions.push({name, value});
+                          }
+                        });
+                        const click = (value) => {
+                          const before = emissions.length;
+                          input.value = value;
+                          button.click();
+                          return emissions.length - before;
+                        };
+                        const emptyDelta = click("");
+                        const one = "x";
+                        const oneDelta = click(one);
+                        const maximum = "x".repeat(1000);
+                        const maximumDelta = click(maximum);
+                        const overDelta = click("x".repeat(1001));
+                        dispose();
+                        dispose();
+                        const disposedDelta = click("after-dispose");
+
+                        const normalReturn = presentation.render(
+                          root, {urgency: "普通"}
+                        );
+                        const normalText = root.querySelector(
+                          "[data-ref='standard-result']"
+                        ).textContent;
+                        const urgentReturn = presentation.render(
+                          root, {urgency: "紧急"}
+                        );
+                        const urgentText = root.querySelector(
+                          "[data-ref='standard-result']"
+                        ).textContent;
+                        const invalid = [
+                          presentation.render(root, {urgency: "非法"}),
+                          presentation.render(root, {}),
+                          presentation.render(
+                            root, {urgency: "普通", extra: true}
+                          ),
+                          presentation.render(root, {urgency: 1}),
+                          presentation.render(root, null)
+                        ];
+                        globalThis.__standard_ui_probe = {
+                          done: true,
+                          interaction: {
+                            emptyDelta,
+                            oneDelta,
+                            maximumDelta,
+                            overDelta,
+                            disposedDelta,
+                            emissions
+                          },
+                          presentation: {
+                            normalReturnWasUndefined:
+                              normalReturn === undefined,
+                            urgentReturnWasUndefined:
+                              urgentReturn === undefined,
+                            normalText,
+                            urgentText,
+                            retainedText: root.querySelector(
+                              "[data-ref='standard-result']"
+                            ).textContent,
+                            errorCodes: invalid.map(
+                              item => item?.error?.code || null
+                            )
+                          }
+                        };
+                      }).catch(error => {
+                        globalThis.__standard_ui_probe = {
+                          done: true,
+                          error: String(error && error.message || error)
+                        };
+                      });
+                      return true;
+                    })()""",
+                    target=standard_ui_page,
+                )
+                is True
+            )
+            wait_js(
+                "globalThis.__standard_ui_probe?.done === true",
+                30,
+                "standard UI semantic probe",
+                target=standard_ui_page,
+            )
+            ui_probe = json.loads(
+                str(
+                    js(
+                        "JSON.stringify(globalThis.__standard_ui_probe)",
+                        target=standard_ui_page,
+                    )
+                )
+            )
+            assert "error" not in ui_probe, ui_probe
+            assert ui_probe["interaction"] == {
+                "emptyDelta": 0,
+                "oneDelta": 1,
+                "maximumDelta": 1,
+                "overDelta": 0,
+                "disposedDelta": 0,
+                "emissions": [
+                    {
+                        "name": "classification_requested",
+                        "value": {"message": "x"},
+                    },
+                    {
+                        "name": "classification_requested",
+                        "value": {"message": "x" * 1000},
+                    },
+                ],
+            }
+            assert ui_probe["presentation"] == {
+                "normalReturnWasUndefined": True,
+                "urgentReturnWasUndefined": True,
+                "normalText": "普通",
+                "urgentText": "紧急",
+                "retainedText": "紧急",
+                "errorCodes": [
+                    "INVALID_RESULT",
+                    "INVALID_INPUT",
+                    "INVALID_INPUT",
+                    "INVALID_RESULT",
+                    "INVALID_INPUT",
+                ],
+            }
             assert (
                 js(
                     """(() => {
@@ -6838,6 +7341,17 @@ def test_phase6_desktop_end_to_end_without_reload(tmp_path: Path, monkeypatch) -
                 )
             )
     finally:
+        if standard_ui_page is not None:
+            standard_ui_view.setPage(QWebEnginePage(standard_ui_view))
+            standard_ui_page.deleteLater()
+            flush_deletes()
+        if standard_ui_profile is not None:
+            standard_ui_profile.deleteLater()
+            flush_deletes()
+        if standard_ui_view is not None:
+            standard_ui_view.close()
+            standard_ui_view.deleteLater()
+            flush_deletes()
         if product_page is not None:
             product_view.setPage(QWebEnginePage(product_view))
             product_page.deleteLater()

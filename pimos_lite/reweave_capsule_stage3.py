@@ -82,6 +82,12 @@ FROZEN_UI_REVIEW_ADMISSION_AUTHORIZATION_VERSION = (
     "frozen_stage3_ui_review_admission_authorization.v1"
 )
 FROZEN_UI_REVIEW_ADMISSION_VERSION = "frozen_stage3_ui_review_admission.v1"
+SOURCE_DERIVED_STANDARD_UI_REVIEW_ADMISSION_AUTHORIZATION_VERSION = (
+    "source_derived_standard_ui_review_admission_authorization.v1"
+)
+SOURCE_DERIVED_STANDARD_UI_REVIEW_ADMISSION_VERSION = (
+    "source_derived_standard_ui_review_admission.v1"
+)
 CAPTURE_BUNDLE_CONTRACT_VERSION = "reweave_capture_bundle.v1"
 CAPTURE_SELECTED_ENTRY = "__reweave_capture__/selected.js"
 CAPTURE_EXECUTION_BUNDLE_VERSION = "reweave_execution_bundle.v1"
@@ -5621,9 +5627,50 @@ class ReweaveCapsuleStage3:
     ) -> dict[str, Any]:
         """Atomically admit one compatible interaction/presentation pair."""
 
+        return self._admit_ui_review_batch(
+            source_database_path,
+            source_directory_path,
+            expected_source_sha256=expected_source_sha256,
+            expected_warehouse_revision=expected_warehouse_revision,
+            authorization_binding=authorization_binding,
+            source_derived=False,
+        )
+
+    def admit_source_derived_standard_ui_reviews(
+        self,
+        source_database_path: Path,
+        source_directory_path: Path,
+        *,
+        expected_source_sha256: str,
+        expected_warehouse_revision: int,
+        authorization_binding: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Atomically admit one exact source-derived standard UI pair."""
+
+        return self._admit_ui_review_batch(
+            source_database_path,
+            source_directory_path,
+            expected_source_sha256=expected_source_sha256,
+            expected_warehouse_revision=expected_warehouse_revision,
+            authorization_binding=authorization_binding,
+            source_derived=True,
+        )
+
+    def _admit_ui_review_batch(
+        self,
+        source_database_path: Path,
+        source_directory_path: Path,
+        *,
+        expected_source_sha256: str,
+        expected_warehouse_revision: int,
+        authorization_binding: dict[str, Any],
+        source_derived: bool,
+    ) -> dict[str, Any]:
+        """Shared UI-pair evidence and atomic-copy kernel."""
+
         source_path = Path(source_database_path)
         source_directory = Path(source_directory_path)
-        authorization_keys = {
+        legacy_authorization_keys = {
             "schema",
             "scope",
             "source_database_sha256",
@@ -5640,6 +5687,28 @@ class ReweaveCapsuleStage3:
             "reviews",
             "authorization_digest",
         }
+        source_derived_authorization_keys = {
+            "schema_version",
+            "run_id",
+            "run_canonical_digest",
+            "terminal_event_digest",
+            "handoff_binding_digest",
+            "proposal_digest",
+            "approval_digest",
+            "package_files_digest",
+            "validation_database_sha256",
+            "source_project_id",
+            "source_run_id",
+            "source_file_index_digest",
+            "page_capability_contract_digest",
+            "supervision_model",
+            "authorization_warehouse_revision",
+            "authorization_catalog_digest",
+            "target_catalog_digest",
+            "reviews",
+            "admission_action_canonical_digest",
+            "authorization_digest",
+        }
         review_keys = {
             "review_id",
             "capability_kind",
@@ -5649,7 +5718,7 @@ class ReweaveCapsuleStage3:
             "validation_sha256",
             "page_capability_declaration_digest",
         }
-        digest_fields = {
+        legacy_digest_fields = {
             "source_database_sha256",
             "source_file_index_digest",
             "page_capability_contract_digest",
@@ -5657,8 +5726,61 @@ class ReweaveCapsuleStage3:
             "target_catalog_digest",
             "authorization_digest",
         }
+        source_derived_digest_fields = {
+            "run_canonical_digest",
+            "terminal_event_digest",
+            "handoff_binding_digest",
+            "proposal_digest",
+            "approval_digest",
+            "package_files_digest",
+            "validation_database_sha256",
+            "source_file_index_digest",
+            "page_capability_contract_digest",
+            "authorization_catalog_digest",
+            "target_catalog_digest",
+            "admission_action_canonical_digest",
+            "authorization_digest",
+        }
         reviews = (
             authorization_binding.get("reviews")
+            if type(authorization_binding) is dict
+            else None
+        )
+        authorization_keys = (
+            source_derived_authorization_keys
+            if source_derived
+            else legacy_authorization_keys
+        )
+        digest_fields = (
+            source_derived_digest_fields
+            if source_derived
+            else legacy_digest_fields
+        )
+        supervision_model = (
+            authorization_binding.get("supervision_model")
+            if source_derived and type(authorization_binding) is dict
+            else {
+                "name": authorization_binding.get(
+                    "supervision_model_name"
+                ),
+                "digest": authorization_binding.get(
+                    "supervision_model_digest"
+                ),
+            }
+            if type(authorization_binding) is dict
+            else None
+        )
+        source_database_sha256 = (
+            authorization_binding.get("validation_database_sha256")
+            if source_derived and type(authorization_binding) is dict
+            else authorization_binding.get("source_database_sha256")
+            if type(authorization_binding) is dict
+            else None
+        )
+        authorization_revision = (
+            authorization_binding.get("authorization_warehouse_revision")
+            if source_derived and type(authorization_binding) is dict
+            else authorization_binding.get("target_warehouse_revision")
             if type(authorization_binding) is dict
             else None
         )
@@ -5674,10 +5796,21 @@ class ReweaveCapsuleStage3:
             or expected_warehouse_revision < 0
             or type(authorization_binding) is not dict
             or set(authorization_binding) != authorization_keys
-            or authorization_binding.get("schema")
-            != FROZEN_UI_REVIEW_ADMISSION_AUTHORIZATION_VERSION
-            or authorization_binding.get("scope")
-            not in {"isolated_rehearsal", "formal_admission"}
+            or (
+                source_derived
+                and authorization_binding.get("schema_version")
+                != SOURCE_DERIVED_STANDARD_UI_REVIEW_ADMISSION_AUTHORIZATION_VERSION
+            )
+            or (
+                not source_derived
+                and authorization_binding.get("schema")
+                != FROZEN_UI_REVIEW_ADMISSION_AUTHORIZATION_VERSION
+            )
+            or (
+                not source_derived
+                and authorization_binding.get("scope")
+                not in {"isolated_rehearsal", "formal_admission"}
+            )
             or any(
                 re.fullmatch(
                     r"[0-9a-f]{64}",
@@ -5686,21 +5819,49 @@ class ReweaveCapsuleStage3:
                 is None
                 for field in digest_fields
             )
-            or authorization_binding["source_database_sha256"]
-            != expected_source_sha256
+            or source_database_sha256 != expected_source_sha256
             or type(authorization_binding.get("source_project_id")) is not str
             or not authorization_binding["source_project_id"]
             or type(authorization_binding.get("source_run_id")) is not str
             or not authorization_binding["source_run_id"]
-            or type(authorization_binding.get("capability_key")) is not str
-            or _SNAKE.fullmatch(authorization_binding["capability_key"]) is None
-            or type(authorization_binding.get("display_name")) is not str
-            or not authorization_binding["display_name"]
-            or len(authorization_binding["display_name"]) > 200
-            or type(authorization_binding.get("supervision_model_name")) is not str
-            or not authorization_binding["supervision_model_name"]
-            or authorization_binding.get("target_warehouse_revision")
-            != expected_warehouse_revision
+            or (
+                not source_derived
+                and (
+                    type(authorization_binding.get("capability_key"))
+                    is not str
+                    or _SNAKE.fullmatch(
+                        authorization_binding["capability_key"]
+                    )
+                    is None
+                    or type(authorization_binding.get("display_name"))
+                    is not str
+                    or not authorization_binding["display_name"]
+                    or len(authorization_binding["display_name"]) > 200
+                )
+            )
+            or type(supervision_model) is not dict
+            or set(supervision_model) != {"name", "digest"}
+            or type(supervision_model.get("name")) is not str
+            or not supervision_model["name"]
+            or re.fullmatch(
+                r"[0-9a-f]{64}",
+                str(supervision_model.get("digest") or ""),
+            )
+            is None
+            or type(authorization_revision) is not int
+            or authorization_revision < 0
+            or (
+                not source_derived
+                and authorization_revision != expected_warehouse_revision
+            )
+            or (
+                source_derived
+                and expected_warehouse_revision
+                not in {
+                    authorization_revision,
+                    authorization_revision + 2,
+                }
+            )
             or type(reviews) is not list
             or len(reviews) != 2
             or any(
@@ -5727,7 +5888,11 @@ class ReweaveCapsuleStage3:
             or [item["capability_kind"] for item in reviews]
             != ["interaction", "presentation"]
         ):
-            raise Stage3Error("frozen_ui_review_admission_invalid")
+            raise Stage3Error(
+                "source_derived_ui_review_admission_invalid"
+                if source_derived
+                else "frozen_ui_review_admission_invalid"
+            )
         authorization_body = {
             key: value
             for key, value in authorization_binding.items()
@@ -5736,16 +5901,55 @@ class ReweaveCapsuleStage3:
         if authorization_binding["authorization_digest"] != hashlib.sha256(
             _canonical_json_bytes(authorization_body)
         ).hexdigest():
-            raise Stage3Error("frozen_ui_review_admission_invalid")
+            raise Stage3Error(
+                "source_derived_ui_review_admission_invalid"
+                if source_derived
+                else "frozen_ui_review_admission_invalid"
+            )
+        if (
+            source_derived
+            and (
+                re.fullmatch(
+                    r"run_[0-9a-f]{32}",
+                    str(authorization_binding.get("run_id") or ""),
+                )
+                is None
+                or authorization_binding[
+                    "admission_action_canonical_digest"
+                ]
+                != hashlib.sha256(
+                    _canonical_json_bytes(
+                        {
+                            "action": (
+                                "admit_source_derived_standard_ui_reviews"
+                            ),
+                            "run_id": authorization_binding["run_id"],
+                        }
+                    )
+                ).hexdigest()
+            )
+        ):
+            raise Stage3Error(
+                "source_derived_ui_review_admission_invalid"
+            )
 
-        def file_sha256(path: Path) -> str:
-            digest = hashlib.sha256()
-            with path.open("rb") as handle:
-                for chunk in iter(lambda: handle.read(1024 * 1024), b""):
-                    digest.update(chunk)
-            return digest.hexdigest()
+        authorization = {
+            **authorization_binding,
+            "source_database_sha256": source_database_sha256,
+            "supervision_model_name": supervision_model["name"],
+            "supervision_model_digest": supervision_model["digest"],
+            "target_warehouse_revision": authorization_revision,
+            "capability_key": (
+                authorization_binding.get("capability_key")
+            ),
+            "display_name": authorization_binding.get("display_name"),
+            "scope": authorization_binding.get("scope"),
+        }
 
-        if file_sha256(source_path) != expected_source_sha256:
+        if (
+            self._frozen_review_file_sha256(source_path)
+            != expected_source_sha256
+        ):
             raise Stage3Error("frozen_ui_review_source_changed")
         source_store = CapsuleWarehouseStore(source_path)
         with source_store.read_connection() as connection:
@@ -5758,11 +5962,11 @@ class ReweaveCapsuleStage3:
             }
             run_row = connection.execute(
                 "SELECT * FROM intake_runs WHERE run_id = ?",
-                (authorization_binding["source_run_id"],),
+                (authorization["source_run_id"],),
             ).fetchone()
             project_row = connection.execute(
                 "SELECT * FROM projects WHERE project_id = ?",
-                (authorization_binding["source_project_id"],),
+                (authorization["source_project_id"],),
             ).fetchone()
             root_row = (
                 connection.execute(
@@ -5819,7 +6023,7 @@ class ReweaveCapsuleStage3:
             ]
             if hashlib.sha256(
                 _canonical_json_bytes(file_index)
-            ).hexdigest() != authorization_binding[
+            ).hexdigest() != authorization[
                 "source_file_index_digest"
             ]:
                 raise Stage3Error("frozen_ui_review_source_changed")
@@ -5835,9 +6039,9 @@ class ReweaveCapsuleStage3:
                     review["candidate_status"] != "review_required"
                     or review["decision"] is not None
                     or review["project_id"]
-                    != authorization_binding["source_project_id"]
+                    != authorization["source_project_id"]
                     or review["run_id"]
-                    != authorization_binding["source_run_id"]
+                    != authorization["source_run_id"]
                     or source_file is None
                     or source_file["sha256"]
                     != authorized["source_file_sha256"]
@@ -5927,9 +6131,9 @@ class ReweaveCapsuleStage3:
                 if (
                     not verification_stage3._evidence_current(evidence, kind)
                     or evidence.get("model_name")
-                    != authorization_binding["supervision_model_name"]
+                    != authorization["supervision_model_name"]
                     or evidence.get("model_digest")
-                    != authorization_binding["supervision_model_digest"]
+                    != authorization["supervision_model_digest"]
                 ):
                     raise Stage3Error(
                         "frozen_ui_review_evidence_invalid"
@@ -5980,14 +6184,15 @@ class ReweaveCapsuleStage3:
         )
         if (
             page_contract["canonical_digest"]
-            != authorization_binding["page_capability_contract_digest"]
+            != authorization["page_capability_contract_digest"]
         ):
             raise Stage3Error("frozen_ui_review_page_capability_invalid")
 
         root = dict(root_row)
         root["current_path"] = str(source_directory)
         if (
-            file_sha256(source_path) != expected_source_sha256
+            self._frozen_review_file_sha256(source_path)
+            != expected_source_sha256
             or self.store.path.resolve() == source_path.resolve()
         ):
             raise Stage3Error("frozen_ui_review_source_changed")
@@ -6001,46 +6206,128 @@ class ReweaveCapsuleStage3:
                 item for item in reviews if item["capability_kind"] == kind
             )
             prepared = prepared_by_kind[kind]
-            value = {
-                "schema": FROZEN_UI_REVIEW_ADMISSION_VERSION,
-                "batch_authorization_digest": authorization_binding[
-                    "authorization_digest"
-                ],
-                "authorization_scope": authorization_binding["scope"],
-                "source_database_sha256": expected_source_sha256,
-                "source_review_id": authorized["review_id"],
-                "capability_kind": kind,
-                "candidate_canonical_hash": prepared.artifact.version_canonical_hash,
-                "source_identity_sha256": prepared.snapshot_digest,
-                "source_file_sha256": authorized["source_file_sha256"],
-                "validation_sha256": authorized["validation_sha256"],
-                "page_capability_declaration_digest": authorized[
-                    "page_capability_declaration_digest"
-                ],
-                "page_capability_contract_digest": page_contract[
-                    "canonical_digest"
-                ],
-                "authorized_capability_key": authorization_binding[
-                    "capability_key"
-                ],
-                "authorized_display_name": authorization_binding[
-                    "display_name"
-                ],
-                "supervision_model_name": authorization_binding[
-                    "supervision_model_name"
-                ],
-                "supervision_model_digest": authorization_binding[
-                    "supervision_model_digest"
-                ],
-                "target_warehouse_revision_before": revision_before,
-                "target_catalog_digest_before": authorization_binding[
-                    "target_catalog_digest"
-                ],
-                "target_warehouse_revision_after": revision_after,
-                "target_catalog_digest_after": authorization_binding[
-                    "target_catalog_digest"
-                ],
-            }
+            if source_derived:
+                value = {
+                    "schema": (
+                        SOURCE_DERIVED_STANDARD_UI_REVIEW_ADMISSION_VERSION
+                    ),
+                    "authorization_digest": authorization[
+                        "authorization_digest"
+                    ],
+                    "run_id": authorization["run_id"],
+                    "run_canonical_digest": authorization[
+                        "run_canonical_digest"
+                    ],
+                    "terminal_event_digest": authorization[
+                        "terminal_event_digest"
+                    ],
+                    "handoff_binding_digest": authorization[
+                        "handoff_binding_digest"
+                    ],
+                    "proposal_digest": authorization[
+                        "proposal_digest"
+                    ],
+                    "approval_digest": authorization[
+                        "approval_digest"
+                    ],
+                    "package_files_digest": authorization[
+                        "package_files_digest"
+                    ],
+                    "source_database_sha256": expected_source_sha256,
+                    "source_project_id": authorization[
+                        "source_project_id"
+                    ],
+                    "source_run_id": authorization["source_run_id"],
+                    "source_file_index_digest": authorization[
+                        "source_file_index_digest"
+                    ],
+                    "source_review_id": authorized["review_id"],
+                    "capability_kind": kind,
+                    "candidate_canonical_hash": (
+                        prepared.artifact.version_canonical_hash
+                    ),
+                    "source_relpath": authorized["source_relpath"],
+                    "source_identity_sha256": prepared.snapshot_digest,
+                    "source_file_sha256": authorized[
+                        "source_file_sha256"
+                    ],
+                    "validation_sha256": authorized[
+                        "validation_sha256"
+                    ],
+                    "page_capability_declaration_digest": authorized[
+                        "page_capability_declaration_digest"
+                    ],
+                    "page_capability_contract_digest": page_contract[
+                        "canonical_digest"
+                    ],
+                    "supervision_model": authorization[
+                        "supervision_model"
+                    ],
+                    "authorization_warehouse_revision": authorization[
+                        "authorization_warehouse_revision"
+                    ],
+                    "authorization_catalog_digest": authorization[
+                        "authorization_catalog_digest"
+                    ],
+                    "admission_action_canonical_digest": authorization[
+                        "admission_action_canonical_digest"
+                    ],
+                    "target_warehouse_revision_before": revision_before,
+                    "target_catalog_digest_before": authorization[
+                        "target_catalog_digest"
+                    ],
+                    "target_warehouse_revision_after": revision_after,
+                    "target_catalog_digest_after": authorization[
+                        "target_catalog_digest"
+                    ],
+                }
+            else:
+                value = {
+                    "schema": FROZEN_UI_REVIEW_ADMISSION_VERSION,
+                    "batch_authorization_digest": authorization[
+                        "authorization_digest"
+                    ],
+                    "authorization_scope": authorization["scope"],
+                    "source_database_sha256": expected_source_sha256,
+                    "source_review_id": authorized["review_id"],
+                    "capability_kind": kind,
+                    "candidate_canonical_hash": (
+                        prepared.artifact.version_canonical_hash
+                    ),
+                    "source_identity_sha256": prepared.snapshot_digest,
+                    "source_file_sha256": authorized[
+                        "source_file_sha256"
+                    ],
+                    "validation_sha256": authorized[
+                        "validation_sha256"
+                    ],
+                    "page_capability_declaration_digest": authorized[
+                        "page_capability_declaration_digest"
+                    ],
+                    "page_capability_contract_digest": page_contract[
+                        "canonical_digest"
+                    ],
+                    "authorized_capability_key": authorization[
+                        "capability_key"
+                    ],
+                    "authorized_display_name": authorization[
+                        "display_name"
+                    ],
+                    "supervision_model_name": authorization[
+                        "supervision_model_name"
+                    ],
+                    "supervision_model_digest": authorization[
+                        "supervision_model_digest"
+                    ],
+                    "target_warehouse_revision_before": revision_before,
+                    "target_catalog_digest_before": authorization[
+                        "target_catalog_digest"
+                    ],
+                    "target_warehouse_revision_after": revision_after,
+                    "target_catalog_digest_after": authorization[
+                        "target_catalog_digest"
+                    ],
+                }
             return {
                 **value,
                 "digest": hashlib.sha256(
@@ -6057,8 +6344,8 @@ class ReweaveCapsuleStage3:
         expected_receipts = {
             kind: receipt(
                 kind,
-                expected_warehouse_revision + index,
-                expected_warehouse_revision + index + 1,
+                authorization_revision + index,
+                authorization_revision + index + 1,
             )
             for index, kind in enumerate(ordered_kinds)
         }
@@ -6066,7 +6353,13 @@ class ReweaveCapsuleStage3:
         for kind in ordered_kinds:
             row = dict(review_by_kind[kind])
             summary = dict(summary_by_kind[kind])
-            summary["frozen_ui_review_admission"] = expected_receipts[kind]
+            summary[
+                (
+                    "source_derived_standard_ui_review_admission"
+                    if source_derived
+                    else "frozen_ui_review_admission"
+                )
+            ] = expected_receipts[kind]
             row["sanitized_candidate_json"] = _json(summary)
             row["equivalence_comparison_json"] = _json(
                 comparison_by_kind[kind]
@@ -6097,18 +6390,26 @@ class ReweaveCapsuleStage3:
             if (
                 type(selected_model) is not dict
                 or selected_model.get("name")
-                != authorization_binding["supervision_model_name"]
+                != authorization["supervision_model_name"]
                 or selected_model.get("digest")
-                != authorization_binding["supervision_model_digest"]
+                != authorization["supervision_model_digest"]
             ):
                 raise Stage3Error(
-                    "frozen_ui_review_supervision_model_changed"
+                    (
+                        "source_derived_ui_review_supervision_model_changed"
+                        if source_derived
+                        else "frozen_ui_review_supervision_model_changed"
+                    )
                 )
-            group = connection.execute(
-                "SELECT capability_key FROM capability_groups "
-                "WHERE capability_key = ?",
-                (authorization_binding["capability_key"],),
-            ).fetchone()
+            group = (
+                None
+                if source_derived
+                else connection.execute(
+                    "SELECT capability_key FROM capability_groups "
+                    "WHERE capability_key = ?",
+                    (authorization["capability_key"],),
+                ).fetchone()
+            )
             existing = {
                 kind: connection.execute(
                     "SELECT * FROM review_items WHERE review_id = ?",
@@ -6119,13 +6420,19 @@ class ReweaveCapsuleStage3:
             if all(row is not None for row in existing.values()):
                 if (
                     group is not None
-                    or revision != expected_warehouse_revision + 2
+                    or revision != authorization_revision + 2
                     or any(
                         dict(existing[kind]) != admitted_rows[kind]
                         for kind in ordered_kinds
                     )
                 ):
-                    raise Stage3Error("frozen_ui_review_identity_conflict")
+                    raise Stage3Error(
+                        (
+                            "source_derived_ui_review_identity_conflict"
+                            if source_derived
+                            else "frozen_ui_review_identity_conflict"
+                        )
+                    )
                 return {
                     "status": "already_admitted",
                     "review_ids": [
@@ -6139,11 +6446,23 @@ class ReweaveCapsuleStage3:
                     "warehouse_revision": revision,
                 }
             if any(row is not None for row in existing.values()):
-                raise Stage3Error("frozen_ui_review_identity_conflict")
+                raise Stage3Error(
+                    (
+                        "source_derived_ui_review_identity_conflict"
+                        if source_derived
+                        else "frozen_ui_review_identity_conflict"
+                    )
+                )
             if group is not None:
                 raise Stage3Error("frozen_ui_review_capability_exists")
-            if revision != expected_warehouse_revision:
-                raise Stage3Error("frozen_ui_review_target_stale")
+            if revision != authorization_revision:
+                raise Stage3Error(
+                    (
+                        "source_derived_ui_review_target_stale"
+                        if source_derived
+                        else "frozen_ui_review_target_stale"
+                    )
+                )
             for table, row, identity_column in lineage_rows:
                 current = connection.execute(
                     f"SELECT * FROM {table} WHERE {identity_column} = ?",
@@ -6151,7 +6470,13 @@ class ReweaveCapsuleStage3:
                 ).fetchone()
                 if current is not None:
                     if dict(current) != row:
-                        raise Stage3Error("frozen_ui_review_identity_conflict")
+                        raise Stage3Error(
+                            (
+                                "source_derived_ui_review_identity_conflict"
+                                if source_derived
+                                else "frozen_ui_review_identity_conflict"
+                            )
+                        )
                     continue
                 columns = tuple(row)
                 connection.execute(
@@ -6171,7 +6496,13 @@ class ReweaveCapsuleStage3:
                 if new_revision != expected_receipts[kind][
                     "target_warehouse_revision_after"
                 ]:
-                    raise Stage3Error("frozen_ui_review_target_stale")
+                    raise Stage3Error(
+                        (
+                            "source_derived_ui_review_target_stale"
+                            if source_derived
+                            else "frozen_ui_review_target_stale"
+                        )
+                    )
         return {
             "status": "review_required",
             "review_ids": [

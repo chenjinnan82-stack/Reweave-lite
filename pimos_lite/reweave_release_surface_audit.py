@@ -505,12 +505,29 @@ def _release_checks(
             <= public_product_actions
         ),
         "source_derived_admission_is_desktop_management_only": (
-            "admit_source_derived_review" in capsule_management_actions
-            and "admit_source_derived_review" not in public_product_actions
-            and "admit_source_derived_review" not in agent_actions
-            and "admit_source_derived_review" in bridge_slots
-            and "admit_source_derived_review"
-            in frontend_actions.get("bridge_actions", [])
+            {
+                "admit_source_derived_review",
+                "admit_source_derived_standard_ui_reviews",
+            }
+            <= capsule_management_actions
+            and not {
+                "admit_source_derived_review",
+                "admit_source_derived_standard_ui_reviews",
+            }.intersection(public_product_actions)
+            and not {
+                "admit_source_derived_review",
+                "admit_source_derived_standard_ui_reviews",
+            }.intersection(agent_actions)
+            and {
+                "admit_source_derived_review",
+                "admit_source_derived_standard_ui_reviews",
+            }
+            <= bridge_slots
+            and {
+                "admit_source_derived_review",
+                "admit_source_derived_standard_ui_reviews",
+            }
+            <= set(frontend_actions.get("bridge_actions", []))
         ),
         "formal_entrypoints_exclude_stage4_composer": (
             not any(

@@ -49,6 +49,7 @@ def test_phase4_bridge_forwards_json_payloads_to_app_service() -> None:
         "start_refresh_all",
         "authorize_and_start_source_derived_computation",
         "admit_source_derived_review",
+        "admit_source_derived_standard_ui_reviews",
         "get_intake_run",
         "cancel_intake_run",
         "list_supervision_models",

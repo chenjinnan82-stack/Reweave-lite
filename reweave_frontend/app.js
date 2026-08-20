@@ -30,11 +30,13 @@
     developerMode: false,
     sourceRoots: [],
     sourceDerivedRuns: [],
+    sourceDerivedUiRuns: [],
     selectedSourceRootId: "",
     sourceRootSelectionStale: false,
     runs: {},
     errorKey: "",
   };
+  var sourceDerivedPendingFocusKey = "";
   var ingestionNavigation = {
     returnScene: "product",
     station: "source",
@@ -383,10 +385,12 @@
       sourceDerivedAgentStale: "来源、模型或正式仓库已漂移；只能撤销。",
       sourceDerivedAgentConflict: "Agent 授权状态冲突；只能安全撤销。",
       sourceDerivedAgentModelNotice: "批准后仍不会调用模型；Agent 启动时才会各调用一次源码模型和监督模型。",
-      sourceDerivedUiAgentAuthorize: "授权 Agent 准备标准输入和展示",
-      sourceDerivedUiAgentModelNotice: "批准不会调用模型或创建运行；Agent 启动后由 Reweave 确定性生成界面，并按输入、展示顺序监督两次。",
-      sourceDerivedUiEvidence: "证据文件",
+      sourceDerivedUiAgentAuthorize: "授权 Agent 准备来源绑定的标准输入与双结果展示脚手架",
+      sourceDerivedUiAgentModelNotice: "来源文件仅用于授权、来源记录和漂移检测；UI 由 Reweave 固定规则生成，不从 React/Vite 源码推导。批准不会调用模型或创建运行；Agent 启动后只验证并监督输入和展示两个 UI 部件。",
+      sourceDerivedUiAgentPending: "来源绑定的标准输入与双结果展示脚手架提案已准备，等待批准。",
+      sourceDerivedUiEvidence: "来源证据（仅绑定与漂移检测）",
       sourceDerivedUiVisibleText: "可见文案",
+      sourceDerivedUiDeclaredExamples: "声明示例（未执行）",
       source_derived_handoff_clipboard_failed: "剪贴板写入失败，授权已撤销。",
       source_derived_handoff_clipboard_revoke_failed: "剪贴板写入失败且撤销未确认。请保持梭子关闭并刷新。",
       sourceDerivedTitle: "从单一证据文件生成隔离计算提案",
@@ -410,6 +414,12 @@
       sourceDerivedAdmissionConfirm: "确认将这个隔离提案接纳到正式 Review？此操作不会发布能力。",
       sourceDerivedAdmissionAdmitted: "已进入正式 Review",
       sourceDerivedAdmissionConflict: "接纳状态冲突，已失败关闭。",
+      sourceDerivedUiAdmissionTitle: "来源绑定的标准输入与双结果展示脚手架",
+      sourceDerivedUiAdmissionAction: "接纳输入与展示两个 UI Review",
+      sourceDerivedUiAdmissionConfirm: "确认将输入和展示两个 UI 部件原子接纳到正式 Review？这不表示分类规则已通过，也不会发布能力。",
+      sourceDerivedUiAdmissionAdmitted: "输入和展示两个 UI Review 已进入正式 Review",
+      sourceDerivedUiAdmissionConflict: "成对接纳状态冲突，已失败关闭。",
+      sourceDerivedUiAdmissionSucceeded: "输入和展示两个 UI Review 已接纳到正式 Review；分类规则仍未验收。",
       source_derivation_request_invalid: "单文件来源授权信息无效。",
       source_derivation_evidence_invalid: "证据文件不安全、不可读取、超限或包含疑似秘密。",
       source_derivation_run_stale: "来源、模型或正式 catalog 已变化；运行已失败关闭。",
@@ -932,10 +942,12 @@
       sourceDerivedAgentStale: "The source, model, or formal warehouse drifted; only revocation is allowed.",
       sourceDerivedAgentConflict: "Agent authorization state conflicts; only safe revocation is allowed.",
       sourceDerivedAgentModelNotice: "Approval still does not call a model. The Agent run later calls the source model and supervisor once each.",
-      sourceDerivedUiAgentAuthorize: "Authorize Agent to prepare standard input and display",
-      sourceDerivedUiAgentModelNotice: "Approval calls no model and creates no run. The Agent then asks Reweave to assemble deterministically and supervise input, then display.",
-      sourceDerivedUiEvidence: "Evidence files",
+      sourceDerivedUiAgentAuthorize: "Authorize Agent to prepare a source-bound standard input and two-result display scaffold",
+      sourceDerivedUiAgentModelNotice: "Source files are used only for authorization, provenance, and drift detection. Reweave generates the UI with fixed rules; it is not derived from React/Vite source. Approval calls no model and creates no run; Agent start only validates and supervises the input and display UI parts.",
+      sourceDerivedUiAgentPending: "The source-bound standard input and two-result display scaffold is ready for approval.",
+      sourceDerivedUiEvidence: "Source evidence (binding and drift detection only)",
       sourceDerivedUiVisibleText: "Visible text",
+      sourceDerivedUiDeclaredExamples: "Declared examples (not executed)",
       source_derived_handoff_clipboard_failed: "Clipboard write failed and the authorization was revoked.",
       source_derived_handoff_clipboard_revoke_failed: "Clipboard write failed and revocation was not confirmed. Keep the Shuttle closed and refresh.",
       sourceDerivedTitle: "Generate an isolated computation from one evidence file",
@@ -959,6 +971,12 @@
       sourceDerivedAdmissionConfirm: "Admit this isolated proposal to formal Review? This does not publish a capability.",
       sourceDerivedAdmissionAdmitted: "Admitted to formal Review",
       sourceDerivedAdmissionConflict: "Admission state conflicts and failed closed.",
+      sourceDerivedUiAdmissionTitle: "Source-bound standard input and two-result display scaffold",
+      sourceDerivedUiAdmissionAction: "Admit the input and display UI Reviews",
+      sourceDerivedUiAdmissionConfirm: "Atomically admit the input and display UI parts to formal Review? This does not prove the classification rule or publish a capability.",
+      sourceDerivedUiAdmissionAdmitted: "The input and display UI Reviews were admitted to formal Review",
+      sourceDerivedUiAdmissionConflict: "Pair admission conflicts and failed closed.",
+      sourceDerivedUiAdmissionSucceeded: "The input and display UI Reviews were admitted to formal Review; the classification rule remains untested.",
       source_derivation_request_invalid: "The one-file source authorization is invalid.",
       source_derivation_evidence_invalid: "The evidence file is unsafe, unreadable, oversized, or contains a possible secret.",
       source_derivation_run_stale: "The source, model, or formal catalog changed; the run failed closed.",
@@ -1900,6 +1918,10 @@
     if (Array.isArray(payload.sourceDerivedRuns)) {
       ingestionManagement.sourceDerivedRuns =
         payload.sourceDerivedRuns.slice();
+    }
+    if (Array.isArray(payload.sourceDerivedUiRuns)) {
+      ingestionManagement.sourceDerivedUiRuns =
+        payload.sourceDerivedUiRuns.slice();
     }
     if (Array.isArray(payload.projects)) ingestionManagement.projects = payload.projects.slice();
     if (Array.isArray(payload.review_items)) ingestionManagement.reviewItems = payload.review_items.slice();
@@ -3215,13 +3237,14 @@
       registration.appendChild(displayNameLabel);
       registration.appendChild(register);
       sourceRootActions.push(register);
-      container.appendChild(registration);
 
       var sourceDerivedAgent = document.createElement("fieldset");
       sourceDerivedAgent.className = "warehouse-project-config";
       var sourceDerivedAgentLegend = document.createElement("legend");
       sourceDerivedAgentLegend.textContent = t("sourceDerivedAgentTitle");
       sourceDerivedAgent.appendChild(sourceDerivedAgentLegend);
+      var pendingStandardUiApproval = null;
+      var pendingStandardUiRootId = "";
       boundSourceRoots.forEach(function (root) {
         var rootId = String(root.root_id || "");
         var projection = sourceDerivedHandoffProjection(
@@ -3249,8 +3272,15 @@
           statusKey = "sourceDerivedAgentApproved";
         } else if (projection.proposal_status === "rejected") {
           statusKey = "sourceDerivedAgentRejected";
+        } else if (
+          projection.proposal_status === "pending" &&
+          projection.proposal &&
+          projection.proposal.proposal_kind === "standard_ui_pair"
+        ) {
+          statusKey = "sourceDerivedUiAgentPending";
         }
         status.textContent = statusKey ? t(statusKey) : "";
+        status.setAttribute("aria-live", "polite");
         row.appendChild(status);
 
         if (
@@ -3293,7 +3323,7 @@
                   : "",
               ],
               [
-                t("sourceDerivedCases"),
+                t("sourceDerivedUiDeclaredExamples"),
                 Array.isArray(proposal.acceptance_cases)
                   ? proposal.acceptance_cases.map(function (item) {
                     return String(item.input_text || "") + " → " +
@@ -3374,6 +3404,13 @@
               });
             });
             row.appendChild(decide);
+            if (
+              decision === "approve" &&
+              proposal.proposal_kind === "standard_ui_pair"
+            ) {
+              pendingStandardUiApproval = decide;
+              pendingStandardUiRootId = rootId;
+            }
           });
         }
 
@@ -3443,6 +3480,23 @@
         sourceDerivedAgent.appendChild(row);
       });
       container.appendChild(sourceDerivedAgent);
+      container.appendChild(registration);
+      if (pendingStandardUiApproval) {
+        if (sourceDerivedPendingFocusKey !== pendingStandardUiRootId) {
+          window.requestAnimationFrame(function () {
+            if (!document.body.contains(pendingStandardUiApproval)) return;
+            pendingStandardUiApproval.scrollIntoView({ block: "nearest" });
+            pendingStandardUiApproval.focus({ preventScroll: true });
+            sourceDerivedPendingFocusKey = pendingStandardUiRootId;
+            pendingStandardUiApproval.dataset.autoFocused =
+              document.activeElement === pendingStandardUiApproval
+                ? "true"
+                : "false";
+          });
+        }
+      } else {
+        sourceDerivedPendingFocusKey = "";
+      }
 
       var isolatedRuns = ingestionManagement.sourceDerivedRuns.filter(function (run) {
         return run && run.review_scope === "isolated";
@@ -3509,6 +3563,78 @@
           admissions.appendChild(row);
         });
         container.appendChild(admissions);
+      }
+
+      var isolatedUiRuns = ingestionManagement.sourceDerivedUiRuns.filter(
+        function (run) {
+          return run && run.review_scope === "isolated";
+        }
+      );
+      if (isolatedUiRuns.length) {
+        var uiAdmissions = document.createElement("fieldset");
+        uiAdmissions.className =
+          "warehouse-project-config warehouse-developer-only";
+        var uiAdmissionsLegend = document.createElement("legend");
+        uiAdmissionsLegend.textContent = t("sourceDerivedUiAdmissionTitle");
+        uiAdmissions.appendChild(uiAdmissionsLegend);
+        isolatedUiRuns.forEach(function (run) {
+          var row = document.createElement("div");
+          row.className = "warehouse-project-config";
+          var summary = document.createElement("strong");
+          summary.textContent = String(run.behavior_intent || "");
+          row.appendChild(summary);
+          var status = document.createElement("p");
+          status.className = "warehouse-meta";
+          status.setAttribute("aria-live", "polite");
+          if (run.formal_admission_status === "admitted") {
+            status.textContent = t("sourceDerivedUiAdmissionAdmitted");
+          } else if (run.formal_admission_status === "conflict") {
+            status.textContent = t("sourceDerivedUiAdmissionConflict");
+          } else {
+            status.textContent =
+              String(run.status || "") + " · " +
+              String(run.updated_at || "");
+          }
+          row.appendChild(status);
+          if (
+            run.status === "review_required" &&
+            run.formal_admission_status === "not_admitted" &&
+            typeof run.run_id === "string"
+          ) {
+            var admitPair = document.createElement("button");
+            admitPair.type = "button";
+            admitPair.className = "btn-primary";
+            admitPair.dataset.action =
+              "admit-source-derived-standard-ui-reviews";
+            admitPair.textContent = t("sourceDerivedUiAdmissionAction");
+            admitPair.addEventListener("click", function () {
+              if (!window.confirm(t("sourceDerivedUiAdmissionConfirm"))) return;
+              admitPair.disabled = true;
+              bridgeCall(
+                "admit_source_derived_standard_ui_reviews",
+                JSON.stringify({ run_id: run.run_id })
+              ).then(function (raw) {
+                var result = parseBridgeJson(raw);
+                if (!managementPayload(result)) {
+                  admitPair.disabled = false;
+                  setManagementStatus(managementError(result));
+                  return;
+                }
+                setManagementStatus("sourceDerivedUiAdmissionSucceeded");
+                return refreshIngestionManagement().then(function () {
+                  ingestionNavigation.productReview = null;
+                  ingestionNavigation.sourceHandoffReview = null;
+                  ingestionNavigation.station = "review";
+                  renderManagementReviews();
+                  syncIngestionStation();
+                });
+              });
+            });
+            row.appendChild(admitPair);
+          }
+          uiAdmissions.appendChild(row);
+        });
+        container.appendChild(uiAdmissions);
       }
 
       var sourceDerived = document.createElement("fieldset");
