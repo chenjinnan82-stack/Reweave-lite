@@ -1221,6 +1221,9 @@ class Phase4ManagementTest(unittest.TestCase):
             )
 
         with patch(
+            "pimos_lite.reweave_app_service.javascript_source_snapshot_supported",
+            return_value=True,
+        ), patch(
             "pimos_lite.reweave_capsule_stage3.OllamaSupervisor.supervise",
             new=approve,
         ), patch(
