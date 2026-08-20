@@ -1179,6 +1179,25 @@ class Phase4ManagementTest(unittest.TestCase):
                 }
             ],
         }
+        with patch(
+            "pimos_lite.reweave_app_service.javascript_source_snapshot_supported",
+            return_value=False,
+        ):
+            unsupported = (
+                self.service.create_local_source_derived_handoff(
+                    {
+                        "source_root_id": root_id,
+                        "action_profile": "source_derived_ui_agent.v1",
+                    }
+                )
+            )
+        self.assertFalse(unsupported["ok"])
+        self.assertEqual(
+            unsupported["error"]["code"],
+            "source_platform_unsupported_v1",
+        )
+        if not javascript_source_snapshot_supported():
+            return
         supervisor_calls: list[str] = []
 
         def approve(_self, _summary, capability_kind):
@@ -1221,9 +1240,6 @@ class Phase4ManagementTest(unittest.TestCase):
             )
 
         with patch(
-            "pimos_lite.reweave_app_service.javascript_source_snapshot_supported",
-            return_value=True,
-        ), patch(
             "pimos_lite.reweave_capsule_stage3.OllamaSupervisor.supervise",
             new=approve,
         ), patch(
