@@ -3408,6 +3408,7 @@
               decision === "approve" &&
               proposal.proposal_kind === "standard_ui_pair"
             ) {
+              decide.dataset.pendingStandardUi = "true";
               pendingStandardUiApproval = decide;
               pendingStandardUiRootId = rootId;
             }
@@ -6006,6 +6007,10 @@
     productPlanScene.sync();
     targetIntegration.sync();
     if (
+      document.querySelector('[data-pending-standard-ui="true"]')
+    ) {
+      openIngestionScene("product", null);
+    } else if (
       options.compatibility !== true &&
       desktopShellState &&
       desktopShellState.canPlanProduct === true

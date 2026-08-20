@@ -1270,6 +1270,12 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
         "pendingStandardUiApproval.focus({ preventScroll: true });"
         in app
     )
+    assert 'decide.dataset.pendingStandardUi = "true";' in app
+    assert (
+        "document.querySelector('[data-pending-standard-ui=\"true\"]')"
+        in app
+    )
+    assert 'openIngestionScene("product", null);' in app
     assert (
         '"copy_local_source_derived_handoff_binding"' in app
     )
