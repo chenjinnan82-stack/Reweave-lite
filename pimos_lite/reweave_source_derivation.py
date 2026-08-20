@@ -75,6 +75,12 @@ SOURCE_DERIVED_REVIEW_ADMISSION_AUTHORIZATION_VERSION = (
 SOURCE_DERIVED_REVIEW_ADMISSION_VERSION = (
     "source_derived_review_admission.v1"
 )
+SOURCE_DERIVED_STANDARD_UI_REVIEW_ADMISSION_AUTHORIZATION_VERSION = (
+    "source_derived_standard_ui_review_admission_authorization.v1"
+)
+SOURCE_DERIVED_STANDARD_UI_REVIEW_ADMISSION_VERSION = (
+    "source_derived_standard_ui_review_admission.v1"
+)
 SOURCE_DERIVED_STATE_DIRECTORY = "source_derived_computations"
 SOURCE_DERIVED_RUN_STATUSES = frozenset(
     {"pending", "running", "review_required", "failed", "cancelled"}
@@ -2311,6 +2317,181 @@ def validate_source_derived_review_admission_authorization(
         raise SourceDerivationError(
             "source_derivation_review_admission_invalid"
         )
+    return copy.deepcopy(row)
+
+
+def build_source_derived_standard_ui_review_admission_authorization(
+    run: dict[str, Any],
+    *,
+    source_project_id: str,
+    source_run_id: str,
+    source_file_index_digest: str,
+    page_capability_contract_digest: str,
+    reviews: list[dict[str, Any]],
+    target_catalog_digest: str,
+) -> dict[str, Any]:
+    """Bind one terminal standard UI pair to one human admission action."""
+
+    if type(run) is not dict:
+        raise SourceDerivationError(
+            "source_derived_ui_review_admission_invalid"
+        )
+    events = run.get("events")
+    terminal = events[-1] if type(events) is list and events else None
+    action = {
+        "action": "admit_source_derived_standard_ui_reviews",
+        "run_id": run.get("run_id"),
+    }
+    body = {
+        "schema_version": (
+            SOURCE_DERIVED_STANDARD_UI_REVIEW_ADMISSION_AUTHORIZATION_VERSION
+        ),
+        "run_id": run.get("run_id"),
+        "run_canonical_digest": run.get("canonical_digest"),
+        "terminal_event_digest": (
+            terminal.get("canonical_digest")
+            if type(terminal) is dict
+            else None
+        ),
+        "handoff_binding_digest": run.get("handoff_binding_digest"),
+        "proposal_digest": run.get("proposal_digest"),
+        "approval_digest": run.get("approval_digest"),
+        "package_files_digest": canonical_json_digest(
+            run.get("package_files")
+        ),
+        "validation_database_sha256": run.get(
+            "validation_database_sha256"
+        ),
+        "source_project_id": source_project_id,
+        "source_run_id": source_run_id,
+        "source_file_index_digest": source_file_index_digest,
+        "page_capability_contract_digest": (
+            page_capability_contract_digest
+        ),
+        "supervision_model": copy.deepcopy(
+            run.get("supervision_model")
+        ),
+        "authorization_warehouse_revision": run.get(
+            "warehouse_revision"
+        ),
+        "authorization_catalog_digest": run.get("catalog_digest"),
+        "target_catalog_digest": target_catalog_digest,
+        "reviews": copy.deepcopy(reviews),
+        "admission_action_canonical_digest": canonical_json_digest(action),
+    }
+    return validate_source_derived_standard_ui_review_admission_authorization(
+        {**body, "authorization_digest": canonical_json_digest(body)}
+    )
+
+
+def validate_source_derived_standard_ui_review_admission_authorization(
+    value: Any,
+) -> dict[str, Any]:
+    code = "source_derived_ui_review_admission_invalid"
+    row = _exact(
+        value,
+        {
+            "schema_version",
+            "run_id",
+            "run_canonical_digest",
+            "terminal_event_digest",
+            "handoff_binding_digest",
+            "proposal_digest",
+            "approval_digest",
+            "package_files_digest",
+            "validation_database_sha256",
+            "source_project_id",
+            "source_run_id",
+            "source_file_index_digest",
+            "page_capability_contract_digest",
+            "supervision_model",
+            "authorization_warehouse_revision",
+            "authorization_catalog_digest",
+            "target_catalog_digest",
+            "reviews",
+            "admission_action_canonical_digest",
+            "authorization_digest",
+        },
+        code,
+    )
+    review_fields = {
+        "review_id",
+        "capability_kind",
+        "candidate_canonical_hash",
+        "source_relpath",
+        "source_file_sha256",
+        "validation_sha256",
+        "page_capability_declaration_digest",
+    }
+    reviews = row["reviews"]
+    body = {
+        key: copy.deepcopy(item)
+        for key, item in row.items()
+        if key != "authorization_digest"
+    }
+    digest_fields = {
+        "run_canonical_digest",
+        "terminal_event_digest",
+        "handoff_binding_digest",
+        "proposal_digest",
+        "approval_digest",
+        "package_files_digest",
+        "validation_database_sha256",
+        "source_file_index_digest",
+        "page_capability_contract_digest",
+        "authorization_catalog_digest",
+        "target_catalog_digest",
+        "admission_action_canonical_digest",
+        "authorization_digest",
+    }
+    if (
+        row["schema_version"]
+        != SOURCE_DERIVED_STANDARD_UI_REVIEW_ADMISSION_AUTHORIZATION_VERSION
+        or _RUN_ID.fullmatch(str(row["run_id"])) is None
+        or any(
+            _DIGEST.fullmatch(str(row[field])) is None
+            for field in digest_fields
+        )
+        or _SAFE_ID.fullmatch(str(row["source_project_id"])) is None
+        or _SAFE_ID.fullmatch(str(row["source_run_id"])) is None
+        or _validate_supervision_model(row["supervision_model"])
+        != row["supervision_model"]
+        or type(row["authorization_warehouse_revision"]) is not int
+        or row["authorization_warehouse_revision"] < 0
+        or type(reviews) is not list
+        or len(reviews) != 2
+        or any(
+            type(review) is not dict
+            or set(review) != review_fields
+            or review["capability_kind"]
+            not in {"interaction", "presentation"}
+            or type(review["review_id"]) is not str
+            or not review["review_id"]
+            or _safe_relative(review["source_relpath"])
+            != review["source_relpath"]
+            or any(
+                _DIGEST.fullmatch(str(review[field])) is None
+                for field in (
+                    "candidate_canonical_hash",
+                    "source_file_sha256",
+                    "validation_sha256",
+                    "page_capability_declaration_digest",
+                )
+            )
+            for review in reviews
+        )
+        or [review["capability_kind"] for review in reviews]
+        != ["interaction", "presentation"]
+        or row["admission_action_canonical_digest"]
+        != canonical_json_digest(
+            {
+                "action": "admit_source_derived_standard_ui_reviews",
+                "run_id": row["run_id"],
+            }
+        )
+        or row["authorization_digest"] != canonical_json_digest(body)
+    ):
+        raise SourceDerivationError(code)
     return copy.deepcopy(row)
 
 

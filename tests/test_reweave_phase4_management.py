@@ -29,7 +29,10 @@ from pimos_lite.reweave_agent_stdio import (
     dispatch_agent_request,
 )
 from pimos_lite.reweave_source_derivation import (
+    assemble_source_derived_standard_ui,
+    build_source_derived_standard_ui_proposal,
     get_source_derived_run,
+    read_source_derived_ui_evidence,
 )
 
 
@@ -1179,6 +1182,66 @@ class Phase4ManagementTest(unittest.TestCase):
                 }
             ],
         }
+        counterfactual_source = self.root / "standard-ui-agent-counterfactual"
+        (counterfactual_source / "src").mkdir(parents=True)
+        (counterfactual_source / "src" / "Panel.tsx").write_text(
+            "export const DifferentPanel = () => 'different';\n",
+            encoding="utf-8",
+        )
+        (counterfactual_source / "src" / "styles.css").write_text(
+            ".different { display: block; }\n",
+            encoding="utf-8",
+        )
+        counterfactual_root = self.service._capsule_intake.bind_source_root(
+            counterfactual_source,
+            root_kind="project_collection",
+        )
+        first_proposal = build_source_derived_standard_ui_proposal(
+            handoff_binding_digest="1" * 64,
+            request=payload,
+            evidence=read_source_derived_ui_evidence(
+                root["current_path"], payload["evidence_relpaths"]
+            ),
+            supervision_model={
+                "name": "source-handoff-test-model",
+                "digest": "b" * 64,
+            },
+            warehouse_revision=1,
+            catalog_digest="c" * 64,
+            prepared_at="2026-08-20T00:00:00Z",
+        )
+        second_proposal = build_source_derived_standard_ui_proposal(
+            handoff_binding_digest="2" * 64,
+            request=payload,
+            evidence=read_source_derived_ui_evidence(
+                counterfactual_root["current_path"],
+                payload["evidence_relpaths"],
+            ),
+            supervision_model={
+                "name": "source-handoff-test-model",
+                "digest": "b" * 64,
+            },
+            warehouse_revision=1,
+            catalog_digest="c" * 64,
+            prepared_at="2026-08-20T00:00:00Z",
+        )
+        self.assertNotEqual(
+            first_proposal["evidence_digest"],
+            second_proposal["evidence_digest"],
+        )
+        self.assertNotEqual(
+            first_proposal["canonical_digest"],
+            second_proposal["canonical_digest"],
+        )
+        first_package = assemble_source_derived_standard_ui(first_proposal)
+        self.assertEqual(
+            first_package,
+            assemble_source_derived_standard_ui(second_proposal),
+        )
+        self.assertEqual(
+            first_package,
+            assemble_source_derived_standard_ui(first_proposal),
+        )
         with patch(
             "pimos_lite.reweave_app_service.javascript_source_snapshot_supported",
             return_value=False,
@@ -1223,6 +1286,46 @@ class Phase4ManagementTest(unittest.TestCase):
                 },
             )
 
+        def validate_ui(_stage3, prepared):
+            kind = prepared.artifact.canonical_payload["capability_kind"]
+            names = (
+                sorted(
+                    prepared.artifact.canonical_payload[
+                        "output_contract"
+                    ]["events"]
+                )
+                if kind == "interaction"
+                else []
+            )
+            return {
+                "schema_version": "qweb_validation.v1",
+                "status": "passed",
+                "normal_cases": len(prepared.fixtures["normal"]),
+                "boundary_cases": len(prepared.fixtures["boundary"]),
+                "invalid_cases": len(prepared.fixtures["invalid"]),
+                "repeated_render": kind == "presentation",
+                "dispose_idempotent": kind == "interaction",
+                "remount_checked": (
+                    kind == "interaction"
+                    and len(prepared.fixtures["normal"])
+                    + len(prepared.fixtures["boundary"])
+                    > 1
+                ),
+                "acceptance_scope": (
+                    "real_qwebengine_interaction"
+                    if kind == "interaction"
+                    else "real_qwebengine_render"
+                ),
+                **(
+                    {
+                        "emission_count": len(names),
+                        "emission_names": names,
+                    }
+                    if kind == "interaction"
+                    else {}
+                ),
+            }
+
         def request(
             session: dict[str, object],
             action: str,
@@ -1244,7 +1347,7 @@ class Phase4ManagementTest(unittest.TestCase):
             new=approve,
         ), patch(
             "pimos_lite.reweave_capsule_stage3.ReweaveCapsuleStage3._runtime_validation",
-            return_value={"status": "passed"},
+            new=validate_ui,
         ), patch.object(
             self.service._product_planner,
             "_selected_model",
@@ -1294,6 +1397,36 @@ class Phase4ManagementTest(unittest.TestCase):
                     {},
                 )["ok"]
             )
+            evidence_file = source / "src" / "Panel.tsx"
+            original_evidence = evidence_file.read_bytes()
+            evidence_file.write_bytes(
+                b"export const Panel = () => 'drifted';\n"
+            )
+            stale_approval = (
+                self.service
+                .decide_local_source_derived_handoff_proposal(
+                    {
+                        "source_root_id": root_id,
+                        "decision": "approve",
+                    }
+                )
+            )
+            self.assertFalse(stale_approval["ok"])
+            self.assertEqual(
+                stale_approval["error"]["code"],
+                "source_derived_handoff_stale",
+            )
+            pending_record = next(
+                item
+                for item, _path in (
+                    self.service._source_derived_handoff_records()
+                )
+                if item["source_root_id"] == root_id
+            )
+            self.assertEqual(pending_record["proposal_status"], "pending")
+            self.assertIsNone(pending_record["run_id"])
+            self.assertEqual(supervisor_calls, [])
+            evidence_file.write_bytes(original_evidence)
             approved = (
                 self.service
                 .decide_local_source_derived_handoff_proposal(
@@ -1334,6 +1467,19 @@ class Phase4ManagementTest(unittest.TestCase):
             self.assertEqual(
                 supervisor_calls, ["interaction", "presentation"]
             )
+            summary = request(
+                session,
+                "get_source_derived_standard_ui_review_summary",
+                {},
+            )
+            self.assertTrue(summary["ok"], summary)
+            self.assertEqual(
+                summary["data"]["acceptance_passed_count"], 0
+            )
+            self.assertEqual(
+                summary["data"]["capability_kinds"],
+                ["interaction", "presentation"],
+            )
             repeated = request(
                 session,
                 "start_source_derived_standard_ui",
@@ -1353,20 +1499,359 @@ class Phase4ManagementTest(unittest.TestCase):
             self.assertEqual(
                 denied["error"]["code"], "agent_action_not_allowed"
             )
-            (
+            invalid_admission = (
+                self.service.admit_source_derived_standard_ui_reviews(
+                    {"run_id": run_id, "review_id": "forbidden"}
+                )
+            )
+            self.assertFalse(invalid_admission["ok"])
+            self.assertEqual(
+                invalid_admission["error"]["code"],
+                "source_derived_ui_review_admission_invalid",
+            )
+            interaction = (
                 self.service._source_derived_ui_workspace(run_id)
                 / "source"
                 / "interaction.js"
-            ).write_text("export const tampered = true;\n", encoding="utf-8")
-            conflicted = request(
-                session,
-                "get_source_derived_standard_ui_run",
-                {},
+            )
+            original_interaction = interaction.read_bytes()
+            interaction.write_bytes(b"export const tampered = true;\n")
+            conflicted = (
+                self.service.admit_source_derived_standard_ui_reviews(
+                    {"run_id": run_id}
+                )
             )
             self.assertFalse(conflicted["ok"])
             self.assertEqual(
                 conflicted["error"]["code"],
                 "source_derived_ui_run_conflict",
+            )
+            interaction.write_bytes(original_interaction)
+
+            with self.store.read_connection() as connection:
+                before_revision = int(
+                    connection.execute(
+                        "SELECT warehouse_revision FROM warehouse_state "
+                        "WHERE singleton_id=1"
+                    ).fetchone()[0]
+                )
+                before_counts = {
+                    table: int(
+                        connection.execute(
+                            f"SELECT COUNT(*) FROM {table}"
+                        ).fetchone()[0]
+                    )
+                    for table in (
+                        "review_items",
+                        "capsules",
+                        "capsule_versions",
+                    )
+                }
+            self.assertEqual(
+                next(
+                    item
+                    for item in self.service._capsule_management_state()[
+                        "sourceDerivedUiRuns"
+                    ]
+                    if item["run_id"] == run_id
+                )["formal_admission_status"],
+                "not_admitted",
+            )
+
+            admissions: list[dict[str, object]] = []
+
+            def admit() -> None:
+                admissions.append(
+                    self.service
+                    .admit_source_derived_standard_ui_reviews(
+                        {"run_id": run_id}
+                    )
+                )
+
+            threads = [threading.Thread(target=admit) for _ in range(2)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
+            self.assertTrue(
+                all(item["ok"] for item in admissions), admissions
+            )
+            self.assertEqual(
+                {
+                    item["data"]["status"]
+                    for item in admissions
+                },
+                {"review_required", "already_admitted"},
+            )
+            self.assertEqual(
+                {
+                    item["data"]["review_count"]
+                    for item in admissions
+                },
+                {2},
+            )
+            repeated_admission = (
+                self.service.admit_source_derived_standard_ui_reviews(
+                    {"run_id": run_id}
+                )
+            )
+            self.assertTrue(repeated_admission["ok"], repeated_admission)
+            self.assertEqual(
+                repeated_admission["data"]["status"],
+                "already_admitted",
+            )
+            with self.store.read_connection() as connection:
+                self.assertEqual(
+                    int(
+                        connection.execute(
+                            "SELECT warehouse_revision "
+                            "FROM warehouse_state WHERE singleton_id=1"
+                        ).fetchone()[0]
+                    ),
+                    before_revision + 2,
+                )
+                after_counts = {
+                    table: int(
+                        connection.execute(
+                            f"SELECT COUNT(*) FROM {table}"
+                        ).fetchone()[0]
+                    )
+                    for table in before_counts
+                }
+                rows = connection.execute(
+                    "SELECT sanitized_candidate_json FROM review_items "
+                    "WHERE review_id IN (?,?) ORDER BY review_id",
+                    tuple(
+                        item["review_id"]
+                        for item in self.service._read_source_derived_ui_run(
+                            run_id
+                        )["reviews"]
+                    ),
+                ).fetchall()
+            self.assertEqual(
+                after_counts["review_items"],
+                before_counts["review_items"] + 2,
+            )
+            self.assertEqual(
+                after_counts["capsules"], before_counts["capsules"]
+            )
+            self.assertEqual(
+                after_counts["capsule_versions"],
+                before_counts["capsule_versions"],
+            )
+            admission_receipt_digests: set[str] = set()
+            for row in rows:
+                receipt = json.loads(
+                    row["sanitized_candidate_json"]
+                )["source_derived_standard_ui_review_admission"]
+                admission_receipt_digests.add(receipt["digest"])
+                self.assertNotIn("capability_key", receipt)
+                self.assertNotIn("display_name", receipt)
+                self.assertNotIn("role_key", receipt)
+                self.assertNotIn("variant_key", receipt)
+                self.assertNotIn("acceptance_passed_count", receipt)
+                self.assertNotIn("acceptance_cases", receipt)
+                self.assertNotIn("business_acceptance", receipt)
+            listed = self.service.list_review_items({})
+            admitted_by_kind = {
+                item["capability_kind"]: item["review_id"]
+                for item in self.service._read_source_derived_ui_run(
+                    run_id
+                )["reviews"]
+            }
+            admitted_ids = set(admitted_by_kind.values())
+            self.assertEqual(
+                {
+                    tuple(item["allowed_decisions"])
+                    for item in listed["data"]["items"]
+                    if item["review_id"] in admitted_ids
+                },
+                {("publish_general", "reject")},
+            )
+            self.service.close()
+            self.service = ReweaveAppService(
+                engine=LocalReweaveEngine(), capsule_store=self.store
+            )
+            restored = next(
+                item
+                for item in self.service._capsule_management_state()[
+                    "sourceDerivedUiRuns"
+                ]
+                if item["run_id"] == run_id
+            )
+            self.assertEqual(
+                restored["formal_admission_status"], "admitted"
+            )
+            admission_revision = self.store.current_revision()
+            with self.store.transaction() as connection:
+                trigger_row = connection.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='trigger' "
+                    "AND name='warehouse_state_update_guard'"
+                ).fetchone()
+                self.assertIsNotNone(trigger_row)
+                trigger_sql = str(trigger_row[0])
+                connection.execute(
+                    "DROP TRIGGER warehouse_state_update_guard"
+                )
+                connection.execute(
+                    "UPDATE warehouse_state SET warehouse_revision=? "
+                    "WHERE singleton_id=1",
+                    (admission_revision - 1,),
+                )
+                connection.execute(trigger_sql)
+            rolled_back = (
+                self.service.admit_source_derived_standard_ui_reviews(
+                    {"run_id": run_id}
+                )
+            )
+            self.assertFalse(rolled_back["ok"])
+            self.assertEqual(
+                self.store.current_revision(), admission_revision - 1
+            )
+            self.assertEqual(
+                next(
+                    item
+                    for item in self.service._capsule_management_state()[
+                        "sourceDerivedUiRuns"
+                    ]
+                    if item["run_id"] == run_id
+                )["formal_admission_status"],
+                "conflict",
+            )
+            with self.store.transaction() as connection:
+                connection.execute(
+                    "UPDATE warehouse_state SET warehouse_revision=? "
+                    "WHERE singleton_id=1",
+                    (admission_revision,),
+                )
+            publication_revision = self.store.current_revision()
+            for kind, role_key in (
+                ("interaction", "work_order_message_input"),
+                ("presentation", "urgency_result_display"),
+            ):
+                published = self.service.decide_review_item(
+                    {
+                        "review_id": admitted_by_kind[kind],
+                        "decision": "publish_general",
+                        "capability_key": (
+                            "standard_ui_admission_lifecycle"
+                        ),
+                        "display_name": "Standard UI admission lifecycle",
+                        "role_key": role_key,
+                        "variant_key": "default",
+                    }
+                )
+                self.assertTrue(published["ok"], published)
+            self.assertEqual(
+                self.store.current_revision(), publication_revision + 2
+            )
+            after_publication = next(
+                item
+                for item in self.service._capsule_management_state()[
+                    "sourceDerivedUiRuns"
+                ]
+                if item["run_id"] == run_id
+            )
+            self.assertEqual(
+                after_publication["formal_admission_status"], "admitted"
+            )
+            with self.store.read_connection() as connection:
+                post_publication_counts = {
+                    table: int(
+                        connection.execute(
+                            f"SELECT COUNT(*) FROM {table}"
+                        ).fetchone()[0]
+                    )
+                    for table in (
+                        "review_items",
+                        "capsules",
+                        "capsule_versions",
+                    )
+                }
+                published_rows = connection.execute(
+                    "SELECT sanitized_candidate_json FROM review_items "
+                    "WHERE review_id IN (?,?) ORDER BY review_id",
+                    tuple(sorted(admitted_ids)),
+                ).fetchall()
+            self.assertEqual(
+                {
+                    json.loads(row["sanitized_candidate_json"])[
+                        "source_derived_standard_ui_review_admission"
+                    ]["digest"]
+                    for row in published_rows
+                },
+                admission_receipt_digests,
+            )
+            repeated_after_publication = (
+                self.service.admit_source_derived_standard_ui_reviews(
+                    {"run_id": run_id}
+                )
+            )
+            self.assertTrue(
+                repeated_after_publication["ok"],
+                repeated_after_publication,
+            )
+            self.assertEqual(
+                repeated_after_publication["data"]["status"],
+                "already_admitted",
+            )
+            self.assertEqual(
+                repeated_after_publication["data"]["warehouse_revision"],
+                publication_revision + 2,
+            )
+            self.assertEqual(
+                self.store.current_revision(), publication_revision + 2
+            )
+            with self.store.read_connection() as connection:
+                self.assertEqual(
+                    {
+                        table: int(
+                            connection.execute(
+                                f"SELECT COUNT(*) FROM {table}"
+                            ).fetchone()[0]
+                        )
+                        for table in post_publication_counts
+                    },
+                    post_publication_counts,
+                )
+            self.service.close()
+            self.service = ReweaveAppService(
+                engine=LocalReweaveEngine(), capsule_store=self.store
+            )
+            self.assertEqual(
+                next(
+                    item
+                    for item in self.service._capsule_management_state()[
+                        "sourceDerivedUiRuns"
+                    ]
+                    if item["run_id"] == run_id
+                )["formal_admission_status"],
+                "admitted",
+            )
+            current_revision = self.store.current_revision()
+            with self.store.transaction() as connection:
+                connection.execute(
+                    "DELETE FROM review_items WHERE review_id=?",
+                    (next(iter(admitted_ids)),),
+                )
+            partial = (
+                self.service.admit_source_derived_standard_ui_reviews(
+                    {"run_id": run_id}
+                )
+            )
+            self.assertFalse(partial["ok"])
+            self.assertEqual(
+                self.store.current_revision(), current_revision
+            )
+            self.assertEqual(
+                next(
+                    item
+                    for item in self.service._capsule_management_state()[
+                        "sourceDerivedUiRuns"
+                    ]
+                    if item["run_id"] == run_id
+                )["formal_admission_status"],
+                "conflict",
             )
 
     @patch(

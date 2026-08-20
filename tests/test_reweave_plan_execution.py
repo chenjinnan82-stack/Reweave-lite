@@ -3898,6 +3898,15 @@ process.stdout.write(JSON.stringify({result, rendered: totalNode.textContent}));
         )
         self.assertEqual(
             dispatch(
+                derived_session,
+                "admit_source_derived_standard_ui_reviews",
+                {"run_id": "run_" + "6" * 32},
+                "derived-ui-admission-denied",
+            )["error"]["code"],
+            "agent_action_not_allowed",
+        )
+        self.assertEqual(
+            dispatch(
                 source_session,
                 "prepare_source_derived_computation",
                 derived_payload,

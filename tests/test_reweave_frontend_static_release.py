@@ -1251,11 +1251,31 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     )
     assert '"admit_source_derived_review"' in app
     assert 'dataset.action = "admit-source-derived-review"' in app
+    assert '"admit_source_derived_standard_ui_reviews"' in app
+    assert (
+        '"admit-source-derived-standard-ui-reviews"' in app
+    )
     assert (
         'if (!window.confirm(t("sourceDerivedAdmissionConfirm"))) return;'
         in app
     )
     assert "sourceDerivedRuns" in app
+    assert "sourceDerivedUiRuns" in app
+    assert (
+        app.index("container.appendChild(sourceDerivedAgent)")
+        < app.index("container.appendChild(registration)")
+    )
+    assert 'pendingStandardUiApproval.scrollIntoView({ block: "nearest" });' in app
+    assert (
+        "pendingStandardUiApproval.focus({ preventScroll: true });"
+        in app
+    )
+    assert 'decide.dataset.pendingStandardUi = "true";' in app
+    assert (
+        "document.querySelector('[data-pending-standard-ui=\"true\"]')"
+        in app
+    )
+    assert 'openIngestionScene("product", null);' in app
     assert (
         '"copy_local_source_derived_handoff_binding"' in app
     )
@@ -1277,6 +1297,33 @@ def test_mock_fallback_does_not_present_local_warehouse_workbench() -> None:
     assert '"source_derived_ui_agent.v1"' in app
     assert '"authorize-source-derived-ui-agent"' in app
     assert "sourceDerivedUiAgentModelNotice" in app
+    assert (
+        'sourceDerivedUiAgentAuthorize: "授权 Agent '
+        '准备来源绑定的标准输入与双结果展示脚手架"' in app
+    )
+    assert (
+        'sourceDerivedUiEvidence: "来源证据（仅绑定与漂移检测）"'
+        in app
+    )
+    assert (
+        'sourceDerivedUiDeclaredExamples: "声明示例（未执行）"'
+        in app
+    )
+    assert (
+        'sourceDerivedUiDeclaredExamples: '
+        '"Declared examples (not executed)"' in app
+    )
+    assert 't("sourceDerivedUiDeclaredExamples")' in app
+    assert 't("sourceDerivedCases")' in app
+    assert (
+        "来源文件仅用于授权、来源记录和漂移检测；"
+        "UI 由 Reweave 固定规则生成，不从 React/Vite 源码推导。"
+        in app
+    )
+    assert (
+        "这不表示分类规则已通过，也不会发布能力。"
+        in app
+    )
     assert 'dataset.action = "authorize-source-derived"' in app
     assert "sourceDerivedNotice" in app
     assert "input_text:" in app

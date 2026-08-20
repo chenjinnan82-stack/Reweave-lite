@@ -123,11 +123,13 @@ from pimos_lite.reweave_javascript_source import (
     javascript_source_snapshot_supported,
 )
 from pimos_lite.reweave_page_capability_contract import (
+    build_page_capability_contract_v2,
     verify_formal_capsule_identity,
 )
 from pimos_lite.reweave_source_derivation import (
     SOURCE_DERIVATION_AUTHORIZATION_VERSION,
     SOURCE_DERIVED_REVIEW_ADMISSION_VERSION,
+    SOURCE_DERIVED_STANDARD_UI_REVIEW_ADMISSION_VERSION,
     SOURCE_DERIVED_STANDARD_UI_PROPOSAL_VERSION,
     SOURCE_DERIVED_STANDARD_UI_RUN_VERSION,
     SourceDerivationError,
@@ -136,6 +138,7 @@ from pimos_lite.reweave_source_derivation import (
     build_source_derived_authorization,
     build_source_derived_agent_proposal,
     build_source_derived_review_admission_authorization,
+    build_source_derived_standard_ui_review_admission_authorization,
     build_source_derived_standard_ui_proposal,
     build_source_derived_request,
     get_source_derived_run,
@@ -148,6 +151,7 @@ from pimos_lite.reweave_source_derivation import (
     validate_source_derived_response,
     validate_source_derived_agent_proposal,
     validate_source_derived_review_admission_authorization,
+    validate_source_derived_standard_ui_review_admission_authorization,
     validate_source_derived_standard_ui_proposal,
     write_source_derived_proposal,
     validate_source_derived_authorization,
@@ -259,6 +263,7 @@ CAPSULE_MANAGEMENT_ACTIONS = frozenset(
         "start_refresh_all",
         "authorize_and_start_source_derived_computation",
         "admit_source_derived_review",
+        "admit_source_derived_standard_ui_reviews",
         "create_local_source_derived_handoff",
         "revoke_local_source_derived_handoff",
         "decide_local_source_derived_handoff_proposal",
@@ -2780,6 +2785,7 @@ class ReweaveAppService:
             "singleWarehouse": True,
             "singleComposer": True,
             "sourceDerivedRuns": [],
+            "sourceDerivedUiRuns": [],
             "legacy": legacy,
             "capabilities": {
                 "sourceManagement": True,
@@ -2976,6 +2982,37 @@ class ReweaveAppService:
                 {
                     "schema_version": (
                         "source_derived_run_management.v1"
+                    ),
+                    "run_id": None,
+                    "behavior_intent": "",
+                    "status": "conflict",
+                    "stage": "supervision",
+                    "review_scope": "isolated",
+                    "created_at": None,
+                    "updated_at": None,
+                    "formal_admission_status": "conflict",
+                }
+            ]
+        try:
+            state["sourceDerivedUiRuns"] = [
+                self._source_derived_ui_run_management_projection(
+                    run, handoff
+                )
+                for run, handoff in self._source_derived_ui_run_records()
+            ]
+        except (
+            CapsuleStoreError,
+            SourceDerivationError,
+            SourceHandoffError,
+            Stage3Error,
+            OSError,
+            ValueError,
+            sqlite3.Error,
+        ):
+            state["sourceDerivedUiRuns"] = [
+                {
+                    "schema_version": (
+                        "source_derived_ui_run_management.v1"
                     ),
                     "run_id": None,
                     "behavior_intent": "",
@@ -5764,6 +5801,517 @@ class ReweaveAppService:
             "review_count": len(row["reviews"]),
         }
 
+    def _source_derived_ui_run_records(
+        self,
+    ) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+        records: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        seen: set[str] = set()
+        for handoff, _path in self._source_derived_handoff_records():
+            run_id = handoff.get("run_id")
+            if (
+                handoff.get("schema_version")
+                != _SOURCE_DERIVED_UI_HANDOFF_VERSION
+                or run_id is None
+            ):
+                continue
+            if run_id in seen:
+                raise SourceHandoffError(
+                    "source_derived_ui_run_conflict"
+                )
+            run = self._read_source_derived_ui_run(run_id)
+            if (
+                run["handoff_binding_digest"]
+                != handoff["handoff_binding_digest"]
+                or run["proposal_digest"] != handoff["proposal_digest"]
+                or run["approval_digest"] != handoff["approval_digest"]
+                or run["source_root_id"] != handoff["source_root_id"]
+                or run["supervision_model"]
+                != handoff["supervision_model"]
+                or run["warehouse_revision"]
+                != handoff["warehouse_revision"]
+                or run["catalog_digest"] != handoff["catalog_digest"]
+            ):
+                raise SourceHandoffError(
+                    "source_derived_ui_run_conflict"
+                )
+            seen.add(run_id)
+            records.append((run, handoff))
+        return sorted(records, key=lambda item: item[0]["run_id"])
+
+    @staticmethod
+    def _source_derived_standard_ui_receipt_valid(
+        receipt: Any,
+        *,
+        run: dict[str, Any],
+        kind: str,
+        formal_review: sqlite3.Row,
+        revision_before: int,
+    ) -> bool:
+        fields = {
+            "schema",
+            "authorization_digest",
+            "run_id",
+            "run_canonical_digest",
+            "terminal_event_digest",
+            "handoff_binding_digest",
+            "proposal_digest",
+            "approval_digest",
+            "package_files_digest",
+            "source_database_sha256",
+            "source_project_id",
+            "source_run_id",
+            "source_file_index_digest",
+            "source_review_id",
+            "capability_kind",
+            "candidate_canonical_hash",
+            "source_relpath",
+            "source_identity_sha256",
+            "source_file_sha256",
+            "validation_sha256",
+            "page_capability_declaration_digest",
+            "page_capability_contract_digest",
+            "supervision_model",
+            "authorization_warehouse_revision",
+            "authorization_catalog_digest",
+            "admission_action_canonical_digest",
+            "target_warehouse_revision_before",
+            "target_catalog_digest_before",
+            "target_warehouse_revision_after",
+            "target_catalog_digest_after",
+            "digest",
+        }
+        if type(receipt) is not dict or set(receipt) != fields:
+            return False
+        body = {key: value for key, value in receipt.items() if key != "digest"}
+        terminal = run["events"][-1]
+        digest_fields = fields - {
+            "schema",
+            "run_id",
+            "source_project_id",
+            "source_run_id",
+            "source_review_id",
+            "capability_kind",
+            "source_relpath",
+            "supervision_model",
+            "authorization_warehouse_revision",
+            "target_warehouse_revision_before",
+            "target_warehouse_revision_after",
+        }
+        return (
+            receipt["schema"]
+            == SOURCE_DERIVED_STANDARD_UI_REVIEW_ADMISSION_VERSION
+            and all(
+                re.fullmatch(r"[0-9a-f]{64}", str(receipt[field]))
+                is not None
+                for field in digest_fields
+            )
+            and receipt["run_id"] == run["run_id"]
+            and receipt["run_canonical_digest"]
+            == run["canonical_digest"]
+            and receipt["terminal_event_digest"]
+            == terminal["canonical_digest"]
+            and receipt["handoff_binding_digest"]
+            == run["handoff_binding_digest"]
+            and receipt["proposal_digest"] == run["proposal_digest"]
+            and receipt["approval_digest"] == run["approval_digest"]
+            and receipt["package_files_digest"]
+            == canonical_json_digest(run["package_files"])
+            and receipt["source_database_sha256"]
+            == run["validation_database_sha256"]
+            and receipt["source_review_id"]
+            == formal_review["review_id"]
+            and receipt["source_project_id"]
+            == formal_review["project_id"]
+            and receipt["source_run_id"] == formal_review["run_id"]
+            and receipt["capability_kind"] == kind
+            and receipt["candidate_canonical_hash"]
+            == formal_review["candidate_canonical_hash"]
+            and receipt["source_relpath"]
+            == formal_review["source_relpath"]
+            and receipt["supervision_model"] == run["supervision_model"]
+            and receipt["authorization_warehouse_revision"]
+            == run["warehouse_revision"]
+            and receipt["authorization_catalog_digest"]
+            == run["catalog_digest"]
+            and receipt["target_warehouse_revision_before"]
+            == revision_before
+            and receipt["target_warehouse_revision_after"]
+            == revision_before + 1
+            and receipt["target_catalog_digest_before"]
+            == receipt["target_catalog_digest_after"]
+            and receipt["digest"] == canonical_json_digest(body)
+        )
+
+    def _source_derived_standard_ui_admission_status(
+        self,
+        run: dict[str, Any],
+    ) -> str:
+        by_kind = {
+            item["capability_kind"]: item["review_id"]
+            for item in run["reviews"]
+        }
+        with self._capsule_store.read_connection() as connection:
+            revision = int(
+                connection.execute(
+                    "SELECT warehouse_revision FROM warehouse_state "
+                    "WHERE singleton_id=1"
+                ).fetchone()[0]
+            )
+            rows = {
+                kind: connection.execute(
+                    "SELECT * FROM review_items "
+                    "WHERE review_id=?",
+                    (review_id,),
+                ).fetchone()
+                for kind, review_id in by_kind.items()
+            }
+        if all(row is None for row in rows.values()):
+            return "not_admitted"
+        if any(row is None for row in rows.values()):
+            return "conflict"
+        try:
+            receipts = {
+                kind: json.loads(row["sanitized_candidate_json"]).get(
+                    "source_derived_standard_ui_review_admission"
+                )
+                for kind, row in rows.items()
+            }
+        except (AttributeError, TypeError, json.JSONDecodeError):
+            return "conflict"
+        valid = (
+            revision >= run["warehouse_revision"] + 2
+            and self._source_derived_standard_ui_receipt_valid(
+                receipts["interaction"],
+                run=run,
+                kind="interaction",
+                formal_review=rows["interaction"],
+                revision_before=run["warehouse_revision"],
+            )
+            and self._source_derived_standard_ui_receipt_valid(
+                receipts["presentation"],
+                run=run,
+                kind="presentation",
+                formal_review=rows["presentation"],
+                revision_before=run["warehouse_revision"] + 1,
+            )
+            and receipts["interaction"]["authorization_digest"]
+            == receipts["presentation"]["authorization_digest"]
+        )
+        if not valid:
+            return "conflict"
+        first = receipts["interaction"]
+        common = {
+            "source_database_sha256",
+            "source_project_id",
+            "source_run_id",
+            "source_file_index_digest",
+            "page_capability_contract_digest",
+            "supervision_model",
+            "authorization_warehouse_revision",
+            "authorization_catalog_digest",
+            "admission_action_canonical_digest",
+            "target_catalog_digest_before",
+        }
+        if any(
+            first[field] != receipts["presentation"][field]
+            for field in common
+        ):
+            return "conflict"
+        try:
+            expected = (
+                build_source_derived_standard_ui_review_admission_authorization(
+                    run,
+                    source_project_id=first["source_project_id"],
+                    source_run_id=first["source_run_id"],
+                    source_file_index_digest=first[
+                        "source_file_index_digest"
+                    ],
+                    page_capability_contract_digest=first[
+                        "page_capability_contract_digest"
+                    ],
+                    reviews=[
+                        {
+                            "review_id": receipt["source_review_id"],
+                            "capability_kind": kind,
+                            "candidate_canonical_hash": receipt[
+                                "candidate_canonical_hash"
+                            ],
+                            "source_relpath": receipt["source_relpath"],
+                            "source_file_sha256": receipt[
+                                "source_file_sha256"
+                            ],
+                            "validation_sha256": receipt[
+                                "validation_sha256"
+                            ],
+                            "page_capability_declaration_digest": receipt[
+                                "page_capability_declaration_digest"
+                            ],
+                        }
+                        for kind, receipt in (
+                            ("interaction", receipts["interaction"]),
+                            ("presentation", receipts["presentation"]),
+                        )
+                    ],
+                    target_catalog_digest=first[
+                        "target_catalog_digest_before"
+                    ],
+                )
+            )
+        except (SourceDerivationError, TypeError, ValueError):
+            return "conflict"
+        return (
+            "admitted"
+            if expected["authorization_digest"]
+            == first["authorization_digest"]
+            else "conflict"
+        )
+
+    def _source_derived_standard_ui_review_admission_context(
+        self,
+        run_id: str,
+    ) -> dict[str, Any]:
+        matches = [
+            (run, handoff)
+            for run, handoff in self._source_derived_ui_run_records()
+            if run["run_id"] == run_id
+        ]
+        if len(matches) != 1:
+            raise SourceDerivationError(
+                "source_derived_ui_review_admission_not_ready"
+            )
+        run, handoff = matches[0]
+        terminal = run["events"][-1]
+        if (
+            run["status"] != "review_required"
+            or run["stage"] != "supervision"
+            or terminal["status"] != "review_required"
+            or terminal["stage"] != "supervision"
+            or handoff["proposal_status"] != "approved"
+            or handoff["proposal"] is None
+        ):
+            raise SourceDerivationError(
+                "source_derived_ui_review_admission_not_ready"
+            )
+        admission_status = (
+            self._source_derived_standard_ui_admission_status(run)
+        )
+        if admission_status == "admitted":
+            return {
+                "warehouse_revision": self._capsule_store.current_revision(),
+                "formal_admission_status": "admitted",
+            }
+        if admission_status == "conflict":
+            raise SourceDerivationError(
+                "source_derived_ui_review_admission_stale"
+            )
+        root = self._capsule_intake.get_source_root(
+            handoff["source_root_id"]
+        )
+        if root.get("status") != "bound":
+            raise SourceDerivationError(
+                "source_derived_ui_review_admission_stale"
+            )
+        evidence = read_source_derived_ui_evidence(
+            str(root["current_path"]),
+            handoff["proposal"]["request"]["evidence_relpaths"],
+        )
+        proposal = build_source_derived_standard_ui_proposal(
+            handoff_binding_digest=handoff["handoff_binding_digest"],
+            request=handoff["proposal"]["request"],
+            evidence=evidence,
+            supervision_model=handoff["supervision_model"],
+            warehouse_revision=handoff["warehouse_revision"],
+            catalog_digest=handoff["catalog_digest"],
+            prepared_at=handoff["proposal"]["prepared_at"],
+        )
+        selected = self._capsule_supervisor.selected_model()
+        if (
+            proposal != handoff["proposal"]
+            or {
+                "name": selected["name"],
+                "digest": selected["digest"],
+            }
+            != run["supervision_model"]
+        ):
+            raise SourceDerivationError(
+                "source_derived_ui_review_admission_stale"
+            )
+
+        source_directory = self._source_derived_ui_workspace(run_id) / "source"
+        database = self._source_derived_ui_workspace(
+            run_id
+        ) / "capsule_warehouse.sqlite3"
+        source_store = CapsuleWarehouseStore(database)
+        review_ids = {
+            item["capability_kind"]: item["review_id"]
+            for item in run["reviews"]
+        }
+        with source_store.read_connection() as connection:
+            reviews = {
+                kind: connection.execute(
+                    "SELECT * FROM review_items WHERE review_id=?",
+                    (review_id,),
+                ).fetchone()
+                for kind, review_id in review_ids.items()
+            }
+            if any(row is None for row in reviews.values()):
+                raise SourceDerivationError(
+                    "source_derived_ui_review_admission_conflict"
+                )
+            project_ids = {str(row["project_id"]) for row in reviews.values()}
+            source_run_ids = {str(row["run_id"]) for row in reviews.values()}
+            if len(project_ids) != 1 or len(source_run_ids) != 1:
+                raise SourceDerivationError(
+                    "source_derived_ui_review_admission_conflict"
+                )
+            project_id = next(iter(project_ids))
+            source_run_id = next(iter(source_run_ids))
+            project = connection.execute(
+                "SELECT * FROM projects WHERE project_id=?",
+                (project_id,),
+            ).fetchone()
+            source_root = (
+                connection.execute(
+                    "SELECT * FROM source_roots WHERE root_id=?",
+                    (project["source_root_id"],),
+                ).fetchone()
+                if project is not None
+                else None
+            )
+        if (
+            project is None
+            or source_root is None
+            or project["source_type"] != "static_web"
+            or Path(str(source_root["current_path"])) != source_directory
+        ):
+            raise SourceDerivationError(
+                "source_derived_ui_review_admission_conflict"
+            )
+        file_index = [
+            {
+                "path": name,
+                "file_type": "text",
+                "size": (source_directory / name).lstat().st_size,
+                "sha256": digest,
+            }
+            for name, digest in sorted(run["package_files"].items())
+        ]
+        source_files = {item["path"]: item for item in file_index}
+        authorized_reviews = []
+        declarations: dict[str, dict[str, Any]] = {}
+        for kind in ("interaction", "presentation"):
+            row = reviews[kind]
+            try:
+                summary = json.loads(row["sanitized_candidate_json"])
+                declaration = summary["page_capability_declaration"]
+                validation = summary["stage3_evidence"]["validation"]
+                source = source_files[str(row["source_relpath"])]
+            except (
+                KeyError,
+                TypeError,
+                json.JSONDecodeError,
+            ) as exc:
+                raise SourceDerivationError(
+                    "source_derived_ui_review_admission_conflict"
+                ) from exc
+            if (
+                summary.get("capability_kind") != kind
+                or row["candidate_status"] != "review_required"
+                or row["decision"] is not None
+            ):
+                raise SourceDerivationError(
+                    "source_derived_ui_review_admission_conflict"
+                )
+            declarations[kind] = declaration
+            authorized_reviews.append(
+                {
+                    "review_id": str(row["review_id"]),
+                    "capability_kind": kind,
+                    "candidate_canonical_hash": str(
+                        row["candidate_canonical_hash"]
+                    ),
+                    "source_relpath": str(row["source_relpath"]),
+                    "source_file_sha256": source["sha256"],
+                    "validation_sha256": canonical_json_digest(validation),
+                    "page_capability_declaration_digest": str(
+                        declaration["canonical_digest"]
+                    ),
+                }
+            )
+        try:
+            page_contract = build_page_capability_contract_v2(
+                presentation_provides=declarations["presentation"][
+                    "provides"
+                ],
+                interaction_requires=declarations["interaction"][
+                    "requires"
+                ],
+            )
+        except (KeyError, TypeError, ValueError) as exc:
+            raise SourceDerivationError(
+                "source_derived_ui_review_admission_conflict"
+            ) from exc
+
+        catalog = self._product_planning_catalog()
+        target_catalog_digest = canonical_json_digest(
+            {"capsules": catalog["capsules"]}
+        )
+        authorization = (
+            build_source_derived_standard_ui_review_admission_authorization(
+                run,
+                source_project_id=project_id,
+                source_run_id=source_run_id,
+                source_file_index_digest=canonical_json_digest(file_index),
+                page_capability_contract_digest=page_contract[
+                    "canonical_digest"
+                ],
+                reviews=authorized_reviews,
+                target_catalog_digest=target_catalog_digest,
+            )
+        )
+        authorization = (
+            validate_source_derived_standard_ui_review_admission_authorization(
+                authorization
+            )
+        )
+        if (
+            catalog["warehouse_revision"] != run["warehouse_revision"]
+            or canonical_json_digest(catalog) != run["catalog_digest"]
+        ):
+            raise SourceDerivationError(
+                "source_derived_ui_review_admission_stale"
+            )
+        return {
+            "authorization": authorization,
+            "source_directory": source_directory,
+            "validation_database": database,
+            "warehouse_revision": catalog["warehouse_revision"],
+            "formal_admission_status": "not_admitted",
+        }
+
+    def _source_derived_ui_run_management_projection(
+        self,
+        run: dict[str, Any],
+        handoff: dict[str, Any],
+    ) -> dict[str, Any]:
+        return {
+            "schema_version": "source_derived_ui_run_management.v1",
+            "run_id": run["run_id"],
+            "behavior_intent": handoff["proposal"]["request"][
+                "behavior_intent"
+            ],
+            "status": run["status"],
+            "stage": run["stage"],
+            "review_scope": "isolated",
+            "created_at": run["created_at"],
+            "updated_at": run["updated_at"],
+            "formal_admission_status": (
+                self._source_derived_standard_ui_admission_status(run)
+                if run["status"] == "review_required"
+                else "not_admitted"
+            ),
+        }
+
     def _start_authorized_source_derived_standard_ui(
         self,
         binding: dict[str, Any],
@@ -5974,11 +6522,7 @@ class ReweaveAppService:
                 "result_enum": copy.deepcopy(
                     proposal["result_enum"]
                 ),
-                "acceptance_passed_count": (
-                    len(proposal["acceptance_cases"])
-                    if row["status"] == "review_required"
-                    else 0
-                ),
+                "acceptance_passed_count": 0,
                 "reason_code": row["events"][-1]["error_code"],
             }
 
@@ -6338,10 +6882,23 @@ class ReweaveAppService:
             and candidate["source_derived_review_admission"].get("schema")
             == SOURCE_DERIVED_REVIEW_ADMISSION_VERSION
         )
+        source_derived_ui_review = (
+            type(
+                candidate.get(
+                    "source_derived_standard_ui_review_admission"
+                )
+            )
+            is dict
+            and candidate[
+                "source_derived_standard_ui_review_admission"
+            ].get("schema")
+            == SOURCE_DERIVED_STANDARD_UI_REVIEW_ADMISSION_VERSION
+        )
         if current_status == "review_required" and (
             frozen_product_review
             or frozen_ui_review
             or source_derived_review
+            or source_derived_ui_review
         ):
             allowed.extend(["publish_general", "reject"])
         elif (
@@ -12371,6 +12928,77 @@ class ReweaveAppService:
             return self._exception_error(
                 exc,
                 "source_derivation_review_admission_failed",
+            )
+
+    @_serialized_management
+    def admit_source_derived_standard_ui_reviews(
+        self,
+        payload: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        """Admit one exact isolated standard UI pair after user consent."""
+
+        try:
+            self._ensure_capsule_management()
+            request = self._payload(payload)
+            if (
+                set(request) != {"run_id"}
+                or type(request.get("run_id")) is not str
+                or re.fullmatch(r"run_[0-9a-f]{32}", request["run_id"])
+                is None
+            ):
+                return self._error(
+                    "source_derived_ui_review_admission_invalid"
+                )
+            context = (
+                self._source_derived_standard_ui_review_admission_context(
+                    request["run_id"]
+                )
+            )
+            if context["formal_admission_status"] == "admitted":
+                return self._ok(
+                    {
+                        "status": "already_admitted",
+                        "review_count": 2,
+                        "warehouse_revision": context[
+                            "warehouse_revision"
+                        ],
+                    }
+                )
+            authorization = context["authorization"]
+            result = (
+                self._capsule_stage3
+                .admit_source_derived_standard_ui_reviews(
+                    context["validation_database"],
+                    context["source_directory"],
+                    expected_source_sha256=authorization[
+                        "validation_database_sha256"
+                    ],
+                    expected_warehouse_revision=context[
+                        "warehouse_revision"
+                    ],
+                    authorization_binding=authorization,
+                )
+            )
+            return self._ok(
+                {
+                    "status": result["status"],
+                    "review_count": 2,
+                    "warehouse_revision": result["warehouse_revision"],
+                }
+            )
+        except (
+            CapsuleStoreError,
+            ProductPlanningError,
+            SourceDerivationError,
+            SourceHandoffError,
+            Stage3Error,
+            OSError,
+            ValueError,
+            sqlite3.Error,
+        ) as exc:
+            return self._exception_error(
+                exc,
+                "source_derived_ui_review_admission_failed",
             )
 
     @_serialized_management

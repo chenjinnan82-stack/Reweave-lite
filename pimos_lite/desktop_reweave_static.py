@@ -302,6 +302,15 @@ class ReweaveBridge:
                 )
 
             @Slot(str, result=str)
+            def admit_source_derived_standard_ui_reviews(
+                self, payload_json: str = ""
+            ) -> str:
+                return self._phase4_call(
+                    "admit_source_derived_standard_ui_reviews",
+                    payload_json,
+                )
+
+            @Slot(str, result=str)
             def get_intake_run(self, payload_json: str = "") -> str:
                 return self._phase4_call("get_intake_run", payload_json)
 
