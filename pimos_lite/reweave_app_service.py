@@ -5920,6 +5920,9 @@ class ReweaveAppService:
             == run["validation_database_sha256"]
             and receipt["source_review_id"]
             == formal_review["review_id"]
+            and receipt["source_project_id"]
+            == formal_review["project_id"]
+            and receipt["source_run_id"] == formal_review["run_id"]
             and receipt["capability_kind"] == kind
             and receipt["candidate_canonical_hash"]
             == formal_review["candidate_canonical_hash"]
@@ -5976,7 +5979,7 @@ class ReweaveAppService:
         except (AttributeError, TypeError, json.JSONDecodeError):
             return "conflict"
         valid = (
-            revision == run["warehouse_revision"] + 2
+            revision >= run["warehouse_revision"] + 2
             and self._source_derived_standard_ui_receipt_valid(
                 receipts["interaction"],
                 run=run,
@@ -6054,19 +6057,12 @@ class ReweaveAppService:
                     ],
                 )
             )
-            target_digest = canonical_json_digest(
-                {"capsules": self._product_planning_catalog()["capsules"]}
-            )
         except (SourceDerivationError, TypeError, ValueError):
             return "conflict"
         return (
             "admitted"
-            if (
-                expected["authorization_digest"]
-                == first["authorization_digest"]
-                and target_digest
-                == first["target_catalog_digest_before"]
-            )
+            if expected["authorization_digest"]
+            == first["authorization_digest"]
             else "conflict"
         )
 
@@ -6095,6 +6091,18 @@ class ReweaveAppService:
         ):
             raise SourceDerivationError(
                 "source_derived_ui_review_admission_not_ready"
+            )
+        admission_status = (
+            self._source_derived_standard_ui_admission_status(run)
+        )
+        if admission_status == "admitted":
+            return {
+                "warehouse_revision": self._capsule_store.current_revision(),
+                "formal_admission_status": "admitted",
+            }
+        if admission_status == "conflict":
+            raise SourceDerivationError(
+                "source_derived_ui_review_admission_stale"
             )
         root = self._capsule_intake.get_source_root(
             handoff["source_root_id"]
@@ -6266,18 +6274,9 @@ class ReweaveAppService:
                 authorization
             )
         )
-        status = self._source_derived_standard_ui_admission_status(run)
         if (
-            status == "conflict"
-            or (
-                status == "not_admitted"
-                and (
-                    catalog["warehouse_revision"]
-                    != run["warehouse_revision"]
-                    or canonical_json_digest(catalog)
-                    != run["catalog_digest"]
-                )
-            )
+            catalog["warehouse_revision"] != run["warehouse_revision"]
+            or canonical_json_digest(catalog) != run["catalog_digest"]
         ):
             raise SourceDerivationError(
                 "source_derived_ui_review_admission_stale"
@@ -6287,7 +6286,7 @@ class ReweaveAppService:
             "source_directory": source_directory,
             "validation_database": database,
             "warehouse_revision": catalog["warehouse_revision"],
-            "formal_admission_status": status,
+            "formal_admission_status": "not_admitted",
         }
 
     def _source_derived_ui_run_management_projection(
@@ -12955,6 +12954,16 @@ class ReweaveAppService:
                     request["run_id"]
                 )
             )
+            if context["formal_admission_status"] == "admitted":
+                return self._ok(
+                    {
+                        "status": "already_admitted",
+                        "review_count": 2,
+                        "warehouse_revision": context[
+                            "warehouse_revision"
+                        ],
+                    }
+                )
             authorization = context["authorization"]
             result = (
                 self._capsule_stage3

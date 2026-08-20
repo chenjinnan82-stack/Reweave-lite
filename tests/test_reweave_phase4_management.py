@@ -1639,10 +1639,12 @@ class Phase4ManagementTest(unittest.TestCase):
                 after_counts["capsule_versions"],
                 before_counts["capsule_versions"],
             )
+            admission_receipt_digests: set[str] = set()
             for row in rows:
                 receipt = json.loads(
                     row["sanitized_candidate_json"]
                 )["source_derived_standard_ui_review_admission"]
+                admission_receipt_digests.add(receipt["digest"])
                 self.assertNotIn("capability_key", receipt)
                 self.assertNotIn("display_name", receipt)
                 self.assertNotIn("role_key", receipt)
@@ -1651,12 +1653,13 @@ class Phase4ManagementTest(unittest.TestCase):
                 self.assertNotIn("acceptance_cases", receipt)
                 self.assertNotIn("business_acceptance", receipt)
             listed = self.service.list_review_items({})
-            admitted_ids = {
-                item["review_id"]
+            admitted_by_kind = {
+                item["capability_kind"]: item["review_id"]
                 for item in self.service._read_source_derived_ui_run(
                     run_id
                 )["reviews"]
             }
+            admitted_ids = set(admitted_by_kind.values())
             self.assertEqual(
                 {
                     tuple(item["allowed_decisions"])
@@ -1678,6 +1681,152 @@ class Phase4ManagementTest(unittest.TestCase):
             )
             self.assertEqual(
                 restored["formal_admission_status"], "admitted"
+            )
+            admission_revision = self.store.current_revision()
+            with self.store.transaction() as connection:
+                trigger_row = connection.execute(
+                    "SELECT sql FROM sqlite_master WHERE type='trigger' "
+                    "AND name='warehouse_state_update_guard'"
+                ).fetchone()
+                self.assertIsNotNone(trigger_row)
+                trigger_sql = str(trigger_row[0])
+                connection.execute(
+                    "DROP TRIGGER warehouse_state_update_guard"
+                )
+                connection.execute(
+                    "UPDATE warehouse_state SET warehouse_revision=? "
+                    "WHERE singleton_id=1",
+                    (admission_revision - 1,),
+                )
+                connection.execute(trigger_sql)
+            rolled_back = (
+                self.service.admit_source_derived_standard_ui_reviews(
+                    {"run_id": run_id}
+                )
+            )
+            self.assertFalse(rolled_back["ok"])
+            self.assertEqual(
+                self.store.current_revision(), admission_revision - 1
+            )
+            self.assertEqual(
+                next(
+                    item
+                    for item in self.service._capsule_management_state()[
+                        "sourceDerivedUiRuns"
+                    ]
+                    if item["run_id"] == run_id
+                )["formal_admission_status"],
+                "conflict",
+            )
+            with self.store.transaction() as connection:
+                connection.execute(
+                    "UPDATE warehouse_state SET warehouse_revision=? "
+                    "WHERE singleton_id=1",
+                    (admission_revision,),
+                )
+            publication_revision = self.store.current_revision()
+            for kind, role_key in (
+                ("interaction", "work_order_message_input"),
+                ("presentation", "urgency_result_display"),
+            ):
+                published = self.service.decide_review_item(
+                    {
+                        "review_id": admitted_by_kind[kind],
+                        "decision": "publish_general",
+                        "capability_key": (
+                            "standard_ui_admission_lifecycle"
+                        ),
+                        "display_name": "Standard UI admission lifecycle",
+                        "role_key": role_key,
+                        "variant_key": "default",
+                    }
+                )
+                self.assertTrue(published["ok"], published)
+            self.assertEqual(
+                self.store.current_revision(), publication_revision + 2
+            )
+            after_publication = next(
+                item
+                for item in self.service._capsule_management_state()[
+                    "sourceDerivedUiRuns"
+                ]
+                if item["run_id"] == run_id
+            )
+            self.assertEqual(
+                after_publication["formal_admission_status"], "admitted"
+            )
+            with self.store.read_connection() as connection:
+                post_publication_counts = {
+                    table: int(
+                        connection.execute(
+                            f"SELECT COUNT(*) FROM {table}"
+                        ).fetchone()[0]
+                    )
+                    for table in (
+                        "review_items",
+                        "capsules",
+                        "capsule_versions",
+                    )
+                }
+                published_rows = connection.execute(
+                    "SELECT sanitized_candidate_json FROM review_items "
+                    "WHERE review_id IN (?,?) ORDER BY review_id",
+                    tuple(sorted(admitted_ids)),
+                ).fetchall()
+            self.assertEqual(
+                {
+                    json.loads(row["sanitized_candidate_json"])[
+                        "source_derived_standard_ui_review_admission"
+                    ]["digest"]
+                    for row in published_rows
+                },
+                admission_receipt_digests,
+            )
+            repeated_after_publication = (
+                self.service.admit_source_derived_standard_ui_reviews(
+                    {"run_id": run_id}
+                )
+            )
+            self.assertTrue(
+                repeated_after_publication["ok"],
+                repeated_after_publication,
+            )
+            self.assertEqual(
+                repeated_after_publication["data"]["status"],
+                "already_admitted",
+            )
+            self.assertEqual(
+                repeated_after_publication["data"]["warehouse_revision"],
+                publication_revision + 2,
+            )
+            self.assertEqual(
+                self.store.current_revision(), publication_revision + 2
+            )
+            with self.store.read_connection() as connection:
+                self.assertEqual(
+                    {
+                        table: int(
+                            connection.execute(
+                                f"SELECT COUNT(*) FROM {table}"
+                            ).fetchone()[0]
+                        )
+                        for table in post_publication_counts
+                    },
+                    post_publication_counts,
+                )
+            self.service.close()
+            self.service = ReweaveAppService(
+                engine=LocalReweaveEngine(), capsule_store=self.store
+            )
+            self.assertEqual(
+                next(
+                    item
+                    for item in self.service._capsule_management_state()[
+                        "sourceDerivedUiRuns"
+                    ]
+                    if item["run_id"] == run_id
+                )["formal_admission_status"],
+                "admitted",
             )
             current_revision = self.store.current_revision()
             with self.store.transaction() as connection:
